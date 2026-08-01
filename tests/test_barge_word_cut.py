@@ -23,6 +23,7 @@ import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.realtime_media_stage import RealtimeMediaStage
 
 
 class _FakeStream:
@@ -3323,8 +3324,6 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
 
 def test_capture_four_word_speaker_cut_splices_and_dispatches_async_once():
     """Lexical + speaker authority survives capture through async dispatch."""
-    import queue
-
     final_ready = threading.Event()
     finals: list[str] = []
 
@@ -3406,7 +3405,8 @@ def test_capture_four_word_speaker_cut_splices_and_dispatches_async_once():
 
     eng._recognizer = recognizer
     eng._final_recognizer = None
-    eng._final_q = queue.Queue(maxsize=8)
+    final_stage = RealtimeMediaStage(max_queued=8)
+    eng._final_stage = final_stage
     eng._cb = EngineCallbacks(on_barge_in=on_barge_in, on_final=on_final)
     eng._capture_sr = eng.config.sample_rate
     eng._stream_in = _FiniteAsyncInput(
@@ -3418,12 +3418,16 @@ def test_capture_four_word_speaker_cut_splices_and_dispatches_async_once():
     eng._first_audio_pending = True
 
     eng._running.set()
-    final_worker = threading.Thread(target=eng._final_worker)
+    final_worker = threading.Thread(
+        target=eng._final_worker,
+        args=(final_stage,),
+    )
     capture_worker = threading.Thread(target=eng._capture_loop)
     final_worker.start()
     capture_worker.start()
     capture_worker.join(timeout=3.0)
     final_worker.join(timeout=3.0)
+    final_stage.close()
 
     assert not capture_worker.is_alive()
     assert not final_worker.is_alive()
@@ -3529,7 +3533,7 @@ def test_zero_word_capture_never_invokes_offline_recovery_or_dispatches():
 
     eng._recognizer = streaming
     eng._final_recognizer = offline
-    eng._final_q = None
+    eng._final_stage = None
     eng._cb = EngineCallbacks(on_barge_in=on_barge_in, on_final=finals.append)
     eng._capture_sr = eng.config.sample_rate
     eng._stream_in = _FiniteInput(

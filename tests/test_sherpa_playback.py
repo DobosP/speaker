@@ -1434,7 +1434,7 @@ def test_live_shared_worker_fails_restart_before_shared_events_are_reset(
     eng._capture_stopping.set()
     eng._playback_stopping.set()
     prior_play_q = eng._play_q
-    prior_final_q = eng._final_q
+    prior_final_stage = eng._final_stage
 
     try:
         with pytest.raises(RuntimeError, match=message):
@@ -1445,7 +1445,7 @@ def test_live_shared_worker_fails_restart_before_shared_events_are_reset(
         assert not eng._running.is_set()
         assert not eng._receipt_running.is_set()
         assert eng._play_q is prior_play_q
-        assert eng._final_q is prior_final_q
+        assert eng._final_stage is prior_final_stage
         assert getattr(eng, worker_attr) is worker
     finally:
         release.set()

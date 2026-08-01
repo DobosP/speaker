@@ -1,4 +1,5 @@
 """Capture-loop regressions for the load-bearing normal-final VAD gate."""
+
 from __future__ import annotations
 
 import threading
@@ -12,6 +13,7 @@ from core.engine import EngineCallbacks, TranscriptAbortReason
 from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.metrics import SPEECH_END
+from core.realtime_media_stage import RealtimeMediaStage
 
 
 class _Input:
@@ -33,6 +35,7 @@ class _Stream:
 
 class _HallucinatingRecognizer:
     """The exact live idle shape: stable raw ``AND`` + an endpoint."""
+
     def create_stream(self):
         return _Stream()
 
@@ -123,10 +126,7 @@ def test_inline_final_processing_error_aborts_published_partial_once():
     assert len(aborts) == 1
     assert aborts[0].reason is TranscriptAbortReason.DECODE_ERROR
     assert aborts[0].revision > partials[0].revision
-    assert (
-        aborts[0].acoustic.spans[0].key
-        == partials[0].acoustic.spans[0].key
-    )
+    assert aborts[0].acoustic.spans[0].key == partials[0].acoustic.spans[0].key
 
 
 def test_evidence_enabled_without_vad_explicitly_bypasses():
@@ -156,9 +156,9 @@ def _evidence_ambient_frame(rms: float = 0.001):
 
 def _evidence_voice_frame(rms: float = 0.0022):
     t = np.arange(_EVIDENCE_FRAME, dtype="float64") / 16000.0
-    envelope = np.sin(
-        np.pi * (np.arange(_EVIDENCE_FRAME) + 0.5) / _EVIDENCE_FRAME
-    ) ** 0.2
+    envelope = (
+        np.sin(np.pi * (np.arange(_EVIDENCE_FRAME) + 0.5) / _EVIDENCE_FRAME) ** 0.2
+    )
     return _normalize_evidence(
         envelope
         * (
@@ -187,9 +187,7 @@ def _short_yes_block(*, voice_rms: float = 0.0022):
     return np.concatenate(
         [
             _normalize_evidence(
-                signal[
-                    index * _EVIDENCE_FRAME : (index + 1) * _EVIDENCE_FRAME
-                ],
+                signal[index * _EVIDENCE_FRAME : (index + 1) * _EVIDENCE_FRAME],
                 voice_rms,
             )
             for index in range(5)
@@ -300,9 +298,9 @@ def _run_calibrated_evidence(
         on_metric=lambda name, **_kwargs: metrics.append(name),
     )
     if enqueue_sink is not None:
-        engine._final_q = object()
-        engine._enqueue_final = (
-            lambda _seg, raw, *_args, **_kwargs: enqueue_sink.append(raw)
+        engine._final_stage = RealtimeMediaStage(max_queued=1)
+        engine._enqueue_final = lambda _seg, raw, *_args, **_kwargs: (
+            enqueue_sink.append(raw)
         )
 
     engine._running.set()
@@ -523,9 +521,7 @@ def test_vad_onset_rebase_replays_alternate_asr_domain_not_primary():
     recognizer = _Recognizer()
     stream = _RecordingStream()
 
-    replayed = engine._rebase_normal_asr_stream(
-        recognizer, stream, segment
-    )
+    replayed = engine._rebase_normal_asr_stream(recognizer, stream, segment)
 
     assert recognizer.resets == 1
     assert replayed == 3200
@@ -899,10 +895,7 @@ def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
 
         def is_endpoint(self, stream):
             values = self._values(stream)
-            return (
-                np.any(np.isclose(values, 0.41))
-                and np.any(np.isclose(values, 0.22))
-            )
+            return np.any(np.isclose(values, 0.41)) and np.any(np.isclose(values, 0.22))
 
         def reset(self, stream):
             self.resets += 1
@@ -939,9 +932,7 @@ def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
         on_final=finals.append,
     )
     engine._speaking.set()
-    engine._begin_barge_confirm(
-        recognizer, recognizer.stream, time.monotonic()
-    )
+    engine._begin_barge_confirm(recognizer, recognizer.stream, time.monotonic())
 
     engine._running.set()
     thread = threading.Thread(target=engine._capture_loop)
@@ -1275,17 +1266,14 @@ def test_capture_reopen_preserves_recovered_block_after_rebinding_domain():
     gate.enroll_embedding([1.0])
     engine._speaker_gate = gate
     resolved = []
-    engine._resolve_capture_domain = (
-        lambda _sd, selector, **_kwargs: resolved.append(selector) or False
+    engine._resolve_capture_domain = lambda _sd, selector, **_kwargs: (
+        resolved.append(selector) or False
     )
     finals = []
     engine._finalize_and_dispatch = (
-        lambda seg,
-        raw,
-        speech_end,
-        asr_seg=None,
-        speech_sec=None,
-        **_kwargs: finals.append(np.asarray(seg).copy())
+        lambda seg, raw, speech_end, asr_seg=None, speech_sec=None, **_kwargs: (
+            finals.append(np.asarray(seg).copy())
+        )
     )
     engine._cb = EngineCallbacks()
 

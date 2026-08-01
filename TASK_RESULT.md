@@ -1,74 +1,70 @@
-Valid until: this branch lands or ADR-0101 is superseded — then treat as history.
+Valid until: this branch lands or ADR-0107 is superseded — then treat as history.
 
-# Task result — bounded Common Voice spontaneous STT slice
+# Task result — generation-scoped real-time media stage
 
 ## Outcome
 
-Added Common Voice Spontaneous Speech 4.0 English to the public evaluation
-catalog and implemented a Linux/POSIX, no-download preparer for a deterministic
-private 32-speaker P0 slice. Runtime STT defaults, setup, `python -m core
---session`, and `./live.sh` are unchanged.
+Replaced Sherpa's raw async-final queue with the first route-neutral typed media
+stage. It carries the existing capture epoch and capture generation, owns
+immutable endpoint PCM, has a physical queue bound and per-item cancellation,
+and binds one worker to one run. Saturation now retires the oldest queued final
+with a typed backpressure outcome; it can no longer move expensive finalization
+back onto the capture processor. Shutdown always releases queued work, wakes the
+worker, and rejects late offers independently of diagnostic recording.
+A final callback that calls `stop()` now defers retained audio cleanup until its
+capture-effect lease unwinds, after which restart guards can pass normally.
 
-The preparer requires the exact release/API identity and current terms, a
-canonical owner-only archive outside every Git checkout, and a new private
-output. It twice hashes the same archive descriptor, never reads the reported
-TSV body, safely parses the bounded archive/metadata, and uses speaker-first
-deterministic quota matching for eight clean test clips in each of four duration
-bands. It decodes only selected MP3s into bounded mono 16 kHz f32le PCM.
-
-The shared schema-v2 writer now validates cases, provenance, normalized
-references, and the exact <=256 KiB manifest before output creation. It retains
-the created directory descriptor through no-overwrite writes and final
-identity/sidecar/hash checks. Decoder/package and local preparer-code closures
-are bounded, path-free, measured before work, and required unchanged after
-publication; injected decoders are explicitly test-only.
+No recognizer, TTS, entry point, setup option, barge-in/enrollment policy, tool
+authority, or runtime default changed.
 
 ## Files changed
 
-- Catalog/selector: `tools/public_voice_eval_matrix.py` and its tests/docs.
-- Preparer: `tools/prepare_common_voice_spontaneous_v4.py` and focused tests.
-- Shared publication: `tools/streaming_stt/corpus_writer.py`, the existing
-  public converter, and writer regressions.
-- Optional isolated decode pins: `requirements-evaluation.txt`.
-- Decision/status/operator evidence: ADR-0101, `STATUS.md`, testing guide, and
-  public evaluation guide.
+- Route-neutral stage: `core/realtime_media_stage.py`.
+- First production integration: `core/engines/sherpa.py`.
+- Deterministic stage, final-worker, lifecycle, and adjacent regressions under
+  `tests/`.
+- Decision/current truth/testing: ADR-0107, `STATUS.md`, and
+  `docs/agent-testing.md`.
 
 ## Verification
 
-All commands used one-thread math, `ionice -c 3`, and `nice -n 15` limits.
+All test commands used one-thread math, idle I/O priority, and process niceness.
 
-- Integrated SPS/writer/catalog gate: 86 passed in 1.12 s.
-- Expanded streaming-STT gate: 653 passed, 3 real-model deselected in 9.44 s.
-- Complete non-model repository gate: 6,937 passed, 13 skipped, 23 deselected,
-  9 pre-existing warnings in 119.17 s.
-- Required APM/double-talk gate: 6 passed in 0.96 s.
-- Forced clean-CI/no-PyAV focused path: 84 passed, 2 skipped.
-- Scoped Ruff check and format check: passed.
+- Isolated reusable stage: 17 passed.
+- Final focused stage/worker gate: 45 passed, one real-model test deselected.
+- Expanded affected-area gate: 381 passed, one real-model test deselected.
+- Downstream runtime/session cancellation: 153 passed.
+- Required APM/DTD: 6 passed.
+- Complete non-real logic gate: 7,080 passed as 7,052 repository tests plus
+  28 scheduling-sensitive LiveKit engine tests run in isolation; 13 skipped,
+  23 model-only deselected, and nine pre-existing warnings.
+- Scoped Ruff lint passed for every changed Python file; format checks passed
+  for the new stage and expanded focused-test files. Baseline-formatted
+  integration files were left untouched outside semantic hunks.
 - `git diff --check`: passed.
 
-The installed optional PyAV environment exercised a synthetic MP3 encode/decode
-and complete PyAV/FFmpeg/NumPy closure receipt. Clean CI can omit that optional
-dependency; those two tests use explicit per-test skips rather than failing
-module import. Independent security, compatibility, and writer-race audits
-identified the issues above; their requested landing blockers were fixed.
-Three post-fix read-only audits found no landing blocker.
+A first combined attempt was not accepted as evidence: log suppression removed
+one test's subject, the sandbox denied run-log creation, a worktree checkout had
+not preserved one owner-only data-file mode, and LiveKit's one-second loop
+fixture starved under the accumulated low-priority run. All affected cases then
+passed under their intended writable-log/owner-only conditions; the complete
+gate was rerun green with only that 28-test scheduling-sensitive file isolated.
 
-## Limits and manual follow-up
+## Limits and next change
 
-No corpus was downloaded, no real SPS archive was opened, no STT model ran, and
-no network, GPU, microphone, speaker, or live route was used. Therefore this
-proves preparation/publication contracts, not real-release compatibility, WER,
-latency, natural conversation, capture/VAD/AEC, tools, owner voice, or live
-quality. The 32 clean cases are a development slice, not an official full-test
-score, quality-tagged stratum, Romanian result, or training-disjoint claim.
+This is deterministic fake/replay and lifecycle evidence only. No microphone,
+speaker, live route, model weights, GPU decode, WER, natural-conversation, or
+latency validation ran. A native decoder already executing at shutdown cannot
+be forcibly killed, but its stage event and capture epoch fence late effects.
 
-Failed publication may intentionally retain private partial evidence; only exit
-zero is readiness, and publication is not advertised as an atomic readiness
-marker. Next, the owner must acquire the archive under MDC terms into a
-canonical mode-0600 non-Git path, run the preparer, then execute isolated
-one-thread candidate-model comparisons before any separate `./live.sh` A/B.
+Next, introduce one synchronous `SherpaStreamingDecodeSession` that exclusively
+owns every online recognizer and stream operation. Only after that ownership is
+proven should the complete decoder move behind this stage and be compared on
+recorded/public replay. Partial extraction is unsafe because VAD rebase, barge
+confirmation, word-cut, and normal capture currently share native recognizer
+state.
 
 ## Merge recommendation
 
-Recommend fast-forwarding this green, post-audit branch. Do not promote a
-recognizer or runtime default from this headless preparation milestone.
+Recommend fast-forwarding this green, independently reviewed branch. Do not
+promote a recognizer or runtime default from this foundation.

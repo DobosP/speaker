@@ -83,9 +83,19 @@ class _FinalWorkItem:
     speech_sec: Optional[float] = None
     offline_recovery_authorized: bool = False
     owner_lineage_intact: bool = True
-    capture_epoch: Optional[int] = None
     acoustic: Optional[AcousticLineage] = None
     revision: int = 0
+
+
+def _owned_final_pcm(value) -> Optional[np.ndarray]:
+    """Return one immutable float32 copy owned by an async-final handoff."""
+
+    if value is None:
+        return None
+    owned = np.array(value, dtype="float32", order="C", copy=True)
+    owned.shape = (owned.size,)
+    owned.setflags(write=False)
+    return owned
 
 
 def _calibration_has_suspicious_transient(calibration: dict) -> bool:
@@ -166,6 +176,7 @@ from ..media_session import (
     CapturedBlock,
 )
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
+from ..realtime_media_stage import CaptureScope, RealtimeMediaStage
 from ..tts_markup import (
     parse_tts_markup,
     prepare_speech_style,
@@ -1916,15 +1927,12 @@ class SherpaOnnxEngine(AudioEngine):
         # Metadata-only acoustic turn identity. Recreated on every engine start
         # so route/session-local monotonic clocks are never compared across runs.
         self._acoustic_turn_tracker: Optional[AcousticTurnTracker] = None
-        # asr-tts-2: dedicated endpoint-final worker. The queue (work items
-        # ``(seg, raw_final, speech_end_ts)``) + thread are created in ``_build``
-        # ONLY when an offline recognizer or verifier is built and
-        # ``asr_final_async`` is on; left None otherwise so finalization runs
-        # inline (byte-identical to the legacy behaviour). A small bound is
-        # plenty -- utterances arrive
-        # seconds apart and a decode is ~150ms -- and on the rare overflow the
-        # capture loop finalizes inline rather than blocking real-time.
-        self._final_q: "Optional[queue.Queue[Optional[tuple]]]" = None
+        # Dedicated endpoint-final stage + worker. The process-local stage is
+        # created in ``_build`` only when an offline recognizer or verifier is
+        # available and ``asr_final_async`` is on. Its short queue is physically
+        # bounded; overload retires old work and never sends model decode back
+        # onto the capture processor.
+        self._final_stage: Optional[RealtimeMediaStage[_FinalWorkItem]] = None
         self._final_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._capture_stopping = threading.Event()
@@ -3467,6 +3475,13 @@ class SherpaOnnxEngine(AudioEngine):
         explicitly so a slow second pass cannot callback into a stopped/restarted
         runtime.
         """
+        cancel_event = getattr(
+            self._capture_callback_context,
+            "media_cancel_event",
+            None,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         if epoch is None:
             epoch = getattr(self._capture_callback_context, "epoch", None)
         return epoch is None or self._capture_epoch_is_current(epoch)
@@ -3534,6 +3549,13 @@ class SherpaOnnxEngine(AudioEngine):
         **kwargs,
     ) -> bool:
         """Linearize one callback at its actual call seam against stop()."""
+        cancel_event = getattr(
+            self._capture_callback_context,
+            "media_cancel_event",
+            None,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         if capture_epoch is None:
             capture_epoch = getattr(self._capture_callback_context, "epoch", None)
         if capture_epoch is None:
@@ -3849,6 +3871,52 @@ class SherpaOnnxEngine(AudioEngine):
         media_session = self._capture_media_session
         if media_session is not None and not media_session.is_alive:
             self._capture_media_session = None
+        return True
+
+    def _release_retained_audio_resources_if_idle(
+        self,
+        *,
+        close_recorders: bool = False,
+        force: bool = False,
+    ) -> bool:
+        """Collect resources retained while a capture callback held a lease.
+
+        A final callback may call ``stop()`` from the final worker itself. The
+        callback's capture-effect lease cannot be released until that nested
+        stop returns, so the worker calls this helper once finalization unwinds.
+        It is also the common post-join collection path for ordinary stop.
+        """
+
+        if not force and not self._capture_resource_hold.is_set():
+            return True
+        if not self._capture_owner_and_effects_are_idle():
+            return False
+        play_thread = self._play_thread
+        if play_thread is not None and play_thread.is_alive():
+            return False
+
+        capture_closed = self._close_capture_input()
+        with self._receipt_lock:
+            with self._out_lock:
+                fifo = self._fifo
+                out = self._out_stream
+                if fifo is not None:
+                    fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
+                self._out_stream = None
+                self._fifo = None
+            if out is not None:
+                try:
+                    out.stop()
+                    out.close()
+                except Exception:  # noqa: BLE001 - device may be mid-teardown
+                    pass
+            self._terminalize_unbound_receipts()
+
+        if not capture_closed:
+            return False
+        self._capture_resource_hold.clear()
+        if close_recorders:
+            self._close_recorders(log_completed=True)
         return True
 
     # --- AudioEngine ---
@@ -4216,11 +4284,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._start_receipt_dispatcher()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
-        # asr-tts-2: endpoint-final worker (only when async + an endpoint model
-        # was wired in _build). Keeps slow decode off the capture loop.
-        if self._final_q is not None:
+        # Endpoint-final worker (only when async + an endpoint model was wired
+        # in _build). Bind the exact single-run stage into the worker so a later
+        # restart can never redirect an old thread into new-run work.
+        final_stage = self._final_stage
+        if final_stage is not None:
             self._final_thread = threading.Thread(
-                target=self._final_worker, daemon=True
+                target=self._final_worker,
+                args=(final_stage,),
+                daemon=True,
             )
             self._final_thread.start()
 
@@ -4243,6 +4315,20 @@ class SherpaOnnxEngine(AudioEngine):
         if self._capture_control_lane is not None:
             self._capture_control_lane.close()
         self._running.clear()
+        final_stage = self._final_stage
+        if final_stage is not None:
+            # Close is the final-stage linearization point. It fences the active
+            # lease, wakes a blocked worker, and transfers every still-queued
+            # item to this shutdown owner regardless of diagnostic settings.
+            retired_finals = final_stage.close()
+            for retired in retired_finals.retired:
+                work = retired.payload
+                self._emit_transcript_abort(
+                    work.acoustic,
+                    work.revision,
+                    TranscriptAbortReason.SHUTDOWN,
+                    capture_epoch=retired.scope.capture_epoch,
+                )
         virtual_route_thread = self._virtual_route_thread
         if (
             virtual_route_thread is not None
@@ -4316,18 +4402,17 @@ class SherpaOnnxEngine(AudioEngine):
         )
         capture_effects_idle = self._capture_effects_are_idle()
         capture_quiesced = not capture_alive and capture_effects_idle
-        input_close_attempted = False
+        capture_closed = True
         if capture_stream is not None and capture_quiesced:
-            input_close_attempted = True
-            self._close_capture_input()
-        if capture_quiesced:
+            capture_closed = self._close_capture_input()
+        if capture_quiesced and capture_closed:
             self._capture_resource_hold.clear()
         else:
             # Retain the wrapper + native handle.  Letting an uninterruptible
             # daemon leak at shutdown is safer than concurrent close/read native
             # allocator corruption; stop() remains bounded.
             log.error(
-                "capture owner/effect remains active after bounded shutdown; "
+                "capture owner/effect or input remains active after bounded shutdown; "
                 "retaining audio resources and proceeding"
             )
         # Tear the live output stream down BEFORE pushing the sentinel / joining
@@ -4377,34 +4462,16 @@ class SherpaOnnxEngine(AudioEngine):
                 self._play_q.put_nowait(sentinel)
             except queue.Full:
                 pass
-        if self._final_q is not None:
-            # Any finals still queued here are intentionally dropped on shutdown
-            # (like _play_q) -- dispatching a final into a tearing-down runtime is
-            # wrong, and the window is sub-second.
-            if self._diagnostic_bundle is not None:
-                while True:
-                    try:
-                        queued_final = self._final_q.get_nowait()
-                    except queue.Empty:
-                        break
-                    if isinstance(queued_final, _FinalWorkItem):
-                        self._emit_transcript_abort(
-                            queued_final.acoustic,
-                            queued_final.revision,
-                            TranscriptAbortReason.SHUTDOWN,
-                            capture_epoch=queued_final.capture_epoch,
-                        )
-            try:
-                self._final_q.put_nowait(None)  # sentinel: wake final worker
-            except queue.Full:
-                pass  # _running is already clear; it exits on its own next loop
         if self._play_thread is not None:
             self._play_thread.join(timeout=1.0)
             if self._play_thread.is_alive():
                 log.warning("playback thread did not exit within 1.0s; proceeding")
                 if self._diagnostic_bundle is not None:
                     self._diagnostic_bundle.invalidate("playback_timeout")
-        if self._final_thread is not None:
+        if (
+            self._final_thread is not None
+            and self._final_thread is not threading.current_thread()
+        ):
             self._final_thread.join(timeout=1.0)
             if self._final_thread.is_alive():
                 log.warning("final ASR thread did not exit within 1.0s; proceeding")
@@ -4416,30 +4483,9 @@ class SherpaOnnxEngine(AudioEngine):
         # joins. If ownership really quiesced, collect everything skipped under
         # the capture hold; otherwise retain it for a later bounded stop.
         if self._capture_resource_hold.is_set() or retained_capture_resources_on_entry:
-            capture_now_idle = self._capture_owner_and_effects_are_idle()
-            play_thread = self._play_thread
-            playback_now_idle = bool(play_thread is None or not play_thread.is_alive())
-            if capture_now_idle and playback_now_idle:
-                if self._stream_in is not None and not input_close_attempted:
-                    input_close_attempted = True
-                    self._close_capture_input()
-                with self._receipt_lock:
-                    with self._out_lock:
-                        fifo = self._fifo
-                        out = self._out_stream
-                        if fifo is not None:
-                            fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
-                        self._out_stream = None
-                        self._fifo = None
-                    if out is not None:
-                        try:
-                            out.stop()
-                            out.close()
-                        except Exception:  # noqa: BLE001 - device may be mid-teardown
-                            pass
-                    self._terminalize_unbound_receipts()
-                self._capture_resource_hold.clear()
-            else:
+            if not self._release_retained_audio_resources_if_idle(
+                force=retained_capture_resources_on_entry
+            ):
                 self._capture_resource_hold.set()
                 log.error(
                     "capture/playback owner or effect remains active after "
@@ -4888,6 +4934,9 @@ class SherpaOnnxEngine(AudioEngine):
         NS-on domain; the louder NS-off signal would clear the floor too easily
         and re-open the echo-final cascade). ``None`` (every non-apm-owns-ns
         path) -> decode ``seg``, byte-identical."""
+        if not self._capture_callback_is_current(capture_epoch):
+            self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
+            return
         if self._diagnostic_bundle is not None:
             from ..diagnostic_bundle import DiagnosticStage
 
@@ -5136,15 +5185,24 @@ class SherpaOnnxEngine(AudioEngine):
                 log.exception("final transcript callback failed after terminal handoff")
 
     def _maybe_setup_async_final(self) -> None:
-        """Create the final worker queue iff an endpoint model was built and
-        ``asr_final_async`` is on. Split out of ``_build`` so the gate -- the
-        thing that decides "async worker vs byte-identical inline" -- is unit-
-        testable without standing up every model. ``_final_q`` left None otherwise
-        (the capture loop then finalizes inline). asr-tts-2."""
+        """Install one fresh final stage when endpoint finalization is async."""
+
+        previous = self._final_stage
+        self._final_stage = None
+        if previous is not None:
+            retired = previous.close()
+            if retired.queued_released:
+                # A normal stop already owns and terminalizes queued work. If a
+                # prior capture failed before stop, never leak its acoustic
+                # identities into the next run's freshly installed callbacks.
+                log.warning(
+                    "retired %d orphaned final(s) while rebuilding the stage",
+                    retired.queued_released,
+                )
         if (
             self._final_recognizer is not None or self._final_verifier is not None
         ) and self.config.asr_final_async:
-            self._final_q = queue.Queue(maxsize=8)
+            self._final_stage = RealtimeMediaStage(max_queued=8)
             log.info("final ASR models run ASYNC (off the capture thread)")
 
     def _enqueue_final(
@@ -5157,231 +5215,147 @@ class SherpaOnnxEngine(AudioEngine):
         offline_recovery_authorized: bool = False,
         owner_lineage_intact: bool = True,
         capture_epoch: Optional[int] = None,
+        capture_generation: Optional[int] = None,
         acoustic: Optional[AcousticLineage] = None,
         revision: int = 0,
     ) -> None:
-        """Hand an endpointed utterance to the final worker WITHOUT ever
-        blocking the capture loop. On overflow (the worker is wedged/very slow --
-        normally the queue sits near-empty), drop the OLDEST queued utterance to
-        make room for this newer one, mirroring ``_play_q``'s drop-oldest
-        backpressure. This preserves capture-order dispatch, which matters: the
-        runtime's supersede is newest-ARRIVAL-wins, so a stale final arriving
-        after a newer one would wrongly cancel the newer turn. Single producer
-        (this capture thread), so after one ``get_nowait`` a slot is free."""
+        """Transfer an endpointed utterance without waiting for capacity."""
 
-        def _item() -> _FinalWorkItem:
-            return _FinalWorkItem(
-                seg=seg,
-                raw_final=raw_final,
-                speech_end_ts=speech_end_ts,
-                asr_seg=asr_seg,
-                speech_sec=speech_sec,
-                offline_recovery_authorized=bool(offline_recovery_authorized),
-                owner_lineage_intact=bool(owner_lineage_intact),
-                capture_epoch=(
-                    int(capture_epoch) if capture_epoch is not None else None
-                ),
-                acoustic=acoustic,
-                revision=max(0, int(revision)),
+        stage = self._final_stage
+        if stage is None:
+            raise RuntimeError("async final stage is not configured")
+        if capture_epoch is None:
+            capture_epoch = getattr(self._capture_callback_context, "epoch", None)
+        if capture_epoch is None:
+            with self._capture_effect_condition:
+                capture_epoch = self._capture_epoch
+        if capture_generation is None:
+            capture_generation = getattr(
+                self._capture_callback_context,
+                "capture_generation",
+                0,
             )
+        scope = CaptureScope(
+            capture_epoch=int(capture_epoch),
+            capture_generation=int(capture_generation),
+        )
+        work = _FinalWorkItem(
+            seg=_owned_final_pcm(seg),
+            raw_final=str(raw_final),
+            speech_end_ts=speech_end_ts,
+            asr_seg=_owned_final_pcm(asr_seg),
+            speech_sec=speech_sec,
+            offline_recovery_authorized=bool(offline_recovery_authorized),
+            owner_lineage_intact=bool(owner_lineage_intact),
+            acoustic=acoustic,
+            revision=max(0, int(revision)),
+        )
+        offered = stage.offer_nowait(scope, work)
 
-        try:
-            self._final_q.put_nowait(_item())
-            if self._diagnostic_bundle is not None:
-                from ..diagnostic_bundle import DiagnosticStage
-
-                self._diagnostic_observe(
-                    DiagnosticStage.FINALIZER_QUEUED,
-                    acoustic=acoustic,
-                    revision=revision,
-                )
-            return
-        except queue.Full:
-            pass
-        log.warning("final ASR queue full; dropping the oldest pending final")
-        try:
-            dropped = self._final_q.get_nowait()
-            # Make the drop visible in the run bundle, like the floor/speaker
-            # drop paths -- otherwise a wedged worker silently eats turns.
-            if self._capture_callback_is_current(capture_epoch):
+        for dropped in offered.retired:
+            log.warning("final ASR stage full; retiring oldest pending final")
+            if self._capture_callback_is_current(scope.capture_epoch):
                 self._emit_capture_callback(
                     self._cb.on_metric,
                     "second_pass_queue_overflow_dropped_final",
-                    capture_epoch=capture_epoch,
+                    capture_epoch=scope.capture_epoch,
                 )
-            if isinstance(dropped, _FinalWorkItem):
-                self._emit_transcript_abort(
-                    dropped.acoustic,
-                    dropped.revision,
-                    TranscriptAbortReason.BACKPRESSURE,
-                    capture_epoch=dropped.capture_epoch,
-                )
-        except queue.Empty:
-            pass  # the worker just drained one; a slot is free now
-        try:
-            self._final_q.put_nowait(_item())
-            if self._diagnostic_bundle is not None:
-                from ..diagnostic_bundle import DiagnosticStage
+            dropped_work = dropped.payload
+            self._emit_transcript_abort(
+                dropped_work.acoustic,
+                dropped_work.revision,
+                TranscriptAbortReason.BACKPRESSURE,
+                capture_epoch=dropped.scope.capture_epoch,
+            )
 
-                self._diagnostic_observe(
-                    DiagnosticStage.FINALIZER_QUEUED,
-                    acoustic=acoustic,
-                    revision=revision,
-                )
-        except queue.Full:
-            # Only reachable if a sentinel raced in; never block capture.
-            log.warning("final ASR queue still full; finalizing inline")
-            if offline_recovery_authorized or not owner_lineage_intact:
-                self._finalize_and_dispatch(
-                    seg,
-                    raw_final,
-                    speech_end_ts,
-                    asr_seg,
-                    speech_sec,
-                    offline_recovery_authorized=offline_recovery_authorized,
-                    owner_lineage_intact=owner_lineage_intact,
-                    capture_epoch=capture_epoch,
-                    acoustic=acoustic,
-                    revision=revision,
-                )
-            else:
-                self._finalize_and_dispatch(
-                    seg,
-                    raw_final,
-                    speech_end_ts,
-                    asr_seg,
-                    speech_sec,
-                    capture_epoch=capture_epoch,
-                    acoustic=acoustic,
-                    revision=revision,
-                )
+        if not offered.accepted:
+            log.warning("final ASR stage is closed; rejecting late final")
+            self._emit_transcript_abort(
+                work.acoustic,
+                work.revision,
+                TranscriptAbortReason.SHUTDOWN,
+                capture_epoch=scope.capture_epoch,
+            )
+            return
 
-    def _final_worker(self) -> None:
-        """Drain the endpoint-final queue, finalizing one utterance at a time.
+        if self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
 
-        Single consumer -> finals dispatch in capture order even though the
-        model decode is slow; running off the capture thread is the whole point
-        (asr-tts-2): the real-time loop keeps reading the mic, updating the echo
-        reference, and servicing barge-in while this decodes. A broad guard keeps
-        the worker alive across a bad turn -- a finalize failure drops that one
-        turn, it never wedges the queue."""
-        assert self._final_q is not None
+            self._diagnostic_observe(
+                DiagnosticStage.FINALIZER_QUEUED,
+                acoustic=acoustic,
+                revision=revision,
+            )
+
+    def _final_worker(
+        self,
+        stage: Optional[RealtimeMediaStage[_FinalWorkItem]] = None,
+    ) -> None:
+        """Drain one exact single-run final stage in capture order."""
+
+        if stage is None:
+            stage = self._final_stage
+        assert stage is not None
         while self._running.is_set():
-            try:
-                item = self._final_q.get(timeout=0.1)
-            except queue.Empty:
+            stage_item = stage.take(timeout=0.1)
+            if stage_item is None:
+                if stage.snapshot().closed:
+                    break
                 continue
-            if item is None:  # shutdown sentinel
-                break
-            # Tuple items existed before the frozen work-item schema; accepting
-            # them keeps tests and any in-process transitional producer safe.
-            if isinstance(item, _FinalWorkItem):
-                seg = item.seg
-                raw_final = item.raw_final
-                speech_end_ts = item.speech_end_ts
-                asr_seg = item.asr_seg
-                speech_sec = item.speech_sec
-                offline_recovery_authorized = item.offline_recovery_authorized
-                owner_lineage_intact = item.owner_lineage_intact
-                capture_epoch = item.capture_epoch
-                acoustic = item.acoustic
-                revision = item.revision
-            elif len(item) == 4:
-                seg, raw_final, speech_end_ts, asr_seg = item
-                speech_sec = None
-                offline_recovery_authorized = False
-                owner_lineage_intact = True
-                capture_epoch = None
-                acoustic = None
-                revision = 0
-            elif len(item) == 5:
-                seg, raw_final, speech_end_ts, asr_seg, speech_sec = item
-                offline_recovery_authorized = False
-                owner_lineage_intact = True
-                capture_epoch = None
-                acoustic = None
-                revision = 0
-            elif len(item) == 6:
-                # Transitional schema used by the first zero-word handoff
-                # implementation: the sixth field carried only offline decode
-                # authority, before mixed-lineage provenance was added.
-                (
-                    seg,
-                    raw_final,
-                    speech_end_ts,
-                    asr_seg,
-                    speech_sec,
-                    offline_recovery_authorized,
-                ) = item
-                owner_lineage_intact = True
-                capture_epoch = None
-                acoustic = None
-                revision = 0
-            elif len(item) == 7:
-                (
-                    seg,
-                    raw_final,
-                    speech_end_ts,
-                    asr_seg,
-                    speech_sec,
-                    offline_recovery_authorized,
-                    owner_lineage_intact,
-                ) = item
-                capture_epoch = None
-                acoustic = None
-                revision = 0
-            else:
-                (
-                    seg,
-                    raw_final,
-                    speech_end_ts,
-                    asr_seg,
-                    speech_sec,
-                    offline_recovery_authorized,
-                    owner_lineage_intact,
-                    capture_epoch,
-                ) = item
-                acoustic = None
-                revision = 0
+
+            work = stage_item.payload
+            scope = stage_item.scope
             previous_callback_epoch = getattr(
                 self._capture_callback_context, "epoch", None
             )
-            if capture_epoch is not None:
-                self._capture_callback_context.epoch = capture_epoch
+            previous_capture_generation = getattr(
+                self._capture_callback_context,
+                "capture_generation",
+                None,
+            )
+            previous_media_cancel_event = getattr(
+                self._capture_callback_context,
+                "media_cancel_event",
+                None,
+            )
+            self._capture_callback_context.epoch = scope.capture_epoch
+            self._capture_callback_context.capture_generation = scope.capture_generation
+            self._capture_callback_context.media_cancel_event = stage_item.cancel_event
             try:
-                if offline_recovery_authorized or not owner_lineage_intact:
-                    self._finalize_and_dispatch(
-                        seg,
-                        raw_final,
-                        speech_end_ts,
-                        asr_seg,
-                        speech_sec,
-                        offline_recovery_authorized=(offline_recovery_authorized),
-                        owner_lineage_intact=owner_lineage_intact,
-                        capture_epoch=capture_epoch,
-                        acoustic=acoustic,
-                        revision=revision,
+                if stage_item.cancelled:
+                    self._emit_transcript_abort(
+                        work.acoustic,
+                        work.revision,
+                        TranscriptAbortReason.SHUTDOWN,
+                        capture_epoch=scope.capture_epoch,
                     )
-                else:
-                    self._finalize_and_dispatch(
-                        seg,
-                        raw_final,
-                        speech_end_ts,
-                        asr_seg,
-                        speech_sec,
-                        capture_epoch=capture_epoch,
-                        acoustic=acoustic,
-                        revision=revision,
-                    )
-            except Exception:  # noqa: BLE001 - never let the worker die on one turn
+                    continue
+                self._finalize_and_dispatch(
+                    work.seg,
+                    work.raw_final,
+                    work.speech_end_ts,
+                    work.asr_seg,
+                    work.speech_sec,
+                    offline_recovery_authorized=(work.offline_recovery_authorized),
+                    owner_lineage_intact=work.owner_lineage_intact,
+                    capture_epoch=scope.capture_epoch,
+                    acoustic=work.acoustic,
+                    revision=work.revision,
+                )
+            except Exception:  # noqa: BLE001 - one turn must not kill the worker
                 log.exception("final ASR processing failed; dropping this turn")
                 self._emit_transcript_abort(
-                    acoustic,
-                    revision,
-                    TranscriptAbortReason.INTERNAL_ERROR,
-                    capture_epoch=capture_epoch,
+                    work.acoustic,
+                    work.revision,
+                    (
+                        TranscriptAbortReason.SHUTDOWN
+                        if stage_item.cancelled
+                        else TranscriptAbortReason.INTERNAL_ERROR
+                    ),
+                    capture_epoch=scope.capture_epoch,
                 )
             finally:
+                stage.finish(stage_item)
                 if previous_callback_epoch is None:
                     try:
                         del self._capture_callback_context.epoch
@@ -5389,6 +5363,29 @@ class SherpaOnnxEngine(AudioEngine):
                         pass
                 else:
                     self._capture_callback_context.epoch = previous_callback_epoch
+                if previous_capture_generation is None:
+                    try:
+                        del self._capture_callback_context.capture_generation
+                    except AttributeError:
+                        pass
+                else:
+                    self._capture_callback_context.capture_generation = (
+                        previous_capture_generation
+                    )
+                if previous_media_cancel_event is None:
+                    try:
+                        del self._capture_callback_context.media_cancel_event
+                    except AttributeError:
+                        pass
+                else:
+                    self._capture_callback_context.media_cancel_event = (
+                        previous_media_cancel_event
+                    )
+                if (
+                    self._capture_stopping.is_set()
+                    and self._capture_resource_hold.is_set()
+                ):
+                    self._release_retained_audio_resources_if_idle(close_recorders=True)
 
     @staticmethod
     def _build_turn_detector(config):
@@ -7726,7 +7723,7 @@ class SherpaOnnxEngine(AudioEngine):
                             # segment so model decode never stalls this real-time
                             # loop; otherwise finalize inline (legacy,
                             # byte-identical).
-                            if self._final_q is not None:
+                            if self._final_stage is not None:
                                 if recover_empty_streaming or not owner_lineage_intact:
                                     self._enqueue_final(
                                         seg,
@@ -7739,6 +7736,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         ),
                                         owner_lineage_intact=(owner_lineage_intact),
                                         capture_epoch=capture_epoch,
+                                        capture_generation=capture_generation,
                                         acoustic=final_acoustic,
                                         revision=final_revision,
                                     )
@@ -7750,6 +7748,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         asr_seg,
                                         speech_sec,
                                         capture_epoch=capture_epoch,
+                                        capture_generation=capture_generation,
                                         acoustic=final_acoustic,
                                         revision=final_revision,
                                     )

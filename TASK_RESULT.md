@@ -1,45 +1,74 @@
-Valid until: this branch lands or ADR-0100 is superseded — then treat as history.
+Valid until: this branch lands or ADR-0101 is superseded — then treat as history.
 
-# Task result — synchronized private voice diagnostics
+# Task result — bounded Common Voice spontaneous STT slice
 
 ## Outcome
 
-Added an opt-in diagnostic mode to the existing `python -m core --session`
-runtime. No tool-specific or diagnostic entry point was added. Enabling both
-Sherpa recording references now produces four private tracks with independent
-cursors: model pre-gain, model gate, selected ASR input, and the unmodified
-reader-time playback-reference snapshot.
+Added Common Voice Spontaneous Speech 4.0 English to the public evaluation
+catalog and implemented a Linux/POSIX, no-download preparer for a deterministic
+private 32-speaker P0 slice. Runtime STT defaults, setup, `python -m core
+--session`, and `./live.sh` are unchanged.
 
-The transcript-free typed timeline covers capture coordinates, VAD/ASR stages,
-every endpoint decision, final selection/abort, barge-in, and causal playback
-admission/onset/terminal receipt. Endpoint decisions replay from the exact
-configuration and adaptive pause snapshot. Reply playback binds back to the
-acoustic input generation; auxiliary, latency-ack, and reminder speech remain
-distinct.
+The preparer requires the exact release/API identity and current terms, a
+canonical owner-only archive outside every Git checkout, and a new private
+output. It twice hashes the same archive descriptor, never reads the reported
+TSV body, safely parses the bounded archive/metadata, and uses speaker-first
+deterministic quota matching for eight clean test clips in each of four duration
+bands. It decodes only selected MP3s into bounded mono 16 kHz f32le PCM.
 
-Publication is single-writer, bounded, private mode 0600, hash-bound, atomic,
-and no-clobber. A caller can observe `finalizing`; every terminal error remains
-sticky. Loss, malformed evidence, lifecycle mismatch, missing receipt, replay
-mismatch, or unclean shutdown yields incomplete or publication-failed evidence
-without taking ownership of voice behavior.
+The shared schema-v2 writer now validates cases, provenance, normalized
+references, and the exact <=256 KiB manifest before output creation. It retains
+the created directory descriptor through no-overwrite writes and final
+identity/sidecar/hash checks. Decoder/package and local preparer-code closures
+are bounded, path-free, measured before work, and required unchanged after
+publication; injected decoders are explicitly test-only.
+
+## Files changed
+
+- Catalog/selector: `tools/public_voice_eval_matrix.py` and its tests/docs.
+- Preparer: `tools/prepare_common_voice_spontaneous_v4.py` and focused tests.
+- Shared publication: `tools/streaming_stt/corpus_writer.py`, the existing
+  public converter, and writer regressions.
+- Optional isolated decode pins: `requirements-evaluation.txt`.
+- Decision/status/operator evidence: ADR-0101, `STATUS.md`, testing guide, and
+  public evaluation guide.
 
 ## Verification
 
-- Focused diagnostic/endpoint/recording/runtime gate: 253 passed, 3 skipped.
-- Diagnostic publication module: 38 passed, including filesystem-race and
-  delayed-failure injection.
-- Required APM/double-talk gate: 6 passed.
-- Complete non-model logic gate: 6,865 passed, 13 skipped, 23 deselected, with
-  nine pre-existing warnings.
-- Scoped Ruff and `git diff --check`: passed.
+All commands used one-thread math, `ionice -c 3`, and `nice -n 15` limits.
 
-All verification was deterministic and headless. No microphone, speaker, live
-audio route, real STT/TTS model, or GPU was used.
+- Integrated SPS/writer/catalog gate: 86 passed in 1.12 s.
+- Expanded streaming-STT gate: 653 passed, 3 real-model deselected in 9.44 s.
+- Complete non-model repository gate: 6,937 passed, 13 skipped, 23 deselected,
+  9 pre-existing warnings in 119.17 s.
+- Required APM/double-talk gate: 6 passed in 0.96 s.
+- Forced clean-CI/no-PyAV focused path: 84 passed, 2 skipped.
+- Scoped Ruff check and format check: passed.
+- `git diff --check`: passed.
 
-## Limits and next work
+The installed optional PyAV environment exercised a synthetic MP3 encode/decode
+and complete PyAV/FFmpeg/NumPy closure receipt. Clean CI can omit that optional
+dependency; those two tests use explicit per-test skips rather than failing
+module import. Independent security, compatibility, and writer-race audits
+identified the issues above; their requested landing blockers were fixed.
+Three post-fix read-only audits found no landing blocker.
 
-A complete bundle proves internal alignment and causal bookkeeping, not physical
-raw-microphone truth, audible playout, transcript accuracy, natural conversation,
-room AEC, owner identity, or live barge-in. The next evidence step is a fresh
-owner-run `./live.sh` vault/open-speaker A/B, followed by native-reader/gap and
-synchronized AEC replay plus disjoint owner/noise/multi-voice data.
+## Limits and manual follow-up
+
+No corpus was downloaded, no real SPS archive was opened, no STT model ran, and
+no network, GPU, microphone, speaker, or live route was used. Therefore this
+proves preparation/publication contracts, not real-release compatibility, WER,
+latency, natural conversation, capture/VAD/AEC, tools, owner voice, or live
+quality. The 32 clean cases are a development slice, not an official full-test
+score, quality-tagged stratum, Romanian result, or training-disjoint claim.
+
+Failed publication may intentionally retain private partial evidence; only exit
+zero is readiness, and publication is not advertised as an atomic readiness
+marker. Next, the owner must acquire the archive under MDC terms into a
+canonical mode-0600 non-Git path, run the preparer, then execute isolated
+one-thread candidate-model comparisons before any separate `./live.sh` A/B.
+
+## Merge recommendation
+
+Recommend fast-forwarding this green, post-audit branch. Do not promote a
+recognizer or runtime default from this headless preparation milestone.

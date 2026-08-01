@@ -1,0 +1,7 @@
+# Optional reproducible public-corpus preparation dependency.
+#
+# This is not required by the runtime or lean CI suite. Install it only in the
+# isolated environment used to decode the pinned Common Voice SPS evaluation
+# archive; the preparer additionally hashes the complete PyAV/FFmpeg closure.
+av==18.0.0
+numpy==2.4.6

@@ -4,8 +4,8 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Repository logic gate: 6865 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; synchronized-diagnostic focused 253/3 skipped; APM/DTD 6.
-- Streaming family: 567 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
+- Repository logic gate: 6937 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; synchronized-diagnostic focused 253/3 skipped; APM/DTD 6.
+- Streaming family: 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam 28; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
@@ -47,8 +47,7 @@ Last verified: 2026-08-01 on Linux ROG.
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
   plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
   controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Public evaluation has eight tracks, 12 selectable sources, and nine exclusions.
-  Zipformer is a one-thread control; exact Parakeet EOU NeMo is a rejected CUDA reference. Neither changes setup/default/live paths (ADR-0098/0099).
+- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed, speaker-matched private 32-speaker P0 preparer; Zipformer is a one-thread control and Parakeet EOU NeMo remains rejected (ADR-0098/0099/0101).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -66,6 +65,7 @@ Last verified: 2026-08-01 on Linux ROG.
   Only post-GTCRN mic audio was retained, so the failure seam is unknown (ADR-0077).
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
   control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
+- Common Voice SPS v4 real-archive/model compatibility is unrun; its clean P0 slice is not complete-test, quality-tag, Romanian, owner, capture/AEC, tool, or live evidence (ADR-0101).
 - Exact Parakeet burst/paced WER is .6576/.6576 and model-input RTF .1910/.2200;
   paced replay missed three deadlines with 189 ms backlog. Ten of 14 EOU events
   were source-early, so the 6.43 GB NeMo runtime is rejected after-PCM evidence only (ADR-0099).
@@ -86,7 +86,7 @@ Last verified: 2026-08-01 on Linux ROG.
 ## Next
 
 - Run fresh `./live.sh` vault/open-speaker A/B with the synchronized bundle; add native-reader/gap, AEC replay, and disjoint owner/noise/multi-voice data (ADR-0092/0100).
-- Keep `parakeet.cpp`/Common Voice and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
+- Keep `parakeet.cpp`, Common Voice model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 
 ## Standard verification
 

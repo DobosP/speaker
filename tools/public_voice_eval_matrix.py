@@ -26,7 +26,7 @@ from typing import Mapping
 from urllib.parse import urlparse
 
 
-MATRIX_VERSION = 1
+MATRIX_VERSION = 2
 SELECTION_SEED = "speaker-public-eval-v1-2026-08-01"
 MDC_TOKEN_ENV = "MDC_TOKEN"
 
@@ -99,6 +99,7 @@ class SelectionAlgorithm(str, Enum):
     COMPLETE_SPLIT = "complete_split"
     HASH_TOP_K = "sha256_top_k_v1"
     HASH_STRATIFIED = "sha256_stratified_round_robin_v1"
+    HASH_SPEAKER_STRATIFIED = "sha256_speaker_stratified_matching_v1"
     FIXED_IDS = "fixed_ids"
     FIXED_TRANSFORM_GRID = "fixed_transform_grid"
     PAIRED_COMPLETE = "paired_complete"
@@ -214,9 +215,9 @@ CC_BY_4 = LicenseGate(
     ("CC-BY-4.0",),
 )
 CC0_MDC = LicenseGate(
-    "CC0-1.0+MDC-terms",
-    "https://datacollective.mozillafoundation.org/terms/dataset-terms",
-    ("CC0-1.0", "MDC-DATA-TERMS"),
+    "CC0-1.0+MDC-consumer-terms",
+    "https://mozilladatacollective.com/terms/consumers",
+    ("CC0-1.0", "MDC-CONSUMER-TERMS-2026-05-06"),
 )
 APACHE_2 = LicenseGate(
     "Apache-2.0",
@@ -260,35 +261,40 @@ def _mdc_dataset(
     approximate_size: str,
     selection: SelectionPolicy,
     forbid_voice_cloning: bool = False,
+    revision: str | None = None,
+    size_bytes: int | None = None,
+    checksum: Checksum | None = None,
 ) -> Dataset:
     usage_constraints = (
         UsageConstraint.EVALUATION_ONLY,
         UsageConstraint.PRIVATE_CACHE_ONLY,
         UsageConstraint.NO_REIDENTIFICATION,
         UsageConstraint.NO_REHOSTING,
-        *(
-            (UsageConstraint.NO_VOICE_CLONING,)
-            if forbid_voice_cloning
-            else ()
-        ),
+        *((UsageConstraint.NO_VOICE_CLONING,) if forbid_voice_cloning else ()),
     )
     return Dataset(
         dataset_id=dataset_id,
         name=name,
         upstream_id=f"mdc:{mdc_id}",
-        revision=mdc_id,
-        canonical_url=f"https://datacollective.mozillafoundation.org/datasets/{mdc_id}",
+        revision=mdc_id if revision is None else revision,
+        canonical_url=f"https://mozilladatacollective.com/datasets/{mdc_id}",
         license=CC0_MDC,
         artifacts=(
             Artifact(
                 "archive",
                 f"mdc://dataset/{mdc_id}",
                 filename,
-                None,
+                size_bytes,
                 IntegrityKind.MDC_API_SHA256,
+                checksum,
                 integrity_note=(
-                    "Require the MDC API's SHA-256 receipt after terms acceptance; "
-                    f"catalog display size is {approximate_size}."
+                    "Require the MDC API's SHA-256 receipt after terms acceptance"
+                    + (
+                        " and exact agreement with the catalog pin"
+                        if checksum is not None
+                        else ""
+                    )
+                    + f"; catalog display size is {approximate_size}."
                 ),
             ),
         ),
@@ -313,7 +319,9 @@ DATASETS: tuple[Dataset, ...] = (
                 "v0.02_test.tar.gz",
                 None,
                 IntegrityKind.PINNED,
-                _sha256("af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58"),
+                _sha256(
+                    "af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58"
+                ),
             ),
         ),
         SelectionPolicy("Complete upstream test split.", expected_examples=4_890),
@@ -335,6 +343,34 @@ DATASETS: tuple[Dataset, ...] = (
             strata_fields=("accent", "duration_bucket"),
             seed=SELECTION_SEED,
             expected_examples=250,
+            speaker_disjoint=True,
+            speaker_field="client_id",
+        ),
+    ),
+    _mdc_dataset(
+        dataset_id="common_voice_spontaneous_4_en",
+        name="Common Voice Spontaneous Speech 4.0 English",
+        mdc_id="cmqialpeo0077nr077xqdqo0j",
+        filename="common-voice-spontaneous-speech-4-0-engl-c643378f.tar.gz",
+        approximate_size="497.82 MB",
+        revision="sps-corpus-4.0-2026-06-12",
+        size_bytes=522_005_930,
+        checksum=_sha256(
+            "3b03ada7676a5f440a797d896035137fd073d0683133c3e9a83963480d88abfe",
+            "cv-dataset-stats",
+        ),
+        selection=SelectionPolicy(
+            (
+                "Exactly 32 clean/unannotated validated test rows: require empty "
+                "quality_tags, a non-empty transcription, one row per client_id, "
+                "and duration filters [2,6),[6,10),[10,15),[15,25] seconds."
+            ),
+            algorithm=SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+            split="test",
+            identity_fields=("audio_id", "audio_file", "client_id"),
+            strata_fields=("duration_bucket",),
+            seed="speaker-cvss4-en-v1-2026-08-01",
+            expected_examples=32,
             speaker_disjoint=True,
             speaker_field="client_id",
         ),
@@ -495,7 +531,10 @@ DATASETS: tuple[Dataset, ...] = (
                 "ami_public_manual_1.6.2.zip",
                 22_887_865,
                 IntegrityKind.PINNED,
-                _sha256("b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d", "local-freeze"),
+                _sha256(
+                    "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d",
+                    "local-freeze",
+                ),
             ),
             Artifact(
                 "es2004a-array1-01",
@@ -503,7 +542,10 @@ DATASETS: tuple[Dataset, ...] = (
                 "ES2004a.Array1-01.wav",
                 33_579_394,
                 IntegrityKind.PINNED,
-                _sha256("6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150", "local-freeze"),
+                _sha256(
+                    "6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150",
+                    "local-freeze",
+                ),
             ),
             Artifact(
                 "is1009a-array1-01",
@@ -511,7 +553,10 @@ DATASETS: tuple[Dataset, ...] = (
                 "IS1009a.Array1-01.wav",
                 26_849_383,
                 IntegrityKind.PINNED,
-                _sha256("23fd54fd6dbe23870f10317b256f7c648fe0fd587e56d2f940840309f1578b60", "local-freeze"),
+                _sha256(
+                    "23fd54fd6dbe23870f10317b256f7c648fe0fd587e56d2f940840309f1578b60",
+                    "local-freeze",
+                ),
             ),
             Artifact(
                 "ts3003a-array1-01",
@@ -519,7 +564,10 @@ DATASETS: tuple[Dataset, ...] = (
                 "TS3003a.Array1-01.wav",
                 48_183_678,
                 IntegrityKind.PINNED,
-                _sha256("46f81fb403e40a98c1b694c842404c0db24f3a6c67397b247faf0d3f42cf9163", "local-freeze"),
+                _sha256(
+                    "46f81fb403e40a98c1b694c842404c0db24f3a6c67397b247faf0d3f42cf9163",
+                    "local-freeze",
+                ),
             ),
         ),
         SelectionPolicy(
@@ -548,7 +596,9 @@ DATASETS: tuple[Dataset, ...] = (
                 "en-US-train.parquet",
                 34_196_221,
                 IntegrityKind.PINNED,
-                _sha256("37004471dc896ce20771b3fdda0ee8fb33ec7a030fb4e2fd047c561ec0a1ee30"),
+                _sha256(
+                    "37004471dc896ce20771b3fdda0ee8fb33ec7a030fb4e2fd047c561ec0a1ee30"
+                ),
             ),
             Artifact(
                 "en-gb",
@@ -556,7 +606,9 @@ DATASETS: tuple[Dataset, ...] = (
                 "en-GB-train.parquet",
                 34_551_079,
                 IntegrityKind.PINNED,
-                _sha256("52c988dc66991be64109bb7043fd3acb8c00a7cfc1006670ee0b3906868a9b00"),
+                _sha256(
+                    "52c988dc66991be64109bb7043fd3acb8c00a7cfc1006670ee0b3906868a9b00"
+                ),
             ),
             Artifact(
                 "en-au",
@@ -564,7 +616,9 @@ DATASETS: tuple[Dataset, ...] = (
                 "en-AU-train.parquet",
                 37_348_052,
                 IntegrityKind.PINNED,
-                _sha256("74476455327528992aa23a321ca3f1de3037c863a7d76b56e2a05df19cba4bab"),
+                _sha256(
+                    "74476455327528992aa23a321ca3f1de3037c863a7d76b56e2a05df19cba4bab"
+                ),
             ),
         ),
         SelectionPolicy(
@@ -604,20 +658,31 @@ TRACKS: tuple[EvaluationTrack, ...] = (
         TaskCategory.STT,
         (
             "common_voice_26_ro",
+            "common_voice_spontaneous_4_en",
             "common_voice_26_southern_american",
             "common_voice_26_malaysian_english",
             "common_voice_26_irish_english",
             "speechocean762",
             "minds14_english",
         ),
-        (Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.LITERAL_CER, Metric.CANONICAL_CER),
+        (
+            Metric.LITERAL_WER,
+            Metric.CANONICAL_WER,
+            Metric.LITERAL_CER,
+            Metric.CANONICAL_CER,
+        ),
         "Report literal and canonical normalization separately; never publish only the better score.",
     ),
     EvaluationTrack(
         "stop-keyword",
         TaskCategory.STOP_KEYWORD,
         ("speech_commands_v002_test",),
-        (Metric.STOP_PRECISION, Metric.STOP_RECALL, Metric.STOP_CONFUSION_RATE, Metric.FALSE_ALARMS_PER_HOUR),
+        (
+            Metric.STOP_PRECISION,
+            Metric.STOP_RECALL,
+            Metric.STOP_CONFUSION_RATE,
+            Metric.FALSE_ALARMS_PER_HOUR,
+        ),
         "Grade STOP against other commands, unknown words, and silence; do not substitute WER.",
     ),
     EvaluationTrack(
@@ -683,7 +748,11 @@ TRACKS: tuple[EvaluationTrack, ...] = (
 
 
 EXCLUSIONS: tuple[ExcludedDataset, ...] = (
-    ExcludedDataset("smart_turn_v3_2_test", "Pipecat Smart Turn v3.2 test data", "No dataset license is published."),
+    ExcludedDataset(
+        "smart_turn_v3_2_test",
+        "Pipecat Smart Turn v3.2 test data",
+        "No dataset license is published.",
+    ),
     ExcludedDataset(
         "notsofar_1_open_subsets",
         "NOTSOFAR-1 open train/dev-1/eval subsets",
@@ -694,24 +763,77 @@ EXCLUSIONS: tuple[ExcludedDataset, ...] = (
         "NOTSOFAR-1 Dev-set-2",
         "Dev-set-2 is challenge-only and is not covered by the open subset grant.",
     ),
-    ExcludedDataset("libricss", "LibriCSS", "Data license and stable artifact checksum are unclear."),
-    ExcludedDataset("slurp_audio", "SLURP audio", "CC-BY-NC terms are incompatible with this selectable matrix."),
+    ExcludedDataset(
+        "libricss", "LibriCSS", "Data license and stable artifact checksum are unclear."
+    ),
+    ExcludedDataset(
+        "slurp_audio",
+        "SLURP audio",
+        "CC-BY-NC terms are incompatible with this selectable matrix.",
+    ),
     ExcludedDataset("l2_arctic", "L2-ARCTIC", "CC-BY-NC plus a manual access gate."),
     ExcludedDataset("morovoc", "MoRoVoc", "No reference transcripts for STT grading."),
-    ExcludedDataset("openwakeword_collections", "openWakeWord training collections", "Collection terms are often non-commercial or unclear."),
-    ExcludedDataset("hey_snips", "Hey Snips", "Request/research-only access is not a reusable public grant."),
+    ExcludedDataset(
+        "openwakeword_collections",
+        "openWakeWord training collections",
+        "Collection terms are often non-commercial or unclear.",
+    ),
+    ExcludedDataset(
+        "hey_snips",
+        "Hey Snips",
+        "Request/research-only access is not a reusable public grant.",
+    ),
 )
 
 
 _ALLOWED_METRICS: Mapping[TaskCategory, frozenset[Metric]] = {
-    TaskCategory.STT: frozenset({Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.LITERAL_CER, Metric.CANONICAL_CER}),
-    TaskCategory.STOP_KEYWORD: frozenset({Metric.STOP_PRECISION, Metric.STOP_RECALL, Metric.STOP_CONFUSION_RATE, Metric.FALSE_ALARMS_PER_HOUR}),
-    TaskCategory.FAR_FIELD_DEVICE: frozenset({Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.PAIRED_WER_DELTA}),
+    TaskCategory.STT: frozenset(
+        {
+            Metric.LITERAL_WER,
+            Metric.CANONICAL_WER,
+            Metric.LITERAL_CER,
+            Metric.CANONICAL_CER,
+        }
+    ),
+    TaskCategory.STOP_KEYWORD: frozenset(
+        {
+            Metric.STOP_PRECISION,
+            Metric.STOP_RECALL,
+            Metric.STOP_CONFUSION_RATE,
+            Metric.FALSE_ALARMS_PER_HOUR,
+        }
+    ),
+    TaskCategory.FAR_FIELD_DEVICE: frozenset(
+        {Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.PAIRED_WER_DELTA}
+    ),
     TaskCategory.NOISE_REVERB: frozenset({Metric.WER_DEGRADATION_GRID}),
-    TaskCategory.AEC_DOUBLE_TALK: frozenset({Metric.ERLE_DB, Metric.AECMOS, Metric.NEAR_END_ATTENUATION_DB, Metric.BARGE_MISS_RATE, Metric.BARGE_FALSE_RATE, Metric.BARGE_CUT_LATENCY_MS}),
-    TaskCategory.OVERLAP_TURN_TAKING: frozenset({Metric.OVERLAP_WER, Metric.ENDPOINT_EARLY_CUT_RATE, Metric.ENDPOINT_DELAY_MS, Metric.BACKCHANNEL_RETENTION}),
+    TaskCategory.AEC_DOUBLE_TALK: frozenset(
+        {
+            Metric.ERLE_DB,
+            Metric.AECMOS,
+            Metric.NEAR_END_ATTENUATION_DB,
+            Metric.BARGE_MISS_RATE,
+            Metric.BARGE_FALSE_RATE,
+            Metric.BARGE_CUT_LATENCY_MS,
+        }
+    ),
+    TaskCategory.OVERLAP_TURN_TAKING: frozenset(
+        {
+            Metric.OVERLAP_WER,
+            Metric.ENDPOINT_EARLY_CUT_RATE,
+            Metric.ENDPOINT_DELAY_MS,
+            Metric.BACKCHANNEL_RETENTION,
+        }
+    ),
     TaskCategory.SPOKEN_INTENT: frozenset({Metric.INTENT_ACCURACY}),
-    TaskCategory.TEXT_SEMANTIC_ROUTING: frozenset({Metric.INTENT_ACCURACY, Metric.SLOT_F1, Metric.TOOL_SELECTION_ACCURACY, Metric.TOOL_RESULT_ACCURACY}),
+    TaskCategory.TEXT_SEMANTIC_ROUTING: frozenset(
+        {
+            Metric.INTENT_ACCURACY,
+            Metric.SLOT_F1,
+            Metric.TOOL_SELECTION_ACCURACY,
+            Metric.TOOL_RESULT_ACCURACY,
+        }
+    ),
 }
 
 
@@ -720,7 +842,9 @@ def dataset_by_id(dataset_id: str) -> Dataset:
         return next(dataset for dataset in DATASETS if dataset.dataset_id == dataset_id)
     except StopIteration as exc:
         if any(item.dataset_id == dataset_id for item in EXCLUSIONS):
-            raise MatrixError(f"dataset {dataset_id!r} is explicitly non-selectable") from exc
+            raise MatrixError(
+                f"dataset {dataset_id!r} is explicitly non-selectable"
+            ) from exc
         raise MatrixError(f"unknown dataset {dataset_id!r}") from exc
 
 
@@ -748,10 +872,11 @@ def _receipt_for(
     artifact: Artifact,
     receipts: Mapping[str, Checksum],
 ) -> Checksum:
+    key = f"{dataset.dataset_id}/{artifact.artifact_id}"
     if artifact.checksum is not None:
         _validate_checksum(artifact.checksum)
-        return artifact.checksum
-    key = f"{dataset.dataset_id}/{artifact.artifact_id}"
+        if artifact.integrity is not IntegrityKind.MDC_API_SHA256:
+            return artifact.checksum
     try:
         receipt = receipts[key]
     except KeyError as exc:
@@ -767,6 +892,16 @@ def _receipt_for(
     }.get(artifact.integrity)
     if required_source is None or receipt.source != required_source:
         raise MatrixError(f"{key} receipt source must be {required_source!r}")
+    if artifact.checksum is not None:
+        if artifact.checksum.algorithm is not ChecksumAlgorithm.SHA256:
+            raise MatrixError(f"{key} catalog pin must use sha256")
+        if receipt.digest != artifact.checksum.digest:
+            raise MatrixError(f"{key} MDC API receipt does not match the catalog pin")
+        return Checksum(
+            ChecksumAlgorithm.SHA256,
+            artifact.checksum.digest,
+            f"{artifact.checksum.source}+mdc-api",
+        )
     return receipt
 
 
@@ -786,7 +921,9 @@ def _artifact_destination(root: Path, dataset: Dataset, artifact: Artifact) -> P
     dataset_root = (root / dataset.dataset_id).resolve()
     destination = (dataset_root / filename).resolve()
     if destination.parent != dataset_root or root not in destination.parents:
-        raise MatrixError(f"artifact destination escapes corpus root for {dataset.dataset_id}")
+        raise MatrixError(
+            f"artifact destination escapes corpus root for {dataset.dataset_id}"
+        )
     return destination
 
 
@@ -798,7 +935,9 @@ def _canonical_row_fields(
     for field_name in fields:
         value = row.get(field_name)
         if isinstance(value, bool) or not isinstance(value, (str, int)):
-            raise MatrixError(f"selection field {field_name!r} must be string or integer")
+            raise MatrixError(
+                f"selection field {field_name!r} must be string or integer"
+            )
         values.append(value)
     return json.dumps(
         values,
@@ -829,6 +968,7 @@ def select_subset_rows(
     if policy.algorithm not in {
         SelectionAlgorithm.HASH_TOP_K,
         SelectionAlgorithm.HASH_STRATIFIED,
+        SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
         SelectionAlgorithm.FIXED_IDS,
     }:
         raise MatrixError("selection policy does not define a row subset")
@@ -836,10 +976,19 @@ def select_subset_rows(
         raise MatrixError("subset policy lacks identity/count fields")
     materialized: list[tuple[str, Mapping[str, object]]] = []
     identities: set[str] = set()
+    speaker_stratified = policy.algorithm is SelectionAlgorithm.HASH_SPEAKER_STRATIFIED
+    if speaker_stratified and policy.speaker_field is None:
+        raise MatrixError("speaker-stratified selection lacks a speaker field")
     for row in rows:
         identity = _canonical_row_fields(row, policy.identity_fields)
         if identity in identities:
             raise MatrixError("selection row identity is not unique")
+        if speaker_stratified:
+            speaker = row.get(policy.speaker_field)
+            if not isinstance(speaker, str) or not speaker.strip():
+                raise MatrixError(
+                    "speaker-stratified selection requires non-empty speaker ids"
+                )
         identities.add(identity)
         materialized.append((identity, row))
 
@@ -857,16 +1006,105 @@ def select_subset_rows(
     else:
         if policy.seed is None:
             raise MatrixError("hash selection lacks a seed")
-        ranked = [
-            (_selection_rank(policy.seed, identity), identity, row)
-            for identity, row in materialized
-        ]
         if policy.algorithm is SelectionAlgorithm.HASH_TOP_K:
+            ranked = [
+                (_selection_rank(policy.seed, identity), identity, row)
+                for identity, row in materialized
+            ]
             ranked.sort(key=lambda item: (item[0], item[1]))
             selected = [(identity, row) for _rank, identity, row in ranked]
+        elif speaker_stratified:
+            if not policy.strata_fields or policy.speaker_field is None:
+                raise MatrixError("speaker-stratified selection lacks strata fields")
+            forbidden = (
+                frozenset() if forbidden_speaker_ids is None else forbidden_speaker_ids
+            )
+            grouped: dict[
+                str,
+                dict[str, list[tuple[str, str, Mapping[str, object]]]],
+            ] = {}
+            for identity, row in materialized:
+                stratum = _canonical_row_fields(row, policy.strata_fields)
+                speaker = str(row[policy.speaker_field])
+                if speaker in forbidden:
+                    continue
+                clip_rank = _selection_rank(
+                    policy.seed,
+                    f"clip\0{identity}",
+                )
+                grouped.setdefault(stratum, {}).setdefault(speaker, []).append(
+                    (clip_rank, identity, row)
+                )
+            strata = sorted(grouped)
+            if not strata:
+                raise MatrixError("selection source has insufficient exact rows")
+            base, extra = divmod(policy.expected_examples, len(strata))
+            quotas = {
+                stratum: base + (1 if index < extra else 0)
+                for index, stratum in enumerate(strata)
+            }
+            candidates: dict[
+                str,
+                list[tuple[str, str, str, Mapping[str, object]]],
+            ] = {}
+            for stratum in strata:
+                ranked_speakers = []
+                for speaker, clips in grouped[stratum].items():
+                    clips.sort(key=lambda item: (item[0], item[1]))
+                    _clip_rank, identity, row = clips[0]
+                    speaker_rank = _selection_rank(
+                        policy.seed,
+                        f"speaker\0{stratum}\0{speaker}",
+                    )
+                    ranked_speakers.append((speaker_rank, speaker, identity, row))
+                ranked_speakers.sort(key=lambda item: (item[0], item[1], item[2]))
+                candidates[stratum] = ranked_speakers
+
+            owner: dict[str, str] = {}
+
+            def augment(stratum: str, seen: set[str]) -> bool:
+                for _rank, speaker, _identity, _row in candidates[stratum]:
+                    if speaker in seen:
+                        continue
+                    seen.add(speaker)
+                    previous = owner.get(speaker)
+                    if previous is None or (
+                        previous != stratum and augment(previous, seen)
+                    ):
+                        owner[speaker] = stratum
+                        return True
+                return False
+
+            for stratum in strata:
+                for _slot in range(quotas[stratum]):
+                    if not augment(stratum, set()):
+                        raise MatrixError(
+                            "selection source has insufficient exact rows"
+                        )
+
+            assigned: dict[
+                str,
+                list[tuple[str, str, Mapping[str, object]]],
+            ] = {stratum: [] for stratum in strata}
+            for stratum in strata:
+                for rank, speaker, identity, row in candidates[stratum]:
+                    if owner.get(speaker) == stratum:
+                        assigned[stratum].append((rank, identity, row))
+                if len(assigned[stratum]) != quotas[stratum]:
+                    raise MatrixError("selection source has insufficient exact rows")
+            selected = []
+            for slot in range(max(quotas.values(), default=0)):
+                for stratum in strata:
+                    if slot < len(assigned[stratum]):
+                        _rank, identity, row = assigned[stratum][slot]
+                        selected.append((identity, row))
         else:
             if not policy.strata_fields:
                 raise MatrixError("stratified selection lacks strata fields")
+            ranked = [
+                (_selection_rank(policy.seed, identity), identity, row)
+                for identity, row in materialized
+            ]
             groups: dict[str, list[tuple[str, str, Mapping[str, object]]]] = {}
             for rank, identity, row in ranked:
                 stratum = _canonical_row_fields(row, policy.strata_fields)
@@ -878,14 +1116,14 @@ def select_subset_rows(
             while len(selected) < policy.expected_examples:
                 progressed = False
                 for stratum in sorted(groups):
-                    offset = offsets[stratum]
                     group = groups[stratum]
-                    if offset >= len(group):
-                        continue
-                    _rank, identity, row = group[offset]
-                    offsets[stratum] = offset + 1
-                    selected.append((identity, row))
-                    progressed = True
+                    while offsets[stratum] < len(group):
+                        offset = offsets[stratum]
+                        _rank, identity, row = group[offset]
+                        offsets[stratum] = offset + 1
+                        selected.append((identity, row))
+                        progressed = True
+                        break
                     if len(selected) == policy.expected_examples:
                         break
                 if not progressed:
@@ -895,12 +1133,26 @@ def select_subset_rows(
     if len(selected) != policy.expected_examples:
         raise MatrixError("selection source has insufficient exact rows")
     if policy.speaker_disjoint:
-        if policy.speaker_field is None or forbidden_speaker_ids is None:
-            raise MatrixError("speaker-disjoint selection requires a forbidden-speaker set")
+        if policy.speaker_field is None or (
+            forbidden_speaker_ids is None and not speaker_stratified
+        ):
+            raise MatrixError(
+                "speaker-disjoint selection requires a forbidden-speaker set"
+            )
+        forbidden = (
+            frozenset() if forbidden_speaker_ids is None else forbidden_speaker_ids
+        )
+        observed_speakers: set[str] = set()
         for _identity, row in selected:
             speaker = row.get(policy.speaker_field)
-            if not isinstance(speaker, str) or speaker in forbidden_speaker_ids:
+            if (
+                not isinstance(speaker, str)
+                or not speaker.strip()
+                or speaker in forbidden
+                or (speaker_stratified and speaker in observed_speakers)
+            ):
                 raise MatrixError("selection violates speaker-disjoint contract")
+            observed_speakers.add(speaker)
     return tuple(row for _identity, row in selected)
 
 
@@ -910,15 +1162,36 @@ def selected_rows_sha256(
 ) -> str:
     """Bind the ordered canonical identities emitted by ``select_subset_rows``."""
 
-    identities = [
-        _canonical_row_fields(row, policy.identity_fields)
-        for row in rows
-    ]
+    identities = [_canonical_row_fields(row, policy.identity_fields) for row in rows]
     payload = json.dumps(
         identities,
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def selection_policy_sha256(policy: SelectionPolicy) -> str:
+    """Bind every field in a selection recipe using canonical JSON."""
+
+    payload = json.dumps(
+        {
+            "algorithm": policy.algorithm.value,
+            "description": policy.description,
+            "expected_examples": policy.expected_examples,
+            "fixed_ids": list(policy.fixed_ids),
+            "identity_fields": list(policy.identity_fields),
+            "seed": policy.seed,
+            "speaker_disjoint": policy.speaker_disjoint,
+            "speaker_field": policy.speaker_field,
+            "split": policy.split,
+            "strata_fields": list(policy.strata_fields),
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -1030,10 +1303,9 @@ def _stable_file_digests(
             md5.update(chunk)
         after = os.fstat(descriptor)
         named_after = path.lstat()
-        if (
-            _file_identity(before) != _file_identity(after)
-            or _file_identity(after) != _file_identity(named_after)
-        ):
+        if _file_identity(before) != _file_identity(after) or _file_identity(
+            after
+        ) != _file_identity(named_after):
             raise MatrixError()
         return before.st_size, sha256.hexdigest(), md5.hexdigest()
     except (OSError, ValueError, MatrixError):
@@ -1053,7 +1325,9 @@ def verify_local_artifact(plan: PlannedArtifact, path: Path) -> Checksum:
         raise MatrixError("artifact path must equal its absolute planned destination")
     algorithm = plan.checksum.algorithm
     if algorithm is ChecksumAlgorithm.GIT_SHA1:
-        raise MatrixError("Git revisions require a repository/LFS verifier, not file hashing")
+        raise MatrixError(
+            "Git revisions require a repository/LFS verifier, not file hashing"
+        )
     _size, sha256, md5 = _stable_file_digests(
         path,
         expected_bytes=plan.size_bytes,
@@ -1069,7 +1343,9 @@ def validate_matrix() -> None:
     exclusion_ids = [item.dataset_id for item in EXCLUSIONS]
     if len(dataset_ids) != len(set(dataset_ids)):
         raise MatrixError("duplicate selectable dataset id")
-    if len(exclusion_ids) != len(set(exclusion_ids)) or set(dataset_ids) & set(exclusion_ids):
+    if len(exclusion_ids) != len(set(exclusion_ids)) or set(dataset_ids) & set(
+        exclusion_ids
+    ):
         raise MatrixError("invalid exclusion ids")
     for dataset in DATASETS:
         if _SAFE_ID_RE.fullmatch(dataset.dataset_id) is None or not dataset.revision:
@@ -1119,13 +1395,22 @@ def validate_matrix() -> None:
         if selection.algorithm in {
             SelectionAlgorithm.HASH_TOP_K,
             SelectionAlgorithm.HASH_STRATIFIED,
+            SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
         } and (
             selection.seed is None
             or not selection.identity_fields
             or selection.expected_examples is None
             or (
-                selection.algorithm is SelectionAlgorithm.HASH_STRATIFIED
+                selection.algorithm
+                in {
+                    SelectionAlgorithm.HASH_STRATIFIED,
+                    SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+                }
                 and not selection.strata_fields
+            )
+            or (
+                selection.algorithm is SelectionAlgorithm.HASH_SPEAKER_STRATIFIED
+                and selection.speaker_field is None
             )
         ):
             raise MatrixError(f"{dataset.dataset_id} has an incomplete hash selector")
@@ -1156,30 +1441,47 @@ def validate_matrix() -> None:
                 or parsed.fragment
             ):
                 raise MatrixError(f"unsafe artifact locator for {dataset.dataset_id}")
-            if artifact.integrity in {
-                IntegrityKind.PINNED,
-                IntegrityKind.GIT_COMMIT,
-                IntegrityKind.GIT_COMMIT_AND_LFS_OIDS,
-            } and artifact.checksum is None:
+            if (
+                artifact.integrity
+                in {
+                    IntegrityKind.PINNED,
+                    IntegrityKind.GIT_COMMIT,
+                    IntegrityKind.GIT_COMMIT_AND_LFS_OIDS,
+                }
+                and artifact.checksum is None
+            ):
                 raise MatrixError(f"{dataset.dataset_id} lacks a pinned checksum")
             if artifact.checksum is not None:
                 _validate_checksum(artifact.checksum)
+                if (
+                    artifact.integrity is IntegrityKind.MDC_API_SHA256
+                    and artifact.checksum.algorithm is not ChecksumAlgorithm.SHA256
+                ):
+                    raise MatrixError(
+                        f"{dataset.dataset_id} MDC catalog pin is not SHA-256"
+                    )
     categories = [track.category for track in TRACKS]
     if set(categories) != set(TaskCategory) or len(categories) != len(set(categories)):
         raise MatrixError("task categories must appear exactly once")
     if len({track.track_id for track in TRACKS}) != len(TRACKS):
         raise MatrixError("duplicate evaluation track id")
     for track in TRACKS:
-        if not track.metrics or not set(track.metrics) <= _ALLOWED_METRICS[track.category]:
+        if (
+            not track.metrics
+            or not set(track.metrics) <= _ALLOWED_METRICS[track.category]
+        ):
             raise MatrixError(f"metric family leak in {track.track_id}")
         if not track.dataset_ids or not set(track.dataset_ids) <= set(dataset_ids):
             raise MatrixError(f"unknown/non-selectable dataset in {track.track_id}")
     if not all(item.selectable is False for item in EXCLUSIONS):
         raise MatrixError("excluded datasets must be non-selectable")
-    if UsageConstraint.NO_VOICE_CLONING not in dataset_by_id(
-        "common_voice_26_southern_american"
-    ).usage_constraints:
-        raise MatrixError("Southern American corpus lacks its voice-cloning restriction")
+    if (
+        UsageConstraint.NO_VOICE_CLONING
+        not in dataset_by_id("common_voice_26_southern_american").usage_constraints
+    ):
+        raise MatrixError(
+            "Southern American corpus lacks its voice-cloning restriction"
+        )
 
 
 validate_matrix()
@@ -1209,6 +1511,7 @@ __all__ = [
     "build_acquisition_plan",
     "dataset_by_id",
     "default_corpus_root",
+    "selection_policy_sha256",
     "selected_rows_sha256",
     "select_subset_rows",
     "validate_matrix",

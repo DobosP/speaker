@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 
@@ -12,7 +14,7 @@ ALL_TERMS = frozenset(
     {
         "CC-BY-4.0",
         "CC0-1.0",
-        "MDC-DATA-TERMS",
+        "MDC-CONSUMER-TERMS-2026-05-06",
         "Apache-2.0",
         "LIBRIVOX-PUBLIC-DOMAIN",
         "EDINBURGH-VCTK-DATA-TERMS",
@@ -58,10 +60,13 @@ def test_matrix_has_one_track_per_separate_task_metric_family():
 
 
 def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
+    assert matrix.MATRIX_VERSION == 2
     speech = matrix.dataset_by_id("speech_commands_v002_test")
     assert speech.revision == "57ba463ab37e1e7845e0626539a6f6d0fcfbe64a"
     assert speech.selection.expected_examples == 4_890
-    assert _artifact("speech_commands_v002_test", "test-archive").checksum == matrix.Checksum(
+    assert _artifact(
+        "speech_commands_v002_test", "test-archive"
+    ).checksum == matrix.Checksum(
         matrix.ChecksumAlgorithm.SHA256,
         "af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58",
         "upstream",
@@ -95,9 +100,58 @@ def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
         "6c633d0a9d2a143a0e364899b91b06f127315b18"
     )
     assert all(dataset.evaluation_only for dataset in matrix.DATASETS)
-    assert all(dataset.license.redistribution == "cache-only" for dataset in matrix.DATASETS)
+    assert all(
+        dataset.license.redistribution == "cache-only" for dataset in matrix.DATASETS
+    )
     assert all(dataset.license.acceptance_ids for dataset in matrix.DATASETS)
-    assert all("NC" not in dataset.license.license_id.upper() for dataset in matrix.DATASETS)
+    assert all(
+        "NC" not in dataset.license.license_id.upper() for dataset in matrix.DATASETS
+    )
+
+
+def test_common_voice_spontaneous_v4_pin_terms_and_track_are_exact():
+    dataset = matrix.dataset_by_id("common_voice_spontaneous_4_en")
+    assert dataset.upstream_id == "mdc:cmqialpeo0077nr077xqdqo0j"
+    assert dataset.revision == "sps-corpus-4.0-2026-06-12"
+    assert dataset.canonical_url == (
+        "https://mozilladatacollective.com/datasets/cmqialpeo0077nr077xqdqo0j"
+    )
+    assert dataset.license.license_url == (
+        "https://mozilladatacollective.com/terms/consumers"
+    )
+    assert dataset.license.acceptance_ids == (
+        "CC0-1.0",
+        "MDC-CONSUMER-TERMS-2026-05-06",
+    )
+    artifact = _artifact("common_voice_spontaneous_4_en", "archive")
+    assert artifact.filename == (
+        "common-voice-spontaneous-speech-4-0-engl-c643378f.tar.gz"
+    )
+    assert artifact.size_bytes == 522_005_930
+    assert artifact.integrity is matrix.IntegrityKind.MDC_API_SHA256
+    assert artifact.checksum == matrix.Checksum(
+        matrix.ChecksumAlgorithm.SHA256,
+        "3b03ada7676a5f440a797d896035137fd073d0683133c3e9a83963480d88abfe",
+        "cv-dataset-stats",
+    )
+    assert set(dataset.usage_constraints) == {
+        matrix.UsageConstraint.EVALUATION_ONLY,
+        matrix.UsageConstraint.PRIVATE_CACHE_ONLY,
+        matrix.UsageConstraint.NO_REIDENTIFICATION,
+        matrix.UsageConstraint.NO_REHOSTING,
+    }
+    assert "clean/unannotated" in dataset.selection.description
+    for duration_filter in ("[2,6)", "[6,10)", "[10,15)", "[15,25]"):
+        assert duration_filter in dataset.selection.description
+    stt = next(
+        track for track in matrix.TRACKS if track.category is matrix.TaskCategory.STT
+    )
+    assert dataset.dataset_id in stt.dataset_ids
+    assert all(
+        item.canonical_url.startswith("https://mozilladatacollective.com/datasets/")
+        for item in matrix.DATASETS
+        if item.upstream_id.startswith("mdc:")
+    )
 
 
 def test_ami_local_freeze_is_exact_and_warns_about_training_overlap():
@@ -111,9 +165,10 @@ def test_ami_local_freeze_is_exact_and_warns_about_training_overlap():
     assert all(artifact.checksum.source == "local-freeze" for artifact in ami.artifacts)
     assert "ES2004d" in ami.selection.description
     assert "not independent" in ami.evidence_note
-    assert "not independent" in matrix.dataset_by_id(
-        "speech_commands_v002_test"
-    ).evidence_note
+    assert (
+        "not independent"
+        in matrix.dataset_by_id("speech_commands_v002_test").evidence_note
+    )
 
 
 def test_unlicensed_challenge_only_and_nc_sources_are_non_selectable():
@@ -189,9 +244,7 @@ def test_mdc_requires_api_sha256_and_never_retains_or_prints_token(tmp_path):
         "checksum_receipts": {"common_voice_26_ro/archive": receipt},
     }
     with pytest.raises(matrix.MatrixError) as missing:
-        matrix.build_acquisition_plan(
-            ("common_voice_26_ro",), environ={}, **kwargs
-        )
+        matrix.build_acquisition_plan(("common_voice_26_ro",), environ={}, **kwargs)
     assert matrix.MDC_TOKEN_ENV in str(missing.value)
     assert secret not in str(missing.value)
 
@@ -207,6 +260,55 @@ def test_mdc_requires_api_sha256_and_never_retains_or_prints_token(tmp_path):
     assert plan.artifacts[0].checksum == receipt
     assert secret not in repr(plan)
     assert secret not in repr(plan.artifacts[0])
+
+
+def test_pinned_mdc_archive_requires_matching_api_receipt(tmp_path):
+    dataset_id = "common_voice_spontaneous_4_en"
+    artifact = _artifact(dataset_id, "archive")
+    assert artifact.checksum is not None
+    secret = "mdc-secret-pin-must-not-escape"
+    kwargs = {
+        "root": tmp_path / "corpora",
+        "accepted_terms": ALL_TERMS,
+        "environ": {matrix.MDC_TOKEN_ENV: secret},
+    }
+    stale_terms = frozenset(
+        (ALL_TERMS - {"MDC-CONSUMER-TERMS-2026-05-06"}) | {"MDC-DATA-TERMS"}
+    )
+    with pytest.raises(matrix.MatrixError, match="MDC-CONSUMER-TERMS-2026-05-06"):
+        matrix.build_acquisition_plan(
+            (dataset_id,),
+            root=kwargs["root"],
+            accepted_terms=stale_terms,
+            environ=kwargs["environ"],
+        )
+    with pytest.raises(matrix.MatrixError, match="explicit SHA-256"):
+        matrix.build_acquisition_plan((dataset_id,), **kwargs)
+
+    matching = matrix.Checksum(
+        matrix.ChecksumAlgorithm.SHA256,
+        artifact.checksum.digest,
+        "mdc-api",
+    )
+    plan = matrix.build_acquisition_plan(
+        (dataset_id,),
+        checksum_receipts={f"{dataset_id}/archive": matching},
+        **kwargs,
+    )
+    assert plan.artifacts[0].checksum == matrix.Checksum(
+        matrix.ChecksumAlgorithm.SHA256,
+        artifact.checksum.digest,
+        "cv-dataset-stats+mdc-api",
+    )
+    assert secret not in repr(plan)
+
+    mismatch = replace(matching, digest="d" * 64)
+    with pytest.raises(matrix.MatrixError, match="does not match the catalog pin"):
+        matrix.build_acquisition_plan(
+            (dataset_id,),
+            checksum_receipts={f"{dataset_id}/archive": mismatch},
+            **kwargs,
+        )
 
 
 @pytest.mark.parametrize(
@@ -319,11 +421,178 @@ def test_hash_stratified_selector_is_executable_order_independent_and_bound():
         )
 
 
+def test_speaker_stratified_selector_is_balanced_unique_and_order_independent():
+    policy = matrix.dataset_by_id("common_voice_spontaneous_4_en").selection
+    strata = ("[2,6)", "[6,10)", "[10,15)", "[15,25]")
+    rows = [
+        {
+            "audio_id": f"audio-{stratum_index}-{row_index}",
+            "audio_file": f"clip-{stratum_index}-{row_index}.mp3",
+            "client_id": f"speaker-{stratum_index}-{row_index}",
+            "duration_bucket": stratum,
+        }
+        for stratum_index, stratum in enumerate(strata)
+        for row_index in range(12)
+    ]
+
+    first = matrix.select_subset_rows(policy, rows)
+    second = matrix.select_subset_rows(policy, reversed(rows))
+
+    assert [row["audio_id"] for row in first] == [row["audio_id"] for row in second]
+    assert len(first) == 32
+    assert len({row["client_id"] for row in first}) == 32
+    assert Counter(row["duration_bucket"] for row in first) == {
+        stratum: 8 for stratum in strata
+    }
+
+
+def test_speaker_stratified_selector_rejects_empty_and_forbidden_speakers():
+    policy = matrix.SelectionPolicy(
+        "unit speaker selector",
+        algorithm=matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+        identity_fields=("id",),
+        strata_fields=("bucket",),
+        seed="unit-speaker-seed",
+        expected_examples=2,
+        speaker_disjoint=True,
+        speaker_field="speaker",
+    )
+    rows = [
+        {"id": "one", "bucket": "short", "speaker": "speaker-one"},
+        {"id": "two", "bucket": "long", "speaker": "speaker-two"},
+    ]
+    selected = matrix.select_subset_rows(policy, rows)
+    with pytest.raises(matrix.MatrixError, match="insufficient exact rows"):
+        matrix.select_subset_rows(
+            policy,
+            rows,
+            forbidden_speaker_ids=frozenset({str(selected[0]["speaker"])}),
+        )
+
+    invalid_rows = [*rows, {"id": "empty", "bucket": "short", "speaker": ""}]
+    with pytest.raises(matrix.MatrixError, match="non-empty speaker"):
+        matrix.select_subset_rows(policy, invalid_rows)
+
+
+def test_speaker_stratified_selector_requires_exact_unique_speaker_count():
+    policy = matrix.SelectionPolicy(
+        "unit speaker selector",
+        algorithm=matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+        identity_fields=("id",),
+        strata_fields=("bucket",),
+        seed="unit-speaker-seed",
+        expected_examples=3,
+        speaker_field="speaker",
+    )
+    rows = [
+        {"id": "one-a", "bucket": "short", "speaker": "one"},
+        {"id": "one-b", "bucket": "long", "speaker": "one"},
+        {"id": "two", "bucket": "short", "speaker": "two"},
+    ]
+    with pytest.raises(matrix.MatrixError, match="insufficient exact rows"):
+        matrix.select_subset_rows(policy, rows)
+
+
+def test_speaker_stratified_selector_ranks_speakers_before_clips(monkeypatch):
+    policy = matrix.SelectionPolicy(
+        "speaker-first selector",
+        algorithm=matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+        identity_fields=("id",),
+        strata_fields=("bucket",),
+        seed="speaker-first-seed",
+        expected_examples=1,
+        speaker_field="speaker",
+    )
+    rows = [
+        {"id": f"prolific-{index:02d}", "bucket": "one", "speaker": "prolific"}
+        for index in range(20)
+    ]
+    rows.append({"id": "rare-only", "bucket": "one", "speaker": "rare"})
+
+    def rank(_seed: str, identity: str) -> str:
+        if identity.startswith("speaker\0"):
+            return "0" if identity.endswith("\0rare") else "f"
+        return identity
+
+    monkeypatch.setattr(matrix, "_selection_rank", rank)
+    selected = matrix.select_subset_rows(policy, rows)
+    assert [row["speaker"] for row in selected] == ["rare"]
+
+
+def test_speaker_stratified_matching_finds_feasible_cross_stratum_assignment(
+    monkeypatch,
+):
+    policy = matrix.SelectionPolicy(
+        "feasible quota matching",
+        algorithm=matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+        identity_fields=("id",),
+        strata_fields=("bucket",),
+        seed="matching-seed",
+        expected_examples=2,
+        speaker_field="speaker",
+    )
+    rows = [
+        {"id": "a-shared", "bucket": "a", "speaker": "shared"},
+        {"id": "a-alternative", "bucket": "a", "speaker": "alternative"},
+        {"id": "b-shared", "bucket": "b", "speaker": "shared"},
+    ]
+
+    def rank(_seed: str, identity: str) -> str:
+        if identity.startswith("speaker\0"):
+            return "0" if identity.endswith("\0shared") else "f"
+        return identity
+
+    monkeypatch.setattr(matrix, "_selection_rank", rank)
+    selected = matrix.select_subset_rows(policy, rows)
+    assert {(row["bucket"], row["speaker"]) for row in selected} == {
+        ("a", "alternative"),
+        ("b", "shared"),
+    }
+
+
+def test_selection_policy_digest_binds_full_recipe_only():
+    base = matrix.SelectionPolicy(
+        "base recipe",
+        algorithm=matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+        split="test",
+        identity_fields=("id",),
+        strata_fields=("bucket",),
+        seed="base-seed",
+        expected_examples=2,
+        speaker_disjoint=True,
+        speaker_field="speaker",
+        fixed_ids=("fixed",),
+    )
+    variants = (
+        replace(base, description="changed recipe"),
+        replace(base, algorithm=matrix.SelectionAlgorithm.HASH_STRATIFIED),
+        replace(base, split="dev"),
+        replace(base, identity_fields=("other_id",)),
+        replace(base, strata_fields=("other_bucket",)),
+        replace(base, seed="other-seed"),
+        replace(base, expected_examples=3),
+        replace(base, speaker_disjoint=False),
+        replace(base, speaker_field="other_speaker"),
+        replace(base, fixed_ids=("other",)),
+    )
+    digest = matrix.selection_policy_sha256(base)
+    assert len(digest) == 64
+    assert matrix.selection_policy_sha256(base) == digest
+    assert all(matrix.selection_policy_sha256(policy) != digest for policy in variants)
+    assert (
+        len({digest, *(matrix.selection_policy_sha256(item) for item in variants)})
+        == 11
+    )
+
+    rows = ({"id": "one"}, {"id": "two"})
+    assert matrix.selected_rows_sha256(base, rows) == matrix.selected_rows_sha256(
+        replace(base, description="changed recipe"), rows
+    )
+
+
 def test_southern_american_terms_prohibit_voice_clone_and_rehosting():
     constraints = set(
-        matrix.dataset_by_id(
-            "common_voice_26_southern_american"
-        ).usage_constraints
+        matrix.dataset_by_id("common_voice_26_southern_american").usage_constraints
     )
     assert matrix.UsageConstraint.NO_REIDENTIFICATION in constraints
     assert matrix.UsageConstraint.NO_REHOSTING in constraints
@@ -385,7 +654,9 @@ def test_aec_contract_pins_commit_and_requires_embedded_lfs_sha256():
     )
     assert "every selected WAV" in artifact.integrity_note
     assert "meta.csv source provenance" in artifact.integrity_note
-    assert set(matrix.dataset_by_id("microsoft_aec_challenge").license.acceptance_ids) == {
+    assert set(
+        matrix.dataset_by_id("microsoft_aec_challenge").license.acceptance_ids
+    ) == {
         "LIBRIVOX-PUBLIC-DOMAIN",
         "EDINBURGH-VCTK-DATA-TERMS",
         "AUDIOSET-CC-BY-4.0",

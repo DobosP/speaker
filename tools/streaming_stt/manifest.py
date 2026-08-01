@@ -36,6 +36,8 @@ MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES = 384 * 1024 * 1024
 MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_PARAKEET_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_PARAKEET_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
+MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES = 32 * 1024 * 1024
+MAX_FASTER_WHISPER_TOTAL_ARTIFACT_BYTES = 40 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -49,6 +51,7 @@ _MANIFEST_V2_FIELDS = {*_MANIFEST_V1_FIELDS, "adapter_config"}
 _MANIFEST_V3_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V4_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V5_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V6_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -133,10 +136,49 @@ _PARAKEET_CONFIG_FIELDS = {
     "runtime_total_size_bytes",
     "runtime_maximum_file_bytes",
 }
+_FASTER_WHISPER_CONFIG_FIELDS = {
+    "python_version",
+    "faster_whisper_version",
+    "ctranslate2_version",
+    "numpy_version",
+    "cublas_version",
+    "cudnn_version",
+    "cuda_nvrtc_version",
+    "language",
+    "task",
+    "device",
+    "device_index",
+    "compute_type",
+    "cpu_threads",
+    "num_workers",
+    "sample_rate",
+    "execution_mode",
+    "partial_hypotheses",
+    "tail_padding_policy",
+    "beam_size",
+    "patience",
+    "temperature",
+    "compression_ratio_threshold",
+    "log_prob_threshold",
+    "no_speech_threshold",
+    "vad_filter",
+    "condition_on_previous_text",
+    "without_timestamps",
+    "word_timestamps",
+    "runtime_content_sha256",
+    "runtime_file_count",
+    "runtime_total_size_bytes",
+    "runtime_maximum_file_bytes",
+    "model_content_sha256",
+    "model_file_count",
+    "model_total_size_bytes",
+    "model_maximum_file_bytes",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
+FASTER_WHISPER_ENDPOINT_ADAPTER = "faster-whisper-endpoint-v1"
 NEMOTRON_WHEEL_LOCK_SHA256 = (
     "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
 )
@@ -409,6 +451,25 @@ PARAKEET_REALTIME_EOU_MODEL_RECEIPT = (
     "6603a22a53b7c1a4bac4736cb24628fb568a7102ba931a28c799e2e72f109893",
     460_062_720,
 )
+FASTER_WHISPER_ARTIFACT_NAMES = (
+    "runtime-receipt",
+    "model-receipt",
+    "venv-marker",
+)
+_FASTER_WHISPER_ARTIFACT_BASENAMES = {
+    "runtime-receipt": "runtime-receipt.json",
+    "model-receipt": "model-receipt.json",
+    "venv-marker": "pyvenv.cfg",
+}
+_FASTER_WHISPER_SMALL_ARTIFACTS = {
+    "runtime-receipt": 32 * 1024 * 1024,
+    "model-receipt": 4 * 1024 * 1024,
+    "venv-marker": 64 * 1024,
+}
+FASTER_WHISPER_REQUIRED_MODEL_FILES = frozenset(
+    {"config.json", "model.bin", "tokenizer.json"}
+)
+FASTER_WHISPER_VOCABULARY_FILES = frozenset({"vocabulary.json", "vocabulary.txt"})
 
 
 class ManifestError(RuntimeError):
@@ -560,9 +621,7 @@ class SherpaZipformerConfig:
 
     package_version: str = "1.13.3"
     numpy_version: str = "2.4.6"
-    source_repo_id: str = (
-        "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
-    )
+    source_repo_id: str = "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
     variant: str = "epoch-99-avg-1-chunk-16-left-128"
     language: str = "en"
     sample_rate: int = 16_000
@@ -678,8 +737,7 @@ class ParakeetRealtimeEouConfig:
             or self.cuda_version != PARAKEET_REALTIME_EOU_CUDA_VERSION
             or self.numpy_version != PARAKEET_REALTIME_EOU_NUMPY_VERSION
             or self.model_repo_id != "nvidia/parakeet_realtime_eou_120m-v1"
-            or self.model_revision
-            != "a7e2b4629593dce0ec19f600e00e9904353fda2d"
+            or self.model_revision != "a7e2b4629593dce0ec19f600e00e9904353fda2d"
             or self.model_filename != "parakeet_realtime_eou_120m-v1.nemo"
             or self.language != "en"
             or self.device != "cuda:0"
@@ -700,8 +758,7 @@ class ParakeetRealtimeEouConfig:
             or self.eob_token != "<EOB>"
             or type(self.use_amp) is not bool
             or self.use_amp
-            or self.wheel_lock_sha256
-            != PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
+            or self.wheel_lock_sha256 != PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
             or self.runtime_content_sha256
             != PARAKEET_REALTIME_EOU_RUNTIME_CONTENT_SHA256
             or self.runtime_file_count != PARAKEET_REALTIME_EOU_RUNTIME_FILE_COUNT
@@ -743,6 +800,161 @@ class ParakeetRealtimeEouConfig:
 
 
 @dataclass(frozen=True)
+class FasterWhisperEndpointConfig:
+    """Exact final-only decode semantics plus two receipt-bound local trees."""
+
+    python_version: str = "3.12.3"
+    faster_whisper_version: str = "1.2.1"
+    ctranslate2_version: str = "4.8.1"
+    numpy_version: str = "2.4.6"
+    cublas_version: str = "12.9.2.10"
+    cudnn_version: str = "9.24.0.43"
+    cuda_nvrtc_version: str = "12.9.86"
+    language: str = "en"
+    task: str = "transcribe"
+    device: str = "cuda"
+    device_index: int = 0
+    compute_type: str = "float16"
+    cpu_threads: int = 1
+    num_workers: int = 1
+    sample_rate: int = 16_000
+    execution_mode: str = "endpoint-final-only"
+    partial_hypotheses: bool = False
+    tail_padding_policy: str = "pace-only-not-decoded"
+    beam_size: int = 5
+    patience: float = 1.0
+    temperature: float = 0.0
+    compression_ratio_threshold: float = 2.4
+    log_prob_threshold: float = -1.0
+    no_speech_threshold: float = 0.6
+    vad_filter: bool = False
+    condition_on_previous_text: bool = False
+    without_timestamps: bool = True
+    word_timestamps: bool = False
+    runtime_content_sha256: str = "0" * 64
+    runtime_file_count: int = 1
+    runtime_total_size_bytes: int = 1
+    runtime_maximum_file_bytes: int = 1
+    model_content_sha256: str = "0" * 64
+    model_file_count: int = 4
+    model_total_size_bytes: int = 4
+    model_maximum_file_bytes: int = 1
+
+    def __post_init__(self) -> None:
+        exact_numbers = (
+            self.patience,
+            self.temperature,
+            self.compression_ratio_threshold,
+            self.log_prob_threshold,
+            self.no_speech_threshold,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in exact_numbers
+        ):
+            raise ManifestError()
+        tree_integers = (
+            self.runtime_file_count,
+            self.runtime_total_size_bytes,
+            self.runtime_maximum_file_bytes,
+            self.model_file_count,
+            self.model_total_size_bytes,
+            self.model_maximum_file_bytes,
+        )
+        if (
+            self.python_version != "3.12.3"
+            or self.faster_whisper_version != "1.2.1"
+            or self.ctranslate2_version != "4.8.1"
+            or self.numpy_version != "2.4.6"
+            or self.cublas_version != "12.9.2.10"
+            or self.cudnn_version != "9.24.0.43"
+            or self.cuda_nvrtc_version != "12.9.86"
+            or self.language not in {"en", "ro"}
+            or self.task != "transcribe"
+            or self.device != "cuda"
+            or type(self.device_index) is not int
+            or self.device_index != 0
+            or self.compute_type != "float16"
+            or type(self.cpu_threads) is not int
+            or self.cpu_threads != 1
+            or type(self.num_workers) is not int
+            or self.num_workers != 1
+            or type(self.sample_rate) is not int
+            or self.sample_rate != 16_000
+            or self.execution_mode != "endpoint-final-only"
+            or type(self.partial_hypotheses) is not bool
+            or self.partial_hypotheses
+            or self.tail_padding_policy != "pace-only-not-decoded"
+            or type(self.beam_size) is not int
+            or self.beam_size != 5
+            or tuple(float(value) for value in exact_numbers)
+            != (1.0, 0.0, 2.4, -1.0, 0.6)
+            or type(self.vad_filter) is not bool
+            or self.vad_filter
+            or type(self.condition_on_previous_text) is not bool
+            or self.condition_on_previous_text
+            or type(self.without_timestamps) is not bool
+            or not self.without_timestamps
+            or type(self.word_timestamps) is not bool
+            or self.word_timestamps
+            or _SHA256_RE.fullmatch(self.runtime_content_sha256) is None
+            or _SHA256_RE.fullmatch(self.model_content_sha256) is None
+            or any(type(value) is not int or value <= 0 for value in tree_integers)
+            or self.runtime_file_count > 100_000
+            or self.runtime_total_size_bytes > 20 * 1024 * 1024 * 1024
+            or self.runtime_maximum_file_bytes > 4 * 1024 * 1024 * 1024
+            or self.runtime_maximum_file_bytes > self.runtime_total_size_bytes
+            or not 4 <= self.model_file_count <= 4096
+            or self.model_total_size_bytes > 8 * 1024 * 1024 * 1024
+            or self.model_maximum_file_bytes > 4 * 1024 * 1024 * 1024
+            or self.model_maximum_file_bytes > self.model_total_size_bytes
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "python_version": self.python_version,
+            "faster_whisper_version": self.faster_whisper_version,
+            "ctranslate2_version": self.ctranslate2_version,
+            "numpy_version": self.numpy_version,
+            "cublas_version": self.cublas_version,
+            "cudnn_version": self.cudnn_version,
+            "cuda_nvrtc_version": self.cuda_nvrtc_version,
+            "language": self.language,
+            "task": self.task,
+            "device": self.device,
+            "device_index": self.device_index,
+            "compute_type": self.compute_type,
+            "cpu_threads": self.cpu_threads,
+            "num_workers": self.num_workers,
+            "sample_rate": self.sample_rate,
+            "execution_mode": self.execution_mode,
+            "partial_hypotheses": self.partial_hypotheses,
+            "tail_padding_policy": self.tail_padding_policy,
+            "beam_size": self.beam_size,
+            "patience": self.patience,
+            "temperature": self.temperature,
+            "compression_ratio_threshold": self.compression_ratio_threshold,
+            "log_prob_threshold": self.log_prob_threshold,
+            "no_speech_threshold": self.no_speech_threshold,
+            "vad_filter": self.vad_filter,
+            "condition_on_previous_text": self.condition_on_previous_text,
+            "without_timestamps": self.without_timestamps,
+            "word_timestamps": self.word_timestamps,
+            "runtime_content_sha256": self.runtime_content_sha256,
+            "runtime_file_count": self.runtime_file_count,
+            "runtime_total_size_bytes": self.runtime_total_size_bytes,
+            "runtime_maximum_file_bytes": self.runtime_maximum_file_bytes,
+            "model_content_sha256": self.model_content_sha256,
+            "model_file_count": self.model_file_count,
+            "model_total_size_bytes": self.model_total_size_bytes,
+            "model_maximum_file_bytes": self.model_maximum_file_bytes,
+        }
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     path: Path
     digest: str
@@ -758,6 +970,7 @@ class WorkerManifest:
         | NemotronConfig
         | SherpaZipformerConfig
         | ParakeetRealtimeEouConfig
+        | FasterWhisperEndpointConfig
         | None
     ) = None
 
@@ -842,6 +1055,14 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         return _PARAKEET_SMALL_ARTIFACTS.get(
             artifact_name,
             MAX_PARAKEET_ARTIFACT_BYTES,
+        )
+    if (
+        adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+        and artifact_name in FASTER_WHISPER_ARTIFACT_NAMES
+    ):
+        return _FASTER_WHISPER_SMALL_ARTIFACTS.get(
+            artifact_name,
+            MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES,
         )
     raise ManifestError()
 
@@ -1039,6 +1260,52 @@ def _parakeet_config(value: object) -> ParakeetRealtimeEouConfig:
         raise ManifestError() from None
 
 
+def _faster_whisper_config(value: object) -> FasterWhisperEndpointConfig:
+    if not isinstance(value, dict) or set(value) != _FASTER_WHISPER_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return FasterWhisperEndpointConfig(
+            python_version=value.get("python_version"),  # type: ignore[arg-type]
+            faster_whisper_version=value.get("faster_whisper_version"),  # type: ignore[arg-type]
+            ctranslate2_version=value.get("ctranslate2_version"),  # type: ignore[arg-type]
+            numpy_version=value.get("numpy_version"),  # type: ignore[arg-type]
+            cublas_version=value.get("cublas_version"),  # type: ignore[arg-type]
+            cudnn_version=value.get("cudnn_version"),  # type: ignore[arg-type]
+            cuda_nvrtc_version=value.get("cuda_nvrtc_version"),  # type: ignore[arg-type]
+            language=value.get("language"),  # type: ignore[arg-type]
+            task=value.get("task"),  # type: ignore[arg-type]
+            device=value.get("device"),  # type: ignore[arg-type]
+            device_index=value.get("device_index"),  # type: ignore[arg-type]
+            compute_type=value.get("compute_type"),  # type: ignore[arg-type]
+            cpu_threads=value.get("cpu_threads"),  # type: ignore[arg-type]
+            num_workers=value.get("num_workers"),  # type: ignore[arg-type]
+            sample_rate=value.get("sample_rate"),  # type: ignore[arg-type]
+            execution_mode=value.get("execution_mode"),  # type: ignore[arg-type]
+            partial_hypotheses=value.get("partial_hypotheses"),  # type: ignore[arg-type]
+            tail_padding_policy=value.get("tail_padding_policy"),  # type: ignore[arg-type]
+            beam_size=value.get("beam_size"),  # type: ignore[arg-type]
+            patience=value.get("patience"),  # type: ignore[arg-type]
+            temperature=value.get("temperature"),  # type: ignore[arg-type]
+            compression_ratio_threshold=value.get("compression_ratio_threshold"),  # type: ignore[arg-type]
+            log_prob_threshold=value.get("log_prob_threshold"),  # type: ignore[arg-type]
+            no_speech_threshold=value.get("no_speech_threshold"),  # type: ignore[arg-type]
+            vad_filter=value.get("vad_filter"),  # type: ignore[arg-type]
+            condition_on_previous_text=value.get("condition_on_previous_text"),  # type: ignore[arg-type]
+            without_timestamps=value.get("without_timestamps"),  # type: ignore[arg-type]
+            word_timestamps=value.get("word_timestamps"),  # type: ignore[arg-type]
+            runtime_content_sha256=value.get("runtime_content_sha256"),  # type: ignore[arg-type]
+            runtime_file_count=value.get("runtime_file_count"),  # type: ignore[arg-type]
+            runtime_total_size_bytes=value.get("runtime_total_size_bytes"),  # type: ignore[arg-type]
+            runtime_maximum_file_bytes=value.get("runtime_maximum_file_bytes"),  # type: ignore[arg-type]
+            model_content_sha256=value.get("model_content_sha256"),  # type: ignore[arg-type]
+            model_file_count=value.get("model_file_count"),  # type: ignore[arg-type]
+            model_total_size_bytes=value.get("model_total_size_bytes"),  # type: ignore[arg-type]
+            model_maximum_file_bytes=value.get("model_maximum_file_bytes"),  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
 def _validate_venv_layout(
     python: BoundFile,
     marker: BoundArtifact,
@@ -1169,14 +1436,37 @@ def _validate_parakeet_layout(
             for name, basename in _PARAKEET_ARTIFACT_BASENAMES.items()
         )
         or model is None
-        or (model.sha256, model.size_bytes)
-        != PARAKEET_REALTIME_EOU_MODEL_RECEIPT
+        or (model.sha256, model.size_bytes) != PARAKEET_REALTIME_EOU_MODEL_RECEIPT
         or wheel_lock is None
         or (wheel_lock.sha256, wheel_lock.size_bytes)
         != (
             PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256,
             PARAKEET_REALTIME_EOU_WHEEL_LOCK_SIZE_BYTES,
         )
+    ):
+        raise ManifestError()
+    _validate_venv_layout(python, by_name["venv-marker"])
+
+
+def _validate_faster_whisper_layout(
+    python: BoundFile,
+    artifacts: tuple[BoundArtifact, ...],
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    receipt_parents = {
+        by_name[name].path.parent
+        for name in ("runtime-receipt", "model-receipt")
+        if name in by_name
+    }
+    if (
+        tuple(by_name) != FASTER_WHISPER_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_FASTER_WHISPER_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _FASTER_WHISPER_ARTIFACT_BASENAMES.items()
+        )
+        or len(receipt_parents) != 1
     ):
         raise ManifestError()
     _validate_venv_layout(python, by_name["venv-marker"])
@@ -1199,7 +1489,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     if not isinstance(value, dict):
         raise ManifestError()
     schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5}:
+    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5, 6}:
         raise ManifestError()
     expected_fields = {
         1: _MANIFEST_V1_FIELDS,
@@ -1207,6 +1497,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         3: _MANIFEST_V3_FIELDS,
         4: _MANIFEST_V4_FIELDS,
         5: _MANIFEST_V5_FIELDS,
+        6: _MANIFEST_V6_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -1218,6 +1509,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         or (schema_version == 3 and adapter != NEMOTRON_ADAPTER)
         or (schema_version == 4 and adapter != SHERPA_ZIPFORMER_ADAPTER)
         or (schema_version == 5 and adapter != PARAKEET_REALTIME_EOU_ADAPTER)
+        or (schema_version == 6 and adapter != FASTER_WHISPER_ENDPOINT_ADAPTER)
     ):
         raise ManifestError()
 
@@ -1241,6 +1533,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         3: NEMOTRON_ARTIFACT_NAMES,
         4: SHERPA_ZIPFORMER_ARTIFACT_NAMES,
         5: PARAKEET_REALTIME_EOU_ARTIFACT_NAMES,
+        6: FASTER_WHISPER_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -1256,6 +1549,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         3: lambda: _nemotron_config(value.get("adapter_config")),
         4: lambda: _sherpa_zipformer_config(value.get("adapter_config")),
         5: lambda: _parakeet_config(value.get("adapter_config")),
+        6: lambda: _faster_whisper_config(value.get("adapter_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -1269,6 +1563,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 5:
         assert isinstance(adapter_config, ParakeetRealtimeEouConfig)
         _validate_parakeet_layout(python, artifacts, adapter_config)
+    elif schema_version == 6:
+        assert isinstance(adapter_config, FasterWhisperEndpointConfig)
+        _validate_faster_whisper_layout(python, artifacts)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

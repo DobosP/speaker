@@ -34,11 +34,15 @@ from tools.streaming_stt.corpus import (
     verify_corpus_snapshot,
 )
 from tools.streaming_stt.manifest import (
+    FASTER_WHISPER_ENDPOINT_ADAPTER,
+    FASTER_WHISPER_REQUIRED_MODEL_FILES,
+    FASTER_WHISPER_VOCABULARY_FILES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
+    FasterWhisperEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     SherpaZipformerConfig,
@@ -57,6 +61,8 @@ from tools.streaming_stt.protocol import (
     parse_request,
 )
 from tools.streaming_stt.runtime_receipt import (
+    FASTER_WHISPER_MODEL_TREE_LIMITS,
+    FASTER_WHISPER_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceiptError,
@@ -113,6 +119,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
@@ -327,6 +334,7 @@ def _write_strict_report(path: Path, payload: Mapping[str, object]) -> None:
 def _evaluator_binding(adapter: str) -> dict[str, object]:
     if adapter not in {
         _FAKE_ADAPTER,
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
@@ -356,6 +364,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
         "real_candidate_model": adapter
         in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             MOONSHINE_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
@@ -375,6 +384,7 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
             raise ValueError
         return None
     if manifest.adapter not in {
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
@@ -384,6 +394,7 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
     if artifact is None:
         raise ValueError
     limits = {
+        FASTER_WHISPER_ENDPOINT_ADAPTER: FASTER_WHISPER_RUNTIME_TREE_LIMITS,
         NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
         PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
     }.get(manifest.adapter)
@@ -426,6 +437,49 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
             or maximum_file != config.runtime_maximum_file_bytes
         ):
             raise ValueError
+    if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+        config = manifest.adapter_config
+        maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+        if (
+            not isinstance(config, FasterWhisperEndpointConfig)
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+        ):
+            raise ValueError
+    return receipt.digest
+
+
+def _verified_model_receipt_digest(manifest: WorkerManifest) -> str | None:
+    if manifest.adapter != FASTER_WHISPER_ENDPOINT_ADAPTER:
+        if "model-receipt" in manifest.artifact_by_name:
+            raise ValueError
+        return None
+    config = manifest.adapter_config
+    artifact = manifest.artifact_by_name.get("model-receipt")
+    if not isinstance(config, FasterWhisperEndpointConfig) or artifact is None:
+        raise ValueError
+    try:
+        receipt = load_runtime_tree_receipt(
+            artifact.path,
+            expected_digest=artifact.sha256,
+            limits=FASTER_WHISPER_MODEL_TREE_LIMITS,
+        )
+    except RuntimeTreeReceiptError:
+        raise ValueError from None
+    maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+    paths = set(receipt.file_by_path)
+    if (
+        receipt.digest != artifact.sha256
+        or not FASTER_WHISPER_REQUIRED_MODEL_FILES.issubset(paths)
+        or not FASTER_WHISPER_VOCABULARY_FILES.intersection(paths)
+        or receipt.content_digest != config.model_content_sha256
+        or receipt.file_count != config.model_file_count
+        or receipt.total_size_bytes != config.model_total_size_bytes
+        or maximum_file != config.model_maximum_file_bytes
+    ):
+        raise ValueError
     return receipt.digest
 
 
@@ -434,6 +488,7 @@ def _worker_binding(
     source_bundle: SourceBundle,
     *,
     runtime_receipt_sha256: str | None,
+    model_receipt_sha256: str | None = None,
 ) -> dict[str, object]:
     artifacts = [
         {
@@ -459,6 +514,7 @@ def _worker_binding(
             manifest.schema_version != 1
             or manifest.adapter_config is not None
             or runtime_receipt_sha256 is not None
+            or model_receipt_sha256 is not None
         ):
             raise ValueError
         return binding
@@ -467,6 +523,7 @@ def _worker_binding(
         NEMOTRON_ADAPTER: 3,
         SHERPA_ZIPFORMER_ADAPTER: 4,
         PARAKEET_REALTIME_EOU_ADAPTER: 5,
+        FASTER_WHISPER_ENDPOINT_ADAPTER: 6,
     }.get(manifest.adapter)
     if (
         expected_schema is None
@@ -477,12 +534,24 @@ def _worker_binding(
             and not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig)
         )
         or (
+            manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+            and not isinstance(manifest.adapter_config, FasterWhisperEndpointConfig)
+        )
+        or (
             manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
             and runtime_receipt_sha256 is not None
         )
         or (
             manifest.adapter != SHERPA_ZIPFORMER_ADAPTER
             and runtime_receipt_sha256 is None
+        )
+        or (
+            manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+            and model_receipt_sha256 is None
+        )
+        or (
+            manifest.adapter != FASTER_WHISPER_ENDPOINT_ADAPTER
+            and model_receipt_sha256 is not None
         )
     ):
         raise ValueError
@@ -502,6 +571,11 @@ def _worker_binding(
             if isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig)
             else set()
         ),
+        FASTER_WHISPER_ENDPOINT_ADAPTER: (
+            set(manifest.adapter_config.as_dict())
+            if isinstance(manifest.adapter_config, FasterWhisperEndpointConfig)
+            else set()
+        ),
     }[manifest.adapter]
     if set(adapter_config) != expected_config_fields:
         raise ValueError
@@ -514,6 +588,8 @@ def _worker_binding(
     )
     if runtime_receipt_sha256 is not None:
         binding["runtime_receipt_sha256"] = runtime_receipt_sha256
+    if model_receipt_sha256 is not None:
+        binding["model_receipt_sha256"] = model_receipt_sha256
     return binding
 
 
@@ -532,10 +608,7 @@ def _validated_parakeet_cgroup_evidence(
         for name, expected in _PARAKEET_CGROUP_EVIDENCE.items()
     ):
         raise ValueError
-    result = {
-        name: value[name]
-        for name in _PARAKEET_CGROUP_EVIDENCE
-    }
+    result = {name: value[name] for name in _PARAKEET_CGROUP_EVIDENCE}
     _strict_json(result)
     return result
 
@@ -561,11 +634,16 @@ def _evidence_binding(
     *,
     pace: str,
     adapter_config: (
-        NemotronConfig | SherpaZipformerConfig | ParakeetRealtimeEouConfig | None
+        FasterWhisperEndpointConfig
+        | NemotronConfig
+        | SherpaZipformerConfig
+        | ParakeetRealtimeEouConfig
+        | None
     ) = None,
 ) -> dict[str, object]:
     if adapter not in {
         _FAKE_ADAPTER,
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
@@ -581,24 +659,35 @@ def _evidence_binding(
         config = adapter_config
         zipformer_config = None
         parakeet_config = None
+        faster_whisper_config = None
     elif adapter == SHERPA_ZIPFORMER_ADAPTER:
         if not isinstance(adapter_config, SherpaZipformerConfig):
             raise ValueError
         config = None
         zipformer_config = adapter_config
         parakeet_config = None
+        faster_whisper_config = None
     elif adapter == PARAKEET_REALTIME_EOU_ADAPTER:
         if not isinstance(adapter_config, ParakeetRealtimeEouConfig):
             raise ValueError
         config = None
         zipformer_config = None
         parakeet_config = adapter_config
+        faster_whisper_config = None
+    elif adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+        if not isinstance(adapter_config, FasterWhisperEndpointConfig):
+            raise ValueError
+        config = None
+        zipformer_config = None
+        parakeet_config = None
+        faster_whisper_config = adapter_config
     elif adapter_config is not None:
         raise ValueError
     else:
         config = None
         zipformer_config = None
         parakeet_config = None
+        faster_whisper_config = None
     candidate_executed = adapter != _FAKE_ADAPTER
     binding: dict[str, object] = {
         "kind": "bounded_pcm_streaming_harness",
@@ -606,6 +695,7 @@ def _evidence_binding(
         "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
         "real_candidate_model": adapter
         in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             MOONSHINE_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
@@ -644,6 +734,46 @@ def _evidence_binding(
         "live_hardware": False,
         "adoption_authority": False,
     }
+    if faster_whisper_config is not None:
+        binding.update(
+            {
+                "streaming_recognizer": False,
+                "partial_source": "none_final_only",
+                "final_source": "candidate_decode_after_complete_pcm",
+                "external_endpoint_required": True,
+                "latency_evidence": "complete_pcm_to_candidate_final_only",
+                "finalization_latency_scope": (
+                    "complete_pcm_available_to_candidate_final"
+                ),
+                "streaming_deadline_metrics_applicable": False,
+                "wire_deadline_fields": (
+                    "numeric_protocol_placeholders_reported_as_null"
+                ),
+                "tail_padding_policy": faster_whisper_config.tail_padding_policy,
+                "decode_contract": {
+                    "sample_rate_hz": faster_whisper_config.sample_rate,
+                    "language": faster_whisper_config.language,
+                    "device": faster_whisper_config.device,
+                    "device_index": faster_whisper_config.device_index,
+                    "compute_type": faster_whisper_config.compute_type,
+                    "cpu_threads": faster_whisper_config.cpu_threads,
+                    "num_workers": faster_whisper_config.num_workers,
+                    "beam_size": faster_whisper_config.beam_size,
+                    "vad_filter": faster_whisper_config.vad_filter,
+                    "condition_on_previous_text": (
+                        faster_whisper_config.condition_on_previous_text
+                    ),
+                },
+                "resource_control": {
+                    "one_thread_environment": True,
+                    "network_namespace": "unshared",
+                    "runtime_tree_read_only": True,
+                    "model_tree_read_only": True,
+                    "hard_host_memory_limit": False,
+                    "hard_vram_limit": False,
+                },
+            }
+        )
     if config is not None:
         binding.update(
             {
@@ -677,9 +807,7 @@ def _evidence_binding(
                     "production_device_profile": (
                         zipformer_config.production_device_profile
                     ),
-                    "production_num_threads": (
-                        zipformer_config.production_num_threads
-                    ),
+                    "production_num_threads": (zipformer_config.production_num_threads),
                 },
                 "decode_contract": {
                     "sample_rate_hz": zipformer_config.sample_rate,
@@ -710,9 +838,7 @@ def _evidence_binding(
                 "endpoint_latency_scope": (
                     "declared_source_end_to_observed_native_chunk_boundary"
                 ),
-                "endpoint_sample_domain": (
-                    "model_input_including_terminal_zero_fill"
-                ),
+                "endpoint_sample_domain": ("model_input_including_terminal_zero_fill"),
                 "source_tail_accounting": "worker_reported_supervisor_validated",
                 "capture_accrual_included": False,
                 "resource_control": {
@@ -740,6 +866,25 @@ def _evidence_binding(
             }
         )
     return binding
+
+
+def _mark_endpoint_deadline_metrics_not_applicable(
+    metrics: dict[str, object],
+) -> None:
+    """Remove mandatory wire placeholders from final-only report evidence."""
+
+    streaming = metrics.get("streaming")
+    if not isinstance(streaming, dict):
+        raise ValueError
+    for field_name in (
+        "deadline_misses",
+        "max_backlog_p95_ms",
+        "max_backlog_ms",
+    ):
+        if field_name not in streaming:
+            raise ValueError
+        streaming[field_name] = None
+    streaming["deadline_metrics_applicable"] = False
 
 
 def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
@@ -966,6 +1111,7 @@ def _default_stream(manifest: WorkerManifest) -> StreamConfig:
         )
     if manifest.adapter not in {
         _FAKE_ADAPTER,
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     }:
@@ -1136,6 +1282,7 @@ def _run_benchmark_locked(
     except (OSError, RuntimeError):
         raise ValueError from None
     runtime_receipt_sha256 = _verified_runtime_receipt_digest(manifest)
+    model_receipt_sha256 = _verified_model_receipt_digest(manifest)
     corpus = load_corpus(corpus_path)
     evaluator_binding = _evaluator_binding(manifest.adapter)
     corpus_binding = _corpus_binding(corpus)
@@ -1155,6 +1302,7 @@ def _run_benchmark_locked(
             manifest,
             source_bundle,
             runtime_receipt_sha256=runtime_receipt_sha256,
+            model_receipt_sha256=model_receipt_sha256,
         )
         snapshots: list[Path] = []
         for index, case in enumerate(corpus.cases):
@@ -1201,6 +1349,7 @@ def _run_benchmark_locked(
                     )
             ready = worker.ready
         if manifest.adapter in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
@@ -1208,7 +1357,11 @@ def _run_benchmark_locked(
             if (
                 not isinstance(
                     config,
-                    (NemotronConfig, ParakeetRealtimeEouConfig),
+                    (
+                        FasterWhisperEndpointConfig,
+                        NemotronConfig,
+                        ParakeetRealtimeEouConfig,
+                    ),
                 )
                 or ready.runtime.get("python") != config.python_version
             ):
@@ -1223,20 +1376,25 @@ def _run_benchmark_locked(
         current_runtime_receipt_sha256 = _verified_runtime_receipt_digest(
             current_manifest
         )
+        current_model_receipt_sha256 = _verified_model_receipt_digest(current_manifest)
         if (
             current_manifest.digest != manifest.digest
             or current_manifest.worker.path.resolve(strict=True) != _FIXED_WORKER
             or current_runtime_receipt_sha256 != runtime_receipt_sha256
+            or current_model_receipt_sha256 != model_receipt_sha256
             or _worker_binding(
                 current_manifest,
                 source_bundle,
                 runtime_receipt_sha256=current_runtime_receipt_sha256,
+                model_receipt_sha256=current_model_receipt_sha256,
             )
             != worker_binding
             or _evaluator_binding(current_manifest.adapter) != evaluator_binding
         ):
             raise ValueError
         metrics = aggregate_metrics(corpus, records, ready, repeats=repeats)
+        if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+            _mark_endpoint_deadline_metrics_not_applicable(metrics)
         worker_report = _worker_report(
             manifest,
             worker_binding,
@@ -1256,6 +1414,7 @@ def _run_benchmark_locked(
                             NemotronConfig,
                             SherpaZipformerConfig,
                             ParakeetRealtimeEouConfig,
+                            FasterWhisperEndpointConfig,
                         ),
                     )
                     else None

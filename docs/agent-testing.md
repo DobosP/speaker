@@ -22,6 +22,7 @@
 | Recording-driven STT accuracy | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval` | aggregate-only streaming/offline/selected WER+CER over every hash-pinned labelled clip; each selected offline recognizer/verifier must complete a decode with zero error outcomes; no runtime, TTS, tools, network, or audio device (ADR-0078/0080) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced Sherpa seam, fixed aggregate conditions/privacy, evaluator, and deterministic AMI preparation pass without a model or audio device (ADR-0092) |
 | Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, Nemotron, and Parakeet private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091/0099) |
+| Faster-Whisper final-only comparator | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_faster_whisper_endpoint_candidate.py tests/test_streaming_stt_faster_whisper_endpoint.py -q` | separate runtime/model receipts, no-download provision, final-only adapter, evaluator provenance, PCM/tree tamper rejection, and schema-v6 worker serialization pass without importing/loading a candidate, GPU, network, or audio device (ADR-0102) |
 | Public matrix + production-model STT control | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_zipformer.py -m "not real_model" -q` | no-download license/receipt/selection/privacy contracts and exact fp32 Zipformer Bubblewrap control pass without a corpus, model load, network, or audio device (ADR-0098) |
 | Common Voice spontaneous P0 preparation | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_public_voice_eval_matrix.py -q` | exact release/API receipt, twice-hashed private archive, safe tar/TSV, speaker-first quota matching, bounded publication/provenance, and synthetic decode pass; the two real-PyAV checks run only when the pinned optional `requirements-evaluation.txt` environment is installed. No corpus download, model, network, GPU, or audio device (ADR-0101) |
 | Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs; no install, download, network, audio device, or adoption claim (ADR-0090) |
@@ -154,6 +155,59 @@ Preparation, provisioning, and evaluation refuse overwrite. They download
 nothing and open no audio device. Preserve reports privately. These runs begin
 after PCM is available and cannot validate capture, VAD, AEC, turn ground
 truth, conversational latency, live audio, or a default change (ADR-0099).
+
+## Exact Faster-Whisper final-only benchmark setup
+
+Start with an existing Python 3.12 virtual environment containing the pinned
+Faster-Whisper/CTranslate2/CUDA-wheel closure, an already-downloaded local
+CTranslate2 model directory, and a prepared schema-v2 streaming corpus. The
+runtime `site-packages` root and model root must be owner-private, and every
+file must be a materialized single-link regular file; symlink-backed Hugging
+Face snapshots and package-manager hard links require separate materialized
+copies. The environment must expose only `python3.12` as its `lib/pythonX.Y`
+runtime, its interpreter must resolve to `python3.12`, and `pyvenv.cfg` must
+report version 3.12.3. Use a new absolute private output that neither contains
+nor is contained by the virtual environment, `site-packages`, or model root;
+the runtime and model roots also cannot overlap. Provisioning hashes both trees
+but does not import candidate packages, load a model, download, or open an
+audio device. Receipt strictness is intentional and is not relaxed for local caches:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.provision_faster_whisper_endpoint_candidate \
+  --venv-root /absolute/existing-faster-whisper-venv \
+  --model-root /absolute/local-ctranslate2-model \
+  --model-id faster-whisper-small-local \
+  --language en \
+  --output-dir /absolute/private/new-faster-whisper-receipt
+```
+
+Run the receipt through the aggregate evaluator. Use `--pace realtime` only
+when wall-clock endpoint-to-final replay is needed; burst results are explicitly
+accelerated. The adapter emits no partials and does not perform endpoint
+detection:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest /absolute/private/new-faster-whisper-receipt/worker-manifest.json \
+  --corpus /absolute/private/prepared-public-corpus/corpus.json \
+  --repeats 1 --chunk-samples 1600 --partial-interval-ms 200 \
+  --tail-padding-samples 0 --pace burst \
+  --scratch-root /absolute/private/new-faster-whisper-scratch \
+  --output /absolute/private/new-faster-whisper-report.json
+```
+
+The Bubblewrap worker has no network and mounts the receipt-bound runtime/model
+trees read-only. It has one-thread settings but no independently verified hard
+RAM or VRAM limit. Preserve reports privately. Results begin after controller
+PCM snapshotting and cannot validate capture, VAD, endpoint detection, AEC,
+conversation turn-taking, room echo, owner identity, live audio, or a default
+change. Streaming deadline/backlog metrics are explicitly null/not applicable;
+only complete-PCM-to-final decode latency is meaningful (ADR-0102).
 
 ## Exact Nemotron benchmark setup
 

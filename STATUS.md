@@ -47,7 +47,7 @@ Last verified: 2026-08-01 on Linux ROG.
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
   plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
   controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed, speaker-matched private 32-speaker P0 preparer; Zipformer is a one-thread control and Parakeet EOU NeMo remains rejected (ADR-0098/0099/0101).
+- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed, speaker-matched private 32-speaker P0 preparer; Zipformer is a one-thread control, Parakeet EOU NeMo remains rejected, and a receipt-bound Faster-Whisper comparator is final-only (ADR-0098/0099/0101/0102).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -66,6 +66,7 @@ Last verified: 2026-08-01 on Linux ROG.
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
   control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
 - Common Voice SPS v4 real-archive/model compatibility is unrun; its clean P0 slice is not complete-test, quality-tag, Romanian, owner, capture/AEC, tool, or live evidence (ADR-0101).
+- The schema-v6 Faster-Whisper endpoint comparator enforces isolated receipt roots and final-only worker/supervisor boundaries; fake coverage only—no candidate, corpus, GPU, WER, latency, streaming, or runtime/default claim has run (ADR-0102).
 - Exact Parakeet burst/paced WER is .6576/.6576 and model-input RTF .1910/.2200;
   paced replay missed three deadlines with 189 ms backlog. Ten of 14 EOU events
   were source-early, so the 6.43 GB NeMo runtime is rejected after-PCM evidence only (ADR-0099).
@@ -86,7 +87,7 @@ Last verified: 2026-08-01 on Linux ROG.
 ## Next
 
 - Run fresh `./live.sh` vault/open-speaker A/B with the synchronized bundle; add native-reader/gap, AEC replay, and disjoint owner/noise/multi-voice data (ADR-0092/0100).
-- Keep `parakeet.cpp`, Common Voice model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
+- Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 
 ## Standard verification
 

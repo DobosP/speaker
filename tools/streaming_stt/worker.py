@@ -29,6 +29,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
@@ -417,12 +418,16 @@ from tools.streaming_stt.bounded_io import (  # noqa: E402
     read_regular_bounded,
 )
 from tools.streaming_stt.manifest import (  # noqa: E402
+    FASTER_WHISPER_ENDPOINT_ADAPTER,
+    FASTER_WHISPER_REQUIRED_MODEL_FILES,
+    FASTER_WHISPER_VOCABULARY_FILES,
     MAX_PYTHON_BYTES,
     ManifestError,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
+    FasterWhisperEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     WorkerManifest,
@@ -444,6 +449,8 @@ from tools.streaming_stt.protocol import (  # noqa: E402
     parse_request,
 )
 from tools.streaming_stt.runtime_receipt import (  # noqa: E402
+    FASTER_WHISPER_MODEL_TREE_LIMITS,
+    FASTER_WHISPER_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
@@ -532,7 +539,9 @@ def _native_final_payload(
     expected_chunks = (
         samples_seen + request.stream.chunk_samples - 1
     ) // request.stream.chunk_samples
-    expected_model_padding = expected_chunks * request.stream.chunk_samples - samples_seen
+    expected_model_padding = (
+        expected_chunks * request.stream.chunk_samples - samples_seen
+    )
     expected_endpoint_sample = samples_seen + expected_model_padding
     if (
         source_samples != request.pcm.samples
@@ -642,6 +651,55 @@ def _load_pcm(request: TranscribeRequest, scratch_root: Path) -> bytes:
     return raw
 
 
+def _faster_whisper_tree_matches(
+    receipt: RuntimeTreeReceipt,
+    *,
+    content_sha256: str,
+    file_count: int,
+    total_size_bytes: int,
+    maximum_file_bytes: int,
+) -> bool:
+    return (
+        receipt.content_digest == content_sha256
+        and receipt.file_count == file_count
+        and receipt.total_size_bytes == total_size_bytes
+        and max((item.size_bytes for item in receipt.files), default=0)
+        == maximum_file_bytes
+    )
+
+
+def _verify_faster_whisper_model_receipt(
+    manifest: WorkerManifest,
+) -> RuntimeTreeReceipt:
+    artifact = manifest.artifact_by_name.get("model-receipt")
+    config = manifest.adapter_config
+    if artifact is None or not isinstance(config, FasterWhisperEndpointConfig):
+        raise ManifestError()
+    try:
+        receipt = load_runtime_tree_receipt(
+            artifact.path,
+            expected_digest=artifact.sha256,
+            limits=FASTER_WHISPER_MODEL_TREE_LIMITS,
+        )
+    except RuntimeError:
+        raise ManifestError() from None
+    paths = set(receipt.file_by_path)
+    if (
+        receipt.digest != artifact.sha256
+        or not FASTER_WHISPER_REQUIRED_MODEL_FILES.issubset(paths)
+        or not FASTER_WHISPER_VOCABULARY_FILES.intersection(paths)
+        or not _faster_whisper_tree_matches(
+            receipt,
+            content_sha256=config.model_content_sha256,
+            file_count=config.model_file_count,
+            total_size_bytes=config.model_total_size_bytes,
+            maximum_file_bytes=config.model_maximum_file_bytes,
+        )
+    ):
+        raise ManifestError()
+    return receipt
+
+
 def _verify_runtime_receipt(
     manifest: WorkerManifest,
 ) -> RuntimeTreeReceipt | None:
@@ -650,6 +708,7 @@ def _verify_runtime_receipt(
     if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
         return None
     if manifest.adapter not in {
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
@@ -662,6 +721,7 @@ def _verify_runtime_receipt(
         MOONSHINE_ADAPTER: None,
         NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
         PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
+        FASTER_WHISPER_ENDPOINT_ADAPTER: FASTER_WHISPER_RUNTIME_TREE_LIMITS,
     }[manifest.adapter]
     try:
         receipt = load_runtime_tree_receipt(
@@ -705,6 +765,31 @@ def _verify_runtime_receipt(
         ):
             raise ManifestError()
         _verify_python312_venv_layout(manifest, receipt)
+    if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+        config = manifest.adapter_config
+        if not isinstance(
+            config, FasterWhisperEndpointConfig
+        ) or not _faster_whisper_tree_matches(
+            receipt,
+            content_sha256=config.runtime_content_sha256,
+            file_count=config.runtime_file_count,
+            total_size_bytes=config.runtime_total_size_bytes,
+            maximum_file_bytes=config.runtime_maximum_file_bytes,
+        ):
+            raise ManifestError()
+        model_receipt = _verify_faster_whisper_model_receipt(manifest)
+        try:
+            receipt.root.relative_to(model_receipt.root)
+        except ValueError:
+            pass
+        else:
+            raise ManifestError()
+        try:
+            model_receipt.root.relative_to(receipt.root)
+        except ValueError:
+            pass
+        else:
+            raise ManifestError()
     return receipt
 
 
@@ -752,13 +837,21 @@ def _verify_worker_state(
 
 def _verify_candidate_python_version(manifest: WorkerManifest) -> None:
     if manifest.adapter not in {
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
         return
     config = manifest.adapter_config
     if (
-        not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
+        not isinstance(
+            config,
+            (
+                FasterWhisperEndpointConfig,
+                NemotronConfig,
+                ParakeetRealtimeEouConfig,
+            ),
+        )
         or platform.python_version() != config.python_version
     ):
         raise ManifestError()
@@ -798,12 +891,23 @@ def _activate_candidate_runtime(
             raise ManifestError()
         return
     if manifest.adapter not in {
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
         raise ManifestError()
-    if manifest.adapter == MOONSHINE_ADAPTER:
+    if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+        module_prefixes = (
+            "av",
+            "ctranslate2",
+            "faster_whisper",
+            "huggingface_hub",
+            "nvidia",
+            "numpy",
+            "tokenizers",
+        )
+    elif manifest.adapter == MOONSHINE_ADAPTER:
         module_prefixes = ("moonshine_voice",)
     elif manifest.adapter == NEMOTRON_ADAPTER:
         module_prefixes = (
@@ -874,6 +978,22 @@ def _create_adapter(manifest: WorkerManifest):
                 expected_size_bytes=artifact.size_bytes,
             ),
             FakeAdapterError,
+        )
+    if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+        if not isinstance(manifest.adapter_config, FasterWhisperEndpointConfig):
+            raise ManifestError()
+        model_receipt = _verify_faster_whisper_model_receipt(manifest)
+        from tools.streaming_stt.adapters.faster_whisper_endpoint import (  # noqa: PLC0415
+            FasterWhisperEndpointAdapter,
+            FasterWhisperEndpointAdapterError,
+        )
+
+        return (
+            FasterWhisperEndpointAdapter(
+                model_receipt.root,
+                config=manifest.adapter_config,
+            ),
+            FasterWhisperEndpointAdapterError,
         )
     model_artifacts = tuple(
         artifact
@@ -988,6 +1108,9 @@ def _run(
         raise ManifestError()
     runtime_receipt = _verify_worker_state(manifest, source_bundle)
     _activate_candidate_runtime(manifest, runtime_receipt)
+    final_only_endpoint = manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+    if final_only_endpoint and manifest.schema_version != 6:
+        raise ManifestError()
     adapter, adapter_error = _create_adapter(manifest)
     _write(
         {
@@ -1048,7 +1171,7 @@ def _run(
 
                 def emit_partial(_adapter_seq: int, partial) -> None:
                     nonlocal partial_count
-                    if partial_count >= MAX_PARTIALS_PER_CASE:
+                    if final_only_endpoint or partial_count >= MAX_PARTIALS_PER_CASE:
                         raise ProtocolError()
                     _write(
                         {
@@ -1065,7 +1188,9 @@ def _run(
                     partial_count += 1
 
                 case = adapter.transcribe(request, emit_partial=emit_partial)
-                if len(case.partials) != partial_count:
+                if len(case.partials) != partial_count or (
+                    final_only_endpoint and partial_count != 0
+                ):
                     raise ProtocolError()
                 if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
                     _write(
@@ -1103,7 +1228,7 @@ def _run(
                         "v": protocol_version,
                         "id": request.request_id,
                         "type": "final",
-                        "seq": partial_count,
+                        "seq": 0 if final_only_endpoint else partial_count,
                         "text": case.final,
                         "samples_seen": total_samples,
                         "elapsed_ms": case.elapsed_ms,

@@ -21,12 +21,16 @@ from .bounded_io import (
     opened_directory_nofollow,
 )
 from .manifest import (
+    FASTER_WHISPER_ENDPOINT_ADAPTER,
+    FASTER_WHISPER_REQUIRED_MODEL_FILES,
+    FASTER_WHISPER_VOCABULARY_FILES,
     MAX_PYTHON_BYTES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
+    FasterWhisperEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     WorkerManifest,
@@ -62,6 +66,8 @@ from .source_bundle import (
     verify_source_bundle,
 )
 from .runtime_receipt import (
+    FASTER_WHISPER_MODEL_TREE_LIMITS,
+    FASTER_WHISPER_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
@@ -244,8 +250,7 @@ def _validate_native_final(
     if (
         request.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
         or request.stream.chunk_samples != config.native_chunk_samples
-        or request.stream.tail_padding_samples
-        > config.maximum_tail_padding_samples
+        or request.stream.tail_padding_samples > config.maximum_tail_padding_samples
     ):
         raise WorkerError("worker_protocol")
     samples_seen = event.source_samples_consumed + event.tail_samples_consumed
@@ -256,9 +261,7 @@ def _validate_native_final(
     expected_endpoint_sample = samples_seen + expected_padding
     source_complete = event.source_samples_consumed == request.pcm.samples
     expected_authoritative = (
-        event.native_endpoint
-        and event.endpoint_reason == "eou"
-        and source_complete
+        event.native_endpoint and event.endpoint_reason == "eou" and source_complete
     )
     expected_latency = (
         (event.tail_samples_consumed + expected_padding)
@@ -285,9 +288,7 @@ def _validate_native_final(
         or event.finalization_ms > event.elapsed_ms
         or event.chunks != expected_chunks
         or event.model_padding_samples != expected_padding
-        or abs(
-            event.audio_seconds - request.pcm.samples / request.pcm.sample_rate
-        )
+        or abs(event.audio_seconds - request.pcm.samples / request.pcm.sample_rate)
         > 1e-6
     )
     if common_invalid:
@@ -731,6 +732,86 @@ def _verify_nemotron_runtime_layout(
         raise WorkerError("worker_artifact_changed") from None
 
 
+def _faster_whisper_tree_matches(
+    receipt: RuntimeTreeReceipt,
+    *,
+    content_sha256: str,
+    file_count: int,
+    total_size_bytes: int,
+    maximum_file_bytes: int,
+) -> bool:
+    return (
+        receipt.content_digest == content_sha256
+        and receipt.file_count == file_count
+        and receipt.total_size_bytes == total_size_bytes
+        and max((item.size_bytes for item in receipt.files), default=0)
+        == maximum_file_bytes
+    )
+
+
+def _load_faster_whisper_model_receipt(
+    manifest: WorkerManifest,
+) -> RuntimeTreeReceipt:
+    config = manifest.adapter_config
+    artifact = manifest.artifact_by_name.get("model-receipt")
+    if not isinstance(config, FasterWhisperEndpointConfig) or artifact is None:
+        raise WorkerError("worker_artifact_changed")
+    try:
+        receipt = load_runtime_tree_receipt(
+            artifact.path,
+            expected_digest=artifact.sha256,
+            limits=FASTER_WHISPER_MODEL_TREE_LIMITS,
+        )
+    except RuntimeError:
+        raise WorkerError("worker_artifact_changed") from None
+    paths = set(receipt.file_by_path)
+    if (
+        receipt.digest != artifact.sha256
+        or not FASTER_WHISPER_REQUIRED_MODEL_FILES.issubset(paths)
+        or not FASTER_WHISPER_VOCABULARY_FILES.intersection(paths)
+        or not _faster_whisper_tree_matches(
+            receipt,
+            content_sha256=config.model_content_sha256,
+            file_count=config.model_file_count,
+            total_size_bytes=config.model_total_size_bytes,
+            maximum_file_bytes=config.model_maximum_file_bytes,
+        )
+    ):
+        raise WorkerError("worker_artifact_changed")
+    return receipt
+
+
+def _verify_faster_whisper_runtime_layout(
+    manifest: WorkerManifest,
+    receipt: RuntimeTreeReceipt,
+) -> RuntimeTreeReceipt:
+    config = manifest.adapter_config
+    if not isinstance(
+        config, FasterWhisperEndpointConfig
+    ) or not _faster_whisper_tree_matches(
+        receipt,
+        content_sha256=config.runtime_content_sha256,
+        file_count=config.runtime_file_count,
+        total_size_bytes=config.runtime_total_size_bytes,
+        maximum_file_bytes=config.runtime_maximum_file_bytes,
+    ):
+        raise WorkerError("worker_artifact_changed")
+    model = _load_faster_whisper_model_receipt(manifest)
+    try:
+        receipt.root.relative_to(model.root)
+    except ValueError:
+        pass
+    else:
+        raise WorkerError("worker_artifact_changed")
+    try:
+        model.root.relative_to(receipt.root)
+    except ValueError:
+        pass
+    else:
+        raise WorkerError("worker_artifact_changed")
+    return model
+
+
 def _append_mount(
     command: list[str],
     option: str,
@@ -828,6 +909,115 @@ def _nemotron_bwrap_command(
         _append_mount(command, "--ro-bind", runtime_receipt)
     if not any(_path_is_within(runtime_wheel_lock, root) for root in read_only_roots):
         _append_mount(command, "--ro-bind", runtime_wheel_lock)
+
+    bundle_root = Path(f"/proc/self/fd/{bundle_descriptor}")
+    command.extend(
+        (
+            "--chdir",
+            str(scratch),
+            "--argv0",
+            str(manifest.python.path),
+            "--",
+            f"/proc/self/fd/{python_descriptor}",
+            "-I",
+            "-S",
+            "-B",
+            f"/proc/self/fd/{worker_descriptor}",
+            "--manifest",
+            str(manifest.path),
+            "--scratch-root",
+            str(scratch),
+            "--source-bundle-manifest",
+            str(bundle_root / source_bundle.manifest_path.name),
+            "--source-bundle-sha256",
+            source_bundle.tree_sha256,
+            "--source-bundle-fd",
+            str(bundle_descriptor),
+        )
+    )
+    return command
+
+
+def _faster_whisper_bwrap_command(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+    *,
+    bundle_descriptor: int,
+    worker_descriptor: int,
+    python_descriptor: int,
+    device_nodes: Sequence[Path],
+    system_ro_paths: Sequence[Path],
+    proc_driver_available: bool,
+) -> list[str]:
+    """Build the networkless, receipt-mounted Faster-Whisper command."""
+
+    artifacts = manifest.artifact_by_name
+    try:
+        runtime_artifact = artifacts["runtime-receipt"]
+        model_artifact = artifacts["model-receipt"]
+        runtime = load_runtime_tree_receipt(
+            runtime_artifact.path,
+            expected_digest=runtime_artifact.sha256,
+            limits=FASTER_WHISPER_RUNTIME_TREE_LIMITS,
+        )
+        verify_venv_runtime_location(runtime, manifest.python.path)
+        model = _verify_faster_whisper_runtime_layout(manifest, runtime)
+    except (KeyError, RuntimeError):
+        raise WorkerError("worker_prerequisite") from None
+    venv_root = manifest.python.path.parent.parent
+    model_root = model.root
+    required_paths = (
+        scratch,
+        source_bundle.root,
+        source_bundle.worker_path,
+        manifest.path,
+        manifest.worker.path,
+        venv_root,
+        model_root,
+        runtime_artifact.path,
+        model_artifact.path,
+    )
+    if any(not path.is_absolute() or "\x00" in str(path) for path in required_paths):
+        raise WorkerError("worker_prerequisite")
+
+    command = [
+        str(_BWRAP_PATH),
+        "--unshare-user-try",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--die-with-parent",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for path in system_ro_paths:
+        _append_mount(command, "--ro-bind", path)
+    if proc_driver_available:
+        _append_mount(command, "--ro-bind", _NVIDIA_PROC_DRIVER)
+    for path in device_nodes:
+        _append_mount(command, "--dev-bind", path)
+
+    _append_mount(command, "--bind", scratch)
+    _append_mount(command, "--ro-bind", source_bundle.root)
+    _append_mount(
+        command,
+        "--ro-bind",
+        source_bundle.worker_path,
+        manifest.worker.path,
+    )
+    _append_mount(command, "--ro-bind", manifest.path)
+    _append_mount(command, "--ro-bind", venv_root)
+    _append_mount(command, "--ro-bind", model_root)
+    read_only_roots = (source_bundle.root, venv_root, model_root)
+    for receipt_path in (runtime_artifact.path, model_artifact.path):
+        if not any(_path_is_within(receipt_path, root) for root in read_only_roots):
+            _append_mount(command, "--ro-bind", receipt_path)
 
     bundle_root = Path(f"/proc/self/fd/{bundle_descriptor}")
     command.extend(
@@ -1073,6 +1263,7 @@ class StreamingWorker:
         proc_driver_available = False
         user_runtime_directory: Path | None = None
         if self.manifest.adapter in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
             SHERPA_ZIPFORMER_ADAPTER,
@@ -1082,6 +1273,7 @@ class StreamingWorker:
         if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
             system_ro_paths = _core_system_ro_paths()
         if self.manifest.adapter in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
@@ -1110,6 +1302,7 @@ class StreamingWorker:
             self._worker_descriptor = self._open_staged_worker_descriptor()
             self._python_descriptor = self._open_bound_python_descriptor()
             if self.manifest.adapter in {
+                FASTER_WHISPER_ENDPOINT_ADAPTER,
                 NEMOTRON_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
                 SHERPA_ZIPFORMER_ADAPTER,
@@ -1150,11 +1343,17 @@ class StreamingWorker:
         )
         start_new_session = True
         if self.manifest.adapter in {
+            FASTER_WHISPER_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
             try:
-                command = _nemotron_bwrap_command(
+                builder = (
+                    _faster_whisper_bwrap_command
+                    if self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+                    else _nemotron_bwrap_command
+                )
+                command = builder(
                     self.manifest,
                     scratch,
                     self.source_bundle,
@@ -1283,6 +1482,11 @@ class StreamingWorker:
             expected_protocol = _wire_protocol_version(self.manifest)
             if checked.protocol_version != expected_protocol:
                 raise WorkerError("invalid_request")
+            schema_v6_final_only = self.manifest.schema_version == 6
+            if schema_v6_final_only != (
+                self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+            ):
+                raise WorkerError("worker_protocol")
             self._verify_pcm(checked)
             self._send(encoded)
             partials: list[PartialEvent] = []
@@ -1293,7 +1497,8 @@ class StreamingWorker:
                 event = self._next_event(max(0.0, case_deadline - self._monotonic()))
                 if type(event) is PartialEvent:
                     if (
-                        event.protocol_version != expected_protocol
+                        schema_v6_final_only
+                        or event.protocol_version != expected_protocol
                         or event.request_id != checked.request_id
                         or event.seq != len(partials)
                         or event.samples_seen < last_samples
@@ -1338,6 +1543,7 @@ class StreamingWorker:
                     event.protocol_version != PROTOCOL_VERSION
                     or event.request_id != checked.request_id
                     or event.seq != len(partials)
+                    or (schema_v6_final_only and event.seq != 0)
                     or event.samples_seen
                     != checked.pcm.samples + checked.stream.tail_padding_samples
                     or event.samples_seen < last_samples
@@ -1463,6 +1669,7 @@ class StreamingWorker:
             ):
                 raise WorkerError("worker_artifact_changed")
             if self.manifest.adapter in {
+                FASTER_WHISPER_ENDPOINT_ADAPTER,
                 MOONSHINE_ADAPTER,
                 NEMOTRON_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
@@ -1474,6 +1681,9 @@ class StreamingWorker:
                     MOONSHINE_ADAPTER: None,
                     NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
                     PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
+                    FASTER_WHISPER_ENDPOINT_ADAPTER: (
+                        FASTER_WHISPER_RUNTIME_TREE_LIMITS
+                    ),
                 }[self.manifest.adapter]
                 receipt = load_runtime_tree_receipt(
                     receipt_artifact.path,
@@ -1489,6 +1699,8 @@ class StreamingWorker:
                     PARAKEET_REALTIME_EOU_ADAPTER,
                 }:
                     _verify_nemotron_runtime_layout(self.manifest, receipt)
+                if self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+                    _verify_faster_whisper_runtime_layout(self.manifest, receipt)
                 if self.manifest.adapter == MOONSHINE_ADAPTER:
                     wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
                     if wheel_artifact is None:

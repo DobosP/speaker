@@ -27,6 +27,7 @@ WORKER_SOURCE_FILES = (
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
@@ -407,6 +408,10 @@ def stage_worker_source_bundle(
                 "tools/streaming_stt/adapters/fake.py": (
                     adapter_descriptor,
                     "fake.py",
+                ),
+                "tools/streaming_stt/adapters/faster_whisper_endpoint.py": (
+                    adapter_descriptor,
+                    "faster_whisper_endpoint.py",
                 ),
                 "tools/streaming_stt/adapters/moonshine.py": (
                     adapter_descriptor,

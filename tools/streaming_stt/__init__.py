@@ -1,4 +1,4 @@
-"""Bounded, model-isolated streaming-STT benchmark support.
+"""Bounded, model-isolated streaming and final-only STT benchmark support.
 
 The package deliberately imports no optional recognizer runtime. Candidate
 models run in separately provisioned Python processes behind the JSONL contract

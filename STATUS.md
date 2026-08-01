@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Repository logic gate: 6787 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; public-matrix/Zipformer focused 28; APM/DTD 6.
+- Repository logic gate: 6865 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; synchronized-diagnostic focused 253/3 skipped; APM/DTD 6.
 - Streaming family: 567 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam 28; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
@@ -54,8 +54,9 @@ Last verified: 2026-08-01 on Linux ROG.
   new children and bounded drain reports providers still exiting (ADR-0094).
 - Same-ID reuse cannot consume stale terminal/TTS/playback cleanup. Tools do not
   retry; failed web gets one local fallback (ADR-0021/0030/0051/0086/0094).
-- Terminal receipts govern spoken history with fail-closed identity, exact-owner
-  capacity, and validated fields; TTS identity is session-locked (ADR-0028/0029/0038/0086).
+- Terminal receipts govern spoken history with fail-closed identity and exact
+  ownership. Opt-in recording atomically binds four private tracks, exact endpoint
+  replay, and causal playback; loss is incomplete and proves no audibility/live quality (ADR-0028/0029/0038/0086/0100).
 
 ## Live evidence and limits
 
@@ -84,11 +85,8 @@ Last verified: 2026-08-01 on Linux ROG.
 
 ## Next
 
-- Build receipt-bound `parakeet.cpp` and prepare selected Common Voice Spontaneous
-  Speech v4 rows; keep both isolated until capture, turn, device, owner, AEC, and live gates pass.
-- Wire and live-A/B the publisher-scoped session, then converge mobile task/tool/output/drain ownership and add remote audible-playout acknowledgement.
-- Add native-reader/gap and synchronized AEC replay plus disjoint owner
-  controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).
+- Run fresh `./live.sh` vault/open-speaker A/B with the synchronized bundle; add native-reader/gap, AEC replay, and disjoint owner/noise/multi-voice data (ADR-0092/0100).
+- Keep `parakeet.cpp`/Common Voice and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 
 ## Standard verification
 

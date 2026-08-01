@@ -533,6 +533,8 @@ def build_runtime(
     force_planner: bool = False,
     force_stream_tts: bool = False,
     load_fraction=None,
+    diagnostic_observer=None,
+    diagnostic_invalidator=None,
 ) -> VoiceRuntime:
     """Assemble the full VoiceRuntime from config + the built clients/engine.
 
@@ -710,6 +712,8 @@ def build_runtime(
         # of waiting forever for a stray "yes". 0 disables.
         confirmation_ttl_sec=float(config.get("confirmation_ttl_sec", 180.0)),
         post_barge_response_window_sec=post_barge_response_window_sec,
+        diagnostic_observer=diagnostic_observer,
+        diagnostic_invalidator=diagnostic_invalidator,
     )
 
     return runtime
@@ -1115,6 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
     record_path = None
     pre_dsp_reference_path = None
     playback_reference_path = None
+    asr_input_reference_path = None
+    diagnostic_timeline_path = None
+    diagnostic_manifest_path = None
     if args.record and hasattr(engine, "set_record_path"):
         from .recorder import sidecar_wav_path
 
@@ -1129,6 +1136,23 @@ def main(argv: list[str] | None = None) -> int:
         if bool((config.get("sherpa", {}) or {}).get("record_playback_reference")):
             playback_reference_path = sidecar_wav_path(record_path, "ref")
             runlog.summary.note(playback_reference=playback_reference_path)
+        if pre_dsp_reference_path is not None and playback_reference_path is not None:
+            asr_input_reference_path = sidecar_wav_path(record_path, "asr")
+            diagnostic_timeline_path = (
+                record_path[:-4] + ".timeline.jsonl"
+                if record_path.lower().endswith(".wav")
+                else record_path + ".timeline.jsonl"
+            )
+            diagnostic_manifest_path = (
+                record_path[:-4] + ".diagnostic.json"
+                if record_path.lower().endswith(".wav")
+                else record_path + ".diagnostic.json"
+            )
+            runlog.summary.note(
+                asr_input_reference=asr_input_reference_path,
+                diagnostic_timeline=diagnostic_timeline_path,
+                diagnostic_manifest=diagnostic_manifest_path,
+            )
     elif args.record:
         runlog.logger.warning("--record ignored: %s engine has no recorder", args.engine)
 
@@ -1144,6 +1168,16 @@ def main(argv: list[str] | None = None) -> int:
         force_planner=bool(args.planner),
         force_stream_tts=bool(args.stream_tts),
         load_fraction=monitor.load_fraction,
+        diagnostic_observer=(
+            getattr(engine, "record_diagnostic_observation", None)
+            if asr_input_reference_path is not None
+            else None
+        ),
+        diagnostic_invalidator=(
+            getattr(engine, "invalidate_diagnostics", None)
+            if asr_input_reference_path is not None
+            else None
+        ),
     )
     voice_session = VoiceSession(session_plan, runtime)
     memorizer = None
@@ -1210,6 +1244,17 @@ def main(argv: list[str] | None = None) -> int:
             records = [r.as_dict() for r in runtime.metrics.records()]
         except Exception:  # noqa: BLE001 - never let logging hide the real error
             records = None
+        diagnostic_status = getattr(engine, "diagnostic_status", None)
+        if diagnostic_status is not None:
+            try:
+                status_payload = (
+                    diagnostic_status()
+                    if callable(diagnostic_status)
+                    else dict(diagnostic_status)
+                )
+                runlog.summary.note(diagnostic_status=status_payload)
+            except Exception:  # noqa: BLE001 - private evidence status is additive
+                runlog.logger.warning("could not summarize diagnostic status")
         runlog.finalize(records)
         print(f"[log] full log: {runlog.log_path}")
         print(f"[log] summary:  {runlog.summary_path}")
@@ -1219,6 +1264,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[log] pre-DSP:  {pre_dsp_reference_path}")
         if playback_reference_path is not None:
             print(f"[log] playback: {playback_reference_path}")
+        if asr_input_reference_path is not None:
+            print(f"[log] ASR input: {asr_input_reference_path}")
+        if diagnostic_timeline_path is not None:
+            print(f"[log] timeline:  {diagnostic_timeline_path}")
+        if diagnostic_manifest_path is not None:
+            if os.path.exists(diagnostic_manifest_path):
+                print(f"[log] manifest:  {diagnostic_manifest_path}")
+            else:
+                print(
+                    "[log] diagnostics: manifest not published "
+                    f"({diagnostic_manifest_path})"
+                )
         if cleanup_error is not None and active_error is None:
             raise cleanup_error
     return 0

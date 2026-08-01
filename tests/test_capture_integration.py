@@ -228,10 +228,19 @@ def test_record_references_imply_record_and_print_actual_bundle_paths(
     assert data["meta"]["recording"] == engine.record_path
     assert data["meta"]["pre_dsp_reference"] == engine.record_path[:-4] + ".pre-dsp.wav"
     assert data["meta"]["playback_reference"] == engine.record_path[:-4] + ".ref.wav"
+    assert data["meta"]["asr_input_reference"] == engine.record_path[:-4] + ".asr.wav"
+    assert data["meta"]["diagnostic_timeline"] == engine.record_path[:-4] + ".timeline.jsonl"
+    assert data["meta"]["diagnostic_manifest"] == engine.record_path[:-4] + ".diagnostic.json"
     output = capsys.readouterr().out
     assert f"[log] audio:    {engine.record_path}" in output
     assert f"[log] pre-DSP:  {engine.record_path[:-4]}.pre-dsp.wav" in output
     assert f"[log] playback: {engine.record_path[:-4]}.ref.wav" in output
+    assert f"[log] ASR input: {engine.record_path[:-4]}.asr.wav" in output
+    assert f"[log] timeline:  {engine.record_path[:-4]}.timeline.jsonl" in output
+    assert (
+        "[log] diagnostics: manifest not published "
+        f"({engine.record_path[:-4]}.diagnostic.json)"
+    ) in output
     assert "logs/runs" not in output
 
 

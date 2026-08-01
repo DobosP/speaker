@@ -3,12 +3,15 @@ FRAME-ALIGNED with the mic WAV so an open-speaker barge run replays faithfully.
 Pure -- exercises the accumulator/frame helpers directly, no audio device."""
 from __future__ import annotations
 
+import json
 import wave
 
 import numpy as np
 import pytest
 
+from core.diagnostic_bundle import DiagnosticTrack, validate_manifest
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.media_session import CapturedBlock
 
 
 class _RecRec:
@@ -103,6 +106,30 @@ def test_pre_dsp_post_and_playback_frames_share_one_coordinate():
     np.testing.assert_allclose(ref, 0.0)
 
 
+def test_disabled_endpoint_diagnostics_ignore_dormant_nonfinite_knobs(
+    tmp_path,
+):
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            endpoint_min_silence_sec=float("nan"),
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    eng.set_record_path(str(tmp_path / "dormant.wav"))
+
+    eng._open_recorders()
+    try:
+        bundle = eng._diagnostic_bundle
+        assert bundle is not None
+        replay = bundle.endpoint_replay_config
+        assert replay.enabled is False
+        assert replay.min_silence_sec == 0.5
+    finally:
+        eng._close_recorders(log_completed=False)
+
+
 def test_actual_aligned_wavs_finalize_to_equal_frame_counts(tmp_path):
     eng = SherpaOnnxEngine(
         SherpaConfig(
@@ -113,34 +140,158 @@ def test_actual_aligned_wavs_finalize_to_equal_frame_counts(tmp_path):
     paths = {
         "post": tmp_path / "run.wav",
         "pre": tmp_path / "run.pre-dsp.wav",
+        "asr": tmp_path / "run.asr.wav",
         "ref": tmp_path / "run.ref.wav",
+        "timeline": tmp_path / "run.timeline.jsonl",
+        "manifest": tmp_path / "run.diagnostic.json",
     }
     eng.set_record_path(str(paths["post"]))
     eng._open_recorders()
 
-    assert eng._recorder.path == str(paths["post"])
-    assert eng._pre_dsp_recorder.path == str(paths["pre"])
-    assert eng._ref_recorder.path == str(paths["ref"])
+    bundle = eng._diagnostic_bundle
+    assert bundle is not None
+    assert bundle.path_by_role[DiagnosticTrack.MODEL_GATE_PCM] == paths["post"]
+    assert bundle.path_by_role[DiagnosticTrack.MODEL_PRE_GAIN_TAP] == paths["pre"]
+    assert bundle.path_by_role[DiagnosticTrack.MODEL_ASR_TAP] == paths["asr"]
+    assert (
+        bundle.path_by_role[DiagnosticTrack.PLAYBACK_REFERENCE_READER_SNAPSHOT]
+        == paths["ref"]
+    )
+
+    def captured(sequence: int, start: int, count: int) -> CapturedBlock:
+        return CapturedBlock(
+            pcm=np.zeros(count, dtype="float32"),
+            sample_rate_hz=16000,
+            sequence=sequence,
+            captured_started_at=10.0 + start / 16000,
+            captured_at=10.0 + (start + count) / 16000,
+            capture_epoch=1,
+            source_generation=1,
+            capture_generation=1,
+            source_sample_start=start,
+            source_sample_end=start + count,
+        )
 
     eng._write_recording_frame(
         np.full(800, 0.1, dtype="float32"),
         np.full(800, 0.2, dtype="float32"),
+        asr_input_samples=np.full(800, 0.3, dtype="float32"),
+        captured=captured(1, 0, 800),
     )
     eng._write_recording_frame(
         np.full(1200, -0.1, dtype="float32"),
         np.full(1200, -0.2, dtype="float32"),
+        asr_input_samples=np.full(1200, -0.3, dtype="float32"),
+        captured=captured(2, 800, 1200),
     )
-    eng._close_recorders(log_completed=False)
+    eng._close_recorders(log_completed=True)
 
     counts = []
-    for path in paths.values():
+    first_samples = []
+    for key in ("post", "pre", "asr", "ref"):
+        path = paths[key]
         with wave.open(str(path), "rb") as recording:
             assert recording.getframerate() == 16000
             counts.append(recording.getnframes())
-    assert counts == [2000, 2000, 2000]
+            first_samples.append(
+                int.from_bytes(recording.readframes(1), "little", signed=True)
+            )
+    assert counts == [2000, 2000, 2000, 2000]
+    assert first_samples == [6553, 3276, 9830, 0]
+    assert validate_manifest(paths["manifest"])
     assert eng._recorder is None
     assert eng._pre_dsp_recorder is None
     assert eng._ref_recorder is None
+    assert eng._diagnostic_bundle is None
+
+
+def test_malformed_diagnostic_coordinate_never_breaks_capture_and_fails_closed(
+    tmp_path,
+):
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    eng.set_record_path(str(tmp_path / "bad-coordinate.wav"))
+    eng._open_recorders()
+    malformed = CapturedBlock(
+        pcm=np.zeros(8, dtype="float32"),
+        sample_rate_hz=16000,
+        sequence=1,
+        captured_started_at=1.0,
+        captured_at=1.001,
+        capture_epoch=1,
+        source_generation=1,
+        capture_generation=1,
+        source_sample_start=0,
+        source_sample_end=0,
+    )
+
+    assert (
+        eng._write_recording_frame(
+            np.zeros(8, dtype="float32"),
+            np.zeros(8, dtype="float32"),
+            asr_input_samples=np.zeros(8, dtype="float32"),
+            captured=malformed,
+        )
+        is None
+    )
+    eng._close_recorders(log_completed=True)
+
+    assert eng.diagnostic_status == {
+        "status": "incomplete",
+        "failure_codes": ["capture_integration_error"],
+    }
+    assert not validate_manifest(tmp_path / "bad-coordinate.diagnostic.json")
+
+
+def test_native_rate_reference_snapshot_preserves_its_independent_cursor(
+    tmp_path,
+):
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    record_path = tmp_path / "native-rate.wav"
+    eng.set_record_path(str(record_path))
+    eng._open_recorders()
+    # A stateful 48 kHz -> 16 kHz resampler may emit 1,468 samples for a native
+    # 4,800-sample block even though the reader-time reference snapshot is 1,600.
+    # The reference remains the unmodified 1,600-sample reader snapshot on its
+    # own cursor; the 1,468-sample pre-gain tap and later DSP tracks are separate.
+    output_count = 1468
+    captured = CapturedBlock(
+        pcm=np.zeros(4800, dtype="float32"),
+        sample_rate_hz=48000,
+        sequence=1,
+        captured_started_at=1.0,
+        captured_at=1.1,
+        capture_epoch=1,
+        source_generation=1,
+        capture_generation=1,
+        source_sample_start=0,
+        source_sample_end=4800,
+    )
+    span = eng._write_recording_frame(
+        np.zeros(output_count, dtype="float32"),
+        np.zeros(output_count, dtype="float32"),
+        asr_input_samples=np.zeros(output_count, dtype="float32"),
+        captured_reference=np.ones(1600, dtype="float32"),
+        captured=captured,
+    )
+    assert span is not None
+    eng._close_recorders(log_completed=True)
+
+    manifest = tmp_path / "native-rate.diagnostic.json"
+    assert validate_manifest(manifest)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["provenance"]["playback_reference_preserves_reader_snapshot"] is True
+    with wave.open(str(tmp_path / "native-rate.ref.wav"), "rb") as recording:
+        assert recording.getnframes() == 1600
 
 
 def test_sidecar_open_failure_closes_primary_recorder(monkeypatch, tmp_path):

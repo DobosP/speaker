@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from threading import Event, Thread
 from typing import Callable, Mapping, Optional
@@ -158,8 +159,19 @@ class VoiceRuntime:
         confirmation_ttl_sec: float = 180.0,
         admission_load: Optional[Callable[[], Optional[float]]] = None,
         post_barge_response_window_sec: float = 8.0,
+        diagnostic_observer: Optional[Callable[[object], object]] = None,
+        diagnostic_invalidator: Optional[Callable[[str], object]] = None,
     ):
         self.engine = engine
+        # Optional private, transcript-free evidence sink.  It is deliberately
+        # not an AgentEvent subscriber: playback receipts arrive on a priority
+        # lifecycle lane and diagnostics must never add control-plane work.
+        self._diagnostic_observer = diagnostic_observer
+        self._diagnostic_invalidator = diagnostic_invalidator
+        self._diagnostic_acoustic_by_input: dict[
+            int, tuple[str, str, int]
+        ] = {}
+        self._diagnostic_acoustic_order: deque[int] = deque()
         # Playout receipts are opt-in.  Legacy engines retain the established
         # admission-time history path; a capable engine moves memory/resume/
         # follow-up truth to its terminal sink attestations.
@@ -797,13 +809,43 @@ class VoiceRuntime:
             # teardown order below.  Bound the drain so a broken engine contract
             # can never turn shutdown into a hang.
             self._interrupt_playback_history()
+            receipt_deadline = time.monotonic() + 0.5
+            try:
+                # Ask for terminal receipts while the diagnostic writer is still
+                # accepting invalidation. Engine.stop() may close that writer.
+                self.engine.stop_speaking()
+            except Exception:  # noqa: BLE001
+                log.exception("receipt-capable engine stop_speaking failed")
+            while time.monotonic() < receipt_deadline:
+                if not self._bus_threaded:
+                    self.bus.drain()
+                with self._playback_effect_lock:
+                    if (
+                        not self._playback_history.pending
+                        and not self._pending_playback_memory_commits
+                        and self.bus.idle()
+                    ):
+                        break
+                time.sleep(0.005)
+            with self._playback_effect_lock:
+                playback_pending_before_engine_stop = bool(
+                    self._playback_history.pending
+                    or self._pending_playback_memory_commits
+                )
+            if playback_pending_before_engine_stop:
+                invalidator = self._diagnostic_invalidator
+                if invalidator is not None:
+                    try:
+                        invalidator("receipt_timeout")
+                    except Exception:  # noqa: BLE001 - teardown must continue
+                        log.exception("could not invalidate pending receipt evidence")
             try:
                 self.engine.stop()
                 engine_stopped = True
             except Exception:  # noqa: BLE001
                 log.exception("receipt-capable engine stop failed")
-            receipt_deadline = time.monotonic() + 0.5
-            while time.monotonic() < receipt_deadline:
+            post_stop_receipt_deadline = time.monotonic() + 0.5
+            while time.monotonic() < post_stop_receipt_deadline:
                 if not self._bus_threaded:
                     self.bus.drain()
                 with self._playback_effect_lock:
@@ -949,6 +991,83 @@ class VoiceRuntime:
                 self._playback_effect_changed.wait(timeout=min(0.05, remaining))
             return True
 
+    def _observe_playback_diagnostic(
+        self,
+        *,
+        stage: str,
+        fragment_id: str,
+        context: Optional[PlaybackContext] = None,
+        acoustic_identity: Optional[tuple[str, str, int]] = None,
+        playback_kind: Optional[str] = None,
+        outcome: Optional[str] = None,
+        played_fraction: Optional[float] = None,
+    ) -> None:
+        observer = self._diagnostic_observer
+        if observer is None:
+            return
+        try:
+            from .diagnostic_bundle import DiagnosticObservation, DiagnosticStage
+
+            if stage == "admitted":
+                diagnostic_stage = DiagnosticStage.PLAYBACK_ADMITTED
+            elif stage == "started":
+                diagnostic_stage = DiagnosticStage.PLAYBACK_STARTED
+            else:
+                diagnostic_stage = DiagnosticStage.PLAYBACK_TERMINAL
+            stream_id = utterance_id = None
+            acoustic_revision = None
+            if acoustic_identity is not None:
+                stream_id, utterance_id, acoustic_revision = acoustic_identity
+            observer(
+                DiagnosticObservation(
+                    stage=diagnostic_stage,
+                    monotonic_ns=time.perf_counter_ns(),
+                    stream_id=stream_id,
+                    utterance_id=utterance_id,
+                    revision=acoustic_revision,
+                    correlation_id=fragment_id,
+                    agent_session_id=(
+                        context.session_id if context and context.session_id else None
+                    ),
+                    agent_turn_id=(
+                        context.turn_id if context and context.turn_id else None
+                    ),
+                    agent_revision=(context.revision if context else None),
+                    playback_kind=playback_kind,
+                    outcome=outcome,
+                    numeric_value=played_fraction,
+                )
+            )
+        except Exception:  # noqa: BLE001 - evidence never owns playback lifecycle
+            invalidator = self._diagnostic_invalidator
+            if invalidator is not None:
+                try:
+                    invalidator("observation_error")
+                except Exception:  # noqa: BLE001 - retain playback lifecycle
+                    pass
+            log.warning("playback diagnostic observation failed", exc_info=True)
+
+    def _remember_diagnostic_acoustic(
+        self,
+        input_generation: int,
+        acoustic: AcousticLineage | None,
+        revision: int,
+    ) -> None:
+        if self._diagnostic_observer is None or acoustic is None or not acoustic.spans:
+            return
+        span = acoustic.spans[-1]
+        generation = int(input_generation)
+        if generation not in self._diagnostic_acoustic_by_input:
+            self._diagnostic_acoustic_order.append(generation)
+        self._diagnostic_acoustic_by_input[generation] = (
+            span.stream_id,
+            span.utterance_id,
+            max(0, int(revision)),
+        )
+        while len(self._diagnostic_acoustic_order) > 256:
+            expired = self._diagnostic_acoustic_order.popleft()
+            self._diagnostic_acoustic_by_input.pop(expired, None)
+
     def _on_playback_started(self, fragment_id: str) -> None:
         """Exact sink-onset callback for one receipt-owned fragment."""
 
@@ -960,6 +1079,11 @@ class VoiceRuntime:
             attempted = history.mark_started(fragment_id)
             if attempted is None or context is None:
                 return
+            self._observe_playback_diagnostic(
+                stage="started",
+                fragment_id=fragment_id,
+                context=context,
+            )
             self._resume.note_playback_started(fragment_id)
             if not context.remember:
                 return
@@ -980,6 +1104,7 @@ class VoiceRuntime:
         if history is None:
             return
         with self._playback_effect_lock:
+            playback_context = history.fragment_context(receipt.fragment_id)
             playback_admission_id = history.fragment_playback_admission(
                 receipt.fragment_id
             )
@@ -1005,6 +1130,23 @@ class VoiceRuntime:
                         receipt.fragment_id,
                     )
                     return
+                played_fraction = None
+                if (
+                    resolution.played_samples is not None
+                    and resolution.total_samples is not None
+                    and resolution.total_samples > 0
+                ):
+                    played_fraction = (
+                        float(resolution.played_samples)
+                        / float(resolution.total_samples)
+                    )
+                self._observe_playback_diagnostic(
+                    stage="terminal",
+                    fragment_id=receipt.fragment_id,
+                    context=playback_context,
+                    outcome=resolution.outcome.value,
+                    played_fraction=played_fraction,
+                )
                 self._resume.note_playback_receipt(
                     resolution.fragment_id,
                     resolution.safe_text_prefix,
@@ -1580,6 +1722,11 @@ class VoiceRuntime:
             self._clear_partial_fence()
             self.supervisor.cancel_pending_aux_tts()
             input_generation = self._new_input_generation()
+            self._remember_diagnostic_acoustic(
+                input_generation,
+                acoustic,
+                revision,
+            )
             pending = self._latest_arrival_continuation()
             if pending is not None:
                 reservation, _was_propagated = pending
@@ -2662,14 +2809,16 @@ class VoiceRuntime:
                     else event.payload.get("followup", False)
                 )
                 with self._playback_effect_lock:
+                    explicit_input_generation = event.payload.get("input_generation")
+                    playback_input_generation = int(
+                        explicit_input_generation
+                        if explicit_input_generation is not None
+                        else self.supervisor.latest_arrival_generation
+                    )
                     fragment_id = self._playback_history.register(
                         task_id=task_id,
                         epoch=epoch_value,
-                        input_generation=int(
-                            event.payload.get("input_generation")
-                            if event.payload.get("input_generation") is not None
-                            else self.supervisor.latest_arrival_generation
-                        ),
+                        input_generation=playback_input_generation,
                         followup_generation=self.supervisor.followup_generation,
                         text=text,
                         remember=bool(not auxiliary_tts and task_id),
@@ -2690,6 +2839,31 @@ class VoiceRuntime:
                         # Both ledgers must own the fragment before the engine
                         # can synchronously callback from speak_tracked().
                         self._resume.stage_playback(fragment_id, text)
+                        playback_context = self._playback_history.fragment_context(
+                            fragment_id
+                        )
+                        self._observe_playback_diagnostic(
+                            stage="admitted",
+                            fragment_id=fragment_id,
+                            context=playback_context,
+                            playback_kind=(
+                                "reminder"
+                                if event.payload.get("reminder_due") is True
+                                else "latency_ack"
+                                if event.payload.get("latency_ack", False)
+                                else "auxiliary"
+                                if auxiliary_tts
+                                else "reply"
+                            ),
+                            acoustic_identity=(
+                                self._diagnostic_acoustic_by_input.get(
+                                    playback_input_generation
+                                )
+                                if not auxiliary_tts
+                                and explicit_input_generation is not None
+                                else None
+                            ),
+                        )
                     except BaseException:
                         try:
                             self._rollback_registered_playback(fragment_id)

@@ -40,6 +40,9 @@ class PlaybackResolution:
     requested_text: str
     safe_text_prefix: str
     played: bool
+    outcome: PlaybackOutcome
+    played_samples: Optional[int] = None
+    total_samples: Optional[int] = None
     commits: tuple[PlaybackCommit, ...] = ()
 
 
@@ -381,6 +384,9 @@ class PlaybackHistory:
                 requested_text=fragment.requested_text,
                 safe_text_prefix=safe,
                 played=played,
+                outcome=receipt.outcome,
+                played_samples=receipt.played_samples,
+                total_samples=receipt.total_samples,
                 commits=commits,
             )
 
@@ -448,6 +454,7 @@ class PlaybackHistory:
             requested_text=fragment.requested_text,
             safe_text_prefix="",
             played=fragment.started,
+            outcome=PlaybackOutcome.FAILED,
             commits=commits,
         )
 

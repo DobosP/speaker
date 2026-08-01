@@ -20,7 +20,6 @@ import numpy as np
 from always_on_agent.acoustic import (
     AcousticLineage,
     AcousticSource,
-    EndpointReason,
 )
 from always_on_agent.speech_analyzer import exact_control_class
 
@@ -78,7 +77,7 @@ class _FinalWorkItem:
     """One immutable endpoint handoff to the final-ASR worker."""
 
     seg: object = field(repr=False)
-    raw_final: str
+    raw_final: str = field(repr=False)
     speech_end_ts: Optional[float]
     asr_seg: object = field(default=None, repr=False)
     speech_sec: Optional[float] = None
@@ -274,6 +273,16 @@ class _FinalSpeakerDecision:
     verification: OwnerVerification
 
 
+class FinalTranscriptSource(str, Enum):
+    """PII-free route that supplied the selected final hypothesis."""
+
+    NONE = "none"
+    STREAMING = "streaming"
+    OFFLINE = "offline"
+    VERIFIER_CONSENSUS = "verifier_consensus"
+    ESTABLISHED_OVERRIDE = "established_override"
+
+
 @dataclass(frozen=True)
 class FinalTranscriptDecision:
     """In-memory evidence for one production final-selection decision.
@@ -289,6 +298,7 @@ class FinalTranscriptDecision:
     offline_raw: Optional[str] = field(repr=False)
     selected: str = field(repr=False)
     offline_outcome: str
+    selected_source: FinalTranscriptSource
     verifier_raw: Optional[str] = field(default=None, repr=False)
     verifier_outcome: str = "unavailable"
     verifier_support: int = 0
@@ -593,11 +603,25 @@ def _resolve_final_transcript(
                     exc_info=True,
                 )
 
+    if not selected.strip():
+        selected_source = FinalTranscriptSource.NONE
+    elif verifier_changed:
+        selected_source = FinalTranscriptSource.VERIFIER_CONSENSUS
+    elif (
+        offline_text
+        and selected.strip() == offline_text.strip()
+        and selected.strip() != streaming_final.strip()
+    ):
+        selected_source = FinalTranscriptSource.OFFLINE
+    else:
+        selected_source = FinalTranscriptSource.STREAMING
+
     return FinalTranscriptDecision(
         streaming_raw=raw_final,
         offline_raw=offline_raw,
         selected=selected,
         offline_outcome=offline_outcome,
+        selected_source=selected_source,
         verifier_raw=verifier_raw,
         verifier_outcome=verifier_outcome,
         verifier_support=verifier_support,
@@ -1797,6 +1821,14 @@ class SherpaOnnxEngine(AudioEngine):
         # written to WAV so the run can be replayed and frozen into a test).
         self._record_path: Optional[str] = None
         self._recorder = None
+        # Full live diagnostics use one composite writer for every model-rate
+        # track plus a sample-indexed, transcript-free timeline.  It is enabled
+        # only when both established sidecar flags are present; ordinary
+        # ``--record`` keeps the legacy single-WAV path.
+        self._diagnostic_bundle = None
+        self._diagnostic_last_status = "disabled"
+        self._diagnostic_last_failure_codes: tuple[str, ...] = ()
+        self._diagnostic_spans: dict[tuple[str, int, int, str], object] = {}
         # Optional private diagnostic sidecar: model-rate host input before
         # application gain/AEC/GTCRN, frame-aligned to ``_recorder``. It is
         # evidence only and is never fed back into the active recognizer.
@@ -2230,6 +2262,46 @@ class SherpaOnnxEngine(AudioEngine):
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
         self._record_path = path
 
+    @staticmethod
+    def _diagnostic_sidecar_path(record_path: str, suffix: str) -> str:
+        root = record_path[:-4] if record_path.lower().endswith(".wav") else record_path
+        return f"{root}.{suffix}"
+
+    @property
+    def diagnostic_status(self) -> dict[str, object]:
+        """Aggregate-only state safe to copy into the private run summary."""
+        bundle = self._diagnostic_bundle
+        if bundle is not None:
+            return {
+                "status": bundle.manifest_status.value,
+                "failure_codes": list(bundle.failure_codes),
+            }
+        return {
+            "status": self._diagnostic_last_status,
+            "failure_codes": list(self._diagnostic_last_failure_codes),
+        }
+
+    def record_diagnostic_observation(self, observation) -> bool:
+        """Non-blockingly offer one already-sanitized runtime observation."""
+        bundle = self._diagnostic_bundle
+        if bundle is None:
+            return False
+        try:
+            return bool(bundle.observe(observation))
+        except Exception:  # noqa: BLE001 - diagnostics cannot break voice behavior
+            try:
+                bundle.invalidate("observation_error")
+            except Exception:  # noqa: BLE001 - retain the voice path
+                pass
+            log.warning("diagnostic observation rejected", exc_info=True)
+            return False
+
+    def invalidate_diagnostics(self, code: str) -> None:
+        """Fail the active private bundle closed using its fixed vocabulary."""
+        bundle = self._diagnostic_bundle
+        if bundle is not None:
+            bundle.invalidate(code)
+
     def _open_recorders(self) -> None:
         """Open the configured primary recording and its optional sidecars."""
         if not self._record_path:
@@ -2239,6 +2311,90 @@ class SherpaOnnxEngine(AudioEngine):
         from ..recorder import WavRecorder, sidecar_wav_path
 
         try:
+            if (
+                self.config.record_pre_dsp_reference
+                and self.config.record_playback_reference
+            ):
+                from ..diagnostic_bundle import (
+                    DiagnosticTrack,
+                    EndpointReplayConfig,
+                    SynchronizedDiagnosticBundle,
+                )
+                from ..endpointing import EndpointConfig
+
+                endpoint_config = (
+                    self._endpoint_policy.replay_config
+                    if self._endpoint_policy is not None
+                    # No live policy exists when endpointing is disabled. Keep
+                    # dormant user knobs out of the evidence contract and use
+                    # the canonical inert configuration instead.
+                    else EndpointConfig()
+                )
+                pause_samples = (
+                    self._endpoint_policy.replay_pause_samples()
+                    if self._endpoint_policy is not None
+                    else ()
+                )
+                endpoint_replay_config = EndpointReplayConfig(
+                    enabled=self._endpoint_policy is not None,
+                    min_silence_sec=endpoint_config.min_silence_sec,
+                    max_silence_sec=endpoint_config.max_silence_sec,
+                    complete_threshold=endpoint_config.complete_threshold,
+                    incomplete_threshold=endpoint_config.incomplete_threshold,
+                    high_confidence_floor=endpoint_config.high_confidence_floor,
+                    high_confidence_score=endpoint_config.high_confidence_score,
+                    adaptive_floor=endpoint_config.adaptive_floor,
+                    pause_window=endpoint_config.pause_window,
+                    pause_quantile=endpoint_config.pause_quantile,
+                    pause_margin=endpoint_config.pause_margin,
+                    pause_min_samples=endpoint_config.pause_min_samples,
+                    initial_pause_samples_sec=pause_samples,
+                )
+
+                path_by_role = {
+                    DiagnosticTrack.MODEL_PRE_GAIN_TAP: sidecar_wav_path(
+                        self._record_path, "pre-dsp"
+                    ),
+                    DiagnosticTrack.MODEL_GATE_PCM: self._record_path,
+                    DiagnosticTrack.MODEL_ASR_TAP: sidecar_wav_path(
+                        self._record_path, "asr"
+                    ),
+                    DiagnosticTrack.PLAYBACK_REFERENCE_READER_SNAPSHOT: sidecar_wav_path(
+                        self._record_path, "ref"
+                    ),
+                }
+                timeline_path = self._diagnostic_sidecar_path(
+                    self._record_path, "timeline.jsonl"
+                )
+                manifest_path = self._diagnostic_sidecar_path(
+                    self._record_path, "diagnostic.json"
+                )
+                self._diagnostic_bundle = SynchronizedDiagnosticBundle(
+                    path_by_role,
+                    timeline_path,
+                    manifest_path,
+                    self.config.sample_rate,
+                    endpoint_replay_config=endpoint_replay_config,
+                )
+                self._diagnostic_last_status = "open"
+                self._diagnostic_last_failure_codes = ()
+                self._diagnostic_spans.clear()
+                self._ref_accum = np.zeros(0, dtype="float32")
+                log.info("recording model gate PCM -> %s", self._record_path)
+                log.info(
+                    "recording model-rate pre-gain tap -> %s",
+                    path_by_role[DiagnosticTrack.MODEL_PRE_GAIN_TAP],
+                )
+                log.info(
+                    "recording continuous selected ASR tap (PCM16 replay) -> %s",
+                    path_by_role[DiagnosticTrack.MODEL_ASR_TAP],
+                )
+                log.info(
+                    "recording unmodified reader-time playback reference -> %s",
+                    path_by_role[DiagnosticTrack.PLAYBACK_REFERENCE_READER_SNAPSHOT],
+                )
+                log.info("recording synchronized voice timeline -> %s", timeline_path)
+                return
             self._recorder = WavRecorder(self._record_path, self.config.sample_rate)
             log.info("recording session audio -> %s", self._record_path)
             if self.config.record_pre_dsp_reference:
@@ -2279,14 +2435,75 @@ class SherpaOnnxEngine(AudioEngine):
         pre_dsp_samples,
         processed_samples,
         *,
+        asr_input_samples=None,
         captured_reference=None,
-    ) -> None:
+        captured=None,
+    ):
         """Write one aligned post/pre-DSP/reference recording coordinate."""
-        if self._recorder is None:
-            return
         import numpy as np
 
         processed = np.asarray(processed_samples, dtype="float32").reshape(-1)
+        bundle = self._diagnostic_bundle
+        if bundle is not None:
+            try:
+                if captured is None:
+                    raise ValueError("capture coordinate is required")
+                from ..diagnostic_bundle import CaptureCoordinate, DiagnosticTrack
+
+                gap = captured.gap_before
+                gap_fields = {}
+                if gap is not None:
+                    gap_fields = {
+                        "gap_reason": gap.reason.value,
+                        "gap_prior_generation": int(gap.prior_generation),
+                        "gap_generation": int(gap.generation),
+                        "gap_first_dropped_sequence": gap.first_dropped_sequence,
+                        "gap_last_dropped_sequence": gap.last_dropped_sequence,
+                        "gap_dropped_frames": int(gap.dropped_frames),
+                        "gap_dropped_samples": int(gap.dropped_samples),
+                    }
+                coordinate = CaptureCoordinate(
+                    sequence=int(captured.sequence),
+                    sample_rate_hz=int(captured.sample_rate_hz),
+                    captured_started_at=float(captured.captured_started_at),
+                    captured_at=float(captured.captured_at),
+                    capture_epoch=int(captured.capture_epoch),
+                    source_generation=int(captured.source_generation),
+                    capture_generation=int(captured.capture_generation),
+                    source_sample_start=int(captured.source_sample_start),
+                    source_sample_end=int(captured.source_sample_end),
+                    **gap_fields,
+                )
+                actual_asr = (
+                    processed
+                    if asr_input_samples is None
+                    else np.asarray(asr_input_samples, dtype="float32").reshape(-1)
+                )
+                pre_dsp = np.asarray(pre_dsp_samples, dtype="float32").reshape(-1)
+                reference = self._take_reference_frame(
+                    processed.shape[0],
+                    captured_reference=captured_reference,
+                    align_captured=False,
+                )
+                return bundle.write_frame(
+                    {
+                        DiagnosticTrack.MODEL_PRE_GAIN_TAP: pre_dsp,
+                        DiagnosticTrack.MODEL_GATE_PCM: processed,
+                        DiagnosticTrack.MODEL_ASR_TAP: actual_asr,
+                        DiagnosticTrack.PLAYBACK_REFERENCE_READER_SNAPSHOT: reference,
+                    },
+                    coordinate,
+                )
+            except Exception:  # noqa: BLE001 - evidence cannot stop capture
+                try:
+                    bundle.invalidate("capture_integration_error")
+                except Exception:  # noqa: BLE001 - retain the original voice path
+                    pass
+                log.warning("synchronized diagnostic frame rejected", exc_info=True)
+                return None
+
+        if self._recorder is None:
+            return None
         if self._pre_dsp_recorder is not None:
             self._pre_dsp_recorder.write(
                 self._align_recording_frame(pre_dsp_samples, processed.shape[0])
@@ -2297,9 +2514,34 @@ class SherpaOnnxEngine(AudioEngine):
                 processed.shape[0],
                 captured_reference=captured_reference,
             )
+        return None
 
     def _close_recorders(self, *, log_completed: bool) -> None:
         """Close every recording owned by this engine exactly once."""
+        bundle = self._diagnostic_bundle
+        if bundle is not None:
+            try:
+                manifest_path = bundle.close(clean_shutdown=log_completed)
+                self._diagnostic_last_status = bundle.manifest_status.value
+                self._diagnostic_last_failure_codes = bundle.failure_codes
+                if log_completed:
+                    log.info(
+                        "recorded synchronized diagnostic bundle (%s) -> %s",
+                        self._diagnostic_last_status,
+                        manifest_path,
+                    )
+            except Exception:  # noqa: BLE001 - cleanup must continue
+                self._diagnostic_last_status = "publish_failed"
+                self._diagnostic_last_failure_codes = bundle.failure_codes
+                log.exception("could not close synchronized diagnostic bundle")
+            finally:
+                # Preserve a bounded background finalizer so status polling can
+                # observe its eventual terminal result after close() times out.
+                if self._diagnostic_last_status != "finalizing":
+                    self._diagnostic_bundle = None
+                self._diagnostic_spans.clear()
+                self._ref_accum = None
+            return
         owned = (
             ("_recorder", "session audio"),
             ("_pre_dsp_recorder", "pre-DSP input reference"),
@@ -2352,9 +2594,14 @@ class SherpaOnnxEngine(AudioEngine):
         if self._ref_accum.shape[0] > cap:
             self._ref_accum = self._ref_accum[-cap:]
 
-    def _write_reference_frame(self, n: int, *, captured_reference=None) -> None:
-        """Write exactly ``n`` reference samples (silence when the assistant isn't
-        playing) to the reference recorder, FRAME-ALIGNED with the mic recording.
+    def _take_reference_frame(
+        self,
+        n: int,
+        *,
+        captured_reference=None,
+        align_captured: bool = True,
+    ):
+        """Return the reader-time playback reference for one capture block.
 
         When AEC is on the FarEndRing exists: read it at delay 0 -- the EXACT
         true-playback-aligned far-end the canceller reads -- so a replay can sweep
@@ -2363,19 +2610,20 @@ class SherpaOnnxEngine(AudioEngine):
         to the accumulator (the coherence reference, for barge replay)."""
         import numpy as np
 
-        if self._ref_recorder is None:
-            return
         if captured_reference is not None:
-            self._ref_recorder.write(self._align_recording_frame(captured_reference, n))
-            return
+            captured = np.asarray(captured_reference, dtype="float32").reshape(-1)
+            return (
+                self._align_recording_frame(captured, n)
+                if align_captured
+                else captured
+            )
         if self._far_ref is not None:
             out = np.asarray(self._far_ref.read(n, 0), dtype="float32").reshape(-1)
             if out.shape[0] < n:
                 out = np.concatenate([out, np.zeros(n - out.shape[0], dtype="float32")])
-            self._ref_recorder.write(out[:n])
-            return
+            return out[:n]
         if self._ref_accum is None:
-            return
+            return np.zeros(n, dtype="float32")
         if self._ref_accum.shape[0] >= n:
             out, self._ref_accum = self._ref_accum[:n], self._ref_accum[n:]
         else:
@@ -2384,7 +2632,19 @@ class SherpaOnnxEngine(AudioEngine):
                 np.concatenate([self._ref_accum, pad]),
                 np.zeros(0, dtype="float32"),
             )
-        self._ref_recorder.write(out)
+        return out
+
+    def _write_reference_frame(self, n: int, *, captured_reference=None) -> None:
+        """Write exactly ``n`` reference samples for the legacy sidecar path."""
+        if self._ref_recorder is None:
+            return
+        self._ref_recorder.write(
+            self._take_reference_frame(
+                n,
+                captured_reference=captured_reference,
+                align_captured=True,
+            )
+        )
 
     def _clear_playback_reference(self) -> None:
         """Clear each live timeline ring once (AEC may alias the generic ring)."""
@@ -3293,6 +3553,7 @@ class SherpaOnnxEngine(AudioEngine):
         detected_at: float,
         speech_start_at: Optional[float] = None,
         capture_epoch: Optional[int] = None,
+        diagnostic_span=None,
     ) -> bool:
         tracker = self._acoustic_turn_tracker
         acoustic = None
@@ -3305,7 +3566,7 @@ class SherpaOnnxEngine(AudioEngine):
                 ),
             )
         if self._cb.on_barge_in_result is not None:
-            return self._emit_capture_callback(
+            delivered = self._emit_capture_callback(
                 self._cb.on_barge_in_result,
                 AcousticSignal(
                     acoustic=acoustic,
@@ -3314,10 +3575,22 @@ class SherpaOnnxEngine(AudioEngine):
                 ),
                 capture_epoch=capture_epoch,
             )
-        return self._emit_capture_callback(
-            self._cb.on_barge_in,
-            capture_epoch=capture_epoch,
-        )
+        else:
+            delivered = self._emit_capture_callback(
+                self._cb.on_barge_in,
+                capture_epoch=capture_epoch,
+            )
+        if delivered and self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
+
+            self._diagnostic_observe(
+                DiagnosticStage.BARGE_DETECTED,
+                at=detected_at,
+                bundle_span=diagnostic_span,
+                acoustic=acoustic,
+                revision=revision,
+            )
+        return delivered
 
     def _emit_command_callback(
         self,
@@ -3348,6 +3621,119 @@ class SherpaOnnxEngine(AudioEngine):
             capture_epoch=capture_epoch,
         )
 
+    @staticmethod
+    def _diagnostic_acoustic_key(
+        acoustic: Optional[AcousticLineage],
+    ) -> Optional[tuple[str, int, int, str]]:
+        if acoustic is None or not acoustic.spans:
+            return None
+        span = acoustic.spans[-1]
+        return (
+            span.stream_id,
+            int(span.capture_epoch),
+            int(span.capture_generation),
+            span.utterance_id,
+        )
+
+    def _bind_diagnostic_span(self, acoustic, bundle_span) -> None:
+        """Bind lifecycle events to the endpoint frame only.
+
+        A turn sample count is not a packed-bundle coordinate: word-cut and
+        confirmed-barge handoffs may prepend/replay non-contiguous PCM.
+        """
+        key = self._diagnostic_acoustic_key(acoustic)
+        if key is not None and bundle_span is not None:
+            self._diagnostic_spans[key] = bundle_span
+
+    def _diagnostic_observe(
+        self,
+        stage,
+        *,
+        at: Optional[float] = None,
+        bundle_span=None,
+        acoustic: Optional[AcousticLineage] = None,
+        revision: Optional[int] = None,
+        correlation_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        basis: Optional[str] = None,
+        completion_state: Optional[str] = None,
+        selected_source: Optional[str] = None,
+        outcome: Optional[str] = None,
+        numeric_value: Optional[float] = None,
+        support: Optional[int] = None,
+        boolean_value: Optional[bool] = None,
+        acoustic_endpoint: Optional[bool] = None,
+        vad_active: Optional[bool] = None,
+        early_endpoint_allowed: Optional[bool] = None,
+        trailing_silence_sec: Optional[float] = None,
+        terminal: bool = False,
+    ) -> bool:
+        """Offer one typed observation without retaining transcript or PCM."""
+        if self._diagnostic_bundle is None:
+            return False
+        from ..diagnostic_bundle import DiagnosticObservation
+
+        key = self._diagnostic_acoustic_key(acoustic)
+        if bundle_span is None and key is not None:
+            bundle_span = self._diagnostic_spans.get(key)
+        acoustic_span = acoustic.spans[-1] if acoustic and acoustic.spans else None
+        try:
+            observation = DiagnosticObservation(
+                stage=stage,
+                monotonic_ns=int(
+                    max(0.0, time.perf_counter() if at is None else float(at))
+                    * 1_000_000_000
+                ),
+                span=bundle_span,
+                stream_id=(acoustic_span.stream_id if acoustic_span else None),
+                utterance_id=(acoustic_span.utterance_id if acoustic_span else None),
+                correlation_id=correlation_id,
+                revision=revision,
+                reason=reason,
+                basis=basis,
+                completion_state=completion_state,
+                selected_source=selected_source,
+                outcome=outcome,
+                numeric_value=numeric_value,
+                support=support,
+                boolean_value=boolean_value,
+                acoustic_endpoint=acoustic_endpoint,
+                vad_active=vad_active,
+                early_endpoint_allowed=early_endpoint_allowed,
+                trailing_silence_sec=trailing_silence_sec,
+            )
+            accepted = self.record_diagnostic_observation(observation)
+        except Exception:  # noqa: BLE001 - evidence cannot break the audio loop
+            bundle = self._diagnostic_bundle
+            if bundle is not None:
+                try:
+                    bundle.invalidate("observation_error")
+                except Exception:  # noqa: BLE001 - preserve the voice path
+                    pass
+            log.warning("could not construct diagnostic observation", exc_info=True)
+            accepted = False
+        if terminal and key is not None:
+            self._diagnostic_spans.pop(key, None)
+        return accepted
+
+    def _diagnostic_final_aborted(
+        self,
+        acoustic: Optional[AcousticLineage],
+        revision: int,
+        reason: str,
+    ) -> None:
+        if self._diagnostic_bundle is None:
+            return
+        from ..diagnostic_bundle import DiagnosticStage
+
+        self._diagnostic_observe(
+            DiagnosticStage.FINAL_ABORTED,
+            acoustic=acoustic,
+            revision=revision,
+            reason=reason,
+            terminal=True,
+        )
+
     def _emit_transcript_abort(
         self,
         acoustic: Optional[AcousticLineage],
@@ -3357,9 +3743,22 @@ class SherpaOnnxEngine(AudioEngine):
         capture_epoch: Optional[int] = None,
     ) -> bool:
         callback = self._cb.on_transcript_abort
-        if acoustic is None or callback is None:
+        if acoustic is None:
             return True
         emitted = AcousticTurnTracker.with_emitted_at(acoustic, time.perf_counter())
+        if self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
+
+            self._diagnostic_observe(
+                DiagnosticStage.FINAL_ABORTED,
+                at=emitted.spans[-1].emitted_at,
+                acoustic=emitted,
+                revision=revision,
+                reason=reason.value,
+                terminal=True,
+            )
+        if callback is None:
+            return True
         try:
             return self._emit_capture_callback(
                 callback,
@@ -3982,6 +4381,19 @@ class SherpaOnnxEngine(AudioEngine):
             # Any finals still queued here are intentionally dropped on shutdown
             # (like _play_q) -- dispatching a final into a tearing-down runtime is
             # wrong, and the window is sub-second.
+            if self._diagnostic_bundle is not None:
+                while True:
+                    try:
+                        queued_final = self._final_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if isinstance(queued_final, _FinalWorkItem):
+                        self._emit_transcript_abort(
+                            queued_final.acoustic,
+                            queued_final.revision,
+                            TranscriptAbortReason.SHUTDOWN,
+                            capture_epoch=queued_final.capture_epoch,
+                        )
             try:
                 self._final_q.put_nowait(None)  # sentinel: wake final worker
             except queue.Full:
@@ -3990,10 +4402,14 @@ class SherpaOnnxEngine(AudioEngine):
             self._play_thread.join(timeout=1.0)
             if self._play_thread.is_alive():
                 log.warning("playback thread did not exit within 1.0s; proceeding")
+                if self._diagnostic_bundle is not None:
+                    self._diagnostic_bundle.invalidate("playback_timeout")
         if self._final_thread is not None:
             self._final_thread.join(timeout=1.0)
             if self._final_thread.is_alive():
                 log.warning("final ASR thread did not exit within 1.0s; proceeding")
+                if self._diagnostic_bundle is not None:
+                    self._diagnostic_bundle.invalidate("finalizer_timeout")
         # An admitted async-final callback can be the only capture effect still
         # active at the first snapshot above, then finish while the worker joins.
         # Re-evaluate once after both shared audio workers have had their bounded
@@ -4045,9 +4461,17 @@ class SherpaOnnxEngine(AudioEngine):
             )
         if not self._drain_receipt_dispatcher(timeout=0.5):
             log.warning("playback receipts still pending after bounded shutdown drain")
+            if self._diagnostic_bundle is not None:
+                self._diagnostic_bundle.invalidate("receipt_timeout")
         self._stop_receipt_dispatcher()
         if not self._capture_resource_hold.is_set():
             self._close_recorders(log_completed=True)
+        elif self._diagnostic_bundle is not None:
+            # A retained native capture owner must not leave the private writer
+            # and its manifest open forever. The composite writer rejects late
+            # capture offers safely and publishes explicitly incomplete evidence.
+            self._diagnostic_bundle.invalidate("capture_shutdown_timeout")
+            self._close_recorders(log_completed=False)
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
         self._submit_playback(text, on_done=on_done, ticket=None, style=None)
@@ -4464,36 +4888,42 @@ class SherpaOnnxEngine(AudioEngine):
         NS-on domain; the louder NS-off signal would clear the floor too easily
         and re-open the echo-final cascade). ``None`` (every non-apm-owns-ns
         path) -> decode ``seg``, byte-identical."""
+        if self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
+
+            self._diagnostic_observe(
+                DiagnosticStage.FINALIZER_STARTED,
+                acoustic=acoustic,
+                revision=revision,
+            )
         decode_seg = asr_seg if asr_seg is not None else seg
         final_decision = None
+
+        def established_transcribe() -> str:
+            kwargs = {}
+            if speech_sec is not None:
+                kwargs["speech_sec"] = speech_sec
+            if offline_recovery_authorized:
+                kwargs["allow_empty_streaming"] = True
+            return self._final_transcribe(decode_seg, raw_final, **kwargs)
+
         if self._final_verifier is None:
-            # Preserve the long-standing text-only test/embedding seam when no
-            # verifier can change provenance.
-            if speech_sec is None:
-                final_text = (
-                    self._final_transcribe(
-                        decode_seg,
-                        raw_final,
-                        allow_empty_streaming=True,
-                    )
-                    if offline_recovery_authorized
-                    else self._final_transcribe(decode_seg, raw_final)
+            default_seam = (
+                getattr(self._final_transcribe, "__func__", None)
+                is SherpaOnnxEngine._final_transcribe
+            )
+            if self._diagnostic_bundle is not None and default_seam:
+                final_decision = self._final_decision(
+                    decode_seg,
+                    raw_final,
+                    speech_sec=speech_sec,
+                    allow_empty_streaming=offline_recovery_authorized,
                 )
+                final_text = final_decision.selected
             else:
-                final_text = (
-                    self._final_transcribe(
-                        decode_seg,
-                        raw_final,
-                        speech_sec=speech_sec,
-                        allow_empty_streaming=True,
-                    )
-                    if offline_recovery_authorized
-                    else self._final_transcribe(
-                        decode_seg,
-                        raw_final,
-                        speech_sec=speech_sec,
-                    )
-                )
+                # Recording must remain observational for embedders/tests that
+                # replace the established text-selection seam.
+                final_text = established_transcribe()
         else:
             final_decision = self._final_decision(
                 decode_seg,
@@ -4507,12 +4937,43 @@ class SherpaOnnxEngine(AudioEngine):
                     "asr_final_verifier_disabled_after_decode_error",
                     capture_epoch=capture_epoch,
                 )
+        if final_decision is not None and self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
+
+            selection_outcome = (
+                final_decision.verifier_outcome
+                if final_decision.verifier_outcome != "unavailable"
+                else final_decision.offline_outcome
+            )
+            self._diagnostic_observe(
+                DiagnosticStage.FINAL_SELECTION,
+                acoustic=acoustic,
+                revision=revision,
+                selected_source=final_decision.selected_source.value,
+                outcome=selection_outcome,
+                support=final_decision.verifier_support,
+                boolean_value=final_decision.verifier_changed,
+            )
+        elif self._diagnostic_bundle is not None:
+            from ..diagnostic_bundle import DiagnosticStage
+
+            self._diagnostic_observe(
+                DiagnosticStage.FINAL_SELECTION,
+                acoustic=acoustic,
+                revision=revision,
+                selected_source=FinalTranscriptSource.ESTABLISHED_OVERRIDE.value,
+                outcome="unavailable",
+                support=0,
+                boolean_value=False,
+            )
         log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._capture_callback_is_current(capture_epoch):
+            self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
             return
         if not final_text.strip():
             log.info("dropping empty final after offline recovery")
             if not self._capture_callback_is_current(capture_epoch):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             self._emit_capture_callback(
                 self._cb.on_metric,
@@ -4536,6 +4997,7 @@ class SherpaOnnxEngine(AudioEngine):
                 final_text,
             )
             if not self._capture_callback_is_current(capture_epoch):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             self._emit_capture_callback(
                 self._cb.on_metric,
@@ -4551,11 +5013,15 @@ class SherpaOnnxEngine(AudioEngine):
         else:
             speaker_decision = self._speaker_decision_for_final(seg)
             if not self._capture_callback_is_current(capture_epoch):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             verification = speaker_decision.verification
             if verification is OwnerVerification.VERIFIED and not owner_lineage_intact:
                 verification = OwnerVerification.UNKNOWN
                 if not self._capture_callback_is_current(capture_epoch):
+                    self._diagnostic_final_aborted(
+                        acoustic, revision, "stale_fenced"
+                    )
                     return
                 self._emit_capture_callback(
                     self._cb.on_metric,
@@ -4568,6 +5034,9 @@ class SherpaOnnxEngine(AudioEngine):
                     final_text,
                 )
                 if not self._capture_callback_is_current(capture_epoch):
+                    self._diagnostic_final_aborted(
+                        acoustic, revision, "stale_fenced"
+                    )
                     return
                 self._emit_capture_callback(
                     self._cb.on_metric,
@@ -4590,6 +5059,9 @@ class SherpaOnnxEngine(AudioEngine):
                 verification = OwnerVerification.UNKNOWN
                 origin = "unknown"
                 if not self._capture_callback_is_current(capture_epoch):
+                    self._diagnostic_final_aborted(
+                        acoustic, revision, "stale_fenced"
+                    )
                     return
                 self._emit_capture_callback(
                     self._cb.on_metric,
@@ -4597,6 +5069,7 @@ class SherpaOnnxEngine(AudioEngine):
                     capture_epoch=capture_epoch,
                 )
             if not self._capture_callback_is_current(capture_epoch):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             if not self._emit_capture_callback(
                 self._cb.on_metric,
@@ -4604,6 +5077,7 @@ class SherpaOnnxEngine(AudioEngine):
                 at=speech_end_ts,
                 capture_epoch=capture_epoch,
             ):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             emitted_acoustic = (
                 AcousticTurnTracker.with_emitted_at(acoustic, time.perf_counter())
@@ -4618,21 +5092,47 @@ class SherpaOnnxEngine(AudioEngine):
                 revision=revision,
             )
             if not self._capture_callback_is_current(capture_epoch):
+                self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
             try:
                 if self._cb.on_final_result is not None:
-                    self._emit_capture_callback(
+                    delivered = self._emit_capture_callback(
                         self._cb.on_final_result,
                         result,
                         capture_epoch=capture_epoch,
                     )
                 else:
-                    self._emit_capture_callback(
+                    delivered = self._emit_capture_callback(
                         self._cb.on_final,
                         final_text,
                         capture_epoch=capture_epoch,
                     )
+                if self._diagnostic_bundle is not None:
+                    from ..diagnostic_bundle import DiagnosticStage
+
+                    self._diagnostic_observe(
+                        (
+                            DiagnosticStage.FINAL_DISPATCHED
+                            if delivered
+                            else DiagnosticStage.FINAL_ABORTED
+                        ),
+                        acoustic=emitted_acoustic or acoustic,
+                        revision=revision,
+                        outcome=("callback_returned" if delivered else None),
+                        reason=(None if delivered else "stale_fenced"),
+                        terminal=True,
+                    )
             except Exception:  # noqa: BLE001 - do not attempt a second terminal
+                if self._diagnostic_bundle is not None:
+                    from ..diagnostic_bundle import DiagnosticStage
+
+                    self._diagnostic_observe(
+                        DiagnosticStage.FINAL_ABORTED,
+                        acoustic=emitted_acoustic or acoustic,
+                        revision=revision,
+                        reason="callback_error",
+                        terminal=True,
+                    )
                 log.exception("final transcript callback failed after terminal handoff")
 
     def _maybe_setup_async_final(self) -> None:
@@ -4687,6 +5187,14 @@ class SherpaOnnxEngine(AudioEngine):
 
         try:
             self._final_q.put_nowait(_item())
+            if self._diagnostic_bundle is not None:
+                from ..diagnostic_bundle import DiagnosticStage
+
+                self._diagnostic_observe(
+                    DiagnosticStage.FINALIZER_QUEUED,
+                    acoustic=acoustic,
+                    revision=revision,
+                )
             return
         except queue.Full:
             pass
@@ -4712,6 +5220,14 @@ class SherpaOnnxEngine(AudioEngine):
             pass  # the worker just drained one; a slot is free now
         try:
             self._final_q.put_nowait(_item())
+            if self._diagnostic_bundle is not None:
+                from ..diagnostic_bundle import DiagnosticStage
+
+                self._diagnostic_observe(
+                    DiagnosticStage.FINALIZER_QUEUED,
+                    acoustic=acoustic,
+                    revision=revision,
+                )
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("final ASR queue still full; finalizing inline")
@@ -4914,6 +5430,119 @@ class SherpaOnnxEngine(AudioEngine):
                 )
         return LexicalTurnCompletionDetector()
 
+    def _observe_turn(
+        self,
+        *,
+        acoustic_endpoint: bool,
+        partial: str,
+        silence_sec: float,
+        samples=None,
+        allow_early: bool = True,
+        vad_active: bool = False,
+    ):
+        """Capture the exact, PII-free facts used by endpoint policy.
+
+        The branch order intentionally mirrors the former boolean-only
+        :meth:`_decide_endpoint` implementation.  Transcript text and PCM are
+        consumed locally by the detector but never enter the returned value.
+        """
+        from ..endpointing import CompletionScoreState, TurnObservation
+
+        if acoustic_endpoint and vad_active:
+            state = CompletionScoreState.HARD_BOUNDARY
+            score = None
+        elif self._endpoint_policy is None or self._turn_detector is None:
+            state = CompletionScoreState.UNAVAILABLE
+            score = None
+        else:
+            text = (partial or "").strip()
+            if not text:
+                state = CompletionScoreState.NO_PARTIAL
+                score = None
+            elif not acoustic_endpoint and not allow_early:
+                state = CompletionScoreState.EARLY_GUARDED
+                score = None
+            elif (
+                self._endpoint_wants_audio
+                and silence_sec < self._endpoint_prosody_min_silence
+            ):
+                state = CompletionScoreState.AUDIO_WINDOW_PENDING
+                score = None
+            else:
+                try:
+                    score = self._turn_detector.completion_score(
+                        text,
+                        samples=samples,
+                        sample_rate=self.config.sample_rate,
+                    )
+                    state = CompletionScoreState.SCORED
+                except Exception:  # noqa: BLE001 - preserve acoustic fallback
+                    log.debug(
+                        "turn-completion detector failed; using acoustic endpoint",
+                        exc_info=True,
+                    )
+                    state = CompletionScoreState.DETECTOR_ERROR
+                    score = None
+
+        return TurnObservation(
+            acoustic_endpoint=bool(acoustic_endpoint),
+            vad_active=bool(vad_active),
+            early_endpoint_allowed=bool(allow_early),
+            trailing_silence_sec=float(silence_sec),
+            completion_state=state,
+            completion_score=(None if score is None else float(score)),
+        )
+
+    def _turn_evaluation(
+        self,
+        *,
+        acoustic_endpoint: bool,
+        partial: str,
+        silence_sec: float,
+        samples=None,
+        allow_early: bool = True,
+        vad_active: bool = False,
+    ):
+        """Return the PII-free observation and its typed endpoint result.
+
+        When semantic endpointing is disabled (the default) or there's no partial
+        to judge, this is exactly ``acoustic_endpoint`` -- byte-identical to the
+        pure acoustic path. Otherwise the policy may commit a final EARLY on a
+        confident-complete partial, or HOLD (bounded) past the acoustic timer on a
+        mid-phrase one. Pure + side-effect-free, so it is unit-testable without
+        models or audio."""
+        from ..endpointing import decide_turn
+
+        observation = self._observe_turn(
+            acoustic_endpoint=acoustic_endpoint,
+            partial=partial,
+            silence_sec=silence_sec,
+            samples=samples,
+            allow_early=allow_early,
+            vad_active=vad_active,
+        )
+        return observation, decide_turn(observation, policy=self._endpoint_policy)
+
+    def _turn_decision(
+        self,
+        *,
+        acoustic_endpoint: bool,
+        partial: str,
+        silence_sec: float,
+        samples=None,
+        allow_early: bool = True,
+        vad_active: bool = False,
+    ):
+        """Return the typed endpoint result without changing policy behavior."""
+        return self._turn_evaluation(
+            acoustic_endpoint=acoustic_endpoint,
+            partial=partial,
+            silence_sec=silence_sec,
+            samples=samples,
+            allow_early=allow_early,
+            vad_active=vad_active,
+        )[1]
+
     def _decide_endpoint(
         self,
         *,
@@ -4924,57 +5553,15 @@ class SherpaOnnxEngine(AudioEngine):
         allow_early: bool = True,
         vad_active: bool = False,
     ) -> bool:
-        """Combine the acoustic endpoint with a semantic turn-completion decision.
-
-        When semantic endpointing is disabled (the default) or there's no partial
-        to judge, this is exactly ``acoustic_endpoint`` -- byte-identical to the
-        pure acoustic path. Otherwise the policy may commit a final EARLY on a
-        confident-complete partial, or HOLD (bounded) past the acoustic timer on a
-        mid-phrase one. Pure + side-effect-free, so it is unit-testable without
-        models or audio."""
-        # A recognizer acoustic endpoint while the independent live VAD still
-        # sees speech is the configured forced long-utterance boundary (rule 3),
-        # not an ordinary trailing-silence endpoint. Semantic HOLD is allowed to
-        # extend the latter, but it must never veto this hard ownership boundary:
-        # doing so lets continued speech roll its head out of ASRSegment's bounded
-        # buffer before any final is emitted.
-        if acoustic_endpoint and vad_active:
-            return True
-        if self._endpoint_policy is None or self._turn_detector is None:
-            return acoustic_endpoint
-        text = (partial or "").strip()
-        if not text:
-            return acoustic_endpoint
-        # A semantic completion score may HOLD a real acoustic endpoint, but it
-        # may only create an EARLY endpoint after a load-bearing acoustic source
-        # (the live VAD) has observed speech and then quiet. Decoder text not
-        # changing is not silence: a long word, compute stall, or stable partial
-        # can otherwise reset the recognizer in the middle of ongoing speech.
-        if not acoustic_endpoint and not allow_early:
-            return False
-        # An audio (prosody) detector is expensive (~10-25ms); consult it only once
-        # trailing silence has reached the decision window. During active speech the
-        # acoustic endpoint is False, so skipping it is behaviour-identical but free.
-        if (
-            self._endpoint_wants_audio
-            and silence_sec < self._endpoint_prosody_min_silence
-        ):
-            return acoustic_endpoint
-        try:
-            score = self._turn_detector.completion_score(
-                text, samples=samples, sample_rate=self.config.sample_rate
-            )
-        except Exception:  # noqa: BLE001 - a detector error must never break capture
-            log.debug(
-                "turn-completion detector failed; using acoustic endpoint",
-                exc_info=True,
-            )
-            return acoustic_endpoint
-        return self._endpoint_policy.decide(
+        """Compatibility wrapper for existing callers of the boolean seam."""
+        return self._turn_decision(
             acoustic_endpoint=acoustic_endpoint,
-            completion_score=score,
+            partial=partial,
             silence_sec=silence_sec,
-        )
+            samples=samples,
+            allow_early=allow_early,
+            vad_active=vad_active,
+        ).commit
 
     def _endpoint_audio_needed(
         self,
@@ -6096,6 +6683,9 @@ class SherpaOnnxEngine(AudioEngine):
                 # the denoiser still runs then.
                 if self._denoiser is not None and not self._apm_owns_ns:
                     samples = self._denoiser.process_16k(samples)
+                asr_input_samples = (
+                    asr_samples if asr_samples is not None else samples
+                )
 
                 # A second recovery may complete while a popped block is inside
                 # resampling/AEC. Retire it before KWS, VAD, ASR, recordings, or
@@ -6118,15 +6708,17 @@ class SherpaOnnxEngine(AudioEngine):
                     break
                 effects_admitted = True
 
-                if self._recorder is not None:
-                    # One coordinate owns all recording tracks: the recognizer
-                    # input, optional pre-application-DSP input, and optional
-                    # playback reference. Each sibling receives exactly this
-                    # processed frame length, preserving sample-index alignment.
-                    self._write_recording_frame(
+                diagnostic_frame_span = None
+                if self._recorder is not None or self._diagnostic_bundle is not None:
+                    # The full diagnostic path admits all four tracks as one
+                    # queue item and retains the CapturedBlock source mapping.
+                    # Legacy partial recording modes retain their old behavior.
+                    diagnostic_frame_span = self._write_recording_frame(
                         pre_gain_samples,
                         samples,
+                        asr_input_samples=asr_input_samples,
                         captured_reference=block_context.far_reference_zero,
+                        captured=captured,
                     )
 
                 total_blocks += 1
@@ -6588,6 +7180,7 @@ class SherpaOnnxEngine(AudioEngine):
                                             detected_at=now,
                                             speech_start_at=now,
                                             capture_epoch=capture_epoch,
+                                            diagnostic_span=diagnostic_frame_span,
                                         )
                             elif eligible:
                                 rejected_run = 0.0
@@ -6808,11 +7401,33 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._vad is not None and not word_cut_pcm_includes_current:
                         if not word_cut_vad_includes_current:
                             self._vad.accept_waveform(samples)
+                        prior_vad_active = bool(segment.vad_active)
                         vad_active = bool(self._vad.is_speech_detected())
                         first_vad_onset = vad_active and not segment.speech_seen
                         pause = segment.observe_vad(vad_active, clock_now)
+                        if (
+                            diagnostic_frame_span is not None
+                            and prior_vad_active != vad_active
+                        ):
+                            from ..diagnostic_bundle import DiagnosticStage
+
+                            self._diagnostic_observe(
+                                DiagnosticStage.VAD_TRANSITION,
+                                at=clock_now,
+                                bundle_span=diagnostic_frame_span,
+                                boolean_value=vad_active,
+                            )
                         if pause is not None and self._endpoint_policy is not None:
                             self._endpoint_policy.observe_pause(pause)
+                            if diagnostic_frame_span is not None:
+                                from ..diagnostic_bundle import DiagnosticStage
+
+                                self._diagnostic_observe(
+                                    DiagnosticStage.ENDPOINT_PAUSE_OBSERVED,
+                                    at=clock_now,
+                                    bundle_span=diagnostic_frame_span,
+                                    numeric_value=float(pause),
+                                )
                         if first_vad_onset:
                             acoustic_turn.ensure_started(segment.first_speech_at)
                             # The normal recognizer listens continuously so it
@@ -6844,9 +7459,7 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                     segment.append(
                         samples,
-                        (asr_samples if asr_samples is not None else samples)
-                        if self._aec_asr is not None
-                        else None,
+                        asr_input_samples if self._aec_asr is not None else None,
                     ) if not word_cut_pcm_includes_current else None
                     # fix 2: the streaming recognizer reads the NS-off tap so
                     # near-end words survive; the owned primary segment + the
@@ -6854,7 +7467,7 @@ class SherpaOnnxEngine(AudioEngine):
                     if not word_cut_asr_includes_current:
                         stream.accept_waveform(
                             self.config.sample_rate,
-                            asr_samples if asr_samples is not None else samples,
+                            asr_input_samples,
                         )
                         while recognizer.is_ready(stream):
                             recognizer.decode_stream(stream)
@@ -6905,7 +7518,7 @@ class SherpaOnnxEngine(AudioEngine):
                                 speech_start_at=segment.first_speech_at,
                             )
                             if self._cb.on_partial_result is not None:
-                                self._emit_capture_callback(
+                                partial_emitted = self._emit_capture_callback(
                                     self._cb.on_partial_result,
                                     PartialTranscript(
                                         shown,
@@ -6915,10 +7528,20 @@ class SherpaOnnxEngine(AudioEngine):
                                     capture_epoch=capture_epoch,
                                 )
                             else:
-                                self._emit_capture_callback(
+                                partial_emitted = self._emit_capture_callback(
                                     self._cb.on_partial,
                                     shown,
                                     capture_epoch=capture_epoch,
+                                )
+                            if partial_emitted and diagnostic_frame_span is not None:
+                                from ..diagnostic_bundle import DiagnosticStage
+
+                                self._diagnostic_observe(
+                                    DiagnosticStage.ASR_PARTIAL,
+                                    at=emitted_now,
+                                    bundle_span=diagnostic_frame_span,
+                                    acoustic=partial_acoustic,
+                                    revision=partial_revision,
                                 )
                             last_published_partial = text
                     acoustic_endpoint = recognizer.is_endpoint(stream)
@@ -6964,14 +7587,41 @@ class SherpaOnnxEngine(AudioEngine):
                         if (owned_primary is not None and owned_primary.size)
                         else None
                     )
-                    if self._decide_endpoint(
+                    turn_observation, turn_decision = self._turn_evaluation(
                         acoustic_endpoint=acoustic_endpoint,
                         partial=last_partial,
                         silence_sec=endpoint_silence,
                         samples=endpoint_samples,
                         allow_early=segment.early_endpoint_allowed,
                         vad_active=segment.vad_active,
-                    ):
+                    )
+                    if diagnostic_frame_span is not None:
+                        from ..diagnostic_bundle import DiagnosticStage
+
+                        self._diagnostic_observe(
+                            DiagnosticStage.ENDPOINT_EVALUATED,
+                            at=decision_now,
+                            bundle_span=diagnostic_frame_span,
+                            acoustic=acoustic_turn.current(
+                                emitted_at=decision_now
+                            ),
+                            reason=turn_decision.endpoint_reason.value,
+                            basis=turn_decision.basis.value,
+                            completion_state=(
+                                turn_observation.completion_state.value
+                            ),
+                            numeric_value=turn_observation.completion_score,
+                            acoustic_endpoint=turn_observation.acoustic_endpoint,
+                            vad_active=turn_observation.vad_active,
+                            early_endpoint_allowed=(
+                                turn_observation.early_endpoint_allowed
+                            ),
+                            trailing_silence_sec=(
+                                turn_observation.trailing_silence_sec
+                            ),
+                            boolean_value=turn_decision.commit,
+                        )
+                    if turn_decision.commit:
                         raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         self._confirm_handoff_stream_live = False
@@ -6992,23 +7642,43 @@ class SherpaOnnxEngine(AudioEngine):
                         speech_evidence = segment.speech_evidence_snapshot()
                         seg = owned_primary if owned_primary.size else samples
                         asr_seg = owned_asr if self._aec_asr is not None else None
-                        endpoint_reason = (
-                            EndpointReason.MAX_WAIT
-                            if acoustic_endpoint and segment.vad_active
-                            else (
-                                EndpointReason.ASR
-                                if acoustic_endpoint
-                                else EndpointReason.SEMANTIC
-                            )
-                        )
                         final_acoustic, final_revision = acoustic_turn.close(
                             speech_start_at=segment.first_speech_at,
                             speech_end_at=speech_end_ts,
                             endpoint_committed_at=decision_now,
                             sample_rate_hz=self.config.sample_rate,
                             owned_sample_count=int(owned_primary.size),
-                            endpoint_reason=endpoint_reason,
+                            endpoint_reason=turn_decision.endpoint_reason,
                         )
+                        self._bind_diagnostic_span(
+                            final_acoustic, diagnostic_frame_span
+                        )
+                        if diagnostic_frame_span is not None:
+                            from ..diagnostic_bundle import DiagnosticStage
+
+                            self._diagnostic_observe(
+                                DiagnosticStage.ENDPOINT_COMMITTED,
+                                at=decision_now,
+                                bundle_span=diagnostic_frame_span,
+                                acoustic=final_acoustic,
+                                revision=final_revision,
+                                reason=turn_decision.endpoint_reason.value,
+                                basis=turn_decision.basis.value,
+                                completion_state=(
+                                    turn_observation.completion_state.value
+                                ),
+                                numeric_value=turn_observation.completion_score,
+                            )
+                            self._diagnostic_observe(
+                                DiagnosticStage.ASR_STREAMING_FINAL,
+                                at=decision_now,
+                                bundle_span=diagnostic_frame_span,
+                                acoustic=final_acoustic,
+                                revision=final_revision,
+                                outcome=(
+                                    "nonempty" if raw_final.strip() else "empty"
+                                ),
+                            )
                         pending_terminal_acoustic = final_acoustic
                         pending_terminal_revision = final_revision
                         segment.reset()
@@ -7029,6 +7699,11 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                         if admitted and (raw_final.strip() or recover_empty_streaming):
                             if not self._capture_epoch_is_current(capture_epoch):
+                                self._diagnostic_final_aborted(
+                                    final_acoustic,
+                                    final_revision,
+                                    "stale_fenced",
+                                )
                                 pending_terminal_acoustic = None
                                 continue
                             if not self._speech_evidence_admits_final(

@@ -30,8 +30,11 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
+import math
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
+from always_on_agent.acoustic import EndpointReason
 from always_on_agent.text import normalize_text
 
 # Words that, when they END an utterance, ALMOST CERTAINLY mean "more is coming".
@@ -296,6 +299,37 @@ class SessionPauseModel:
             return
         self._samples.append(g)
 
+    def replay_samples(self) -> tuple[float, ...]:
+        """Return the bounded learner state needed for deterministic replay."""
+        return tuple(self._samples)
+
+    def restore_replay_samples(self, samples: Sequence[float]) -> None:
+        """Restore one exact, representable learner snapshot.
+
+        Replaying snapshots through :meth:`observe_pause` would silently drop
+        impossible values and could therefore validate a state other than the
+        one declared by the evidence. Validate the whole snapshot first, then
+        replace the deque atomically.
+        """
+
+        maxlen = self._samples.maxlen
+        if maxlen is None or len(samples) > maxlen:
+            raise ValueError("pause replay state exceeds the configured window")
+        restored: list[float] = []
+        for sample in samples:
+            if isinstance(sample, bool) or not isinstance(sample, (int, float)):
+                raise TypeError("pause replay samples must be numeric")
+            value = float(sample)
+            if (
+                not math.isfinite(value)
+                or value < _MIN_PAUSE_SEC
+                or value > self._hi
+            ):
+                raise ValueError("pause replay sample is not representable")
+            restored.append(value)
+        self._samples.clear()
+        self._samples.extend(restored)
+
     def _clamp(self, v: float) -> float:
         return min(max(v, self._lo), self._hi)
 
@@ -366,6 +400,32 @@ class EndpointConfig:
     pause_margin: float = 0.15
     pause_min_samples: int = 8
 
+    def __post_init__(self) -> None:
+        """Reject policy inputs that cannot be replayed or serialized exactly."""
+
+        for name in ("enabled", "adaptive_floor"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean")
+        for name in (
+            "min_silence_sec",
+            "max_silence_sec",
+            "complete_threshold",
+            "incomplete_threshold",
+            "high_confidence_floor",
+            "high_confidence_score",
+            "pause_quantile",
+            "pause_margin",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite")
+        for name in ("pause_window", "pause_min_samples"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+
     @classmethod
     def from_sherpa(cls, c: object) -> "EndpointConfig":
         return cls(
@@ -382,6 +442,54 @@ class EndpointConfig:
             pause_margin=float(getattr(c, "endpoint_pause_margin", 0.15)),
             pause_min_samples=int(getattr(c, "endpoint_pause_min_samples", 8)),
         )
+
+
+class CompletionScoreState(str, Enum):
+    """Why one turn observation does or does not contain a completion score."""
+
+    HARD_BOUNDARY = "hard_boundary"
+    UNAVAILABLE = "unavailable"
+    NO_PARTIAL = "no_partial"
+    EARLY_GUARDED = "early_guarded"
+    AUDIO_WINDOW_PENDING = "audio_window_pending"
+    DETECTOR_ERROR = "detector_error"
+    SCORED = "scored"
+
+
+class TurnDecisionBasis(str, Enum):
+    """The policy path that produced one turn decision."""
+
+    ACOUSTIC = "acoustic"
+    SEMANTIC_EARLY = "semantic_early"
+    SEMANTIC_HOLD = "semantic_hold"
+    SEMANTIC_WAIT = "semantic_wait"
+    MAX_WAIT = "max_wait"
+
+
+@dataclass(frozen=True, slots=True)
+class TurnObservation:
+    """Aggregate-safe inputs to one endpoint policy decision.
+
+    Transcript text, PCM, model exceptions, and clock/identity data deliberately
+    stay outside this value.  A recorded observation can therefore be replayed
+    deterministically without retaining user content.
+    """
+
+    acoustic_endpoint: bool
+    vad_active: bool
+    early_endpoint_allowed: bool
+    trailing_silence_sec: float
+    completion_state: CompletionScoreState
+    completion_score: Optional[float] = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnDecision:
+    """Typed endpoint result before transcript selection or admission gates."""
+
+    commit: bool
+    endpoint_reason: EndpointReason
+    basis: TurnDecisionBasis
 
 
 class AdaptiveEndpointPolicy:
@@ -410,6 +518,19 @@ class AdaptiveEndpointPolicy:
         calls this on each resume-after-gap). No-op for the floor until
         ``pause_min_samples`` gaps have been seen."""
         self._pause.observe_pause(gap_sec)
+
+    @property
+    def replay_config(self) -> EndpointConfig:
+        """Immutable policy configuration used by this live policy."""
+        return self._c
+
+    def replay_pause_samples(self) -> tuple[float, ...]:
+        """Snapshot accepted pause state without exposing transcript content."""
+        return self._pause.replay_samples()
+
+    def restore_replay_pause_samples(self, samples: Sequence[float]) -> None:
+        """Restore a persisted learner snapshot without silent filtering."""
+        self._pause.restore_replay_samples(samples)
 
     def decide(self, *, acoustic_endpoint: bool, completion_score: float, silence_sec: float) -> bool:
         c = self._c
@@ -468,3 +589,79 @@ class AdaptiveEndpointPolicy:
             return False
         # Otherwise the acoustic decision stands (the safe default / hard backstop).
         return acoustic_endpoint
+
+
+def decide_turn(
+    observation: TurnObservation,
+    *,
+    policy: Optional[AdaptiveEndpointPolicy],
+) -> TurnDecision:
+    """Resolve one aggregate observation without changing endpoint policy rules.
+
+    A VAD-active acoustic endpoint remains the hard long-utterance boundary.
+    Every observation that was not scored follows the acoustic endpoint exactly.
+    For a scored observation, :class:`AdaptiveEndpointPolicy` remains the sole
+    source of the commit boolean; this function only gives that result a typed,
+    diagnostic-safe basis and the existing acoustic-lineage endpoint reason.
+    """
+
+    if observation.acoustic_endpoint and observation.vad_active:
+        return TurnDecision(
+            commit=True,
+            endpoint_reason=EndpointReason.MAX_WAIT,
+            basis=TurnDecisionBasis.MAX_WAIT,
+        )
+
+    if (
+        not observation.acoustic_endpoint
+        and not observation.early_endpoint_allowed
+    ):
+        return TurnDecision(
+            commit=False,
+            endpoint_reason=EndpointReason.UNKNOWN,
+            basis=TurnDecisionBasis.ACOUSTIC,
+        )
+
+    if (
+        policy is None
+        or observation.completion_state is not CompletionScoreState.SCORED
+        or observation.completion_score is None
+    ):
+        return TurnDecision(
+            commit=observation.acoustic_endpoint,
+            endpoint_reason=(
+                EndpointReason.ASR
+                if observation.acoustic_endpoint
+                else EndpointReason.UNKNOWN
+            ),
+            basis=TurnDecisionBasis.ACOUSTIC,
+        )
+
+    commit = policy.decide(
+        acoustic_endpoint=observation.acoustic_endpoint,
+        completion_score=observation.completion_score,
+        silence_sec=observation.trailing_silence_sec,
+    )
+    if commit and not observation.acoustic_endpoint:
+        return TurnDecision(
+            commit=True,
+            endpoint_reason=EndpointReason.SEMANTIC,
+            basis=TurnDecisionBasis.SEMANTIC_EARLY,
+        )
+    if not commit and observation.acoustic_endpoint:
+        return TurnDecision(
+            commit=False,
+            endpoint_reason=EndpointReason.UNKNOWN,
+            basis=TurnDecisionBasis.SEMANTIC_HOLD,
+        )
+    if commit:
+        return TurnDecision(
+            commit=True,
+            endpoint_reason=EndpointReason.ASR,
+            basis=TurnDecisionBasis.ACOUSTIC,
+        )
+    return TurnDecision(
+        commit=False,
+        endpoint_reason=EndpointReason.UNKNOWN,
+        basis=TurnDecisionBasis.SEMANTIC_WAIT,
+    )

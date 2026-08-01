@@ -7,6 +7,12 @@ from dataclasses import dataclass
 
 import pytest
 
+from always_on_agent.acoustic import (
+    AcousticLineage,
+    AcousticSource,
+    AcousticSpan,
+    EndpointReason,
+)
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import SessionMemory
@@ -21,6 +27,7 @@ from core.engine import (
     SpeechStyle,
     TrackedSpeech,
 )
+from core.diagnostic_bundle import DiagnosticStage
 from core.engines.sherpa import SherpaConfig
 from core.llm import EchoLLM
 from core.metrics import HANDLED_LOCAL
@@ -136,6 +143,40 @@ class _ControlledReceiptEngine(AudioEngine):
             )
 
 
+class _BrokenReceiptEngine(_ControlledReceiptEngine):
+    """Sink that violates the required terminal-receipt shutdown contract."""
+
+    def stop_speaking(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+
+class _StopOnlyReceiptEngine(_ControlledReceiptEngine):
+    """Adapter whose terminal receipt is dispatched from stop(), not the cut."""
+
+    def stop_speaking(self) -> None:
+        return
+
+    def stop(self) -> None:
+        with self._lock:
+            pending = [
+                index
+                for index, fragment in enumerate(self.fragments)
+                if fragment.on_terminal is not None
+            ]
+        for index in pending:
+            text = self.fragments[index].speech.text
+            self.terminal(
+                index,
+                PlaybackOutcome.COMPLETED,
+                safe_text_prefix=text,
+                played_samples=100,
+                total_samples=100,
+            )
+
+
 def _task(runtime: VoiceRuntime, text: str = "question"):
     task = runtime.supervisor.tasks.create_task(
         IntentDecision(
@@ -156,6 +197,24 @@ def _assistant_memory(runtime: VoiceRuntime) -> list[str]:
         for item in runtime.memory.all()
         if "assistant_output" in item.tags
     ]
+
+
+def _diagnostic_acoustic() -> AcousticLineage:
+    return AcousticLineage.single(
+        AcousticSpan(
+            stream_id="sherpa-11111111111111111111111111111111",
+            utterance_id="u1",
+            capture_epoch=1,
+            capture_generation=1,
+            source=AcousticSource.LIVE_CAPTURE,
+            speech_start_at=1.0,
+            speech_end_at=1.2,
+            endpoint_committed_at=1.3,
+            sample_rate_hz=16_000,
+            owned_sample_count=3_200,
+            endpoint_reason=EndpointReason.ASR,
+        )
+    )
 
 
 class _JoiningCallbackEngine(_ControlledReceiptEngine):
@@ -268,6 +327,9 @@ def test_auxiliary_playback_emits_no_autonomous_reply_markers(caplog):
         remember=False,
         is_followup=False,
         streaming=False,
+        session_id="session-11111111111111111111111111111111",
+        turn_id="turn-1",
+        revision=0,
     )
     try:
         runtime._on_playback_started(auxiliary)
@@ -282,6 +344,220 @@ def test_auxiliary_playback_emits_no_autonomous_reply_markers(caplog):
         assert "task=reply-task input_generation=21" not in caplog.text
         assert "playback receipt started:" not in caplog.text
         assert "playback quiescent:" not in caplog.text
+    finally:
+        runtime.stop()
+
+
+def test_playback_receipts_emit_only_typed_transcript_free_diagnostics():
+    observed = []
+    runtime = VoiceRuntime(
+        _ControlledReceiptEngine(),
+        EchoLLM(),
+        diagnostic_observer=observed.append,
+    )
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    fragment_id = history.register(
+        task_id="private-task-label",
+        epoch=1,
+        input_generation=1,
+        followup_generation=0,
+        text="private spoken canary",
+        remember=False,
+        is_followup=False,
+        streaming=False,
+        session_id="session-11111111111111111111111111111111",
+        turn_id="turn-1",
+        revision=0,
+    )
+    try:
+        runtime._on_playback_started(fragment_id)
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=fragment_id,
+                outcome=PlaybackOutcome.INTERRUPTED,
+                safe_text_prefix="private spoken canary",
+                played_samples=25,
+                total_samples=100,
+                output_sample_rate=16000,
+            )
+        )
+
+        assert [item.stage for item in observed] == [
+            DiagnosticStage.PLAYBACK_STARTED,
+            DiagnosticStage.PLAYBACK_TERMINAL,
+        ]
+        assert all(item.correlation_id == fragment_id for item in observed)
+        assert observed[-1].outcome == "interrupted"
+        assert observed[-1].numeric_value == pytest.approx(0.25)
+        rendered = "\n".join(repr(item) for item in observed)
+        assert "private spoken canary" not in rendered
+        assert "private-task-label" not in rendered
+    finally:
+        runtime.stop()
+
+
+def test_reply_playback_diagnostics_link_acoustic_and_actor_lifecycle():
+    observed = []
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        diagnostic_observer=observed.append,
+    )
+    runtime.start(run_bus=False)
+    task = _task(runtime, "private acoustic question")
+    assert task.identity is not None
+    runtime._remember_diagnostic_acoustic(0, _diagnostic_acoustic(), 2)
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": "private spoken answer",
+                "epoch": task.speech_epoch,
+                "streaming": True,
+                "input_generation": 0,
+                **task.identity.to_payload(),
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert [item.stage for item in observed] == [
+            DiagnosticStage.PLAYBACK_ADMITTED
+        ]
+        engine.start_fragment(0)
+        engine.terminal(
+            0,
+            PlaybackOutcome.INTERRUPTED,
+            safe_text_prefix="private spoken",
+            played_samples=25,
+            total_samples=100,
+        )
+
+        assert [item.stage for item in observed] == [
+            DiagnosticStage.PLAYBACK_ADMITTED,
+            DiagnosticStage.PLAYBACK_STARTED,
+            DiagnosticStage.PLAYBACK_TERMINAL,
+        ]
+        assert len({item.correlation_id for item in observed}) == 1
+        admission = observed[0]
+        assert admission.playback_kind == "reply"
+        assert (
+            admission.stream_id,
+            admission.utterance_id,
+            admission.revision,
+        ) == (
+            "sherpa-11111111111111111111111111111111",
+            "u1",
+            2,
+        )
+        actor_identities = {
+            (item.agent_session_id, item.agent_turn_id, item.agent_revision)
+            for item in observed
+        }
+        assert len(actor_identities) == 1
+        assert all(
+            left.monotonic_ns <= right.monotonic_ns
+            for left, right in zip(observed, observed[1:])
+        )
+        assert observed[-1].outcome == "interrupted"
+        assert observed[-1].numeric_value == pytest.approx(0.25)
+        rendered = "\n".join(repr(item) for item in observed)
+        assert "private acoustic question" not in rendered
+        assert "private spoken answer" not in rendered
+    finally:
+        runtime.stop()
+
+
+def test_missing_shutdown_receipt_invalidates_diagnostic_evidence():
+    invalidations: list[str] = []
+    engine = _BrokenReceiptEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        diagnostic_invalidator=invalidations.append,
+    )
+    runtime.start(run_bus=False)
+    task = _task(runtime, "broken receipt question")
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": "unreceipted answer",
+                "epoch": task.speech_epoch,
+                "streaming": True,
+                **task.identity.to_payload(),
+            },
+        )
+    )
+    runtime.bus.drain()
+    assert len(engine.fragments) == 1
+
+    runtime.stop()
+
+    assert invalidations == ["receipt_timeout"]
+
+
+def test_stop_only_terminal_receipt_gets_a_fresh_post_stop_drain():
+    engine = _StopOnlyReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "stop-only receipt question")
+    answer = "Stop-only complete answer."
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": answer,
+                "speak": True,
+                "followup": False,
+                "data": {},
+                "epoch": task.speech_epoch,
+            },
+            priority=60,
+        )
+    )
+    runtime.bus.drain()
+    engine.start_fragment(0)
+
+    runtime.stop()
+
+    assert runtime.supervisor.session_actor.active_playback_count == 0
+    assert _assistant_memory(runtime) == [answer]
+
+
+def test_latency_ack_playback_is_not_mislabeled_as_generic_auxiliary():
+    observed = []
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        diagnostic_observer=observed.append,
+    )
+    runtime.start(run_bus=False)
+    runtime._publish_auxiliary_event(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": "latency-ack",
+                "text": "private acknowledgement",
+                "latency_ack": True,
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert len(engine.fragments) == 1
+        assert observed[0].stage is DiagnosticStage.PLAYBACK_ADMITTED
+        assert observed[0].playback_kind == "latency_ack"
+        assert observed[0].stream_id is None
+        assert observed[0].utterance_id is None
+        engine.terminal(0, PlaybackOutcome.DROPPED)
     finally:
         runtime.stop()
 
@@ -915,7 +1191,12 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
 def test_resume_stage_failure_releases_actor_and_history_ownership(caplog):
     caplog.set_level(logging.ERROR, logger="speaker.event_bus")
     engine = _ControlledReceiptEngine()
-    runtime = VoiceRuntime(engine, EchoLLM())
+    observed = []
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        diagnostic_observer=observed.append,
+    )
     runtime.start(run_bus=False)
     task = _task(runtime)
 
@@ -944,6 +1225,7 @@ def test_resume_stage_failure_releases_actor_and_history_ownership(caplog):
         assert runtime.supervisor.session_actor.active_playback_count == 0
         assert runtime._playback_history.pending is False
         assert runtime._playback_history.pending_playback_admissions() == ()
+        assert observed == []
     finally:
         runtime.stop()
 
@@ -962,7 +1244,12 @@ def test_malformed_terminal_receipt_forces_failure_and_releases_actor(
     malformed,
 ):
     engine = _ControlledReceiptEngine()
-    runtime = VoiceRuntime(engine, EchoLLM())
+    observed = []
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        diagnostic_observer=observed.append,
+    )
     runtime.start(run_bus=False)
     task = _task(runtime)
     runtime.bus.publish(
@@ -991,11 +1278,21 @@ def test_malformed_terminal_receipt_forces_failure_and_releases_actor(
         runtime._on_playback_terminal(
             PlaybackReceipt(fragment_id=fragment_id, **fields)  # type: ignore[arg-type]
         )
+        runtime._on_playback_terminal(
+            PlaybackReceipt(fragment_id=fragment_id, **fields)  # type: ignore[arg-type]
+        )
 
         assert runtime.supervisor.session_actor.active_playback_count == 0
         assert runtime._playback_history.pending is False
         assert runtime._playback_history.pending_playback_admissions() == ()
         assert _assistant_memory(runtime) == []
+        assert [item.stage for item in observed] == [
+            DiagnosticStage.PLAYBACK_ADMITTED,
+            DiagnosticStage.PLAYBACK_TERMINAL,
+        ]
+        assert observed[-1].outcome == "failed"
+        assert observed[-1].numeric_value is None
+        assert observed[0].correlation_id == observed[-1].correlation_id
     finally:
         runtime.stop()
 

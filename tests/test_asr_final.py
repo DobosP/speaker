@@ -17,6 +17,7 @@ from core.engines._sherpa_models import (
 )
 from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import (
+    FinalTranscriptSource,
     SherpaConfig,
     SherpaOnnxEngine,
     _resolve_final_transcript,
@@ -187,6 +188,7 @@ def test_final_decision_exposes_raw_hypotheses_and_preserves_selected_text():
     assert decision.streaming_raw == "Ario der"
     assert decision.offline_raw == "  are you there  "
     assert decision.selected == "are you there"
+    assert decision.selected_source is FinalTranscriptSource.OFFLINE
     assert _transcribe_final_text(
         cfg,
         offline,
@@ -248,6 +250,7 @@ def test_exact_offline_verifier_consensus_changes_baseline_on_identical_pcm():
     assert decision.verifier_outcome == "consensus"
     assert decision.verifier_support == 2
     assert decision.verifier_changed is True
+    assert decision.selected_source is FinalTranscriptSource.VERIFIER_CONSENSUS
     rendered = repr(decision)
     assert "private corrected phrase" not in rendered
     assert "unrelated private streaming words" not in rendered
@@ -297,6 +300,7 @@ def test_nemo_offline_is_evidence_only_without_exact_quorum(
     assert decision.verifier_outcome == expected_outcome
     assert decision.verifier_support == expected_support
     assert decision.verifier_changed is False
+    assert decision.selected_source is FinalTranscriptSource.STREAMING
     assert "private verifier failure" not in repr(decision)
 
 
@@ -344,6 +348,7 @@ def test_two_decoded_empty_models_veto_one_word_noncontrol_final():
     assert decision.verifier_outcome == "empty_veto"
     assert decision.verifier_support == 2
     assert decision.verifier_changed is True
+    assert decision.selected_source is FinalTranscriptSource.NONE
 
 
 def test_two_decoded_empty_models_cannot_veto_stop():

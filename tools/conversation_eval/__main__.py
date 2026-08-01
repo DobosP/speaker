@@ -128,6 +128,30 @@ def _gate_exit_code(gate: dict[str, object]) -> int:
     return 0 if bool(gate.get("passed")) else 1
 
 
+def _attach_flow_acceptance(
+    report: dict[str, object],
+    flow_report: dict[str, object],
+) -> None:
+    """Compose the opt-in lifecycle gate without changing the v4 contract."""
+
+    gate = report.get("gate")
+    if not isinstance(gate, dict):
+        raise ValueError("conversation report is missing its gate")
+    flow_gate = flow_report.get("gate")
+    if not isinstance(flow_gate, dict):
+        raise ValueError("flow report is missing its gate")
+    v4_gate_pass = gate.get("passed") is True
+    flow_acceptance_pass = bool(
+        flow_report.get("passed") is True
+        and flow_gate.get("passed") is True
+    )
+    report["flow_acceptance"] = flow_report
+    gate["v4_gate_pass"] = v4_gate_pass
+    gate["flow_acceptance_required"] = True
+    gate["flow_acceptance_pass"] = flow_acceptance_pass
+    gate["passed"] = bool(v4_gate_pass and flow_acceptance_pass)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run the versioned, device-free voice conversation trace gate."
@@ -160,6 +184,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--include-local-config", action="store_true")
     parser.add_argument(
+        "--flow-acceptance",
+        action="store_true",
+        help=(
+            "also require the deterministic flow-v1 lifecycle contract; "
+            "this is a headless plumbing gate, not an STT/TTS quality test"
+        ),
+    )
+    parser.add_argument(
         "--allow-unverified-model",
         action="store_true",
         help=(
@@ -176,6 +208,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.runs < 1:
         parser.error("--runs must be at least 1")
+    if args.flow_acceptance:
+        # Keep the flag-off evaluator import and behavior unchanged.  Flow-v1
+        # is deliberately deterministic; real-model A/B remains the separate
+        # versioned v4 adoption contract.
+        from .flow_schema import FLOW_REQUIRED_RUNS
+
+        if args.mode != "deterministic":
+            parser.error("--flow-acceptance requires --mode deterministic")
+        if args.include_local_config:
+            parser.error("--flow-acceptance refuses --include-local-config")
+        if args.runs != FLOW_REQUIRED_RUNS:
+            parser.error(
+                f"--flow-acceptance requires exactly {FLOW_REQUIRED_RUNS} runs"
+            )
+        if args.scenario:
+            parser.error(
+                "--flow-acceptance requires the complete v4 scenario set; "
+                "omit --scenario"
+            )
     repository_before = _repository_metadata()
     try:
         scenarios = selected(args.scenario)
@@ -381,8 +432,36 @@ def main(argv: list[str] | None = None) -> int:
         provenance_ok=provenance_ok,
         diagnostic_override_used=diagnostic_override_used,
     )
+    if args.flow_acceptance:
+        from .flow import run_flow_suite
+        from .flow_schema import build_flow_report
+
+        flow_results = run_flow_suite(
+            config=config,
+            runs=args.runs,
+        )
+        flow_report = build_flow_report(
+            flow_results,
+            requested_runs=args.runs,
+        )
+        _attach_flow_acceptance(report, flow_report)
     output = write_report(args.output or _default_output(), report)
     gate = report["gate"]
+    if args.flow_acceptance:
+        flow_gate = report["flow_acceptance"]["gate"]
+        flow_summary = report["flow_acceptance"]["summary"]
+        print(
+            "flow: HEADLESS FLOW CONTRACT "
+            f"{'PASS' if flow_gate['passed'] else 'FAIL'} -- "
+            f"{flow_summary['passed_results']}/{flow_summary['total_results']} "
+            f"scenario-runs; pass^3={flow_summary['pass_power_3']}"
+        )
+        print(
+            "flow scope: microphone/native reader, VAD/capture, actual STT/WER, "
+            "real TTS synthesis/audio/pacing, AEC/room/open-speaker barge-in, "
+            "physical audibility, external device effects, and live/perceived "
+            "latency NOT COVERED"
+        )
     print(
         f"gate: {'PASS' if gate['passed'] else 'FAIL'} -- "
         f"semantics={gate['semantic_pass']} coverage={gate['coverage_ok']} "

@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Current non-real logic gate: 7,241 passed as 7,210 low-priority broad tests plus 31 isolated sandbox/logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0111 focused 325; owner 10; current APM/DTD 6.
+- Current non-real logic gate: 7,300 passed as 7,269 low-priority broad tests plus 31 isolated sandbox/logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0112 focused 118; exact headless CLI 42/42 + 12/12; current APM/DTD 6.
 - Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
@@ -39,6 +39,7 @@ Last verified: 2026-08-01 on Linux ROG.
   cannot grant device-action authority (ADR-0027/0041/0051).
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English plus Faster-Whisper Small. Protected controls fail closed; SenseVoice defaults remain unchanged (ADR-0078/0080).
 - Public evaluation has 8 tracks/15 sources/11 exclusions. Its checksum-bound DEMAND transform adds balanced kitchen/living/washing 0/10/20 dB strata; Rochester is acquisition-only without a publisher label map (ADR-0098/0099/0101/0102/0106/0109).
+- The opt-in conversation flow-v1 gate composes unchanged v4 semantics with exact 4x3 deterministic journeys for typed incremental turns, scripted interruption recovery, delayed read tools/follow-up, and confirmed synthetic-action stop/restart fencing. It uses production runtime/session ownership but explicitly excludes microphone/VAD wiring, STT/WER, real TTS/audio, AEC/room, physical audibility, external effects, and live latency (ADR-0112).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -78,7 +79,7 @@ Last verified: 2026-08-01 on Linux ROG.
 
 ## Next
 
-- Add an end-to-end conversation acceptance gate over turn detection, interruption recovery, incremental TTS, tool completion, and restart behavior; keep model/data acquisition and GPU cells isolated from runtime defaults until their aggregate and live gates pass (ADR-0111).
+- Add a hash-bound small public conversation/STT fixture lock, then compare isolated GPU model/configuration cells without changing runtime defaults; keep live promotion dependent on fresh private recording A/B (ADR-0112).
 - Capture fresh `./live.sh` vault/open-speaker evidence, export exact owner-labelled inputs, add disjoint command/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108/0109).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 

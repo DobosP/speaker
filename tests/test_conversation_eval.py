@@ -199,6 +199,31 @@ def test_capability_invocation_observer_captures_exact_boundary_and_is_removable
     assert len(events) == 2
 
 
+def test_trace_preserves_opaque_tool_lifecycle_identities():
+    from always_on_agent.capabilities import CapabilityInvocation
+    from tools.conversation_eval.trace import TraceRecorder
+
+    trace = TraceRecorder()
+    trace.on_capability_invocation(
+        CapabilityInvocation(
+            invocation_id=7,
+            phase="started",
+            name="web.search",
+            query="Pipecat",
+            task_id="runtime-task",
+            planner_tool=True,
+            timestamp=1.0,
+            monotonic=1.0,
+            tool_call_id="opaque-call",
+            idempotency_key="opaque-key",
+        )
+    )
+
+    event = trace.events()[0]
+    assert event.payload["tool_call_id"] == "opaque-call"
+    assert event.payload["idempotency_key"] == "opaque-key"
+
+
 def test_capability_observer_failure_never_changes_provider_result():
     registry = CapabilityRegistry()
     registry.register("answer", lambda _query, _context: CapabilityResult(True, "ok"))

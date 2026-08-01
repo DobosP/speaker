@@ -1,70 +1,61 @@
 Valid until: main advances beyond this task's landing commit — then treat as
 history.
 
-# Task result — complete asynchronous Sherpa decode owner
+# Task result — headless conversation flow acceptance
 
 ## Outcome
 
-The default local Sherpa path now has one bounded reader-to-owner PCM boundary:
-the existing `CaptureMediaSession`/`CaptureMailbox`. A dedicated
-`SherpaStreamingDecodeOwner` runs the complete ordered DSP, VAD, primary ASR,
-playback-confirm, word-cut, endpoint, and capture-loop callback state machine.
-No additional PCM queue was added.
+The unchanged 14-scenario conversation-eval v4 contract now has an opt-in
+flow-v1 extension through the existing diagnostic entry point:
+`python -m tools.conversation_eval --flow-acceptance`. The combined gate
+requires all 42 v4 scenario-runs plus exactly three repetitions of four
+production-control-plane journeys.
 
-Capture scope, decoder continuity, and stream incarnation are separate.
-Mailbox loss flushes the old scope and cancels an unclaimed in-flight block;
-an already-claimed effect may finish. Capture gaps and native errors retire
-both primary and word-cut roles before replacement. PCM and reader-time
-references are bytes-backed, irreversibly read-only, and excluded from reprs.
+Flow-v1 proves typed partial/final revision fencing, pure endpoint-policy
+decisions, incremental receipt-owned scripted playback, scripted interruption
+recovery, delayed read-tool ordering and follow-up, confirmation-gated
+synthetic action ownership, bounded `VoiceSession` stop, fresh-session
+isolation, and late-provider fencing. The action provider is in-memory and
+performs no external mutation.
 
-Startup is one rollback transaction after input opens. The complete processor
-publishes readiness before the reader starts; tail-worker and owner launch
-ambiguity is joined or retained without joining unpublished Python threads.
-Native teardown publishes `CLOSING`, pre-start close does not hold the owner
-lock across destructors, callback-driven full stop defers exact resources until
-its lease unwinds, and both legacy WAV and synchronized diagnostic recording
-receive the correct clean/incomplete disposition.
-
-Capture replay remains a synchronous shared-loop evaluator. Its source digest
-binds the production owner implementation, but its attestation rejects any
-production owner and labels execution `single-session-synchronous-replay`.
+Reports fail closed on incomplete, duplicate, relabelled, contradictory,
+nonfinite, reordered, or unbound evidence. Nonempty task-runtime
+`tool_call_id` and `idempotency_key` values survive in raw diagnostic traces,
+and start/finish identities are checked exactly. The default v4 CLI path stays
+flow-free; the application still has one entry point, `python -m core --session`.
 
 ## Main files
 
-- Added `core/engines/_sherpa_streaming_decode_owner.py` and focused owner tests.
-- Hardened `core/media_session.py` mailbox ownership, immutable snapshots,
-  in-flight effect leases, whole-scope loss, and reader launch ambiguity.
-- Updated `core/engines/sherpa.py` for the complete owner, exact role/identity
-  rotation, native-error recovery, startup rollback, and re-entrant cleanup.
-- Updated hotword, media, startup, replay provenance, playback, and adjacent
-  regression tests.
-- Added ADR-0111 and updated `STATUS.md` plus `docs/agent-testing.md`.
+- Added `tools/conversation_eval/flow.py` and `flow_schema.py`.
+- Added focused runtime, schema-poison, and CLI/backward-compatibility tests.
+- Extended `TraceRecorder` with nonempty opaque tool lifecycle identities.
+- Added ADR-0112 and updated `STATUS.md`.
 
 ## Verification
 
-- Full non-real-model split: 7,241 passed (7,210 low-priority broad plus
-  31 isolated sandbox/logging/path/thread-sensitive checks), 14 skipped,
-  23 model-only deselected, and 9 pre-existing warnings.
-- Documented complete-owner/adjacent gate: 325 passed; dedicated owner file:
-  10 passed, including terminal/registry stress; required APM/DTD: 6 passed.
-- One unchanged bounded-I/O test was isolated after its process-global
-  `os.read` hook was consumed by an unrelated reader; it passed alone and a
-  reviewer reproduced the pre-snapshot interference deterministically.
-- Working-tree and staged `git diff --check` are clean; the exact 15-file task
-  set is staged with no unstaged changes.
+- Exact combined CLI: base v4 42/42 and flow-v1 12/12, both `pass^3=True`,
+  exit 0; report written outside Git at
+  `/tmp/speaker-conversation-flow-v1-report.json`.
+- Focused evaluator/flow suite: 118 passed; mandatory APM/DTD: 6 passed.
+- Full non-real split: 7,300 passed (7,269 low-priority broad plus 31
+  isolated logging/path/thread-sensitive checks), 14 skipped, 23 model-only
+  deselected, and 9 pre-existing warnings.
+- The 31 isolated checks comprise one log-capture case with debug logging, one
+  writable-runlog CLI case, one private-mode wheel-lock case, and 28 fake
+  LiveKit event-loop cases. LiveKit passed outside the sandbox because this
+  sandbox's asyncio self-pipe did not wake; the production code was unchanged.
+- Independent final review found no fail-open, evidence-overclaim, lifecycle,
+  or backward-compatibility blocker. `git diff --check` is clean.
 
 ## Limits / next
 
-No STT/TTS model, endpoint policy, enrollment rule, tool authority, capability,
-entry point, or device default changed. No physical microphone/audio-device,
-GPU/model-backed, acoustic AEC/room, WER, latency, or live-conversation test
-ran.
+Fixture transcripts are plumbing-only. No microphone/native reader, live VAD
+wiring, recognizer decode, WER/CER, real TTS/PCM pacing, AEC/room/open-speaker
+behavior, physical audibility, external device effect, GPU model, or
+live/perceived latency was tested.
 
-Fake-device tests prove owner-before-reader ordering, not native hardware.
-Replay bypasses the production owner thread, native reader, mailbox overload,
-and effect leases; its source digest is not execution evidence. The inline
-`media_pcm_queue_ms=0` path is compatibility only.
-
-Next, add an end-to-end conversation acceptance gate and acquire fresh private
-plus permissively licensed disjoint command/multi-voice data. Run isolated GPU
-model cells without changing runtime defaults, then perform physical live A/B.
+Next, implement a reproducible, hash-bound 96-case local fixture recipe from
+HarperValleyBank, EdAcc, AMI, and Common Voice Spontaneous Speech v4. Keep audio
+outside Git, label overlap as diagnostic-only, and do not claim the public data
+is unseen or training-disjoint. Then run isolated GPU STT/configuration cells
+without changing defaults; live promotion still requires Paul's recordings.

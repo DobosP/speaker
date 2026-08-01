@@ -204,6 +204,14 @@ class TraceRecorder:
             "query": event.query,
             "planner_tool": event.planner_tool,
         }
+        # Preserve non-empty lifecycle identities allocated by TaskRuntime.
+        # They are safe opaque strings (the private invocation context remains
+        # hidden) and prove exact tool ownership/idempotency. Omitting empty
+        # values keeps legacy v4 trace JSON stable for direct registry calls.
+        if event.tool_call_id:
+            payload["tool_call_id"] = event.tool_call_id
+        if event.idempotency_key:
+            payload["idempotency_key"] = event.idempotency_key
         if event.phase == "finished":
             payload["result"] = result_payload(event.result)
         self._append(

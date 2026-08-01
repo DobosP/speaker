@@ -140,6 +140,54 @@ Small's poor result rejects it as an adoption candidate. These numbers remain
 development whole-clip evidence, not streaming/interaction latency, held-out,
 live-hardware, or model-adoption evidence.
 
+## VoxPopuli Romanian-accented English slice
+
+[ADR-0103](adr/0103-add-romanian-accented-english-voxpopuli-slice.md) records
+the separate 24-speaker `en_ro` preparation path. It accepts only two explicit
+local files from the official `en_accented` test split at revision
+`42f01879c780b4a2e90ec0b4f616c2ece526e4f1`; the tool contains no downloader
+or network client. Review the dataset's CC0 declaration and the linked European
+Parliament source legal notice before preparation.
+
+Use a separate environment containing exactly PyArrow 25.0.0. Keep the source
+files owner-only and choose a new private output directory. The source object
+names, sizes, and SHA-256 values are:
+
+- `test-00000-of-00002.parquet`: 2,471,743,754 bytes,
+  `202d71bde2680f30aa7ae1050a98cdf85972458f94e6493db2aa7b8dd8ff46ec`;
+- `test-00001-of-00002.parquet`: 2,474,983,297 bytes,
+  `7d61b4c7a2e5c565a382543236442a7a8dd081c985e52dd1084905e4becc3901`.
+
+```bash
+python3 -m venv /absolute/private/voxpopuli-parquet-env
+/absolute/private/voxpopuli-parquet-env/bin/python -m pip install \
+  'pyarrow==25.0.0'
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.prepare_voxpopuli_ro_accent \
+  --source-shard-0 /absolute/private/test-00000-of-00002.parquet \
+  --source-shard-1 /absolute/private/test-00001-of-00002.parquet \
+  --parquet-python /absolute/private/voxpopuli-parquet-env/bin/python \
+  --output-dir /absolute/private/new-voxpopuli-en-ro-corpus \
+  --accept-term CC0-1.0 \
+  --accept-term EUROPEAN-PARLIAMENT-LEGAL-NOTICE
+```
+
+The aggregate CLI response contains counts and digests only. The private
+schema-v2 corpus carries literal references for scoring; its preparation
+receipt carries only domain-separated identity hashes, transcript hashes, source/PCM
+hashes, selection evidence, and official provenance. The worker inherits the
+already-open source descriptors and never follows Parquet audio path values.
+
+The four duration bands each contribute six distinct speakers. This is a
+formal spontaneous Romanian-L2-English diagnostic after PCM is available. It
+does not cover domestic conversation, commands, capture, endpointing, echo,
+tools, or live behavior, and model-training overlap may be unknown. Synthetic
+tests are green; real-shard schema/audio compatibility is intentionally unrun
+until the first preparation receives separate review.
+
 ## Whole-clip decoder smoke
 
 The evaluator requires Linux and the production Faster-Whisper CUDA contract:

@@ -27,10 +27,12 @@ from .manifest import (
     MAX_PYTHON_BYTES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     WorkerManifest,
@@ -131,6 +133,41 @@ class WorkerError(RuntimeError):
         self.code = code
 
 
+def _external_moonshine_config(
+    manifest: WorkerManifest,
+) -> MoonshineExternalEndpointConfig:
+    config = manifest.adapter_config
+    if (
+        type(config) is not MoonshineExternalEndpointConfig
+        or config.segmentation_mode != "external-presegmented"
+        or config.endpoint_owner != "external-input-boundary"
+        or type(config.vad_threshold) is not float
+        or config.vad_threshold != 0.0
+        or math.copysign(1.0, config.vad_threshold) != 1.0
+        or type(config.vad_max_segment_duration_sec) is not float
+        or config.vad_max_segment_duration_sec != 136.0
+        or type(config.vad_hop_size_samples) is not int
+        or config.vad_hop_size_samples != 512
+        or type(config.streaming_chunk_samples) is not int
+        or config.streaming_chunk_samples != 1_280
+        or type(config.online_partial_interval_ms) is not int
+        or config.online_partial_interval_ms != 500
+        or type(config.authoritative_alignment_samples) is not int
+        or config.authoritative_alignment_samples
+        != math.lcm(
+            config.vad_hop_size_samples,
+            config.streaming_chunk_samples,
+        )
+        or config.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
+        or config.finalization_policy
+        != "verified-native-free-authoritative-batch-v2"
+        or type(config.maximum_source_samples) is not int
+        or config.maximum_source_samples != 2_097_152
+    ):
+        raise WorkerError("worker_protocol")
+    return config
+
+
 def sanitized_worker_environment(scratch_root: Path) -> dict[str, str]:
     """Return a minimal environment with numerical fan-out disabled."""
 
@@ -181,6 +218,23 @@ def _expected_final_evidence(
     """Derive independently checkable final chunk and padding evidence."""
 
     total_samples = request.pcm.samples + request.stream.tail_padding_samples
+    if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+        config = _external_moonshine_config(manifest)
+        if (
+            request.stream.tail_padding_samples != 0
+            or request.stream.chunk_samples != config.streaming_chunk_samples
+            or request.stream.partial_interval_ms
+            != config.online_partial_interval_ms
+            or request.pcm.samples > config.maximum_source_samples
+        ):
+            raise WorkerError("invalid_request")
+        chunks = (
+            total_samples + config.streaming_chunk_samples - 1
+        ) // config.streaming_chunk_samples
+        return (
+            chunks,
+            (-request.pcm.samples) % config.authoritative_alignment_samples,
+        )
     if manifest.adapter != NEMOTRON_ADAPTER:
         chunks = (
             total_samples + request.stream.chunk_samples - 1
@@ -1249,6 +1303,15 @@ class StreamingWorker:
     def start(self) -> ReadyEvent:
         if self._process is not None or self._closed:
             raise WorkerError("worker_state")
+        if self.manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+            if self.manifest.schema_version != 7:
+                raise WorkerError("worker_protocol")
+            _external_moonshine_config(self.manifest)
+        elif (
+            self.manifest.schema_version == 7
+            and self.manifest.adapter != MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+        ):
+            raise WorkerError("worker_protocol")
         try:
             lexical_scratch = Path(os.path.abspath(self.scratch_root))
             with opened_directory_nofollow(
@@ -1487,6 +1550,8 @@ class StreamingWorker:
                 self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
             ):
                 raise WorkerError("worker_protocol")
+            if self.manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+                _expected_final_evidence(self.manifest, checked)
             self._verify_pcm(checked)
             self._send(encoded)
             partials: list[PartialEvent] = []
@@ -1671,6 +1736,7 @@ class StreamingWorker:
             if self.manifest.adapter in {
                 FASTER_WHISPER_ENDPOINT_ADAPTER,
                 MOONSHINE_ADAPTER,
+                MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
                 NEMOTRON_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
             }:
@@ -1679,6 +1745,7 @@ class StreamingWorker:
                     raise WorkerError("worker_artifact_changed")
                 limits = {
                     MOONSHINE_ADAPTER: None,
+                    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: None,
                     NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
                     PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
                     FASTER_WHISPER_ENDPOINT_ADAPTER: (
@@ -1701,7 +1768,10 @@ class StreamingWorker:
                     _verify_nemotron_runtime_layout(self.manifest, receipt)
                 if self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
                     _verify_faster_whisper_runtime_layout(self.manifest, receipt)
-                if self.manifest.adapter == MOONSHINE_ADAPTER:
+                if self.manifest.adapter in {
+                    MOONSHINE_ADAPTER,
+                    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+                }:
                     wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
                     if wheel_artifact is None:
                         raise WorkerError("worker_artifact_changed")

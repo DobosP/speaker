@@ -1,0 +1,160 @@
+{
+  "candidate": {
+    "adapter": "moonshine-voice-external-endpoint-v1",
+    "language": "en",
+    "model_arch": "medium-streaming",
+    "model_id": "moonshine-voice-0.1.0-medium-streaming-en-cpu-boundary-external",
+    "provider": "cpu",
+    "segmentation_mode": "external-presegmented",
+    "upstream_commit": "cc1695646a560f2eec7f7c058f3c4d580f039e4b",
+    "version": "0.1.0"
+  },
+  "config": {
+    "authoritative_alignment_samples": 2560,
+    "chunk_samples": 1280,
+    "finalization_policy": "verified-native-free-authoritative-batch-v2",
+    "online_partial_interval_ms": 500,
+    "tail_padding_samples": 0,
+    "vad_hop_size_samples": 512,
+    "vad_threshold": 0.0
+  },
+  "control": {
+    "adapter": "moonshine-voice-stream-v1",
+    "comparison_scope": "descriptive_external_vs_legacy_only",
+    "controlled_internal_external_pair": false,
+    "model_id": "moonshine-voice-0.1.0-medium-streaming-en-cpu"
+  },
+  "corpus": {
+    "audio_total_sec": 136.615,
+    "case_set_sha256": "cdb651158c4c45d5d24cc68cf15b31c60b7c1e7cd57eeea1dcf51bd69cfc9cc4",
+    "cases": 14,
+    "command_attempts": 0,
+    "dataset": "MInDS-14 en-US",
+    "kind": "public-voice-v1",
+    "manifest_sha256": "a9c6859289d28b3bcc79665d890c9934f1f7b17dd7f3fe34b83a8d69a61ed3fe",
+    "suite": "intent-asr"
+  },
+  "date": "2026-08-02",
+  "execution": {
+    "discarded_pre_repair_diagnostics": {
+      "internal_profile_invalidated_by_source_audit": true,
+      "used_for_verdict": false,
+      "vad_bypass_80ms_smoke_timed_out": true
+    },
+    "model_free_preflight_failures": [
+      "world_writable_scratch_parent",
+      "stale_control_worker_binding"
+    ],
+    "order": [
+      "external_presegmented_aba_smoke",
+      "external_presegmented_burst_r1",
+      "legacy_same_geometry_burst_r1"
+    ],
+    "paced_run": false,
+    "repeat_run": false,
+    "stopped_after_decisive_burst_rejection": true
+  },
+  "native_audit": {
+    "authoritative_batch_threshold_zero_bypasses_silero": true,
+    "internal_vad_recurrent_state_process_global": true,
+    "internal_vad_segment_tail_loss_possible_samples": 1279,
+    "public_disable_vad_flag_available": false,
+    "python_stream_close_checks_native_return_code": false,
+    "schema7_direct_native_free_checks_return_code": true,
+    "whole_input_alignment_safe_only_for_threshold_zero_single_segment": true
+  },
+  "receipts": {
+    "artifact_set_sha256": "fa8d31d6df4ab0791e1b8074da7cbced067f98908b3e3d89a00934f9245526f1",
+    "config_contract_sha256": "3eb38d19555f18f1094b6ba580780b30a907bda25560ebe66e809887b4403083",
+    "control_manifest_sha256": "1d9b05a1b1b513a323c487e8127fdb6912e214705e38d8973142c240c70c2231",
+    "control_manifest_size_bytes": 2916,
+    "external_manifest_sha256": "3e49e9c02899266a03a301973b6b0a4ec0dd61cf68559ea7ee101cdfc91882ab",
+    "external_manifest_size_bytes": 3379,
+    "runtime_receipt_sha256": "0f695be826bc9a2b0d86ba8184ae076275378165db401629af534c8f0b9140f5",
+    "source_bundle_sha256": "db3791f62f6249f3ce6f6ee2fb4db5e6129c8d426f1fbf54f3f8843603f69ccc",
+    "wheel_sha256": "0f833deb43bad5dcfb4cfd3257b6df83ef9abd3f27be3199622fe41932e8d916",
+    "wheel_size_bytes": 56369045,
+    "worker_sha256": "9d927ee61f9ba27c1443a3a31b1bbe9475be6b2e37c312f74b7940d1923d3746"
+  },
+  "reports": [
+    {
+      "kind": "external_presegmented_burst_r1",
+      "metrics": {
+        "cer": 0.8373,
+        "finalization_p50_ms": 608.292,
+        "finalization_p95_ms": 4906.783,
+        "first_partial_p50_ms": 65.011,
+        "max_reported_rss_mb": 1634.965,
+        "model_padding_max_samples": 2390,
+        "model_padding_total_samples": 18316,
+        "nonempty_finals": 10,
+        "rtf": 0.995,
+        "stable_partial_missing": 7,
+        "wer": 0.875
+      },
+      "report_sha256": "99598ec694d7150bb59496e40a7ce3aabd0df1416afb355d85ec9c0f79054732",
+      "report_size_bytes": 9219,
+      "stderr_bytes": 0
+    },
+    {
+      "kind": "legacy_same_geometry_burst_r1",
+      "metrics": {
+        "cer": 0.6342,
+        "finalization_p50_ms": 0.918,
+        "finalization_p95_ms": 1.496,
+        "first_partial_p50_ms": 81.675,
+        "max_reported_rss_mb": 1094.664,
+        "model_padding_max_samples": 0,
+        "model_padding_total_samples": 0,
+        "nonempty_finals": 14,
+        "rtf": 0.2971,
+        "stable_partial_missing": 0,
+        "wer": 0.6685
+      },
+      "report_sha256": "019d83fb46c3d4be35c775d9fcc2ba0443dcdd22a1e3078fdc9807d0c1b32ab4",
+      "report_size_bytes": 7397,
+      "stderr_bytes": 0
+    }
+  ],
+  "schema_version": 1,
+  "smoke": {
+    "elapsed_sec": 8.70,
+    "evaluations": 3,
+    "middle_known_speech_empty_final": true,
+    "padding_verified": true,
+    "repeat_a_final_identical": true,
+    "repeat_a_partials_identical": true,
+    "sequence_and_source_samples_verified": true
+  },
+  "scope": {
+    "adoption_authority": false,
+    "gpu": false,
+    "live_hardware": false,
+    "model_executed": true,
+    "speaker_endpoint_executed": false,
+    "speaker_endpoint_validated": false,
+    "transcript_rows_present": false,
+    "vad_quality_validated": false
+  },
+  "verdict": {
+    "control_deltas": {
+      "cer": 0.2031,
+      "finalization_p50_ms": 607.374,
+      "finalization_p95_ms": 4905.287,
+      "rss_mb": 540.301,
+      "rtf_ratio": 3.349,
+      "wer": 0.2065
+    },
+    "decision": "benchmark_only_reject_live",
+    "default_changed": false,
+    "reasons": [
+      "four_known_speech_empty_finals",
+      "wer_regression",
+      "candidate_call_rtf_near_one",
+      "slow_batch_finalization",
+      "rss_regression",
+      "stock_internal_vad_pair_invalid",
+      "no_command_or_live_evidence"
+    ]
+  }
+}

@@ -14,7 +14,11 @@ import pytest
 
 from tools import provision_moonshine_candidate as provision
 from tools.streaming_stt import manifest as manifest_module
-from tools.streaming_stt.manifest import MOONSHINE_ARTIFACT_NAMES
+from tools.streaming_stt.manifest import (
+    MOONSHINE_ARTIFACT_NAMES,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+    MoonshineExternalEndpointConfig,
+)
 
 
 _DIST_INFO = "moonshine_voice-0.1.0.dist-info"
@@ -133,6 +137,16 @@ def test_provision_binds_existing_disposable_runtime_without_importing_it(
     )
 
     assert manifest.adapter == "moonshine-voice-stream-v1"
+    assert manifest.schema_version == 2
+    assert manifest.model_id == "moonshine-voice-0.1.0-tiny-streaming-en-cpu"
+    assert manifest.adapter_config is not None
+    assert manifest.adapter_config.as_dict() == {
+        "package_version": "0.1.0",
+        "api_version": 30000,
+        "model_arch": "tiny-streaming",
+        "provider": "cpu",
+        "language": "en",
+    }
     assert manifest.python.path == venv / "bin" / "python"
     assert tuple(manifest.artifact_by_name) == MOONSHINE_ARTIFACT_NAMES
     assert stat.S_IMODE(output.stat().st_mode) == 0o700
@@ -198,6 +212,72 @@ def test_provision_selects_closed_nondefault_streaming_receipt(
     assert manifest.model_id == f"moonshine-voice-0.1.0-{model_arch}-en-cpu"
     assert manifest.adapter_config is not None
     assert manifest.adapter_config.model_arch == model_arch
+
+
+def test_provision_external_presegmented_profile_is_distinct_and_exact(
+    tmp_path,
+    monkeypatch,
+):
+    venv, _site_packages, wheel, model = _inputs(tmp_path, monkeypatch)
+
+    manifest = provision.provision_candidate(
+        venv_root=venv,
+        wheel=wheel,
+        model_root=model,
+        output_dir=tmp_path / "boundary-external-receipt",
+        model_arch="medium-streaming",
+        segmentation_mode="external-presegmented",
+    )
+
+    assert manifest.schema_version == 7
+    assert manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+    assert manifest.model_id == (
+        "moonshine-voice-0.1.0-medium-streaming-en-cpu-boundary-external"
+    )
+    assert len(manifest.model_id) <= 64
+    assert isinstance(manifest.adapter_config, MoonshineExternalEndpointConfig)
+    assert manifest.adapter_config.as_dict() == {
+        "package_version": "0.1.0",
+        "api_version": 30000,
+        "model_arch": "medium-streaming",
+        "provider": "cpu",
+        "language": "en",
+        "segmentation_mode": "external-presegmented",
+        "endpoint_owner": "external-input-boundary",
+        "vad_threshold": 0.0,
+        "vad_max_segment_duration_sec": 136.0,
+        "vad_hop_size_samples": 512,
+        "streaming_chunk_samples": 1280,
+        "online_partial_interval_ms": 500,
+        "authoritative_alignment_samples": 2560,
+        "tail_alignment_policy": "zero-pad-to-vad-model-lcm",
+        "finalization_policy": "verified-native-free-authoritative-batch-v2",
+        "maximum_source_samples": 2_097_152,
+    }
+
+
+@pytest.mark.parametrize(
+    "segmentation_mode",
+    [None, "", "internal-vad", "native-vad", "EXTERNAL-PRESEGMENTED", True],
+)
+def test_provision_rejects_open_segmentation_mode_before_output(
+    tmp_path,
+    monkeypatch,
+    segmentation_mode,
+):
+    venv, _site_packages, wheel, model = _inputs(tmp_path, monkeypatch)
+    output = tmp_path / "not-created"
+
+    with pytest.raises(provision.ProvisionError):
+        provision.provision_candidate(
+            venv_root=venv,
+            wheel=wheel,
+            model_root=model,
+            output_dir=output,
+            segmentation_mode=segmentation_mode,
+        )
+
+    assert not output.exists()
 
 
 def test_provision_rejects_hardlinked_runtime_before_manifest_publish(
@@ -327,3 +407,6 @@ def test_provision_help_states_no_install_or_download():
     help_text = " ".join(provision._parser().format_help().split())
 
     assert "does not install or download" in help_text
+    assert "legacy" in help_text
+    assert "internal-vad" not in help_text
+    assert "external-presegmented" in help_text

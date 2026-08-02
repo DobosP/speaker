@@ -27,7 +27,10 @@ from tools.streaming_stt import manifest as manifest_module
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
     MOONSHINE_ARTIFACT_NAMES,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     ManifestError,
+    MoonshineExternalEndpointConfig,
+    artifact_maximum_bytes,
     load_worker_manifest,
 )
 from tools.streaming_stt.manifest import MAX_FAKE_ARTIFACT_BYTES
@@ -144,6 +147,41 @@ def _moonshine_manifest(
     return manifest
 
 
+def _moonshine_external_endpoint_manifest(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    segmentation_mode: str = "external-presegmented",
+    vad_threshold: float = 0.0,
+) -> Path:
+    manifest = _moonshine_manifest(tmp_path, monkeypatch)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "schema_version": 7,
+            "model_id": "moonshine-tiny-streaming-external-endpoint-en-0.1.0",
+            "adapter": MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        }
+    )
+    payload["adapter_config"].update(
+        {
+            "segmentation_mode": segmentation_mode,
+            "endpoint_owner": "external-input-boundary",
+            "vad_threshold": vad_threshold,
+            "vad_max_segment_duration_sec": 136.0,
+            "vad_hop_size_samples": 512,
+            "streaming_chunk_samples": 1280,
+            "online_partial_interval_ms": 500,
+            "authoritative_alignment_samples": 2560,
+            "tail_alignment_policy": "zero-pad-to-vad-model-lcm",
+            "finalization_policy": "verified-native-free-authoritative-batch-v2",
+            "maximum_source_samples": 2_097_152,
+        }
+    )
+    manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
 def test_manifest_binds_exact_interpreter_worker_and_artifact(tmp_path):
     manifest_path, _ = _fixture(tmp_path)
 
@@ -180,6 +218,150 @@ def test_manifest_v2_binds_closed_moonshine_runtime_and_retains_venv_launcher(
     assert tuple(manifest.artifact_by_name) == MOONSHINE_ARTIFACT_NAMES
     assert manifest.python.path == tmp_path / "candidate-venv" / "bin" / "python"
     assert manifest.python.path.is_symlink()
+
+
+def test_manifest_v7_binds_exact_external_presegmented_moonshine_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    path = _moonshine_external_endpoint_manifest(tmp_path, monkeypatch)
+
+    manifest = load_worker_manifest(path)
+
+    assert manifest.schema_version == 7
+    assert manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+    assert isinstance(
+        manifest.adapter_config,
+        MoonshineExternalEndpointConfig,
+    )
+    assert manifest.adapter_config.as_dict() == {
+        "package_version": "0.1.0",
+        "api_version": 30000,
+        "model_arch": "tiny-streaming",
+        "provider": "cpu",
+        "language": "en",
+        "segmentation_mode": "external-presegmented",
+        "endpoint_owner": "external-input-boundary",
+        "vad_threshold": 0.0,
+        "vad_max_segment_duration_sec": 136.0,
+        "vad_hop_size_samples": 512,
+        "streaming_chunk_samples": 1280,
+        "online_partial_interval_ms": 500,
+        "authoritative_alignment_samples": 2560,
+        "tail_alignment_policy": "zero-pad-to-vad-model-lcm",
+        "finalization_policy": "verified-native-free-authoritative-batch-v2",
+        "maximum_source_samples": 2_097_152,
+    }
+    assert tuple(manifest.artifact_by_name) == MOONSHINE_ARTIFACT_NAMES
+    assert all(
+        artifact_maximum_bytes(MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER, name)
+        == artifact_maximum_bytes(MOONSHINE_ADAPTER, name)
+        for name in MOONSHINE_ARTIFACT_NAMES
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("segmentation_mode", "legacy"),
+        ("endpoint_owner", "worker-vad"),
+        ("vad_threshold", 0),
+        ("vad_threshold", -0.0),
+        ("vad_max_segment_duration_sec", 136),
+        ("vad_hop_size_samples", True),
+        ("vad_hop_size_samples", 256),
+        ("streaming_chunk_samples", True),
+        ("streaming_chunk_samples", 2560),
+        ("online_partial_interval_ms", True),
+        ("online_partial_interval_ms", 80),
+        ("authoritative_alignment_samples", False),
+        ("authoritative_alignment_samples", 1280),
+        ("tail_alignment_policy", "drop-tail"),
+        ("finalization_policy", "stop-only"),
+        ("maximum_source_samples", False),
+        ("maximum_source_samples", 2_097_153),
+    ],
+)
+def test_manifest_v7_rejects_wrong_external_endpoint_receipt_value_or_type(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    path = _moonshine_external_endpoint_manifest(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["adapter_config"][field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+@pytest.mark.parametrize(
+    ("segmentation_mode", "vad_threshold"),
+    [("internal-vad", 0.5), ("internal-vad", 0.0), ("external-presegmented", 0.5)],
+)
+def test_manifest_v7_rejects_every_non_external_zero_threshold_profile(
+    tmp_path,
+    monkeypatch,
+    segmentation_mode,
+    vad_threshold,
+):
+    path = _moonshine_external_endpoint_manifest(
+        tmp_path,
+        monkeypatch,
+        segmentation_mode=segmentation_mode,
+        vad_threshold=vad_threshold,
+    )
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "null"])
+def test_manifest_v7_rejects_open_or_null_external_endpoint_config(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    path = _moonshine_external_endpoint_manifest(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        del payload["adapter_config"]["tail_alignment_policy"]
+    elif mutation == "extra":
+        payload["adapter_config"]["unbound_option"] = "unsafe"
+    else:
+        payload["adapter_config"]["endpoint_owner"] = None
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "adapter"),
+    [
+        (2, MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER),
+        (7, MOONSHINE_ADAPTER),
+    ],
+)
+def test_manifest_rejects_moonshine_adapter_schema_cross_pair(
+    tmp_path,
+    monkeypatch,
+    schema_version,
+    adapter,
+):
+    path = (
+        _moonshine_manifest(tmp_path, monkeypatch)
+        if schema_version == 2
+        else _moonshine_external_endpoint_manifest(tmp_path, monkeypatch)
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["adapter"] = adapter
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
 
 
 @pytest.mark.parametrize("model_arch", ["small-streaming", "medium-streaming"])

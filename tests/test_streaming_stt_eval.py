@@ -27,10 +27,12 @@ from tools.streaming_stt.metrics import (
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
     MOONSHINE_ARTIFACT_NAMES,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     NEMOTRON_ARTIFACT_NAMES,
     PARAKEET_REALTIME_EOU_ADAPTER,
     MoonshineConfig,
+    MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
 )
@@ -561,6 +563,121 @@ def test_moonshine_worker_and_evidence_bindings_are_closed_and_non_adopting(
         streaming_stt_eval._evidence_binding(MOONSHINE_ADAPTER, pace="warp")
 
 
+def test_external_moonshine_binding_is_closed_non_adopting_and_endpoint_honest(
+    tmp_path,
+):
+    artifacts = tuple(
+        SimpleNamespace(
+            name=name,
+            sha256=f"{index + 1:064x}",
+            size_bytes=index + 1,
+            path=tmp_path / f"private-external-artifact-{index}",
+        )
+        for index, name in enumerate(MOONSHINE_ARTIFACT_NAMES)
+    )
+    config = MoonshineExternalEndpointConfig(model_arch="medium-streaming")
+    manifest = SimpleNamespace(
+        digest="a" * 64,
+        schema_version=7,
+        model_id="moonshine-medium-streaming-external",
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        python=SimpleNamespace(sha256="b" * 64),
+        worker=SimpleNamespace(sha256="c" * 64),
+        artifacts=artifacts,
+        adapter_config=config,
+    )
+    source_bundle = SimpleNamespace(tree_sha256="d" * 64, files=(object(),))
+
+    binding = streaming_stt_eval._worker_binding(
+        manifest,
+        source_bundle,
+        runtime_receipt_sha256="e" * 64,
+    )
+    evidence = streaming_stt_eval._evidence_binding(
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        pace="realtime",
+        adapter_config=config,
+    )
+    assert binding["manifest_schema_version"] == 7
+    assert binding["adapter_config"] == config.as_dict()
+    assert str(tmp_path) not in json.dumps(binding)
+    assert evidence["real_candidate_model"] is True
+    assert evidence["adoption_authority"] is False
+    assert evidence["endpointing"] is False
+    assert evidence["input_contract"] == "externally_bounded_complete_pcm"
+    assert evidence["segmentation_mode"] == "external-presegmented"
+    assert evidence["completion_owner"] == "external-input-boundary"
+    assert evidence["speaker_endpoint_executed"] is False
+    assert evidence["speaker_endpoint_validated"] is False
+    assert evidence["moonshine_vad_inference_enabled"] is False
+    assert evidence["moonshine_vad_threshold_zero_bypass"] is True
+    assert evidence["moonshine_vad_wrapper_present"] is True
+    assert evidence["vad_validated"] is False
+    assert evidence["vad_threshold"] == 0.0
+    assert evidence["vad_max_segment_duration_sec"] == 136.0
+    assert evidence["vad_hop_size_samples"] == 512
+    assert evidence["streaming_chunk_samples"] == 1_280
+    assert evidence["online_partial_interval_ms"] == 500
+    assert evidence["authoritative_alignment_samples"] == 2_560
+    assert evidence["tail_alignment_policy"] == "zero-pad-to-vad-model-lcm"
+    assert evidence["model_padding_range_samples"] == [0, 2_559]
+    assert (
+        evidence["finalization_policy"]
+        == "verified-native-free-authoritative-batch-v2"
+    )
+    assert evidence["maximum_source_samples"] == 2_097_152
+    assert evidence["partial_source"] == "candidate_online_stream_snapshot"
+    assert (
+        evidence["final_source"]
+        == "authoritative_complete_pcm_batch_after_online_close"
+    )
+    assert evidence["online_stream_final_used"] is False
+    assert evidence["authoritative_final_second_pass"] is True
+    assert (
+        evidence["compute_rtf_scope"]
+        == "online_candidate_calls_plus_close_plus_authoritative_batch"
+    )
+    assert (
+        evidence["compute_rtf_denominator"]
+        == "original_source_audio_seconds"
+    )
+    assert evidence["deadline_backlog_scope"] == "online_stream_only"
+    assert evidence["native_online_close_policy"] == "verified-direct-native-free-v1"
+    assert evidence["native_online_close_return_code_verified"] is True
+    assert evidence["comparison_scope"] == "descriptive_external_vs_legacy_only"
+    assert evidence["controlled_internal_external_pair"] is False
+    assert evidence["stock_api_limitations"] == [
+        "internal_vad_recurrent_state_process_global",
+        "no_public_disable_vad_flag",
+        "python_stream_close_ignores_native_return_code",
+    ]
+    assert "force_update_before_stop" not in evidence
+    assert "maximum_stream_samples" not in evidence
+    evaluator = streaming_stt_eval._evaluator_binding(
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+    )
+    assert evaluator["real_candidate_model"] is True
+    assert evaluator["model_executed"] is True
+
+    for mismatched in (
+        SimpleNamespace(**{**vars(manifest), "adapter_config": MoonshineConfig()}),
+        SimpleNamespace(**{**vars(manifest), "schema_version": 2}),
+    ):
+        with pytest.raises(ValueError):
+            streaming_stt_eval._worker_binding(
+                mismatched,
+                source_bundle,
+                runtime_receipt_sha256="e" * 64,
+            )
+
+    with pytest.raises(ValueError):
+        streaming_stt_eval._evidence_binding(
+            MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+            pace="burst",
+            adapter_config=MoonshineConfig(),
+        )
+
+
 def test_nemotron_binding_labels_provisional_finals_padding_and_compute_scope(
     tmp_path,
 ):
@@ -826,6 +943,62 @@ def test_adapter_specific_default_streams_preserve_fake_and_moonshine():
     assert fake == StreamConfig(1600, "burst", 200, 0)
     assert moonshine == StreamConfig(1600, "burst", 200, 0)
     assert nemotron == StreamConfig(5120, "burst", 320, 0)
+
+
+def test_external_moonshine_stream_is_receipt_bound_and_requires_zero_user_tail():
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        adapter_config=MoonshineExternalEndpointConfig(),
+    )
+
+    assert streaming_stt_eval._default_stream(manifest) == StreamConfig(
+        1280, "burst", 500, 0
+    )
+    assert streaming_stt_eval._selected_stream(
+        manifest,
+        None,
+        chunk_samples=None,
+        pace=None,
+        partial_interval_ms=None,
+        tail_padding_samples=None,
+    ) == StreamConfig(1280, "burst", 500, 0)
+
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            StreamConfig(1600, "burst", 200, 1),
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=None,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            None,
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=1,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            None,
+            chunk_samples=1600,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=None,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            None,
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=80,
+            tail_padding_samples=None,
+        )
 
 
 def test_parakeet_default_stream_uses_exact_native_chunk_and_declared_tail():
@@ -1298,6 +1471,46 @@ def test_repo_ancestor_retarget_cannot_execute_alternate_modules_and_fails_repor
         )
 
     assert not marker.exists()
+
+
+def test_metric_reducer_aggregates_nonzero_ordinary_final_padding(tmp_path):
+    _, corpus_path = _benchmark_fixture(tmp_path)
+    corpus = load_corpus(corpus_path)
+    usage = ResourceUsage(rss_mb=10.0, threads=1, vram_mb=None)
+    ready = ReadyEvent(
+        model_id="moonshine-external-test",
+        manifest_sha256="a" * 64,
+        source_bundle_sha256="b" * 64,
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        model_load_ms=5.0,
+        resources=usage,
+        runtime={"python": "3.12", "platform": "linux"},
+    )
+    final = FinalEvent(
+        request_id="x",
+        seq=0,
+        text="stop now",
+        samples_seen=160,
+        elapsed_ms=100.0,
+        finalization_ms=20.0,
+        compute_ms=4.0,
+        audio_seconds=0.01,
+        chunks=1,
+        deadline_misses=0,
+        max_backlog_ms=0.0,
+        resources=usage,
+        model_padding_samples=2_400,
+    )
+
+    metrics = aggregate_metrics(
+        corpus,
+        (RunRecord(0, 0, CaseTrace(partials=(), final=final)),),
+        ready,
+        repeats=1,
+    )
+
+    assert metrics["streaming"]["model_padding_total_samples"] == 2_400
+    assert metrics["streaming"]["model_padding_max_samples"] == 2_400
 
 
 def test_metric_reducer_reports_exact_native_endpoint_source_and_tail_accounting(

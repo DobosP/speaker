@@ -52,6 +52,7 @@ _MANIFEST_V3_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V4_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V5_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V6_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V7_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -61,6 +62,20 @@ _MOONSHINE_CONFIG_FIELDS = {
     "model_arch",
     "provider",
     "language",
+}
+_MOONSHINE_EXTERNAL_ENDPOINT_CONFIG_FIELDS = {
+    *_MOONSHINE_CONFIG_FIELDS,
+    "segmentation_mode",
+    "endpoint_owner",
+    "vad_threshold",
+    "vad_max_segment_duration_sec",
+    "vad_hop_size_samples",
+    "streaming_chunk_samples",
+    "online_partial_interval_ms",
+    "authoritative_alignment_samples",
+    "tail_alignment_policy",
+    "finalization_policy",
+    "maximum_source_samples",
 }
 _NEMOTRON_CONFIG_FIELDS = {
     "python_version",
@@ -175,6 +190,9 @@ _FASTER_WHISPER_CONFIG_FIELDS = {
     "model_maximum_file_bytes",
 }
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
+MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER = (
+    "moonshine-voice-external-endpoint-v1"
+)
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
@@ -552,6 +570,74 @@ class MoonshineConfig:
             "provider": self.provider,
             "language": self.language,
         }
+
+
+@dataclass(frozen=True)
+class MoonshineExternalEndpointConfig(MoonshineConfig):
+    """Moonshine decode bound to a controlled external-input boundary."""
+
+    segmentation_mode: str = "external-presegmented"
+    endpoint_owner: str = "external-input-boundary"
+    vad_threshold: float = 0.0
+    vad_max_segment_duration_sec: float = 136.0
+    vad_hop_size_samples: int = 512
+    streaming_chunk_samples: int = 1280
+    online_partial_interval_ms: int = 500
+    authoritative_alignment_samples: int = 2560
+    tail_alignment_policy: str = "zero-pad-to-vad-model-lcm"
+    finalization_policy: str = "verified-native-free-authoritative-batch-v2"
+    maximum_source_samples: int = 2_097_152
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (
+            type(self.segmentation_mode) is not str
+            or self.segmentation_mode != "external-presegmented"
+            or type(self.endpoint_owner) is not str
+            or self.endpoint_owner != "external-input-boundary"
+            or type(self.vad_threshold) is not float
+            or self.vad_threshold != 0.0
+            or math.copysign(1.0, self.vad_threshold) != 1.0
+            or type(self.vad_max_segment_duration_sec) is not float
+            or self.vad_max_segment_duration_sec != 136.0
+            or type(self.vad_hop_size_samples) is not int
+            or self.vad_hop_size_samples != 512
+            or type(self.streaming_chunk_samples) is not int
+            or self.streaming_chunk_samples != 1280
+            or type(self.online_partial_interval_ms) is not int
+            or self.online_partial_interval_ms != 500
+            or type(self.authoritative_alignment_samples) is not int
+            or self.authoritative_alignment_samples != 2560
+            or type(self.tail_alignment_policy) is not str
+            or self.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
+            or type(self.finalization_policy) is not str
+            or self.finalization_policy
+            != "verified-native-free-authoritative-batch-v2"
+            or type(self.maximum_source_samples) is not int
+            or self.maximum_source_samples != 2_097_152
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        value = super().as_dict()
+        value.update(
+            {
+                "segmentation_mode": self.segmentation_mode,
+                "endpoint_owner": self.endpoint_owner,
+                "vad_threshold": self.vad_threshold,
+                "vad_max_segment_duration_sec": self.vad_max_segment_duration_sec,
+                "vad_hop_size_samples": self.vad_hop_size_samples,
+                "streaming_chunk_samples": self.streaming_chunk_samples,
+                "online_partial_interval_ms": self.online_partial_interval_ms,
+                "authoritative_alignment_samples": (
+                    self.authoritative_alignment_samples
+                ),
+                "tail_alignment_policy": self.tail_alignment_policy,
+                "finalization_policy": self.finalization_policy,
+                "maximum_source_samples": self.maximum_source_samples,
+            }
+        )
+        return value
 
 
 @dataclass(frozen=True)
@@ -998,6 +1084,7 @@ class WorkerManifest:
     limits: WorkerLimits
     adapter_config: (
         MoonshineConfig
+        | MoonshineExternalEndpointConfig
         | NemotronConfig
         | SherpaZipformerConfig
         | ParakeetRealtimeEouConfig
@@ -1064,7 +1151,10 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
 
     if adapter == "fake-json-v1" and artifact_name == "fake-script":
         return MAX_FAKE_ARTIFACT_BYTES
-    if adapter == MOONSHINE_ADAPTER and artifact_name in MOONSHINE_ARTIFACT_NAMES:
+    if (
+        adapter in {MOONSHINE_ADAPTER, MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER}
+        and artifact_name in MOONSHINE_ARTIFACT_NAMES
+    ):
         return _MOONSHINE_SMALL_ARTIFACTS.get(
             artifact_name,
             MAX_MOONSHINE_ARTIFACT_BYTES,
@@ -1162,6 +1252,55 @@ def _moonshine_config(value: object) -> MoonshineConfig:
             model_arch=value.get("model_arch"),  # type: ignore[arg-type]
             provider=value.get("provider"),  # type: ignore[arg-type]
             language=value.get("language"),  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
+def _moonshine_external_endpoint_config(
+    value: object,
+) -> MoonshineExternalEndpointConfig:
+    if (
+        not isinstance(value, dict)
+        or set(value) != _MOONSHINE_EXTERNAL_ENDPOINT_CONFIG_FIELDS
+    ):
+        raise ManifestError()
+    try:
+        return MoonshineExternalEndpointConfig(
+            package_version=value.get("package_version"),  # type: ignore[arg-type]
+            api_version=value.get("api_version"),  # type: ignore[arg-type]
+            model_arch=value.get("model_arch"),  # type: ignore[arg-type]
+            provider=value.get("provider"),  # type: ignore[arg-type]
+            language=value.get("language"),  # type: ignore[arg-type]
+            segmentation_mode=value.get(  # type: ignore[arg-type]
+                "segmentation_mode"
+            ),
+            endpoint_owner=value.get("endpoint_owner"),  # type: ignore[arg-type]
+            vad_threshold=value.get("vad_threshold"),  # type: ignore[arg-type]
+            vad_max_segment_duration_sec=value.get(  # type: ignore[arg-type]
+                "vad_max_segment_duration_sec"
+            ),
+            vad_hop_size_samples=value.get(  # type: ignore[arg-type]
+                "vad_hop_size_samples"
+            ),
+            streaming_chunk_samples=value.get(  # type: ignore[arg-type]
+                "streaming_chunk_samples"
+            ),
+            online_partial_interval_ms=value.get(  # type: ignore[arg-type]
+                "online_partial_interval_ms"
+            ),
+            authoritative_alignment_samples=value.get(  # type: ignore[arg-type]
+                "authoritative_alignment_samples"
+            ),
+            tail_alignment_policy=value.get(  # type: ignore[arg-type]
+                "tail_alignment_policy"
+            ),
+            finalization_policy=value.get(  # type: ignore[arg-type]
+                "finalization_policy"
+            ),
+            maximum_source_samples=value.get(  # type: ignore[arg-type]
+                "maximum_source_samples"
+            ),
         )
     except (TypeError, ValueError, ManifestError):
         raise ManifestError() from None
@@ -1520,7 +1659,15 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     if not isinstance(value, dict):
         raise ManifestError()
     schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5, 6}:
+    if type(schema_version) is not int or schema_version not in {
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+    }:
         raise ManifestError()
     expected_fields = {
         1: _MANIFEST_V1_FIELDS,
@@ -1529,6 +1676,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         4: _MANIFEST_V4_FIELDS,
         5: _MANIFEST_V5_FIELDS,
         6: _MANIFEST_V6_FIELDS,
+        7: _MANIFEST_V7_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -1541,6 +1689,10 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         or (schema_version == 4 and adapter != SHERPA_ZIPFORMER_ADAPTER)
         or (schema_version == 5 and adapter != PARAKEET_REALTIME_EOU_ADAPTER)
         or (schema_version == 6 and adapter != FASTER_WHISPER_ENDPOINT_ADAPTER)
+        or (
+            schema_version == 7
+            and adapter != MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+        )
     ):
         raise ManifestError()
 
@@ -1565,6 +1717,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         4: SHERPA_ZIPFORMER_ARTIFACT_NAMES,
         5: PARAKEET_REALTIME_EOU_ARTIFACT_NAMES,
         6: FASTER_WHISPER_ARTIFACT_NAMES,
+        7: MOONSHINE_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -1581,6 +1734,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         4: lambda: _sherpa_zipformer_config(value.get("adapter_config")),
         5: lambda: _parakeet_config(value.get("adapter_config")),
         6: lambda: _faster_whisper_config(value.get("adapter_config")),
+        7: lambda: _moonshine_external_endpoint_config(
+            value.get("adapter_config")
+        ),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -1597,6 +1753,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 6:
         assert isinstance(adapter_config, FasterWhisperEndpointConfig)
         _validate_faster_whisper_layout(python, artifacts)
+    elif schema_version == 7:
+        assert isinstance(adapter_config, MoonshineExternalEndpointConfig)
+        _validate_moonshine_layout(python, artifacts, adapter_config)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

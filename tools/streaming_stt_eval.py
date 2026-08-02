@@ -39,10 +39,13 @@ from tools.streaming_stt.manifest import (
     FASTER_WHISPER_VOCABULARY_FILES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    MoonshineConfig,
+    MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     SherpaZipformerConfig,
@@ -341,6 +344,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
@@ -371,6 +375,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
             MOONSHINE_ADAPTER,
+            MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         },
@@ -391,6 +396,7 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -525,6 +531,7 @@ def _worker_binding(
         return binding
     expected_schema = {
         MOONSHINE_ADAPTER: 2,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: 7,
         NEMOTRON_ADAPTER: 3,
         SHERPA_ZIPFORMER_ADAPTER: 4,
         PARAKEET_REALTIME_EOU_ADAPTER: 5,
@@ -534,6 +541,15 @@ def _worker_binding(
         expected_schema is None
         or manifest.schema_version != expected_schema
         or manifest.adapter_config is None
+        or (
+            manifest.adapter == MOONSHINE_ADAPTER
+            and type(manifest.adapter_config) is not MoonshineConfig
+        )
+        or (
+            manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+            and type(manifest.adapter_config)
+            is not MoonshineExternalEndpointConfig
+        )
         or (
             manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
             and not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig)
@@ -569,6 +585,9 @@ def _worker_binding(
             "provider",
             "language",
         },
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: set(
+            MoonshineExternalEndpointConfig().as_dict()
+        ),
         NEMOTRON_ADAPTER: set(NemotronConfig().as_dict()),
         SHERPA_ZIPFORMER_ADAPTER: set(SherpaZipformerConfig().as_dict()),
         PARAKEET_REALTIME_EOU_ADAPTER: (
@@ -640,6 +659,7 @@ def _evidence_binding(
     pace: str,
     adapter_config: (
         FasterWhisperEndpointConfig
+        | MoonshineExternalEndpointConfig
         | NemotronConfig
         | SherpaZipformerConfig
         | ParakeetRealtimeEouConfig
@@ -652,6 +672,7 @@ def _evidence_binding(
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
@@ -660,9 +681,18 @@ def _evidence_binding(
         "realtime",
     }:
         raise ValueError
-    if adapter == NEMOTRON_ADAPTER:
+    if adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+        if type(adapter_config) is not MoonshineExternalEndpointConfig:
+            raise ValueError
+        external_moonshine_config = adapter_config
+        config = None
+        zipformer_config = None
+        parakeet_config = None
+        faster_whisper_config = None
+    elif adapter == NEMOTRON_ADAPTER:
         if not isinstance(adapter_config, NemotronConfig):
             raise ValueError
+        external_moonshine_config = None
         config = adapter_config
         zipformer_config = None
         parakeet_config = None
@@ -670,6 +700,7 @@ def _evidence_binding(
     elif adapter == SHERPA_ZIPFORMER_ADAPTER:
         if not isinstance(adapter_config, SherpaZipformerConfig):
             raise ValueError
+        external_moonshine_config = None
         config = None
         zipformer_config = adapter_config
         parakeet_config = None
@@ -677,6 +708,7 @@ def _evidence_binding(
     elif adapter == PARAKEET_REALTIME_EOU_ADAPTER:
         if not isinstance(adapter_config, ParakeetRealtimeEouConfig):
             raise ValueError
+        external_moonshine_config = None
         config = None
         zipformer_config = None
         parakeet_config = adapter_config
@@ -684,6 +716,7 @@ def _evidence_binding(
     elif adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
         if not isinstance(adapter_config, FasterWhisperEndpointConfig):
             raise ValueError
+        external_moonshine_config = None
         config = None
         zipformer_config = None
         parakeet_config = None
@@ -691,6 +724,7 @@ def _evidence_binding(
     elif adapter_config is not None:
         raise ValueError
     else:
+        external_moonshine_config = None
         config = None
         zipformer_config = None
         parakeet_config = None
@@ -704,6 +738,7 @@ def _evidence_binding(
         in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
             MOONSHINE_ADAPTER,
+            MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         },
@@ -741,6 +776,69 @@ def _evidence_binding(
         "live_hardware": False,
         "adoption_authority": False,
     }
+    if external_moonshine_config is not None:
+        binding.update(
+            {
+                "input_contract": "externally_bounded_complete_pcm",
+                "segmentation_mode": external_moonshine_config.segmentation_mode,
+                "completion_owner": external_moonshine_config.endpoint_owner,
+                "speaker_endpoint_executed": False,
+                "speaker_endpoint_validated": False,
+                "moonshine_vad_inference_enabled": False,
+                "moonshine_vad_threshold_zero_bypass": True,
+                "moonshine_vad_wrapper_present": True,
+                "vad_validated": False,
+                "vad_threshold": external_moonshine_config.vad_threshold,
+                "vad_max_segment_duration_sec": (
+                    external_moonshine_config.vad_max_segment_duration_sec
+                ),
+                "vad_hop_size_samples": (
+                    external_moonshine_config.vad_hop_size_samples
+                ),
+                "streaming_chunk_samples": (
+                    external_moonshine_config.streaming_chunk_samples
+                ),
+                "online_partial_interval_ms": (
+                    external_moonshine_config.online_partial_interval_ms
+                ),
+                "authoritative_alignment_samples": (
+                    external_moonshine_config.authoritative_alignment_samples
+                ),
+                "tail_alignment_policy": (
+                    external_moonshine_config.tail_alignment_policy
+                ),
+                "model_padding_range_samples": [
+                    0,
+                    external_moonshine_config.authoritative_alignment_samples - 1,
+                ],
+                "finalization_policy": (
+                    external_moonshine_config.finalization_policy
+                ),
+                "maximum_source_samples": (
+                    external_moonshine_config.maximum_source_samples
+                ),
+                "partial_source": "candidate_online_stream_snapshot",
+                "final_source": (
+                    "authoritative_complete_pcm_batch_after_online_close"
+                ),
+                "online_stream_final_used": False,
+                "authoritative_final_second_pass": True,
+                "compute_rtf_scope": (
+                    "online_candidate_calls_plus_close_plus_authoritative_batch"
+                ),
+                "compute_rtf_denominator": "original_source_audio_seconds",
+                "deadline_backlog_scope": "online_stream_only",
+                "native_online_close_policy": "verified-direct-native-free-v1",
+                "native_online_close_return_code_verified": True,
+                "comparison_scope": "descriptive_external_vs_legacy_only",
+                "controlled_internal_external_pair": False,
+                "stock_api_limitations": [
+                    "internal_vad_recurrent_state_process_global",
+                    "no_public_disable_vad_flag",
+                    "python_stream_close_ignores_native_return_code",
+                ],
+            }
+        )
     if faster_whisper_config is not None:
         binding.update(
             {
@@ -1136,6 +1234,16 @@ def _default_stream(manifest: WorkerManifest) -> StreamConfig:
             partial_interval_ms=partial_interval_ms,
             tail_padding_samples=0,
         )
+    if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+        config = manifest.adapter_config
+        if type(config) is not MoonshineExternalEndpointConfig:
+            raise ValueError
+        return StreamConfig(
+            chunk_samples=config.streaming_chunk_samples,
+            pace="burst",
+            partial_interval_ms=config.online_partial_interval_ms,
+            tail_padding_samples=0,
+        )
     if manifest.adapter not in {
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
@@ -1205,6 +1313,15 @@ def _selected_stream(
             not isinstance(config, ParakeetRealtimeEouConfig)
             or selected.chunk_samples != config.native_chunk_samples
             or selected.tail_padding_samples > config.maximum_tail_padding_samples
+        ):
+            raise ValueError
+    if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            type(config) is not MoonshineExternalEndpointConfig
+            or selected.chunk_samples != config.streaming_chunk_samples
+            or selected.partial_interval_ms != config.online_partial_interval_ms
+            or selected.tail_padding_samples != 0
         ):
             raise ValueError
     return selected
@@ -1451,6 +1568,7 @@ def _run_benchmark_locked(
                         manifest.adapter_config,
                         (
                             NemotronConfig,
+                            MoonshineExternalEndpointConfig,
                             SherpaZipformerConfig,
                             ParakeetRealtimeEouConfig,
                             FasterWhisperEndpointConfig,

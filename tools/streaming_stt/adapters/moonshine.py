@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from array import array
 from collections.abc import Callable
+import ctypes
 from dataclasses import dataclass, field
 import hashlib
 import importlib
@@ -20,7 +21,7 @@ import time
 from typing import TypeVar
 
 from ..bounded_io import BoundedReadError, read_regular_bounded
-from ..manifest import MoonshineConfig
+from ..manifest import MoonshineConfig, MoonshineExternalEndpointConfig
 from ..protocol import (
     MAX_HYPOTHESIS_CHARS,
     MAX_PARTIALS_PER_CASE,
@@ -52,6 +53,7 @@ _TRANSCRIBER_OPTIONS = {
     "ort_providers": "CPU",
 }
 _T = TypeVar("_T")
+_MISSING = object()
 
 
 class MoonshineAdapterError(RuntimeError):
@@ -83,6 +85,7 @@ class MoonshineCase:
     elapsed_ms: float
     finalization_ms: float
     compute_ms: float
+    model_padding_samples: int
     deadline_misses: int
     max_backlog_ms: float
     resources: ResourceUsage
@@ -242,6 +245,55 @@ def _audio_chunk(
     return chunk
 
 
+def _verified_native_stream_free(stream: object, transcriber: object) -> None:
+    """Free one stock 0.1.0 stream and verify the native return code.
+
+    ``moonshine_voice.Stream.close`` discards ``moonshine_free_stream``'s
+    signed error code.  Schema v7 therefore binds the exact private layout of
+    the receipt-pinned Python wrapper and calls that C function directly.  A
+    layout drift or anything other than the documented zero success code is a
+    fatal candidate mismatch.
+    """
+
+    stream_transcriber = getattr(stream, "_transcriber", _MISSING)
+    transcriber_library = getattr(transcriber, "_lib", _MISSING)
+    stream_library = getattr(stream, "_lib", _MISSING)
+    transcriber_handle = getattr(transcriber, "_handle", _MISSING)
+    stream_handle = getattr(stream, "_handle", _MISSING)
+    remove_all_listeners = getattr(stream, "remove_all_listeners", None)
+    free_stream = getattr(transcriber_library, "moonshine_free_stream", None)
+    if (
+        stream_transcriber is not transcriber
+        or transcriber_library is _MISSING
+        or stream_library is not transcriber_library
+        or type(transcriber_handle) is not int
+        or transcriber_handle < 0
+        or type(stream_handle) is not int
+        or stream_handle < 0
+        or not callable(remove_all_listeners)
+        or not callable(free_stream)
+        or getattr(free_stream, "restype", _MISSING) is not ctypes.c_int32
+        or tuple(getattr(free_stream, "argtypes", ()))
+        != (ctypes.c_int32, ctypes.c_int32)
+    ):
+        raise MoonshineAdapterError()
+    try:
+        result = free_stream(transcriber_handle, stream_handle)
+    except Exception:
+        raise MoonshineAdapterError() from None
+    if type(result) is not int or result != 0:
+        raise MoonshineAdapterError()
+    try:
+        setattr(stream, "_handle", None)
+        if getattr(stream, "_handle", _MISSING) is not None:
+            raise MoonshineAdapterError()
+        remove_all_listeners()
+    except Exception as error:
+        if isinstance(error, MoonshineAdapterError):
+            raise
+        raise MoonshineAdapterError() from None
+
+
 class MoonshineAdapter:
     """One persistent CPU transcriber with a fresh bounded stream per case."""
 
@@ -249,12 +301,37 @@ class MoonshineAdapter:
         self,
         model_root: Path,
         *,
-        config: MoonshineConfig,
+        config: MoonshineConfig | MoonshineExternalEndpointConfig,
         api: object | None = None,
         clock: Callable[[], float] = time.perf_counter,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        if not isinstance(config, MoonshineConfig):
+        if type(config) not in {MoonshineConfig, MoonshineExternalEndpointConfig}:
+            raise MoonshineAdapterError()
+        boundary_profile = type(config) is MoonshineExternalEndpointConfig
+        if (
+            boundary_profile
+            and (
+                config.segmentation_mode != "external-presegmented"
+                or config.endpoint_owner != "external-input-boundary"
+                or config.vad_threshold != 0.0
+                or math.copysign(1.0, config.vad_threshold) != 1.0
+                or config.vad_max_segment_duration_sec != 136.0
+                or config.vad_hop_size_samples != 512
+                or config.streaming_chunk_samples != 1280
+                or config.online_partial_interval_ms != 500
+                or config.maximum_source_samples != MAX_PCM_BYTES // 4
+                or config.authoritative_alignment_samples
+                != math.lcm(
+                    config.vad_hop_size_samples,
+                    config.streaming_chunk_samples,
+                )
+                or config.authoritative_alignment_samples != 2560
+                or config.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
+                or config.finalization_policy
+                != "verified-native-free-authoritative-batch-v2"
+            )
+        ):
             raise MoonshineAdapterError()
         try:
             resolved_model_root = Path(model_root).resolve(strict=True)
@@ -266,6 +343,7 @@ class MoonshineAdapter:
         self.model_root = resolved_model_root
         self._clock = clock
         self._sleeper = sleeper
+        self._boundary_profile = boundary_profile
         self._closed = False
         self._transcriber: object | None = None
 
@@ -302,11 +380,23 @@ class MoonshineAdapter:
             raise MoonshineAdapterError() from None
 
         try:
+            options = dict(_TRANSCRIBER_OPTIONS)
+            if self._boundary_profile:
+                assert isinstance(config, MoonshineExternalEndpointConfig)
+                options.update(
+                    {
+                        "vad_threshold": str(config.vad_threshold),
+                        "vad_max_segment_duration": str(
+                            config.vad_max_segment_duration_sec
+                        ),
+                        "vad_hop_size": str(config.vad_hop_size_samples),
+                    }
+                )
             self._transcriber = transcriber_type(
                 model_path=str(self.model_root),
                 model_arch=model_arch,
                 update_interval=_DISABLED_AUTO_UPDATE_SECONDS,
-                options=dict(_TRANSCRIBER_OPTIONS),
+                options=options,
             )
             library_version = self._transcriber.get_version()
             if (
@@ -374,6 +464,25 @@ class MoonshineAdapter:
         finished = self._now()
         return result, self._duration_ms(started, finished)
 
+    def _invalidate_after_uncertain_stream_free(self, stream: object) -> None:
+        """Retire the candidate without risking a second native stream free."""
+
+        self._closed = True
+        transcriber = self._transcriber
+        self._transcriber = None
+        if transcriber is not None:
+            try:
+                transcriber.close()
+            except Exception:
+                pass
+        try:
+            setattr(stream, "_handle", None)
+            remove_all_listeners = getattr(stream, "remove_all_listeners", None)
+            if callable(remove_all_listeners):
+                remove_all_listeners()
+        except Exception:
+            pass
+
     def transcribe(
         self,
         request: TranscribeRequest,
@@ -382,13 +491,25 @@ class MoonshineAdapter:
     ) -> MoonshineCase:
         if self._closed or self._transcriber is None:
             raise MoonshineAdapterError()
+        if self._boundary_profile:
+            config = self.config
+            if (
+                type(config) is not MoonshineExternalEndpointConfig
+                or request.stream.tail_padding_samples != 0
+                or request.stream.chunk_samples != config.streaming_chunk_samples
+                or request.stream.partial_interval_ms
+                != config.online_partial_interval_ms
+                or request.pcm.samples > config.maximum_source_samples
+            ):
+                raise MoonshineAdapterError()
         source = _read_pcm(request)
         total_samples = request.pcm.samples + request.stream.tail_padding_samples
-        if total_samples > MAX_STREAM_SAMPLES:
+        if not self._boundary_profile and total_samples > MAX_STREAM_SAMPLES:
             raise MoonshineAdapterError()
 
         case_started = self._now()
         stream: object | None = None
+        native_free_attempted = False
         try:
             stream, create_ms = self._timed(
                 lambda: self._transcriber.create_stream(
@@ -494,29 +615,75 @@ class MoonshineAdapter:
                 raise MoonshineAdapterError()
 
             finalization_started = self._now()
-            forced, force_ms = self._timed(
-                lambda: stream.update_transcription(_FORCE_UPDATE_FLAG)
-            )
-            compute_ms += force_ms
-            raise_on_error_event()
-            assembler.accept(forced)
+            if self._boundary_profile:
+                config = self.config
+                assert isinstance(config, MoonshineExternalEndpointConfig)
+                # Moonshine's VAD advances in 512-sample hops while its
+                # streaming frontend advances in 1,280-sample chunks. Their
+                # least common multiple is 2,560, the first boundary valid for
+                # both model stages and therefore the receipt-bound batch
+                # alignment. Padding belongs only to authoritative batch input.
+                model_padding_samples = (
+                    -request.pcm.samples
+                ) % config.authoritative_alignment_samples
+                batch_audio = list(source)
+                batch_audio.extend([0.0] * model_padding_samples)
 
-            stopped, stop_ms = self._timed(stream.stop)
-            compute_ms += stop_ms
-            raise_on_error_event()
-            if stopped is None:
-                raise MoonshineAdapterError()
-            assembler.accept(stopped)
+                # Native stop currently produces an unreliable final. Verify
+                # the direct C stream free while active and make one separate
+                # batch decode the sole final authority for this bounded input.
+                online_stream = stream
+                transcriber = self._transcriber
+                if transcriber is None:
+                    raise MoonshineAdapterError()
+                native_free_attempted = True
+                _, free_ms = self._timed(
+                    lambda: _verified_native_stream_free(
+                        online_stream,
+                        transcriber,
+                    )
+                )
+                compute_ms += free_ms
+                stream = None
+                raise_on_error_event()
+                batch, batch_ms = self._timed(
+                    lambda: transcriber.transcribe_without_streaming(
+                        batch_audio,
+                        _SAMPLE_RATE,
+                    )
+                )
+                compute_ms += batch_ms
+                if batch is None:
+                    raise MoonshineAdapterError()
+                authoritative = _HypothesisAssembler()
+                final = authoritative.accept(batch)
+            else:
+                model_padding_samples = 0
+                forced, force_ms = self._timed(
+                    lambda: stream.update_transcription(_FORCE_UPDATE_FLAG)
+                )
+                compute_ms += force_ms
+                raise_on_error_event()
+                assembler.accept(forced)
+
+                stopped, stop_ms = self._timed(stream.stop)
+                compute_ms += stop_ms
+                raise_on_error_event()
+                if stopped is None:
+                    raise MoonshineAdapterError()
+                assembler.accept(stopped)
+                final = assembler.text()
             finished = self._now()
             return MoonshineCase(
                 partials=tuple(partials),
-                final=assembler.text(),
+                final=final,
                 elapsed_ms=self._duration_ms(case_started, finished),
                 finalization_ms=self._duration_ms(
                     finalization_started,
                     finished,
                 ),
                 compute_ms=compute_ms,
+                model_padding_samples=model_padding_samples,
                 deadline_misses=deadline_misses,
                 max_backlog_ms=max_backlog_ms,
                 resources=_resource_usage(),
@@ -529,8 +696,18 @@ class MoonshineAdapter:
             if stream is not None:
                 active_exception = sys.exc_info()[0] is not None
                 try:
-                    stream.close()
+                    if self._boundary_profile:
+                        if native_free_attempted:
+                            raise MoonshineAdapterError()
+                        transcriber = self._transcriber
+                        if transcriber is None:
+                            raise MoonshineAdapterError()
+                        _verified_native_stream_free(stream, transcriber)
+                    else:
+                        stream.close()
                 except Exception:
+                    if self._boundary_profile:
+                        self._invalidate_after_uncertain_stream_free(stream)
                     if not active_exception:
                         raise MoonshineAdapterError() from None
 
@@ -540,6 +717,7 @@ __all__ = [
     "MoonshineAdapterError",
     "MoonshineCase",
     "MoonshineConfig",
+    "MoonshineExternalEndpointConfig",
     "MoonshinePartial",
     "MoonshineReady",
 ]

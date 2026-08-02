@@ -424,10 +424,13 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     MAX_PYTHON_BYTES,
     ManifestError,
     MOONSHINE_ADAPTER,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    MoonshineConfig,
+    MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     WorkerManifest,
@@ -463,6 +466,41 @@ from tools.streaming_stt.source_bundle import (  # noqa: E402
     load_source_bundle,
     verify_source_bundle,
 )
+
+
+def _external_moonshine_config(
+    manifest: WorkerManifest,
+) -> MoonshineExternalEndpointConfig:
+    config = manifest.adapter_config
+    if (
+        type(config) is not MoonshineExternalEndpointConfig
+        or config.segmentation_mode != "external-presegmented"
+        or config.endpoint_owner != "external-input-boundary"
+        or type(config.vad_threshold) is not float
+        or config.vad_threshold != 0.0
+        or math.copysign(1.0, config.vad_threshold) != 1.0
+        or type(config.vad_max_segment_duration_sec) is not float
+        or config.vad_max_segment_duration_sec != 136.0
+        or type(config.vad_hop_size_samples) is not int
+        or config.vad_hop_size_samples != 512
+        or type(config.streaming_chunk_samples) is not int
+        or config.streaming_chunk_samples != 1_280
+        or type(config.online_partial_interval_ms) is not int
+        or config.online_partial_interval_ms != 500
+        or type(config.authoritative_alignment_samples) is not int
+        or config.authoritative_alignment_samples
+        != math.lcm(
+            config.vad_hop_size_samples,
+            config.streaming_chunk_samples,
+        )
+        or config.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
+        or config.finalization_policy
+        != "verified-native-free-authoritative-batch-v2"
+        or type(config.maximum_source_samples) is not int
+        or config.maximum_source_samples != 2_097_152
+    ):
+        raise ManifestError()
+    return config
 
 
 def _wire_protocol_version(manifest: WorkerManifest) -> int:
@@ -710,6 +748,7 @@ def _verify_runtime_receipt(
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -719,6 +758,7 @@ def _verify_runtime_receipt(
         raise ManifestError()
     limits = {
         MOONSHINE_ADAPTER: None,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: None,
         NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
         PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
         FASTER_WHISPER_ENDPOINT_ADAPTER: FASTER_WHISPER_RUNTIME_TREE_LIMITS,
@@ -730,7 +770,10 @@ def _verify_runtime_receipt(
             **({} if limits is None else {"limits": limits}),
         )
         verify_venv_runtime_location(receipt, manifest.python.path)
-        if manifest.adapter == MOONSHINE_ADAPTER:
+        if manifest.adapter in {
+            MOONSHINE_ADAPTER,
+            MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        }:
             wheel = manifest.artifact_by_name.get("release-wheel")
             if wheel is None:
                 raise ManifestError()
@@ -893,6 +936,7 @@ def _activate_candidate_runtime(
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -907,7 +951,10 @@ def _activate_candidate_runtime(
             "numpy",
             "tokenizers",
         )
-    elif manifest.adapter == MOONSHINE_ADAPTER:
+    elif manifest.adapter in {
+        MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+    }:
         module_prefixes = ("moonshine_voice",)
     elif manifest.adapter == NEMOTRON_ADAPTER:
         module_prefixes = (
@@ -1011,9 +1058,23 @@ def _create_adapter(manifest: WorkerManifest):
                 raise ManifestError()
         except (OSError, RuntimeError, ValueError, ManifestError):
             raise ManifestError() from None
-    if manifest.adapter == MOONSHINE_ADAPTER:
-        if manifest.adapter_config is None:
+    if manifest.adapter in {
+        MOONSHINE_ADAPTER,
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+    }:
+        expected_config_type = (
+            MoonshineConfig
+            if manifest.adapter == MOONSHINE_ADAPTER
+            else MoonshineExternalEndpointConfig
+        )
+        expected_schema = 2 if manifest.adapter == MOONSHINE_ADAPTER else 7
+        if (
+            type(manifest.adapter_config) is not expected_config_type
+            or manifest.schema_version != expected_schema
+        ):
             raise ManifestError()
+        if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+            _external_moonshine_config(manifest)
         # This verified source imports the external package only here.
         from tools.streaming_stt.adapters.moonshine import (  # noqa: PLC0415
             MoonshineAdapter,
@@ -1160,6 +1221,18 @@ def _run(
                     _write({"v": protocol_version, "type": "bye"})
                     return 0
 
+                if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+                    config = _external_moonshine_config(manifest)
+                    if (
+                        request.stream.tail_padding_samples != 0
+                        or request.stream.chunk_samples
+                        != config.streaming_chunk_samples
+                        or request.stream.partial_interval_ms
+                        != config.online_partial_interval_ms
+                        or request.pcm.samples > config.maximum_source_samples
+                    ):
+                        raise ProtocolError()
+
                 pcm = _load_pcm(request, scratch_root)
                 if request.pcm.sha256 not in consumed_inputs:
                     consumed_inputs.add(request.pcm.sha256)
@@ -1212,6 +1285,14 @@ def _run(
                 total_samples = (
                     request.pcm.samples + request.stream.tail_padding_samples
                 )
+                if manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
+                    config = _external_moonshine_config(manifest)
+                    if (
+                        model_padding_samples
+                        != (-request.pcm.samples)
+                        % config.authoritative_alignment_samples
+                    ):
+                        raise ProtocolError()
                 chunks = (
                     total_samples + request.stream.chunk_samples - 1
                 ) // request.stream.chunk_samples

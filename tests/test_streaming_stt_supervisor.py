@@ -20,8 +20,12 @@ from tools.streaming_stt.corpus import load_corpus
 from tools.streaming_stt.manifest import (
     BoundArtifact,
     BoundFile,
+    MOONSHINE_ADAPTER,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
+    MoonshineConfig,
+    MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetRealtimeEouConfig,
     load_worker_manifest,
@@ -42,6 +46,7 @@ from tools.streaming_stt.runtime_receipt import PARAKEET_RUNTIME_TREE_LIMITS
 from tools.streaming_stt.supervisor import (
     StreamingWorker,
     WorkerError,
+    _expected_final_evidence,
     _await_parakeet_cgroup,
     _nemotron_bwrap_command,
     _parakeet_systemd_scope_command,
@@ -283,6 +288,246 @@ def test_real_worker_is_a_new_process_session_and_closes_cleanly(tmp_path):
     assert trace.final.chunks == 3
     assert worker._process is not None  # noqa: SLF001 - lifecycle proof
     assert worker._process.poll() == 0  # noqa: SLF001 - lifecycle proof
+
+
+@pytest.mark.parametrize("samples", [1, 1_279, 1_280, 2_559, 2_560, 2_561])
+def test_external_moonshine_supervisor_binds_authoritative_alignment_padding(
+    tmp_path,
+    samples,
+):
+    pcm = tmp_path / "case.f32le"
+    pcm.write_bytes(b"\x00" * (samples * 4))
+    request = TranscribeRequest(
+        request_id="external-padding",
+        pcm=PcmInput(
+            path=pcm.resolve(),
+            sha256="0" * 64,
+            samples=samples,
+        ),
+        stream=StreamConfig(1280, "burst", 500, 0),
+    )
+    external = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        adapter_config=MoonshineExternalEndpointConfig(),
+    )
+    legacy = SimpleNamespace(
+        adapter=MOONSHINE_ADAPTER,
+        adapter_config=MoonshineConfig(),
+    )
+
+    external_chunks, external_padding = _expected_final_evidence(
+        external,
+        request,
+    )
+    legacy_chunks, legacy_padding = _expected_final_evidence(legacy, request)
+
+    assert external_chunks == legacy_chunks == (samples + 1_279) // 1_280
+    assert external_padding == (-samples) % 2_560
+    assert legacy_padding is None
+
+
+@pytest.mark.parametrize(
+    (
+        "samples",
+        "chunk_samples",
+        "partial_interval_ms",
+        "tail_padding_samples",
+    ),
+    [
+        (2_097_153, 1_280, 500, 0),
+        (4, 1_279, 500, 0),
+        (4, 1_280, 499, 0),
+        (4, 1_280, 500, 1),
+    ],
+)
+def test_external_moonshine_supervisor_rejects_out_of_contract_request_geometry(
+    samples,
+    chunk_samples,
+    partial_interval_ms,
+    tail_padding_samples,
+):
+    request = SimpleNamespace(
+        pcm=SimpleNamespace(samples=samples),
+        stream=SimpleNamespace(
+            chunk_samples=chunk_samples,
+            partial_interval_ms=partial_interval_ms,
+            tail_padding_samples=tail_padding_samples,
+        ),
+    )
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        adapter_config=MoonshineExternalEndpointConfig(),
+    )
+
+    with pytest.raises(WorkerError, match="invalid_request"):
+        _expected_final_evidence(manifest, request)
+
+
+@pytest.mark.parametrize(
+    (
+        "samples",
+        "chunk_samples",
+        "partial_interval_ms",
+        "tail_padding_samples",
+    ),
+    [
+        (2_097_153, 1_280, 500, 0),
+        (4, 1_279, 500, 0),
+        (4, 1_280, 499, 0),
+        (4, 1_280, 500, 1),
+    ],
+)
+def test_external_moonshine_supervisor_rejects_geometry_before_pcm_or_send(
+    tmp_path,
+    monkeypatch,
+    samples,
+    chunk_samples,
+    partial_interval_ms,
+    tail_padding_samples,
+):
+    pcm = tmp_path / "case.f32le"
+    pcm.write_bytes(b"\x00" * 16)
+    request = TranscribeRequest(
+        request_id="external-tail",
+        pcm=PcmInput(
+            path=pcm.resolve(),
+            sha256="0" * 64,
+            samples=samples,
+        ),
+        stream=StreamConfig(
+            chunk_samples,
+            "burst",
+            partial_interval_ms,
+            tail_padding_samples,
+        ),
+    )
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        schema_version=7,
+        adapter_config=MoonshineExternalEndpointConfig(),
+    )
+    worker = StreamingWorker(manifest, tmp_path / "scratch", SimpleNamespace())
+    worker.ready = object()
+    monkeypatch.setattr(
+        worker,
+        "_verify_pcm",
+        lambda _request: pytest.fail("invalid request reached PCM verification"),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_send",
+        lambda _message: pytest.fail("invalid request reached worker transport"),
+    )
+
+    with pytest.raises(WorkerError, match="invalid_request"):
+        worker.transcribe(request)
+
+
+@pytest.mark.parametrize(
+    ("model_padding_samples", "accepted"),
+    [(1_279, True), (0, False), (2_560, False)],
+)
+def test_external_moonshine_supervisor_validates_authoritative_batch_padding(
+    tmp_path,
+    monkeypatch,
+    model_padding_samples,
+    accepted,
+):
+    request = TranscribeRequest(
+        request_id="external-final",
+        pcm=PcmInput(
+            path=(tmp_path / "case.f32le").resolve(),
+            sha256="0" * 64,
+            samples=1_281,
+        ),
+        stream=StreamConfig(1_280, "burst", 500, 0),
+    )
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        schema_version=7,
+        adapter_config=MoonshineExternalEndpointConfig(),
+        limits=SimpleNamespace(case_timeout_sec=1.0),
+    )
+    worker = StreamingWorker(manifest, tmp_path / "scratch", SimpleNamespace())
+    worker.ready = object()
+    event = FinalEvent(
+        request_id=request.request_id,
+        seq=0,
+        text="stop now",
+        samples_seen=request.pcm.samples,
+        elapsed_ms=10.0,
+        finalization_ms=2.0,
+        compute_ms=8.0,
+        audio_seconds=request.pcm.samples / request.pcm.sample_rate,
+        chunks=2,
+        deadline_misses=0,
+        max_backlog_ms=0.0,
+        resources=ResourceUsage(rss_mb=1.0, threads=1, vram_mb=None),
+        model_padding_samples=model_padding_samples,
+    )
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: event)
+
+    if accepted:
+        assert worker.transcribe(request).final == event
+    else:
+        with pytest.raises(WorkerError, match="worker_protocol"):
+            worker.transcribe(request)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "schema_version", "config"),
+    [
+        (MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER, 2, MoonshineExternalEndpointConfig()),
+        (MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER, 7, MoonshineConfig()),
+        (MOONSHINE_ADAPTER, 7, MoonshineExternalEndpointConfig()),
+    ],
+)
+def test_external_moonshine_supervisor_rejects_schema_config_cross_pairing(
+    tmp_path,
+    adapter,
+    schema_version,
+    config,
+):
+    manifest = SimpleNamespace(
+        adapter=adapter,
+        schema_version=schema_version,
+        adapter_config=config,
+    )
+    worker = StreamingWorker(manifest, tmp_path / "missing", SimpleNamespace())
+
+    with pytest.raises(WorkerError, match="worker_protocol"):
+        worker.start()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("vad_threshold", 0.5),
+        ("streaming_chunk_samples", 640),
+        ("online_partial_interval_ms", 80),
+        ("authoritative_alignment_samples", 1_280),
+        ("maximum_source_samples", 2_097_153),
+        ("finalization_policy", "close-online-authoritative-batch-v1"),
+    ],
+)
+def test_external_moonshine_supervisor_rejects_corrupt_receipt_geometry(
+    tmp_path,
+    field,
+    value,
+):
+    config = MoonshineExternalEndpointConfig()
+    object.__setattr__(config, field, value)
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        schema_version=7,
+        adapter_config=config,
+    )
+    worker = StreamingWorker(manifest, tmp_path / "missing", SimpleNamespace())
+
+    with pytest.raises(WorkerError, match="worker_protocol"):
+        worker.start()
 
 
 @pytest.mark.parametrize(

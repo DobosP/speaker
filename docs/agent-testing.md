@@ -106,6 +106,52 @@ hard RAM/CPU limit. These aggregate runs begin after PCM is available and do
 not validate capture, VAD/endpoint ownership, AEC, commands, live latency, or
 adoption (ADR-0115).
 
+### Stock Moonshine external-boundary diagnostic
+
+The separate schema-v7 diagnostic recorded by ADR-0116 uses a new private
+destination and the same exact runtime, wheel, model, and public corpus. Bind
+the external-presegmented profile, then run its candidate-specific A-B-A smoke:
+
+```bash
+export MOONSHINE_EXTERNAL_PROVISION=/absolute/private/new-moonshine-external-candidate
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.provision_moonshine_candidate \
+  --venv-root "$MOONSHINE_RUNTIME" --wheel "$MOONSHINE_WHEEL" \
+  --model-root "$MOONSHINE_MODEL" --model-arch medium-streaming \
+  --segmentation-mode external-presegmented \
+  --output-dir "$MOONSHINE_EXTERNAL_PROVISION"
+
+SPEAKER_MOONSHINE_SCHEMA7_WORKER_MANIFEST="$MOONSHINE_EXTERNAL_PROVISION/worker-manifest.json" \
+SPEAKER_MOONSHINE_STREAMING_CORPUS="$STREAMING_CORPUS" \
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m pytest \
+  -p no:cacheprovider tests/test_streaming_stt_moonshine_worker.py \
+  -m real_model -k schema_v7 -q
+```
+
+Schema v7 rejects stream overrides: chunk size is 1,280 samples, partial
+cadence is 500 ms, and caller tail padding is zero. Run one aggregate burst
+cell with new private mode-700 scratch and report paths; omitting the geometry
+flags uses those receipt-bound values:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$MOONSHINE_EXTERNAL_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 1 --pace burst \
+  --scratch-root /absolute/private/new-moonshine-external-scratch \
+  --output /absolute/private/new-moonshine-external-report.json
+```
+
+This is complete-PCM, aggregate-only development evidence. It does not run or
+validate Speaker's endpoint, internal VAD quality, capture, AEC, barge-in,
+commands, tools, a device, or live conversation (ADR-0116).
+
 ## Timestamped capture-loop replay
 
 Obtain the AMI manual annotations and `ES2004a.Array1-01.wav` from the

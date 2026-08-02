@@ -26,7 +26,10 @@ from tools.streaming_stt.manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     MOONSHINE_ARTIFACT_NAMES,
+    MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     ManifestError,
+    MoonshineConfig,
+    MoonshineExternalEndpointConfig,
     WorkerManifest,
     artifact_maximum_bytes,
     load_worker_manifest,
@@ -183,6 +186,7 @@ def provision_candidate(
     model_root: Path | str,
     output_dir: Path | str,
     model_arch: str = "tiny-streaming",
+    segmentation_mode: str = "legacy",
 ) -> WorkerManifest:
     """Verify supplied inputs and create one new private model receipt."""
 
@@ -192,6 +196,30 @@ def provision_candidate(
         "medium-streaming",
     }:
         raise ProvisionError()
+    if type(segmentation_mode) is not str or segmentation_mode not in {
+        "legacy",
+        "external-presegmented",
+    }:
+        raise ProvisionError()
+    controlled_boundary = segmentation_mode != "legacy"
+    selected_adapter = (
+        MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
+        if controlled_boundary
+        else MOONSHINE_ADAPTER
+    )
+    selected_schema = 7 if controlled_boundary else 2
+    selected_config: MoonshineConfig | MoonshineExternalEndpointConfig
+    if controlled_boundary:
+        selected_config = MoonshineExternalEndpointConfig(
+            model_arch=model_arch,
+            segmentation_mode=segmentation_mode,
+            vad_threshold=0.0,
+        )
+    else:
+        selected_config = MoonshineConfig(model_arch=model_arch)
+    model_id = f"moonshine-voice-0.1.0-{model_arch}-en-cpu"
+    if controlled_boundary:
+        model_id += "-boundary-external"
     venv = _canonical_directory(venv_root, require_private=True)
     site_packages = _site_packages(venv)
     selected_model_root = _canonical_directory(
@@ -230,7 +258,7 @@ def provision_candidate(
     artifact_bindings = {
         name: _bound_payload(
             artifact_paths[name],
-            maximum_bytes=artifact_maximum_bytes(MOONSHINE_ADAPTER, name),
+            maximum_bytes=artifact_maximum_bytes(selected_adapter, name),
         )
         for name in MOONSHINE_ARTIFACT_NAMES
     }
@@ -252,16 +280,10 @@ def provision_candidate(
         for name in MOONSHINE_ARTIFACT_NAMES
     ]
     manifest_payload = {
-        "schema_version": 2,
-        "model_id": f"moonshine-voice-0.1.0-{model_arch}-en-cpu",
-        "adapter": MOONSHINE_ADAPTER,
-        "adapter_config": {
-            "package_version": "0.1.0",
-            "api_version": 30000,
-            "model_arch": model_arch,
-            "provider": "cpu",
-            "language": "en",
-        },
+        "schema_version": selected_schema,
+        "model_id": model_id,
+        "adapter": selected_adapter,
+        "adapter_config": selected_config.as_dict(),
         "python": _bound_payload(
             python,
             maximum_bytes=MAX_PYTHON_BYTES,
@@ -284,7 +306,10 @@ def provision_candidate(
     except ManifestError:
         raise ProvisionError() from None
     if (
-        manifest.adapter != MOONSHINE_ADAPTER
+        manifest.adapter != selected_adapter
+        or manifest.schema_version != selected_schema
+        or type(manifest.adapter_config) is not type(selected_config)
+        or manifest.adapter_config.as_dict() != selected_config.as_dict()
         or manifest.artifact_by_name["runtime-receipt"].sha256 != receipt.digest
     ):
         raise ProvisionError()
@@ -334,6 +359,15 @@ def _parser() -> argparse.ArgumentParser:
         choices=("tiny-streaming", "small-streaming", "medium-streaming"),
         default="tiny-streaming",
     )
+    parser.add_argument(
+        "--segmentation-mode",
+        choices=("legacy", "external-presegmented"),
+        default="legacy",
+        help=(
+            "use the historical receipt or the opt-in stock-v0.1.0 "
+            "external-presegmented profile"
+        ),
+    )
     return parser
 
 
@@ -346,6 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_root=args.model_root,
             output_dir=args.output_dir,
             model_arch=args.model_arch,
+            segmentation_mode=args.segmentation_mode,
         )
         result: Mapping[str, object] = _safe_result(manifest)
         code = 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from array import array
+import ctypes
 from dataclasses import dataclass, field
 import hashlib
 import importlib
@@ -11,8 +12,12 @@ import sys
 
 import pytest
 
-from tools.streaming_stt.manifest import MoonshineConfig
+from tools.streaming_stt.manifest import (
+    MoonshineConfig,
+    MoonshineExternalEndpointConfig,
+)
 from tools.streaming_stt.protocol import (
+    MAX_PCM_BYTES,
     MAX_PARTIALS_PER_CASE,
     PcmInput,
     StreamConfig,
@@ -62,36 +67,84 @@ class StreamPlan:
     add_cost: float = 0.0
     update_cost: float = 0.0
     stop_cost: float = 0.0
+    close_cost: float = 0.0
     stop_error_event: bool = False
     close_error: bool = False
+    native_free_result: object = 0
+    native_free_error: bool = False
+    malformed_native_layout: str | None = None
     native_cache_without_force: bool = False
 
 
+class FakeNativeFree:
+    restype = ctypes.c_int32
+    argtypes = [ctypes.c_int32, ctypes.c_int32]
+
+    def __init__(self, api: FakeApi) -> None:
+        self.api = api
+
+    def __call__(self, transcriber_handle: int, stream_handle: int) -> object:
+        stream = self.api.stream_by_handle[stream_handle]
+        assert transcriber_handle == stream._transcriber._handle
+        stream.actions.append("native-free")
+        self.api.actions.append("stream:native-free")
+        stream.clock.advance(stream.plan.close_cost)
+        if stream.plan.native_free_error:
+            raise RuntimeError("native free")
+        return stream.plan.native_free_result
+
+
+class FakeNativeLibrary:
+    def __init__(self, api: FakeApi) -> None:
+        self.moonshine_free_stream = FakeNativeFree(api)
+
+
 class FakeStream:
-    def __init__(self, clock: FakeClock, plan: StreamPlan) -> None:
-        self.clock = clock
+    def __init__(self, transcriber: FakeTranscriber, plan: StreamPlan) -> None:
+        api = transcriber.api
+        self.api = api
+        self.clock = api.clock
         self.plan = plan
+        self._transcriber = transcriber
+        self._lib = transcriber._lib
+        self._handle = api.next_stream_handle
+        api.next_stream_handle += 1
+        api.stream_by_handle[self._handle] = self
+        if plan.malformed_native_layout == "wrong-transcriber":
+            self._transcriber = object()
+        elif plan.malformed_native_layout == "wrong-library":
+            self._lib = object()
+        elif plan.malformed_native_layout == "bool-handle":
+            self._handle = True
+        elif plan.malformed_native_layout == "wrong-signature":
+            self._lib.moonshine_free_stream.argtypes = [ctypes.c_int32]
         self.listeners: list[object] = []
         self.added: list[tuple[list[float], int]] = []
         self.update_flags: list[int] = []
         self.actions: list[str] = []
-        self.closed = False
         self.cached_transcript = Transcript([])
+
+    @property
+    def closed(self) -> bool:
+        return self._handle is None
 
     def add_listener(self, listener) -> None:
         self.listeners.append(listener)
 
     def start(self) -> None:
         self.actions.append("start")
+        self.api.actions.append("stream:start")
         self.clock.advance(self.plan.start_cost)
 
     def add_audio(self, audio: list[float], sample_rate: int) -> None:
         self.actions.append("add")
+        self.api.actions.append("stream:add")
         self.added.append((list(audio), sample_rate))
         self.clock.advance(self.plan.add_cost)
 
     def update_transcription(self, flags: int = 0) -> Transcript:
         self.actions.append(f"update:{flags}")
+        self.api.actions.append(f"stream:update:{flags}")
         self.update_flags.append(flags)
         self.clock.advance(self.plan.update_cost)
         if self.plan.native_cache_without_force and flags == 0:
@@ -102,6 +155,7 @@ class FakeStream:
 
     def stop(self) -> Transcript | None:
         self.actions.append("stop")
+        self.api.actions.append("stream:stop")
         self.clock.advance(self.plan.stop_cost)
         if self.plan.stop_error_event:
             event = Error(RuntimeError("swallowed"))
@@ -112,9 +166,14 @@ class FakeStream:
 
     def close(self) -> None:
         self.actions.append("close")
-        self.closed = True
+        self.api.actions.append("stream:close")
+        self._handle = None
+        self.clock.advance(self.plan.close_cost)
         if self.plan.close_error:
             raise RuntimeError("close")
+
+    def remove_all_listeners(self) -> None:
+        self.listeners.clear()
 
 
 class FakeTranscriber:
@@ -132,6 +191,8 @@ class FakeTranscriber:
         self.model_arch = model_arch
         self.update_interval = update_interval
         self.options = options
+        self._lib = api.library
+        self._handle = 41
         self.streams: list[FakeStream] = []
         self.closed = False
         api.clock.advance(api.model_load_cost)
@@ -142,12 +203,28 @@ class FakeTranscriber:
     def create_stream(self, *, update_interval: float) -> FakeStream:
         plan = self.api.plans.pop(0)
         self.api.clock.advance(plan.create_cost)
-        stream = FakeStream(self.api.clock, plan)
+        stream = FakeStream(self, plan)
         self.streams.append(stream)
         return stream
 
+    def transcribe_without_streaming(
+        self,
+        audio: list[float],
+        sample_rate: int,
+    ) -> object:
+        self.api.actions.append("batch")
+        self.api.batch_calls.append((list(audio), sample_rate))
+        self.api.clock.advance(self.api.batch_cost)
+        if not self.api.batch_results:
+            return None
+        result = self.api.batch_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
     def close(self) -> None:
         self.closed = True
+        self._handle = None
 
 
 class FakeTranscriberFactory:
@@ -179,9 +256,22 @@ class FakeApi:
         *,
         model_load_cost: float = 0.0,
         library_version: int = 30000,
+        batch_results: list[object] | None = None,
+        batch_cost: float = 0.0,
     ) -> None:
         self.clock = clock
         self.plans = list(plans)
+        self.actions: list[str] = []
+        self.next_stream_handle = 101
+        self.stream_by_handle: dict[int, FakeStream] = {}
+        self.library = FakeNativeLibrary(self)
+        self.batch_calls: list[tuple[list[float], int]] = []
+        self.batch_results = (
+            [plan.stop_transcript for plan in plans]
+            if batch_results is None
+            else list(batch_results)
+        )
+        self.batch_cost = batch_cost
         self.model_load_cost = model_load_cost
         self.library_version = library_version
         self.Transcriber = FakeTranscriberFactory(self)
@@ -201,6 +291,15 @@ def _config(*, model_arch: str = "tiny-streaming") -> MoonshineConfig:
         model_arch=model_arch,
         provider="cpu",
         language="en",
+    )
+
+
+def _external_config(
+    *,
+    model_arch: str = "tiny-streaming",
+) -> MoonshineExternalEndpointConfig:
+    return MoonshineExternalEndpointConfig(
+        model_arch=model_arch,
     )
 
 
@@ -238,6 +337,7 @@ def _adapter(
     clock: FakeClock,
     *,
     model_arch: str = "tiny-streaming",
+    config: MoonshineConfig | MoonshineExternalEndpointConfig | None = None,
 ):
     from tools.streaming_stt.adapters.moonshine import MoonshineAdapter
 
@@ -245,7 +345,7 @@ def _adapter(
     model_root.mkdir(exist_ok=True)
     return MoonshineAdapter(
         model_root,
-        config=_config(model_arch=model_arch),
+        config=config or _config(model_arch=model_arch),
         api=api,
         clock=clock,
         sleeper=clock.sleep,
@@ -298,6 +398,7 @@ def test_exact_chunks_append_only_declared_zero_tail(tmp_path):
     ]
     assert case.final == "tail preserved"
     assert case.partials == ()
+    assert case.model_padding_samples == 0
     assert emitted == []
 
 
@@ -332,6 +433,87 @@ def test_transcriber_uses_only_closed_cpu_low_metadata_options(
     }
     assert transcriber.model_arch == expected_arch
     assert adapter.config.provider == "cpu"
+
+
+def test_boundary_profile_options_are_exact_fresh_and_do_not_leak_to_legacy(
+    tmp_path,
+):
+    clock = FakeClock()
+    api = FakeApi(clock, [])
+
+    external = _adapter(
+        tmp_path,
+        api,
+        clock,
+        config=_external_config(model_arch="medium-streaming"),
+    )
+    legacy = _adapter(
+        tmp_path,
+        api,
+        clock,
+        config=_config(model_arch="medium-streaming"),
+    )
+
+    external_options = api.Transcriber.instances[0].options
+    legacy_options = api.Transcriber.instances[1].options
+    assert external_options == {
+        "return_audio_data": "false",
+        "identify_speakers": "false",
+        "word_timestamps": "false",
+        "ort_providers": "CPU",
+        "vad_threshold": "0.0",
+        "vad_max_segment_duration": "136.0",
+        "vad_hop_size": "512",
+    }
+    assert legacy_options == {
+        "return_audio_data": "false",
+        "identify_speakers": "false",
+        "word_timestamps": "false",
+        "ort_providers": "CPU",
+    }
+    assert external_options is not legacy_options
+
+    external_options["vad_threshold"] = "changed"
+    assert "vad_threshold" not in legacy_options
+    external.close()
+    legacy.close()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("maximum_source_samples", MAX_PCM_BYTES // 4 - 1),
+        ("online_partial_interval_ms", 80),
+        ("finalization_policy", "close-online-authoritative-batch-v1"),
+    ],
+)
+def test_boundary_profile_receipt_fields_are_revalidated(
+    tmp_path,
+    field_name,
+    invalid_value,
+):
+    from tools.streaming_stt.adapters.moonshine import (
+        MoonshineAdapter,
+        MoonshineAdapterError,
+    )
+
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    config = _external_config()
+    object.__setattr__(config, field_name, invalid_value)
+    clock = FakeClock()
+    api = FakeApi(clock, [])
+
+    with pytest.raises(MoonshineAdapterError):
+        MoonshineAdapter(
+            model_root,
+            config=config,
+            api=api,
+            clock=clock,
+            sleeper=clock.sleep,
+        )
+
+    assert api.Transcriber.instances == []
 
 
 def test_exact_package_and_library_api_versions_are_enforced(tmp_path):
@@ -486,6 +668,276 @@ def test_subinterval_tail_is_force_updated_while_active_before_stop(tmp_path):
     ]
     assert stream.update_flags == [1]
     assert stream.added[-1][0] == [0.25, 0.25, 0.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    ("source_samples", "expected_model_padding"),
+    [(1, 2559), (2559, 1), (2560, 0), (2561, 2559)],
+)
+def test_boundary_profile_batch_gets_exact_full_pcm_and_lcm_padding(
+    tmp_path,
+    source_samples,
+    expected_model_padding,
+):
+    clock = FakeClock()
+    online_final = Transcript([Line(1, 0.0, "untrusted stream final")])
+    authoritative = Transcript([Line(7, 0.0, "authoritative batch")])
+    plan = StreamPlan(stop_transcript=online_final)
+    api = FakeApi(clock, [plan], batch_results=[authoritative])
+    adapter = _adapter(
+        tmp_path,
+        api,
+        clock,
+        config=_external_config(),
+    )
+    source = [0.25] * source_samples
+    request = _request(
+        tmp_path,
+        source,
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    case = adapter.transcribe(
+        request,
+        emit_partial=lambda _seq, _partial: None,
+    )
+
+    stream = api.Transcriber.instances[0].streams[0]
+    assert stream.closed
+    assert "stop" not in stream.actions
+    assert not any(action.startswith("update:") for action in stream.actions)
+    assert api.actions[-2:] == ["stream:native-free", "batch"]
+    assert api.batch_calls == [
+        (
+            [*source, *([0.0] * expected_model_padding)],
+            16_000,
+        )
+    ]
+    assert sum(len(audio) for audio, _sample_rate in stream.added) == source_samples
+    assert case.model_padding_samples == expected_model_padding
+    assert case.final == "authoritative batch"
+
+
+def test_boundary_profile_keeps_online_partial_but_batch_overrides_stream_text(
+    tmp_path,
+):
+    clock = FakeClock()
+    online = Transcript([Line(1, 0.0, "online provisional")])
+    untrusted = Transcript([Line(1, 0.0, "untrusted stop final")])
+    authoritative = Transcript([Line(2, 0.0, "batch wins")])
+    plan = StreamPlan(updates=[online], stop_transcript=untrusted)
+    api = FakeApi(clock, [plan], batch_results=[authoritative])
+    adapter = _adapter(tmp_path, api, clock, config=_external_config())
+    request = _request(
+        tmp_path,
+        [0.25] * 8001,
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    case = adapter.transcribe(
+        request,
+        emit_partial=lambda _seq, _partial: None,
+    )
+
+    stream = api.Transcriber.instances[0].streams[0]
+    assert stream.actions[-2:] == ["update:1", "native-free"]
+    assert api.actions[-2:] == ["stream:native-free", "batch"]
+    assert tuple(partial.text for partial in case.partials) == (
+        "online provisional",
+    )
+    assert tuple(partial.after_samples for partial in case.partials) == (8001,)
+    assert case.model_padding_samples == 2239
+    assert case.final == "batch wins"
+
+
+@pytest.mark.parametrize(
+    ("chunk_samples", "partial_interval_ms", "tail_padding_samples"),
+    [(1600, 500, 0), (1280, 80, 0), (1280, 500, 1)],
+)
+def test_boundary_profile_rejects_unbound_cadence_or_tail_before_stream_creation(
+    tmp_path,
+    chunk_samples,
+    partial_interval_ms,
+    tail_padding_samples,
+):
+    from tools.streaming_stt.adapters.moonshine import MoonshineAdapterError
+
+    clock = FakeClock()
+    api = FakeApi(clock, [StreamPlan()])
+    adapter = _adapter(
+        tmp_path,
+        api,
+        clock,
+        config=_external_config(),
+    )
+    request = _request(
+        tmp_path,
+        [0.0],
+        chunk_samples=chunk_samples,
+        partial_interval_ms=partial_interval_ms,
+        tail_padding_samples=tail_padding_samples,
+    )
+
+    with pytest.raises(MoonshineAdapterError):
+        adapter.transcribe(request, emit_partial=lambda _seq, _partial: None)
+
+    assert api.Transcriber.instances[0].streams == []
+    assert api.batch_calls == []
+
+
+def test_boundary_profile_close_and_batch_time_are_compute_and_finalization(
+    tmp_path,
+):
+    clock = FakeClock()
+    authoritative = Transcript([Line(1, 0.0, "done")])
+    plan = StreamPlan(
+        stop_transcript=Transcript([Line(1, 0.0, "ignored")]),
+        create_cost=0.01,
+        start_cost=0.01,
+        add_cost=0.02,
+        stop_cost=10.0,
+        close_cost=0.04,
+    )
+    api = FakeApi(
+        clock,
+        [plan],
+        batch_results=[authoritative],
+        batch_cost=0.05,
+    )
+    adapter = _adapter(tmp_path, api, clock, config=_external_config())
+    request = _request(
+        tmp_path,
+        [0.0] * 511,
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    case = adapter.transcribe(
+        request,
+        emit_partial=lambda _seq, _partial: None,
+    )
+
+    assert api.actions == [
+        "stream:start",
+        "stream:add",
+        "stream:native-free",
+        "batch",
+    ]
+    assert case.model_padding_samples == 2049
+    assert case.compute_ms == pytest.approx(130.0)
+    assert case.elapsed_ms == pytest.approx(130.0)
+    assert case.finalization_ms == pytest.approx(90.0)
+
+
+@pytest.mark.parametrize(
+    "batch_result",
+    [None, object(), RuntimeError("batch failed")],
+    ids=["none", "invalid", "error"],
+)
+def test_boundary_profile_batch_failures_close_online_stream_and_fail_closed(
+    tmp_path,
+    batch_result,
+):
+    from tools.streaming_stt.adapters.moonshine import MoonshineAdapterError
+
+    clock = FakeClock()
+    api = FakeApi(clock, [StreamPlan()], batch_results=[batch_result])
+    adapter = _adapter(tmp_path, api, clock, config=_external_config())
+    request = _request(
+        tmp_path,
+        [0.0],
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    with pytest.raises(MoonshineAdapterError):
+        adapter.transcribe(request, emit_partial=lambda _seq, _partial: None)
+
+    stream = api.Transcriber.instances[0].streams[0]
+    assert stream.closed
+    assert "stop" not in stream.actions
+    assert api.actions == [
+        "stream:start",
+        "stream:add",
+        "stream:native-free",
+        "batch",
+    ]
+    assert len(api.batch_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("native_free_result", "native_free_error"),
+    [(-2, False), (1, False), (None, False), (True, False), (0, True)],
+    ids=["native-error", "positive", "none", "bool", "call-error"],
+)
+def test_boundary_profile_native_free_failure_prevents_batch(
+    tmp_path,
+    native_free_result,
+    native_free_error,
+):
+    from tools.streaming_stt.adapters.moonshine import MoonshineAdapterError
+
+    clock = FakeClock()
+    api = FakeApi(
+        clock,
+        [
+            StreamPlan(
+                native_free_result=native_free_result,
+                native_free_error=native_free_error,
+            )
+        ],
+        batch_results=[Transcript([])],
+    )
+    adapter = _adapter(tmp_path, api, clock, config=_external_config())
+    request = _request(
+        tmp_path,
+        [0.0],
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    with pytest.raises(MoonshineAdapterError):
+        adapter.transcribe(request, emit_partial=lambda _seq, _partial: None)
+
+    stream = api.Transcriber.instances[0].streams[0]
+    assert stream.closed
+    assert api.actions == ["stream:start", "stream:add", "stream:native-free"]
+    assert api.batch_calls == []
+    assert api.Transcriber.instances[0].closed
+
+
+@pytest.mark.parametrize(
+    "malformed_layout",
+    ["wrong-transcriber", "wrong-library", "bool-handle", "wrong-signature"],
+)
+def test_boundary_profile_rejects_malformed_stock_stream_layout(
+    tmp_path,
+    malformed_layout,
+):
+    from tools.streaming_stt.adapters.moonshine import MoonshineAdapterError
+
+    clock = FakeClock()
+    api = FakeApi(
+        clock,
+        [StreamPlan(malformed_native_layout=malformed_layout)],
+        batch_results=[Transcript([])],
+    )
+    adapter = _adapter(tmp_path, api, clock, config=_external_config())
+    request = _request(
+        tmp_path,
+        [0.0],
+        chunk_samples=1280,
+        partial_interval_ms=500,
+    )
+
+    with pytest.raises(MoonshineAdapterError):
+        adapter.transcribe(request, emit_partial=lambda _seq, _partial: None)
+
+    assert "stream:native-free" not in api.actions
+    assert api.batch_calls == []
+    assert api.Transcriber.instances[0].closed
 
 
 @pytest.mark.parametrize("emit_error", [False, True])

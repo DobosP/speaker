@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -24,6 +25,7 @@ from .runtime_receipt import (
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
+_ELF_LIBRARY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+~-]{0,127}\Z")
 _MAX_MANIFEST_BYTES = 64 * 1024
 MAX_PYTHON_BYTES = 512 * 1024 * 1024
 MAX_WORKER_BYTES = 4 * 1024 * 1024
@@ -38,6 +40,11 @@ MAX_PARAKEET_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_PARAKEET_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
 MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES = 32 * 1024 * 1024
 MAX_FASTER_WHISPER_TOTAL_ARTIFACT_BYTES = 40 * 1024 * 1024
+MAX_PARAKEET_CPP_CONTROL_ARTIFACT_BYTES = 1024 * 1024
+MAX_PARAKEET_CPP_BRIDGE_SOURCE_BYTES = 1024 * 1024
+MAX_PARAKEET_CPP_LIBRARY_BYTES = 256 * 1024 * 1024
+MAX_PARAKEET_CPP_MODEL_BYTES = 320 * 1024 * 1024
+MAX_PARAKEET_CPP_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -53,6 +60,7 @@ _MANIFEST_V4_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V5_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V6_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V7_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V8_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -189,6 +197,37 @@ _FASTER_WHISPER_CONFIG_FIELDS = {
     "model_total_size_bytes",
     "model_maximum_file_bytes",
 }
+_PARAKEET_CPP_CONFIG_FIELDS = {
+    "upstream_repo_id",
+    "upstream_commit",
+    "upstream_tag",
+    "ggml_commit",
+    "c_api_version",
+    "bridge_abi_version",
+    "upstream_license",
+    "upstream_license_sha256",
+    "model_repo_id",
+    "model_revision",
+    "source_model_repo_id",
+    "source_model_revision",
+    "model_filename",
+    "model_sha256",
+    "model_size_bytes",
+    "model_dtype",
+    "model_license",
+    "requested_device",
+    "actual_device",
+    "num_threads",
+    "ggml_native",
+    "ggml_cuda",
+    "ggml_metal",
+    "ggml_vulkan",
+    "ggml_hip",
+    "sample_rate",
+    "native_chunk_samples",
+    "maximum_tail_padding_samples",
+    "frame_sec",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
 MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER = (
     "moonshine-voice-external-endpoint-v1"
@@ -197,6 +236,7 @@ NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
 FASTER_WHISPER_ENDPOINT_ADAPTER = "faster-whisper-endpoint-v1"
+PARAKEET_CPP_ADAPTER = "parakeet-cpp-realtime-eou-v1"
 NEMOTRON_WHEEL_LOCK_SHA256 = (
     "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
 )
@@ -518,6 +558,77 @@ FASTER_WHISPER_REQUIRED_MODEL_FILES = frozenset(
     {"config.json", "model.bin", "tokenizer.json"}
 )
 FASTER_WHISPER_VOCABULARY_FILES = frozenset({"vocabulary.json", "vocabulary.txt"})
+PARAKEET_CPP_ARTIFACT_NAMES = (
+    "source-receipt",
+    "build-receipt",
+    "model-receipt",
+    "libparakeet",
+    "bridge-library",
+    "model-gguf",
+)
+_PARAKEET_CPP_ARTIFACT_BASENAMES = {
+    "source-receipt": "source-receipt.json",
+    "build-receipt": "build-receipt.json",
+    "model-receipt": "model-receipt.json",
+    "libparakeet": "libparakeet.so",
+    "bridge-library": "libspeaker_parakeet_bridge.so",
+    "model-gguf": "realtime_eou_120m-v1-f16.gguf",
+}
+PARAKEET_CPP_MODEL_RECEIPT = (
+    "d1a2b12f12b8a096a57499c9111ed13b442a2b786e17a292c168be45088f0edc",
+    266_517_952,
+)
+PARAKEET_CPP_LIBPARAKEET_RECEIPT = (
+    "eae6fc236de170164193ec3c0b326cfc2327d586161c1d727d1109bbc8d5659d",
+    2_601_992,
+)
+PARAKEET_CPP_LIBPARAKEET_NEEDED = (
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2",
+)
+PARAKEET_CPP_BRIDGE_RECEIPT = (
+    "eb57b8b8db463ebb287997495699bfee9cf72df3099de21bef8d343d4c510f5e",
+    27_168,
+)
+PARAKEET_CPP_BRIDGE_NEEDED = (
+    "libparakeet.so",
+    "libstdc++.so.6",
+    "libc.so.6",
+)
+PARAKEET_CPP_BRIDGE_RUNPATH = "$ORIGIN"
+PARAKEET_CPP_PARENT_GIT_TREE = "7e1b2eeb55caf1c0f6e0a15da0bc769ac7f2524c"
+PARAKEET_CPP_GGML_GIT_TREE = "fb778cbfe12baef2e69f7f6132f2cf8b243269a2"
+PARAKEET_CPP_PATCH_SPECS = (
+    (
+        "0001-ggml-cpu-fold-broadcast-iterations-in-llamafile_sgem.patch",
+        "779bb7c37d38c7a007e9f6e874db7040fafe7e9d93d4152efcbdae8fa560963b",
+    ),
+    (
+        "0002-metal-conv-2d-dw.patch",
+        "55bad8241fd355fbecb63516a5778dd92b916fdd97b6e780ff2979b74f4a8fe3",
+    ),
+    (
+        "0003-metal-pad-leading.patch",
+        "61e7e7be0a2b22afa8aa05afb1d90d89e75f67a2ecdc0fa7d8f51bd705002609",
+    ),
+    (
+        "0004-cuda-pad-grid-stride.patch",
+        "6a57d875c16a0f9aee42f88b9f07ba44fdf05718f54009697299495d8fb02424",
+    ),
+)
+PARAKEET_CPP_PATCHED_DIFF_SHA256 = (
+    "e62f5e880cde081d478927b62f304f60c93e92a8996b4e82f2e3b6a9205e9926"
+)
+PARAKEET_CPP_BRIDGE_SOURCE_SHA256 = (
+    "1fdf9d194afadc986cb956e419c75cf68e7c154eee8098b591c4bcb340eef2e4"
+)
+_PARAKEET_CPP_RECEIPT_NAMES = frozenset(
+    {"source-receipt", "build-receipt", "model-receipt"}
+)
+_PARAKEET_CPP_LIBRARY_NAMES = frozenset({"libparakeet", "bridge-library"})
 
 
 class ManifestError(RuntimeError):
@@ -534,6 +645,15 @@ class BoundFile:
 @dataclass(frozen=True)
 class BoundArtifact(BoundFile):
     name: str
+
+
+@dataclass(frozen=True)
+class ElfInspection:
+    dependencies: tuple[str, ...]
+    runpath: str | None
+    relro: bool
+    bind_now: bool
+    noexecstack: bool
 
 
 @dataclass(frozen=True)
@@ -917,6 +1037,92 @@ class ParakeetRealtimeEouConfig:
 
 
 @dataclass(frozen=True)
+class ParakeetCppConfig:
+    """Exact portable parakeet.cpp source, model, and CPU decode contract."""
+
+    upstream_repo_id: str = "mudler/parakeet.cpp"
+    upstream_commit: str = "1bfbebfaaf493866f49597cd3b7901959d395c60"
+    upstream_tag: str = "v0.5.0"
+    ggml_commit: str = "e705c5fed490514458bdd2eaddc43bd098fcce9b"
+    c_api_version: int = 6
+    bridge_abi_version: int = 1
+    upstream_license: str = "MIT"
+    upstream_license_sha256: str = (
+        "396cb1a512310cb4fabd73118114c8cb53c7352955a37b583e165f15af64f095"
+    )
+    model_repo_id: str = "mudler/parakeet-cpp-gguf"
+    model_revision: str = "bf0af9f425fa01809cadec671b3cb672709d13e9"
+    source_model_repo_id: str = "nvidia/parakeet_realtime_eou_120m-v1"
+    source_model_revision: str = "a7e2b4629593dce0ec19f600e00e9904353fda2d"
+    model_filename: str = "realtime_eou_120m-v1-f16.gguf"
+    model_sha256: str = PARAKEET_CPP_MODEL_RECEIPT[0]
+    model_size_bytes: int = PARAKEET_CPP_MODEL_RECEIPT[1]
+    model_dtype: str = "F16"
+    model_license: str = "CC-BY-4.0"
+    requested_device: str = "cpu"
+    actual_device: str = "cpu"
+    num_threads: int = 1
+    ggml_native: bool = False
+    ggml_cuda: bool = False
+    ggml_metal: bool = False
+    ggml_vulkan: bool = False
+    ggml_hip: bool = False
+    sample_rate: int = 16_000
+    native_chunk_samples: int = 1_280
+    maximum_tail_padding_samples: int = 48_000
+    frame_sec: float = 0.08
+
+    def __post_init__(self) -> None:
+        exact = {
+            "upstream_repo_id": "mudler/parakeet.cpp",
+            "upstream_commit": "1bfbebfaaf493866f49597cd3b7901959d395c60",
+            "upstream_tag": "v0.5.0",
+            "ggml_commit": "e705c5fed490514458bdd2eaddc43bd098fcce9b",
+            "c_api_version": 6,
+            "bridge_abi_version": 1,
+            "upstream_license": "MIT",
+            "upstream_license_sha256": (
+                "396cb1a512310cb4fabd73118114c8cb53c7352955a37b583e165f15af64f095"
+            ),
+            "model_repo_id": "mudler/parakeet-cpp-gguf",
+            "model_revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
+            "source_model_repo_id": "nvidia/parakeet_realtime_eou_120m-v1",
+            "source_model_revision": (
+                "a7e2b4629593dce0ec19f600e00e9904353fda2d"
+            ),
+            "model_filename": "realtime_eou_120m-v1-f16.gguf",
+            "model_sha256": PARAKEET_CPP_MODEL_RECEIPT[0],
+            "model_size_bytes": PARAKEET_CPP_MODEL_RECEIPT[1],
+            "model_dtype": "F16",
+            "model_license": "CC-BY-4.0",
+            "requested_device": "cpu",
+            "actual_device": "cpu",
+            "num_threads": 1,
+            "ggml_native": False,
+            "ggml_cuda": False,
+            "ggml_metal": False,
+            "ggml_vulkan": False,
+            "ggml_hip": False,
+            "sample_rate": 16_000,
+            "native_chunk_samples": 1_280,
+            "maximum_tail_padding_samples": 48_000,
+            "frame_sec": 0.08,
+        }
+        if any(
+            type(getattr(self, name)) is not type(expected)
+            or getattr(self, name) != expected
+            for name, expected in exact.items()
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            name: getattr(self, name)
+            for name in _PARAKEET_CPP_CONFIG_FIELDS
+        }
+
+
+@dataclass(frozen=True)
 class FasterWhisperEndpointConfig:
     """Exact final-only decode semantics plus two receipt-bound local trees."""
 
@@ -1088,6 +1294,7 @@ class WorkerManifest:
         | NemotronConfig
         | SherpaZipformerConfig
         | ParakeetRealtimeEouConfig
+        | ParakeetCppConfig
         | FasterWhisperEndpointConfig
         | None
     ) = None
@@ -1185,6 +1392,12 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
             artifact_name,
             MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES,
         )
+    if adapter == PARAKEET_CPP_ADAPTER and artifact_name in PARAKEET_CPP_ARTIFACT_NAMES:
+        if artifact_name in _PARAKEET_CPP_RECEIPT_NAMES:
+            return MAX_PARAKEET_CPP_CONTROL_ARTIFACT_BYTES
+        if artifact_name in _PARAKEET_CPP_LIBRARY_NAMES:
+            return MAX_PARAKEET_CPP_LIBRARY_BYTES
+        return MAX_PARAKEET_CPP_MODEL_BYTES
     raise ManifestError()
 
 
@@ -1430,6 +1643,55 @@ def _parakeet_config(value: object) -> ParakeetRealtimeEouConfig:
         raise ManifestError() from None
 
 
+def _parakeet_cpp_config(value: object) -> ParakeetCppConfig:
+    if not isinstance(value, dict) or set(value) != _PARAKEET_CPP_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return ParakeetCppConfig(
+            upstream_repo_id=value.get("upstream_repo_id"),  # type: ignore[arg-type]
+            upstream_commit=value.get("upstream_commit"),  # type: ignore[arg-type]
+            upstream_tag=value.get("upstream_tag"),  # type: ignore[arg-type]
+            ggml_commit=value.get("ggml_commit"),  # type: ignore[arg-type]
+            c_api_version=value.get("c_api_version"),  # type: ignore[arg-type]
+            bridge_abi_version=value.get("bridge_abi_version"),  # type: ignore[arg-type]
+            upstream_license=value.get("upstream_license"),  # type: ignore[arg-type]
+            upstream_license_sha256=value.get(  # type: ignore[arg-type]
+                "upstream_license_sha256"
+            ),
+            model_repo_id=value.get("model_repo_id"),  # type: ignore[arg-type]
+            model_revision=value.get("model_revision"),  # type: ignore[arg-type]
+            source_model_repo_id=value.get(  # type: ignore[arg-type]
+                "source_model_repo_id"
+            ),
+            source_model_revision=value.get(  # type: ignore[arg-type]
+                "source_model_revision"
+            ),
+            model_filename=value.get("model_filename"),  # type: ignore[arg-type]
+            model_sha256=value.get("model_sha256"),  # type: ignore[arg-type]
+            model_size_bytes=value.get("model_size_bytes"),  # type: ignore[arg-type]
+            model_dtype=value.get("model_dtype"),  # type: ignore[arg-type]
+            model_license=value.get("model_license"),  # type: ignore[arg-type]
+            requested_device=value.get("requested_device"),  # type: ignore[arg-type]
+            actual_device=value.get("actual_device"),  # type: ignore[arg-type]
+            num_threads=value.get("num_threads"),  # type: ignore[arg-type]
+            ggml_native=value.get("ggml_native"),  # type: ignore[arg-type]
+            ggml_cuda=value.get("ggml_cuda"),  # type: ignore[arg-type]
+            ggml_metal=value.get("ggml_metal"),  # type: ignore[arg-type]
+            ggml_vulkan=value.get("ggml_vulkan"),  # type: ignore[arg-type]
+            ggml_hip=value.get("ggml_hip"),  # type: ignore[arg-type]
+            sample_rate=value.get("sample_rate"),  # type: ignore[arg-type]
+            native_chunk_samples=value.get(  # type: ignore[arg-type]
+                "native_chunk_samples"
+            ),
+            maximum_tail_padding_samples=value.get(  # type: ignore[arg-type]
+                "maximum_tail_padding_samples"
+            ),
+            frame_sec=value.get("frame_sec"),  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
 def _faster_whisper_config(value: object) -> FasterWhisperEndpointConfig:
     if not isinstance(value, dict) or set(value) != _FASTER_WHISPER_CONFIG_FIELDS:
         raise ManifestError()
@@ -1618,6 +1880,442 @@ def _validate_parakeet_layout(
     _validate_venv_layout(python, by_name["venv-marker"])
 
 
+def _exact_receipt_payload(
+    artifact: BoundArtifact,
+    expected: Mapping[str, object],
+) -> dict[str, object]:
+    try:
+        snapshot = read_regular_bounded(
+            artifact.path,
+            maximum_bytes=MAX_PARAKEET_CPP_CONTROL_ARTIFACT_BYTES,
+            expected_bytes=artifact.size_bytes,
+        )
+    except BoundedReadError:
+        raise ManifestError() from None
+    value = _strict_json(snapshot.data)
+    if (
+        snapshot.path != artifact.path
+        or hashlib.sha256(snapshot.data).hexdigest() != artifact.sha256
+        or not isinstance(value, dict)
+        or set(value) != set(expected)
+        or not _exact_json_value(value, expected)
+    ):
+        raise ManifestError()
+    return value
+
+
+def _exact_json_value(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        return set(actual) == set(expected) and all(
+            _exact_json_value(actual[name], expected_value)
+            for name, expected_value in expected.items()
+        )
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        return len(actual) == len(expected) and all(
+            _exact_json_value(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _manifest_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat.S_IFMT(metadata.st_mode),
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _elf_integer(data: bytes, offset: int, width: int) -> int:
+    end = offset + width
+    if offset < 0 or width <= 0 or end > len(data):
+        raise ManifestError()
+    return int.from_bytes(data[offset:end], "little")
+
+
+def inspect_elf(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+    maximum_bytes: int,
+) -> ElfInspection:
+    """Inspect one bounded x86-64 shared ELF without loading it."""
+
+    try:
+        snapshot = read_regular_bounded(
+            path,
+            maximum_bytes=maximum_bytes,
+            expected_bytes=expected_size_bytes,
+        )
+    except BoundedReadError:
+        raise ManifestError() from None
+    data = snapshot.data
+    if (
+        snapshot.path != path
+        or hashlib.sha256(data).hexdigest() != expected_sha256
+        or len(data) < 64
+        or data[:4] != b"\x7fELF"
+        or data[4:7] != b"\x02\x01\x01"
+        or _elf_integer(data, 16, 2) != 3
+        or _elf_integer(data, 18, 2) != 62
+        or _elf_integer(data, 20, 4) != 1
+        or _elf_integer(data, 52, 2) != 64
+    ):
+        raise ManifestError()
+    program_offset = _elf_integer(data, 32, 8)
+    program_size = _elf_integer(data, 54, 2)
+    program_count = _elf_integer(data, 56, 2)
+    if (
+        program_size != 56
+        or not 1 <= program_count <= 64
+        or program_offset < 64
+        or program_offset + (program_size * program_count) > len(data)
+    ):
+        raise ManifestError()
+
+    load_segments: list[tuple[int, int, int]] = []
+    dynamic_segments: list[tuple[int, int]] = []
+    relro = False
+    stack_flags: list[int] = []
+    for index in range(program_count):
+        entry = program_offset + (index * program_size)
+        segment_type = _elf_integer(data, entry, 4)
+        segment_flags = _elf_integer(data, entry + 4, 4)
+        file_offset = _elf_integer(data, entry + 8, 8)
+        virtual_address = _elf_integer(data, entry + 16, 8)
+        file_size = _elf_integer(data, entry + 32, 8)
+        if file_offset + file_size > len(data):
+            raise ManifestError()
+        if segment_type == 1:
+            load_segments.append((file_offset, virtual_address, file_size))
+        elif segment_type == 2:
+            dynamic_segments.append((file_offset, file_size))
+        elif segment_type == 0x6474E551:
+            stack_flags.append(segment_flags)
+        elif segment_type == 0x6474E552:
+            relro = True
+    if len(dynamic_segments) != 1 or not load_segments:
+        raise ManifestError()
+    dynamic_offset, dynamic_size = dynamic_segments[0]
+    if dynamic_size < 16 or dynamic_size % 16:
+        raise ManifestError()
+
+    needed_offsets: list[int] = []
+    string_table_addresses: list[int] = []
+    string_table_sizes: list[int] = []
+    runpath_offsets: list[int] = []
+    rpath_offsets: list[int] = []
+    bind_now = False
+    terminated = False
+    for offset in range(dynamic_offset, dynamic_offset + dynamic_size, 16):
+        tag = _elf_integer(data, offset, 8)
+        value = _elf_integer(data, offset + 8, 8)
+        if tag == 0:
+            terminated = True
+            break
+        if tag == 1:
+            needed_offsets.append(value)
+        elif tag == 5:
+            string_table_addresses.append(value)
+        elif tag == 10:
+            string_table_sizes.append(value)
+        elif tag == 15:
+            rpath_offsets.append(value)
+        elif tag == 24:
+            bind_now = True
+        elif tag == 29:
+            runpath_offsets.append(value)
+        elif tag == 30 and value & 0x8:
+            bind_now = True
+        elif tag == 0x6FFFFFFB and value & 0x1:
+            bind_now = True
+    if (
+        not terminated
+        or not needed_offsets
+        or len(string_table_addresses) != 1
+        or len(string_table_sizes) != 1
+        or string_table_sizes[0] <= 1
+        or string_table_sizes[0] > maximum_bytes
+        or rpath_offsets
+        or len(runpath_offsets) > 1
+    ):
+        raise ManifestError()
+
+    string_address = string_table_addresses[0]
+    string_size = string_table_sizes[0]
+    table_offsets = []
+    for file_offset, virtual_address, file_size in load_segments:
+        if virtual_address <= string_address:
+            relative = string_address - virtual_address
+            if relative + string_size <= file_size:
+                table_offsets.append(file_offset + relative)
+    if len(table_offsets) != 1:
+        raise ManifestError()
+    table_offset = table_offsets[0]
+
+    def string_at(relative: int) -> str:
+        if relative >= string_size:
+            raise ManifestError()
+        start = table_offset + relative
+        end = data.find(b"\x00", start, table_offset + string_size)
+        if end < 0 or end == start:
+            raise ManifestError()
+        try:
+            return data[start:end].decode("ascii", errors="strict")
+        except UnicodeError:
+            raise ManifestError() from None
+
+    names: list[str] = []
+    for relative in needed_offsets:
+        name = string_at(relative)
+        if _ELF_LIBRARY_RE.fullmatch(name) is None or name in names:
+            raise ManifestError()
+        names.append(name)
+    runpath = string_at(runpath_offsets[0]) if runpath_offsets else None
+    return ElfInspection(
+        dependencies=tuple(names),
+        runpath=runpath,
+        relro=relro,
+        bind_now=bind_now,
+        noexecstack=len(stack_flags) == 1 and stack_flags[0] & 0x1 == 0,
+    )
+
+
+def elf_dynamic_dependencies(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+    maximum_bytes: int,
+) -> tuple[str, ...]:
+    """Return exact DT_NEEDED order from one bounded x86-64 shared ELF."""
+
+    return inspect_elf(
+        path,
+        expected_sha256=expected_sha256,
+        expected_size_bytes=expected_size_bytes,
+        maximum_bytes=maximum_bytes,
+    ).dependencies
+
+
+def _validate_shared_elf(
+    artifact: BoundArtifact,
+    *,
+    expected_dependencies: tuple[str, ...],
+) -> ElfInspection:
+    inspection = inspect_elf(
+        artifact.path,
+        expected_sha256=artifact.sha256,
+        expected_size_bytes=artifact.size_bytes,
+        maximum_bytes=artifact_maximum_bytes(PARAKEET_CPP_ADAPTER, artifact.name),
+    )
+    if inspection.dependencies != expected_dependencies:
+        raise ManifestError()
+    return inspection
+
+
+def _closed_directory(path: Path, expected_names: set[str]) -> None:
+    try:
+        metadata = path.lstat()
+        names = set(os.listdir(path))
+        current = path.lstat()
+    except (OSError, RuntimeError, ValueError):
+        raise ManifestError() from None
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or _manifest_file_identity(current) != _manifest_file_identity(metadata)
+        or names != expected_names
+    ):
+        raise ManifestError()
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+        return True
+    except ValueError:
+        pass
+    try:
+        right.relative_to(left)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_parakeet_cpp_layout(
+    artifacts: tuple[BoundArtifact, ...],
+    config: ParakeetCppConfig,
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    if (
+        tuple(by_name) != PARAKEET_CPP_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_PARAKEET_CPP_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _PARAKEET_CPP_ARTIFACT_BASENAMES.items()
+        )
+        or (
+            by_name["model-gguf"].sha256,
+            by_name["model-gguf"].size_bytes,
+        )
+        != PARAKEET_CPP_MODEL_RECEIPT
+        or (
+            by_name["libparakeet"].sha256,
+            by_name["libparakeet"].size_bytes,
+        )
+        != PARAKEET_CPP_LIBPARAKEET_RECEIPT
+        or (
+            by_name["bridge-library"].sha256,
+            by_name["bridge-library"].size_bytes,
+        )
+        != PARAKEET_CPP_BRIDGE_RECEIPT
+    ):
+        raise ManifestError()
+
+    native_names = (
+        "source-receipt",
+        "build-receipt",
+        "libparakeet",
+        "bridge-library",
+    )
+    model_names = ("model-receipt", "model-gguf")
+    native_roots = {by_name[name].path.parent for name in native_names}
+    model_roots = {by_name[name].path.parent for name in model_names}
+    if len(native_roots) != 1 or len(model_roots) != 1:
+        raise ManifestError()
+    native_root = next(iter(native_roots))
+    model_root = next(iter(model_roots))
+    if _paths_overlap(native_root, model_root):
+        raise ManifestError()
+    _closed_directory(
+        native_root,
+        {_PARAKEET_CPP_ARTIFACT_BASENAMES[name] for name in native_names},
+    )
+    _closed_directory(
+        model_root,
+        {_PARAKEET_CPP_ARTIFACT_BASENAMES[name] for name in model_names},
+    )
+    _validate_shared_elf(
+        by_name["libparakeet"],
+        expected_dependencies=PARAKEET_CPP_LIBPARAKEET_NEEDED,
+    )
+    bridge_inspection = _validate_shared_elf(
+        by_name["bridge-library"],
+        expected_dependencies=PARAKEET_CPP_BRIDGE_NEEDED,
+    )
+    if (
+        bridge_inspection.runpath != PARAKEET_CPP_BRIDGE_RUNPATH
+        or not bridge_inspection.relro
+        or not bridge_inspection.bind_now
+        or not bridge_inspection.noexecstack
+    ):
+        raise ManifestError()
+
+    _exact_receipt_payload(
+        by_name["source-receipt"],
+        {
+            "schema_version": 1,
+            "kind": "parakeet-cpp-source-receipt-v1",
+            "repo_id": config.upstream_repo_id,
+            "commit": config.upstream_commit,
+            "tag": config.upstream_tag,
+            "ggml_commit": config.ggml_commit,
+            "parent_pristine_git_tree": PARAKEET_CPP_PARENT_GIT_TREE,
+            "ggml_pristine_git_tree": PARAKEET_CPP_GGML_GIT_TREE,
+            "ordered_patches": [
+                {
+                    "order": order,
+                    "filename": filename,
+                    "sha256": sha256,
+                }
+                for order, (filename, sha256) in enumerate(
+                    PARAKEET_CPP_PATCH_SPECS,
+                    start=1,
+                )
+            ],
+            "patched_diff_sha256": PARAKEET_CPP_PATCHED_DIFF_SHA256,
+            "license": config.upstream_license,
+            "license_sha256": config.upstream_license_sha256,
+        },
+    )
+    _exact_receipt_payload(
+        by_name["build-receipt"],
+        {
+            "schema_version": 1,
+            "kind": "parakeet-cpp-build-receipt-v1",
+            "source_receipt_sha256": by_name["source-receipt"].sha256,
+            "c_api_version": config.c_api_version,
+            "bridge_abi_version": config.bridge_abi_version,
+            "requested_device": config.requested_device,
+            "actual_device": config.actual_device,
+            "num_threads": config.num_threads,
+            "bridge_source_sha256": PARAKEET_CPP_BRIDGE_SOURCE_SHA256,
+            "compiler_id": "GNU",
+            "compiler_version": "13.3.0",
+            "compiler_package": "Ubuntu 13.3.0-6ubuntu2~24.04.1",
+            "cmake_version": "3.31.10",
+            "ninja_version": "1.13.0.git.kitware.jobserver-pipe-1",
+            "system_processor": "x86_64",
+            "ggml_system_arch": "x86",
+            "cpu_variant_flags": [
+                "-msse4.2",
+                "-mf16c",
+                "-mfma",
+                "-mbmi2",
+                "-mavx",
+                "-mavx2",
+            ],
+            "cmake": {
+                "PARAKEET_SHARED": "ON",
+                "BUILD_SHARED_LIBS": "OFF",
+                "GGML_STATIC": "ON",
+                "GGML_NATIVE": "OFF",
+                "GGML_OPENMP": "OFF",
+                "PARAKEET_GGML_CUDA": "OFF",
+                "PARAKEET_GGML_METAL": "OFF",
+                "PARAKEET_GGML_VULKAN": "OFF",
+                "PARAKEET_GGML_HIP": "OFF",
+            },
+            "libparakeet_sha256": by_name["libparakeet"].sha256,
+            "libparakeet_size_bytes": by_name["libparakeet"].size_bytes,
+            "bridge_library_sha256": by_name["bridge-library"].sha256,
+            "bridge_library_size_bytes": by_name["bridge-library"].size_bytes,
+            "libparakeet_needed": list(PARAKEET_CPP_LIBPARAKEET_NEEDED),
+            "bridge_needed": list(PARAKEET_CPP_BRIDGE_NEEDED),
+            "bridge_runpath": PARAKEET_CPP_BRIDGE_RUNPATH,
+            "bridge_relro": True,
+            "bridge_bind_now": True,
+            "bridge_noexecstack": True,
+        },
+    )
+    _exact_receipt_payload(
+        by_name["model-receipt"],
+        {
+            "schema_version": 1,
+            "kind": "parakeet-cpp-model-receipt-v1",
+            "model_repo_id": config.model_repo_id,
+            "model_revision": config.model_revision,
+            "source_model_repo_id": config.source_model_repo_id,
+            "source_model_revision": config.source_model_revision,
+            "filename": config.model_filename,
+            "sha256": config.model_sha256,
+            "size_bytes": config.model_size_bytes,
+            "dtype": config.model_dtype,
+            "license": config.model_license,
+        },
+    )
+
+
 def _validate_faster_whisper_layout(
     python: BoundFile,
     artifacts: tuple[BoundArtifact, ...],
@@ -1667,6 +2365,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         5,
         6,
         7,
+        8,
     }:
         raise ManifestError()
     expected_fields = {
@@ -1677,6 +2376,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         5: _MANIFEST_V5_FIELDS,
         6: _MANIFEST_V6_FIELDS,
         7: _MANIFEST_V7_FIELDS,
+        8: _MANIFEST_V8_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -1693,6 +2393,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
             schema_version == 7
             and adapter != MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
         )
+        or (schema_version == 8 and adapter != PARAKEET_CPP_ADAPTER)
     ):
         raise ManifestError()
 
@@ -1718,6 +2419,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         5: PARAKEET_REALTIME_EOU_ARTIFACT_NAMES,
         6: FASTER_WHISPER_ARTIFACT_NAMES,
         7: MOONSHINE_ARTIFACT_NAMES,
+        8: PARAKEET_CPP_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -1737,6 +2439,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         7: lambda: _moonshine_external_endpoint_config(
             value.get("adapter_config")
         ),
+        8: lambda: _parakeet_cpp_config(value.get("adapter_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -1756,6 +2459,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 7:
         assert isinstance(adapter_config, MoonshineExternalEndpointConfig)
         _validate_moonshine_layout(python, artifacts, adapter_config)
+    elif schema_version == 8:
+        assert isinstance(adapter_config, ParakeetCppConfig)
+        _validate_parakeet_cpp_layout(artifacts, adapter_config)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

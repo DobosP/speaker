@@ -975,3 +975,103 @@ def test_corpus_total_budget_is_checked_before_reading_next_case(
 
     with pytest.raises(CorpusError):
         load_corpus(corpus_path)
+
+
+def _parakeet_cpp_manifest_fixture(tmp_path, monkeypatch):
+    from tests.test_provision_parakeet_cpp_candidate import _inputs
+    from tools import provision_parakeet_cpp_candidate as provision
+
+    paths = _inputs(tmp_path, monkeypatch)
+    manifest = provision.provision_candidate(
+        python=paths["python"],
+        native_root=paths["native_root"],
+        model_root=paths["model_root"],
+        output_dir=paths["output_dir"],
+    )
+    return manifest.path, paths
+
+
+def test_manifest_v8_binds_exact_parakeet_cpp_cpu_cell(tmp_path, monkeypatch):
+    from tools.streaming_stt.manifest import (
+        PARAKEET_CPP_ADAPTER,
+        PARAKEET_CPP_ARTIFACT_NAMES,
+        ParakeetCppConfig,
+    )
+
+    path, _paths = _parakeet_cpp_manifest_fixture(tmp_path, monkeypatch)
+
+    manifest = load_worker_manifest(path)
+
+    assert manifest.schema_version == 8
+    assert manifest.adapter == PARAKEET_CPP_ADAPTER
+    assert isinstance(manifest.adapter_config, ParakeetCppConfig)
+    assert manifest.adapter_config.requested_device == "cpu"
+    assert manifest.adapter_config.actual_device == "cpu"
+    assert manifest.adapter_config.ggml_native is False
+    assert manifest.adapter_config.num_threads == 1
+    assert tuple(manifest.artifact_by_name) == PARAKEET_CPP_ARTIFACT_NAMES
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("num_threads", True),
+        ("ggml_cuda", 0),
+        ("frame_sec", 0.0800001),
+        ("model_dtype", "Q8_0"),
+    ],
+)
+def test_manifest_v8_rejects_nonexact_config_value_or_type(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    path, _paths = _parakeet_cpp_manifest_fixture(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["adapter_config"][field] = value
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+def test_manifest_v8_rejects_boolean_patch_order_in_rebound_source_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    path, paths = _parakeet_cpp_manifest_fixture(tmp_path, monkeypatch)
+    receipt = paths["source_receipt"]
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt_payload["ordered_patches"][0]["order"] = True
+    receipt.write_text(
+        json.dumps(receipt_payload, sort_keys=True),
+        encoding="utf-8",
+    )
+    manifest_payload = json.loads(path.read_text(encoding="utf-8"))
+    source_artifact = next(
+        artifact
+        for artifact in manifest_payload["artifacts"]
+        if artifact["name"] == "source-receipt"
+    )
+    source_artifact["sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    source_artifact["size_bytes"] = receipt.stat().st_size
+    path.write_text(json.dumps(manifest_payload, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+def test_manifest_v8_rejects_changed_native_dependency_closure(
+    tmp_path,
+    monkeypatch,
+):
+    path, _paths = _parakeet_cpp_manifest_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        manifest_module,
+        "PARAKEET_CPP_BRIDGE_NEEDED",
+        ("libparakeet.so", "ld-linux-x86-64.so.2"),
+    )
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)

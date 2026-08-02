@@ -16,11 +16,16 @@ from tools.recorded_stt_eval import (
 )
 
 from .corpus import LoadedCorpus
-from .manifest import PARAKEET_REALTIME_EOU_ADAPTER
+from .manifest import PARAKEET_CPP_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER
 from .protocol import (
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_NATIVE_CHUNK_SAMPLES,
     CaseTrace,
     NativeFinalEvent,
+    ParakeetCppFinalEvent,
+    ParakeetCppObservedEvent,
+    PartialEvent,
     ReadyEvent,
 )
 
@@ -144,6 +149,169 @@ def _is_nonnegative_int(value: object) -> bool:
     return type(value) is int and value >= 0
 
 
+def _validated_parakeet_cpp_final(
+    *,
+    case_samples: int,
+    trace: CaseTrace,
+    ready: ReadyEvent,
+) -> tuple[ParakeetCppFinalEvent, ParakeetCppObservedEvent | None]:
+    """Independently validate v4 observation telemetry and terminal policy."""
+
+    final = trace.final
+    invalid = (
+        type(final) is not ParakeetCppFinalEvent
+        or ready.adapter != PARAKEET_CPP_ADAPTER
+        or final.protocol_version != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+        or any(
+            type(event) is not PartialEvent
+            or event.protocol_version
+            != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+            for event in trace.partials
+        )
+        or type(final.native_endpoint) is not bool
+        or type(final.authoritative) is not bool
+        or not _is_nonnegative_int(final.samples_seen)
+        or final.samples_seen == 0
+        or not _is_nonnegative_int(final.model_padding_samples)
+        or final.model_padding_samples != 0
+        or not _is_nonnegative_int(final.source_samples_offered)
+        or final.source_samples_offered == 0
+        or final.source_samples_offered != case_samples
+        or not _is_nonnegative_int(final.source_samples_consumed)
+        # v4 policy never converts an observation into an early terminal.
+        or final.source_samples_consumed != final.source_samples_offered
+        or not _is_nonnegative_int(final.tail_samples_offered)
+        or not _is_nonnegative_int(final.tail_samples_consumed)
+        or final.tail_samples_consumed > final.tail_samples_offered
+        or final.samples_seen
+        != final.source_samples_consumed + final.tail_samples_consumed
+        or not _is_finite_number(final.audio_seconds)
+        or not math.isclose(
+            float(final.audio_seconds),
+            case_samples / _SAMPLE_RATE_HZ,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+        or type(final.observed_events) is not tuple
+        or len(final.observed_events) > 64
+    )
+    if invalid:
+        raise ValueError("invalid parakeet.cpp endpoint record")
+
+    seen_identities: set[tuple[str, int]] = set()
+    previous_sample: int | None = None
+    previous_frame: int | None = None
+    previous_time: float | None = None
+    finalize_started = False
+    for observed in final.observed_events:
+        if (
+            type(observed) is not ParakeetCppObservedEvent
+            or observed.event_type not in {"eou", "eob"}
+            or observed.event_origin not in {"feed", "finalize"}
+            or not _is_nonnegative_int(observed.observed_sample)
+            or observed.observed_sample == 0
+            or observed.observed_sample > final.samples_seen
+            or not _is_nonnegative_int(observed.encoder_frame)
+            or not _is_finite_number(observed.encoder_time_seconds)
+            or not math.isclose(
+                float(observed.encoder_time_seconds),
+                observed.encoder_frame * 0.08,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+            or (
+                previous_sample is not None
+                and observed.observed_sample < previous_sample
+            )
+            or (
+                previous_frame is not None
+                and observed.encoder_frame < previous_frame
+            )
+            or (
+                previous_time is not None
+                and float(observed.encoder_time_seconds) + 1e-9
+                < previous_time
+            )
+        ):
+            raise ValueError("invalid parakeet.cpp endpoint record")
+        if observed.event_origin == "finalize":
+            finalize_started = True
+            if observed.observed_sample != final.samples_seen:
+                raise ValueError("invalid parakeet.cpp endpoint record")
+        elif (
+            finalize_started
+            or (
+                observed.observed_sample
+                != final.source_samples_offered + final.tail_samples_offered
+                and observed.observed_sample
+                % PARAKEET_CPP_NATIVE_CHUNK_SAMPLES
+                != 0
+            )
+            or float(observed.encoder_time_seconds)
+            > observed.observed_sample / _SAMPLE_RATE_HZ + 1e-9
+        ):
+            raise ValueError("invalid parakeet.cpp endpoint record")
+        identity = (
+            observed.event_type,
+            observed.encoder_frame,
+        )
+        if identity in seen_identities:
+            raise ValueError("invalid parakeet.cpp endpoint record")
+        seen_identities.add(identity)
+        previous_sample = observed.observed_sample
+        previous_frame = observed.encoder_frame
+        previous_time = float(observed.encoder_time_seconds)
+
+    first_eou = next(
+        (
+            observed
+            for observed in final.observed_events
+            if observed.event_type == "eou"
+        ),
+        None,
+    )
+    accepted = (
+        first_eou
+        if first_eou is not None
+        and first_eou.event_origin == "feed"
+        and first_eou.observed_sample >= final.source_samples_offered
+        else None
+    )
+    if accepted is not None:
+        expected_latency_ms = final.tail_samples_consumed / 16.0
+        if (
+            final.samples_seen != accepted.observed_sample
+            or final.endpoint_reason != "eou"
+            or not final.native_endpoint
+            or final.encoder_frame != accepted.encoder_frame
+            or final.encoder_time_seconds != accepted.encoder_time_seconds
+            or final.event_origin != "feed"
+            or final.endpoint_sample != accepted.observed_sample
+            or not final.authoritative
+            or not _is_finite_number(final.endpoint_latency_ms)
+            or not math.isclose(
+                float(final.endpoint_latency_ms),
+                expected_latency_ms,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise ValueError("invalid parakeet.cpp endpoint record")
+    elif (
+        final.native_endpoint
+        or final.endpoint_reason != "tail_exhausted"
+        or final.event_origin != "none"
+        or final.encoder_frame is not None
+        or final.encoder_time_seconds is not None
+        or final.endpoint_sample is not None
+        or final.endpoint_latency_ms is not None
+        or final.authoritative
+        or final.tail_samples_consumed != final.tail_samples_offered
+    ):
+        raise ValueError("invalid parakeet.cpp endpoint record")
+    return final, accepted
+
+
 def _stability(trace: CaseTrace) -> tuple[float | None, float | None, int, int]:
     normalized = [tuple(normalize(event.text)) for event in trace.partials]
     final = tuple(normalize(trace.final.text))
@@ -246,6 +414,7 @@ def _aggregate_metrics_for_cases(
     peak_vram = ready.resources.vram_mb
     seen_runs: set[tuple[int, int]] = set()
     endpoint_records: list[NativeFinalEvent] = []
+    parakeet_cpp_endpoint_records: list[ParakeetCppFinalEvent] = []
     endpoint_source_offered = 0
     endpoint_source_consumed = 0
     endpoint_tail_declared = 0
@@ -259,12 +428,27 @@ def _aggregate_metrics_for_cases(
     source_early_native_events = 0
     source_early_eou_events = 0
     source_early_eob_backchannels = 0
+    parakeet_cpp_terminal_reasons = {"eou": 0, "tail_exhausted": 0}
+    parakeet_cpp_terminal_origins = {"feed": 0, "none": 0}
+    parakeet_cpp_observed_types = {"eou": 0, "eob": 0}
+    parakeet_cpp_observed_origins = {"feed": 0, "finalize": 0}
+    parakeet_cpp_source_early = {"total": 0, "eou": 0, "eob": 0}
+    parakeet_cpp_post_source_feed = {"total": 0, "eou": 0, "eob": 0}
+    parakeet_cpp_accepted_samples: list[float] = []
+    parakeet_cpp_accepted_latencies: list[float] = []
+    parakeet_cpp_observed_encoder_frames: list[float] = []
+    parakeet_cpp_observed_encoder_times: list[float] = []
 
     if (
         ready.adapter == PARAKEET_REALTIME_EOU_ADAPTER
         and ready.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
     ):
         raise ValueError("invalid native endpoint ready event")
+    if (
+        ready.adapter == PARAKEET_CPP_ADAPTER
+        and ready.protocol_version != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    ):
+        raise ValueError("invalid parakeet.cpp endpoint ready event")
 
     for record in records:
         if (
@@ -279,7 +463,45 @@ def _aggregate_metrics_for_cases(
         seen_runs.add((record.case_index, record.repeat))
         case = corpus.cases[record.case_index]
         trace = record.trace
-        if type(trace.final) is NativeFinalEvent:
+        if type(trace.final) is ParakeetCppFinalEvent:
+            final, accepted = _validated_parakeet_cpp_final(
+                case_samples=case.samples,
+                trace=trace,
+                ready=ready,
+            )
+            parakeet_cpp_endpoint_records.append(final)
+            endpoint_source_offered += final.source_samples_offered
+            endpoint_source_consumed += final.source_samples_consumed
+            endpoint_tail_declared += final.tail_samples_offered
+            endpoint_tail_consumed += final.tail_samples_consumed
+            endpoint_model_padding += final.model_padding_samples
+            parakeet_cpp_terminal_reasons[final.endpoint_reason] += 1
+            parakeet_cpp_terminal_origins[final.event_origin] += 1
+            if accepted is not None:
+                parakeet_cpp_accepted_samples.append(
+                    float(accepted.observed_sample)
+                )
+                parakeet_cpp_accepted_latencies.append(
+                    float(final.endpoint_latency_ms)
+                )
+            for observed in final.observed_events:
+                parakeet_cpp_observed_types[observed.event_type] += 1
+                parakeet_cpp_observed_origins[observed.event_origin] += 1
+                parakeet_cpp_observed_encoder_frames.append(
+                    float(observed.encoder_frame)
+                )
+                parakeet_cpp_observed_encoder_times.append(
+                    float(observed.encoder_time_seconds)
+                )
+                if observed.observed_sample < final.source_samples_offered:
+                    parakeet_cpp_source_early["total"] += 1
+                    parakeet_cpp_source_early[observed.event_type] += 1
+                elif observed.event_origin == "feed":
+                    # Inclusive boundary matches the terminal acceptance rule:
+                    # a feed EOU at the exact source end is eligible.
+                    parakeet_cpp_post_source_feed["total"] += 1
+                    parakeet_cpp_post_source_feed[observed.event_type] += 1
+        elif type(trace.final) is NativeFinalEvent:
             final = trace.final
             source_complete = final.source_samples_consumed == final.source_samples
             expected_authoritative = (
@@ -386,7 +608,10 @@ def _aggregate_metrics_for_cases(
                         source_early_eou_events += 1
                     else:
                         source_early_eob_backchannels += 1
-        elif ready.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        elif ready.adapter in {
+            PARAKEET_REALTIME_EOU_ADAPTER,
+            PARAKEET_CPP_ADAPTER,
+        }:
             raise ValueError("missing native endpoint record")
         hypothesis = trace.final.text
         hyp_tokens = tuple(normalize(hypothesis))
@@ -743,6 +968,84 @@ def _aggregate_metrics_for_cases(
             ),
             "endpoint_probability_p95": _percentile(
                 endpoint_probabilities, 0.95
+            ),
+        }
+    elif parakeet_cpp_endpoint_records:
+        source_dropped = endpoint_source_offered - endpoint_source_consumed
+        if source_dropped != 0:
+            raise ValueError("invalid parakeet.cpp endpoint record")
+        tail_unconsumed = endpoint_tail_declared - endpoint_tail_consumed
+        model_input_samples = (
+            endpoint_source_consumed
+            + endpoint_tail_consumed
+            + endpoint_model_padding
+        )
+        model_input_seconds = model_input_samples / _SAMPLE_RATE_HZ
+        result["throughput"].update(
+            {
+                "aggregate_rtf_scope": "declared_source_audio",
+                "model_input_total_sec": round(model_input_seconds, 3),
+                "model_input_aggregate_rtf": (
+                    round((total_compute_ms / 1000.0) / model_input_seconds, 4)
+                    if model_input_seconds
+                    else 0.0
+                ),
+            }
+        )
+        result["endpointing"] = {
+            "evaluations": len(parakeet_cpp_endpoint_records),
+            "accepted_endpoints": len(parakeet_cpp_accepted_samples),
+            "tail_exhaustions": parakeet_cpp_terminal_reasons[
+                "tail_exhausted"
+            ],
+            "terminal_reasons": parakeet_cpp_terminal_reasons,
+            "terminal_origins": parakeet_cpp_terminal_origins,
+            "observations": {
+                "total": sum(parakeet_cpp_observed_types.values()),
+                "eou": parakeet_cpp_observed_types["eou"],
+                "eob": parakeet_cpp_observed_types["eob"],
+                "origins": parakeet_cpp_observed_origins,
+                "source_early": parakeet_cpp_source_early,
+                "post_source_feed": parakeet_cpp_post_source_feed,
+            },
+            "source_samples": {
+                "offered_total": endpoint_source_offered,
+                "consumed_total": endpoint_source_consumed,
+                "dropped_total": source_dropped,
+            },
+            "tail_samples": {
+                "offered_total": endpoint_tail_declared,
+                "consumed_total": endpoint_tail_consumed,
+                "unconsumed_total": tail_unconsumed,
+            },
+            "terminal_model_padding_samples_total": endpoint_model_padding,
+            "model_input_samples_consumed_total": model_input_samples,
+            "accepted_endpoint_sample_p50": _percentile(
+                parakeet_cpp_accepted_samples, 0.50
+            ),
+            "accepted_endpoint_sample_p95": _percentile(
+                parakeet_cpp_accepted_samples, 0.95
+            ),
+            "observed_encoder_frame_p50": _percentile(
+                parakeet_cpp_observed_encoder_frames, 0.50
+            ),
+            "observed_encoder_frame_p95": _percentile(
+                parakeet_cpp_observed_encoder_frames, 0.95
+            ),
+            "observed_encoder_time_p50_seconds": _percentile(
+                parakeet_cpp_observed_encoder_times, 0.50
+            ),
+            "observed_encoder_time_p95_seconds": _percentile(
+                parakeet_cpp_observed_encoder_times, 0.95
+            ),
+            "accepted_endpoint_latency_p50_ms": _percentile(
+                parakeet_cpp_accepted_latencies, 0.50
+            ),
+            "accepted_endpoint_latency_p95_ms": _percentile(
+                parakeet_cpp_accepted_latencies, 0.95
+            ),
+            "accepted_endpoint_latency_max_ms": _percentile(
+                parakeet_cpp_accepted_latencies, 1.0
             ),
         }
     _require_finite_aggregates(result)

@@ -11,16 +11,24 @@ from typing import Mapping
 
 
 # Version 2 remains the wire contract for the existing fake, Moonshine,
-# Nemotron, and Zipformer workers. Version 3 is opt-in for recognizers that can
-# finish on a native endpoint before consuming the request's declared tail.
+# Nemotron, and Zipformer workers. Version 3 is opt-in for the NeMo reference's
+# probability-bearing native endpoint. Version 4 carries parakeet.cpp's typed,
+# timestamped EOU/EOB event instead; it must not invent an endpoint probability.
 PROTOCOL_VERSION = 2
 NATIVE_ENDPOINT_PROTOCOL_VERSION = 3
+PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION = 4
 SUPPORTED_PROTOCOL_VERSIONS = frozenset(
-    {PROTOCOL_VERSION, NATIVE_ENDPOINT_PROTOCOL_VERSION}
+    {
+        PROTOCOL_VERSION,
+        NATIVE_ENDPOINT_PROTOCOL_VERSION,
+        PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+    }
 )
 MAX_LINE_BYTES = 64 * 1024
 MAX_HYPOTHESIS_CHARS = 4096
 MAX_PARTIALS_PER_CASE = 256
+MAX_PARAKEET_CPP_OBSERVED_EVENTS = 64
+PARAKEET_CPP_NATIVE_CHUNK_SAMPLES = 1_280
 MAX_PCM_BYTES = 8 * 1024 * 1024
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
@@ -63,6 +71,15 @@ _STREAM_FIELDS = {
 _RESOURCE_FIELDS = {"rss_mb", "threads", "vram_mb"}
 _RUNTIME_FIELDS = {"python", "platform"}
 _NATIVE_ENDPOINT_REASONS = {"eou", "eob", "tail_exhausted"}
+_PARAKEET_CPP_EVENT_ORIGINS = {"feed", "finalize", "none"}
+_PARAKEET_CPP_OBSERVED_EVENT_FIELDS = {
+    "event_type",
+    "event_origin",
+    "observed_sample",
+    "encoder_frame",
+    "encoder_time_seconds",
+}
+_PARAKEET_CPP_OBSERVED_EVENT_ORIGINS = {"feed", "finalize"}
 
 
 class ProtocolError(RuntimeError):
@@ -218,6 +235,50 @@ class NativeFinalEvent:
 
 
 @dataclass(frozen=True)
+class ParakeetCppObservedEvent:
+    """One bounded native event observation without control authority."""
+
+    event_type: str
+    event_origin: str
+    observed_sample: int
+    encoder_frame: int
+    encoder_time_seconds: float
+
+
+@dataclass(frozen=True)
+class ParakeetCppFinalEvent:
+    """One parakeet.cpp terminal with typed event and consumption evidence."""
+
+    request_id: str
+    seq: int
+    text: str = field(repr=False)
+    samples_seen: int
+    elapsed_ms: float
+    finalization_ms: float
+    compute_ms: float
+    audio_seconds: float
+    chunks: int
+    deadline_misses: int
+    max_backlog_ms: float
+    resources: ResourceUsage
+    model_padding_samples: int
+    source_samples_offered: int
+    source_samples_consumed: int
+    tail_samples_offered: int
+    tail_samples_consumed: int
+    observed_events: tuple[ParakeetCppObservedEvent, ...]
+    endpoint_reason: str
+    native_endpoint: bool
+    encoder_frame: int | None
+    encoder_time_seconds: float | None
+    event_origin: str
+    endpoint_sample: int | None
+    endpoint_latency_ms: float | None
+    authoritative: bool
+    protocol_version: int = PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+
+
+@dataclass(frozen=True)
 class ErrorEvent:
     request_id: str
     code: str
@@ -241,6 +302,7 @@ Response = (
     | PartialEvent
     | FinalEvent
     | NativeFinalEvent
+    | ParakeetCppFinalEvent
     | ErrorEvent
     | ShutdownEvent
     | ByeEvent
@@ -250,7 +312,7 @@ Response = (
 @dataclass(frozen=True)
 class CaseTrace:
     partials: tuple[PartialEvent, ...] = field(repr=False)
-    final: FinalEvent | NativeFinalEvent = field(repr=False)
+    final: FinalEvent | NativeFinalEvent | ParakeetCppFinalEvent = field(repr=False)
 
 
 def _bad() -> object:
@@ -381,6 +443,107 @@ def _resources(value: object) -> ResourceUsage:
     )
 
 
+def _parakeet_cpp_observed_events(
+    value: object,
+    *,
+    samples_seen: int,
+    total_samples_offered: int,
+) -> tuple[ParakeetCppObservedEvent, ...]:
+    if (
+        not isinstance(value, list)
+        or len(value) > MAX_PARAKEET_CPP_OBSERVED_EVENTS
+    ):
+        raise ProtocolError()
+    events: list[ParakeetCppObservedEvent] = []
+    seen: set[tuple[str, int]] = set()
+    last_observed_sample: int | None = None
+    last_encoder_frame: int | None = None
+    last_encoder_time: float | None = None
+    finalize_started = False
+    for raw_event in value:
+        if (
+            not isinstance(raw_event, dict)
+            or set(raw_event) != _PARAKEET_CPP_OBSERVED_EVENT_FIELDS
+        ):
+            raise ProtocolError()
+        event_type = raw_event.get("event_type")
+        event_origin = raw_event.get("event_origin")
+        if (
+            not isinstance(event_type, str)
+            or event_type not in {"eou", "eob"}
+            or not isinstance(event_origin, str)
+            or event_origin not in _PARAKEET_CPP_OBSERVED_EVENT_ORIGINS
+        ):
+            raise ProtocolError()
+        observed_sample = _integer(
+            raw_event.get("observed_sample"),
+            minimum=1,
+            maximum=samples_seen,
+        )
+        encoder_frame = _integer(
+            raw_event.get("encoder_frame"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES,
+        )
+        encoder_time = _number(
+            raw_event.get("encoder_time_seconds"),
+            maximum=(
+                MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES
+            )
+            / 16_000.0,
+        )
+        if (
+            not math.isclose(
+                encoder_time,
+                encoder_frame * 0.08,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+            or (
+                last_observed_sample is not None
+                and observed_sample < last_observed_sample
+            )
+            or (
+                last_encoder_frame is not None
+                and encoder_frame < last_encoder_frame
+            )
+            or (
+                last_encoder_time is not None
+                and encoder_time + 1e-9 < last_encoder_time
+            )
+        ):
+            raise ProtocolError()
+        if event_origin == "finalize":
+            finalize_started = True
+            if observed_sample != samples_seen:
+                raise ProtocolError()
+        elif (
+            finalize_started
+            or (
+                observed_sample != total_samples_offered
+                and observed_sample % PARAKEET_CPP_NATIVE_CHUNK_SAMPLES != 0
+            )
+            or encoder_time > observed_sample / 16_000.0 + 1e-9
+        ):
+            raise ProtocolError()
+        identity = (event_type, encoder_frame)
+        if identity in seen:
+            raise ProtocolError()
+        seen.add(identity)
+        events.append(
+            ParakeetCppObservedEvent(
+                event_type=event_type,
+                event_origin=event_origin,
+                observed_sample=observed_sample,
+                encoder_frame=encoder_frame,
+                encoder_time_seconds=encoder_time,
+            )
+        )
+        last_observed_sample = observed_sample
+        last_encoder_frame = encoder_frame
+        last_encoder_time = encoder_time
+    return tuple(events)
+
+
 def _pcm(value: object) -> PcmInput:
     if not isinstance(value, dict) or set(value) != _PCM_FIELDS:
         raise ProtocolError()
@@ -432,7 +595,11 @@ def _stream(value: object, *, protocol_version: int) -> StreamConfig:
             value.get("tail_padding_samples"),
             maximum=(
                 MAX_NATIVE_TAIL_PADDING_SAMPLES
-                if protocol_version == NATIVE_ENDPOINT_PROTOCOL_VERSION
+                if protocol_version
+                in {
+                    NATIVE_ENDPOINT_PROTOCOL_VERSION,
+                    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+                }
                 else MAX_TAIL_PADDING_SAMPLES
             ),
         ),
@@ -469,7 +636,11 @@ def parse_response(raw: bytes) -> Response:
     protocol_version = _protocol_version(value.get("v"))
     maximum_stream_samples = (
         MAX_NATIVE_STREAM_SAMPLES
-        if protocol_version == NATIVE_ENDPOINT_PROTOCOL_VERSION
+        if protocol_version
+        in {
+            NATIVE_ENDPOINT_PROTOCOL_VERSION,
+            PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+        }
         else MAX_LEGACY_STREAM_SAMPLES
     )
     event_type = value.get("type")
@@ -755,6 +926,215 @@ def parse_response(raw: bytes) -> Response:
             endpoint_reason=str(endpoint_reason),
             native_endpoint=bool(native_endpoint),
             endpoint_probability=endpoint_probability,
+            endpoint_sample=endpoint_sample,
+            endpoint_latency_ms=endpoint_latency_ms,
+            authoritative=bool(authoritative),
+            protocol_version=protocol_version,
+        )
+    if event_type == "parakeet_cpp_final":
+        if protocol_version != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION:
+            raise ProtocolError()
+        expected_fields = {
+            "v",
+            "id",
+            "type",
+            "seq",
+            "text",
+            "samples_seen",
+            "elapsed_ms",
+            "finalization_ms",
+            "compute_ms",
+            "audio_seconds",
+            "chunks",
+            "deadline_misses",
+            "max_backlog_ms",
+            "model_padding_samples",
+            "resources",
+            "source_samples_offered",
+            "source_samples_consumed",
+            "tail_samples_offered",
+            "tail_samples_consumed",
+            "observed_events",
+            "endpoint_reason",
+            "native_endpoint",
+            "encoder_frame",
+            "encoder_time_seconds",
+            "event_origin",
+            "endpoint_sample",
+            "endpoint_latency_ms",
+            "authoritative",
+        }
+        if set(value) != expected_fields:
+            raise ProtocolError()
+        endpoint_reason = value.get("endpoint_reason")
+        native_endpoint = value.get("native_endpoint")
+        event_origin = value.get("event_origin")
+        authoritative = value.get("authoritative")
+        if (
+            not isinstance(endpoint_reason, str)
+            or endpoint_reason not in _NATIVE_ENDPOINT_REASONS
+            or type(native_endpoint) is not bool
+            or not isinstance(event_origin, str)
+            or event_origin not in _PARAKEET_CPP_EVENT_ORIGINS
+            or type(authoritative) is not bool
+        ):
+            raise ProtocolError()
+        samples_seen = _integer(
+            value.get("samples_seen"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES,
+        )
+        source_samples_offered = _integer(
+            value.get("source_samples_offered"),
+            minimum=1,
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        source_samples_consumed = _integer(
+            value.get("source_samples_consumed"),
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        tail_samples_offered = _integer(
+            value.get("tail_samples_offered"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        tail_samples_consumed = _integer(
+            value.get("tail_samples_consumed"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        model_padding_samples = _integer(
+            value.get("model_padding_samples"),
+            maximum=MAX_MODEL_PADDING_SAMPLES,
+        )
+        encoder_frame = _optional_integer(
+            value.get("encoder_frame"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES,
+        )
+        encoder_time_seconds = _optional_number(
+            value.get("encoder_time_seconds"),
+            maximum=(
+                MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES
+            )
+            / 16_000.0,
+        )
+        endpoint_sample = _optional_integer(
+            value.get("endpoint_sample"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES,
+        )
+        endpoint_latency_ms = _optional_number(
+            value.get("endpoint_latency_ms"),
+            maximum=MAX_CASE_EVENT_MS,
+        )
+        observed_events = _parakeet_cpp_observed_events(
+            value.get("observed_events"),
+            samples_seen=samples_seen,
+            total_samples_offered=(
+                source_samples_offered + tail_samples_offered
+            ),
+        )
+        if (
+            samples_seen <= 0
+            or model_padding_samples != 0
+            or source_samples_consumed > source_samples_offered
+            or tail_samples_consumed > tail_samples_offered
+            or (
+                source_samples_consumed < source_samples_offered
+                and tail_samples_consumed != 0
+            )
+            or samples_seen
+            != source_samples_consumed + tail_samples_consumed
+        ):
+            raise ProtocolError()
+        first_eou = next(
+            (event for event in observed_events if event.event_type == "eou"),
+            None,
+        )
+        accepted_event = (
+            first_eou
+            if first_eou is not None
+            and first_eou.event_origin == "feed"
+            and first_eou.observed_sample >= source_samples_offered
+            else None
+        )
+        if accepted_event is not None:
+            expected_latency_ms = tail_samples_consumed / 16.0
+            if (
+                source_samples_consumed != source_samples_offered
+                or samples_seen != accepted_event.observed_sample
+                or endpoint_reason != "eou"
+                or not native_endpoint
+                or encoder_frame != accepted_event.encoder_frame
+                or encoder_time_seconds
+                != accepted_event.encoder_time_seconds
+                or event_origin != "feed"
+                or endpoint_sample != accepted_event.observed_sample
+                or not authoritative
+                or endpoint_latency_ms is None
+                or not math.isclose(
+                    endpoint_latency_ms,
+                    expected_latency_ms,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                )
+            ):
+                raise ProtocolError()
+        elif (
+            native_endpoint
+            or endpoint_reason != "tail_exhausted"
+            or event_origin != "none"
+            or encoder_frame is not None
+            or encoder_time_seconds is not None
+            or endpoint_sample is not None
+            or endpoint_latency_ms is not None
+            or authoritative
+            or source_samples_consumed != source_samples_offered
+            or tail_samples_consumed != tail_samples_offered
+        ):
+            raise ProtocolError()
+        return ParakeetCppFinalEvent(
+            request_id=_safe_id(value.get("id")),
+            seq=_integer(value.get("seq"), maximum=MAX_PARTIALS_PER_CASE),
+            text=_text(value.get("text")),
+            samples_seen=samples_seen,
+            elapsed_ms=_number(
+                value.get("elapsed_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            finalization_ms=_number(
+                value.get("finalization_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            compute_ms=_number(
+                value.get("compute_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            audio_seconds=_number(
+                value.get("audio_seconds"),
+                maximum=MAX_AUDIO_SECONDS,
+            ),
+            chunks=_integer(
+                value.get("chunks"),
+                minimum=1,
+                maximum=MAX_NATIVE_STREAM_SAMPLES,
+            ),
+            deadline_misses=_integer(
+                value.get("deadline_misses"),
+                maximum=MAX_NATIVE_STREAM_SAMPLES,
+            ),
+            max_backlog_ms=_number(
+                value.get("max_backlog_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            resources=_resources(value.get("resources")),
+            model_padding_samples=model_padding_samples,
+            source_samples_offered=source_samples_offered,
+            source_samples_consumed=source_samples_consumed,
+            tail_samples_offered=tail_samples_offered,
+            tail_samples_consumed=tail_samples_consumed,
+            observed_events=observed_events,
+            endpoint_reason=str(endpoint_reason),
+            native_endpoint=bool(native_endpoint),
+            encoder_frame=encoder_frame,
+            encoder_time_seconds=encoder_time_seconds,
+            event_origin=str(event_origin),
             endpoint_sample=endpoint_sample,
             endpoint_latency_ms=endpoint_latency_ms,
             authoritative=bool(authoritative),

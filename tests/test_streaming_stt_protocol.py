@@ -10,11 +10,15 @@ from tools.streaming_stt.protocol import (
     MAX_LEGACY_STREAM_SAMPLES,
     MAX_LINE_BYTES,
     MAX_NATIVE_STREAM_SAMPLES,
+    MAX_PARAKEET_CPP_OBSERVED_EVENTS,
     MAX_STREAM_CHUNK_SAMPLES,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     FinalEvent,
     NativeFinalEvent,
+    ParakeetCppFinalEvent,
+    ParakeetCppObservedEvent,
     PcmInput,
     ProtocolError,
     StreamConfig,
@@ -56,6 +60,7 @@ def test_transcribe_request_round_trips_the_exact_v2_contract(tmp_path):
     [
         (PROTOCOL_VERSION, 16_000, 16_001),
         (NATIVE_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
+        (PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
     ],
 )
 def test_request_tail_bound_is_exact_for_each_protocol_version(
@@ -89,6 +94,11 @@ def test_request_tail_bound_is_exact_for_each_protocol_version(
         ),
         (
             NATIVE_ENDPOINT_PROTOCOL_VERSION,
+            MAX_NATIVE_STREAM_SAMPLES,
+            MAX_NATIVE_STREAM_SAMPLES + 1,
+        ),
+        (
+            PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
             MAX_NATIVE_STREAM_SAMPLES,
             MAX_NATIVE_STREAM_SAMPLES + 1,
         ),
@@ -350,6 +360,643 @@ def test_v2_final_rejects_native_fields_instead_of_relaxing_legacy_schema():
 
     with pytest.raises(ProtocolError):
         parse_response(json.dumps(payload).encode())
+
+
+def _parakeet_cpp_final_payload() -> dict[str, object]:
+    return {
+        "v": PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+        "id": "case-1",
+        "type": "parakeet_cpp_final",
+        "seq": 1,
+        "text": "stop now",
+        "samples_seen": 16_640,
+        "elapsed_ms": 150.0,
+        "finalization_ms": 4.0,
+        "compute_ms": 30.0,
+        "audio_seconds": 1.0,
+        "chunks": 13,
+        "deadline_misses": 0,
+        "max_backlog_ms": 2.0,
+        "model_padding_samples": 0,
+        "resources": {"rss_mb": 50.0, "threads": 2, "vram_mb": 512.0},
+        "source_samples_offered": 16_000,
+        "source_samples_consumed": 16_000,
+        "tail_samples_offered": 48_000,
+        "tail_samples_consumed": 640,
+        "observed_events": [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        "endpoint_reason": "eou",
+        "native_endpoint": True,
+        "encoder_frame": 13,
+        "encoder_time_seconds": 1.04,
+        "event_origin": "feed",
+        "endpoint_sample": 16_640,
+        "endpoint_latency_ms": 40.0,
+        "authoritative": True,
+    }
+
+
+def _tail_exhausted_parakeet_cpp_payload() -> dict[str, object]:
+    payload = _parakeet_cpp_final_payload()
+    payload.update(
+        {
+            "samples_seen": 64_000,
+            "chunks": 50,
+            "tail_samples_consumed": 48_000,
+            "observed_events": [],
+            "endpoint_reason": "tail_exhausted",
+            "native_endpoint": False,
+            "encoder_frame": None,
+            "encoder_time_seconds": None,
+            "event_origin": "none",
+            "endpoint_sample": None,
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        }
+    )
+    return payload
+
+
+def test_parakeet_cpp_final_is_a_distinct_exact_v4_contract():
+    payload = _parakeet_cpp_final_payload()
+
+    result = parse_response(encode_message(payload))
+
+    assert isinstance(result, ParakeetCppFinalEvent)
+    assert not isinstance(result, (FinalEvent, NativeFinalEvent))
+    assert result.source_samples_offered == 16_000
+    assert result.source_samples_consumed == 16_000
+    assert result.tail_samples_offered == 48_000
+    assert result.tail_samples_consumed == 640
+    assert result.observed_events == (
+        ParakeetCppObservedEvent("eou", "feed", 16_640, 13, 1.04),
+    )
+    assert result.endpoint_reason == "eou"
+    assert result.encoder_frame == 13
+    assert result.encoder_time_seconds == 1.04
+    assert result.event_origin == "feed"
+    assert result.authoritative is True
+    assert result.protocol_version == PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    assert "stop now" not in repr(result)
+
+
+def test_early_eou_eob_and_finalize_events_are_telemetry_not_terminals():
+    payload = _tail_exhausted_parakeet_cpp_payload()
+    payload["observed_events"] = [
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 1_280,
+            "encoder_frame": 1,
+            "encoder_time_seconds": 0.08,
+        },
+        {
+            "event_type": "eob",
+            "event_origin": "feed",
+            "observed_sample": 15_360,
+            "encoder_frame": 12,
+            "encoder_time_seconds": 0.96,
+        },
+        {
+            "event_type": "eou",
+            "event_origin": "finalize",
+            "observed_sample": 64_000,
+            "encoder_frame": 50,
+            "encoder_time_seconds": 4.0,
+        },
+    ]
+
+    result = parse_response(encode_message(payload))
+
+    assert isinstance(result, ParakeetCppFinalEvent)
+    assert [event.event_type for event in result.observed_events] == [
+        "eou",
+        "eob",
+        "eou",
+    ]
+    assert result.source_samples_consumed == result.source_samples_offered
+    assert result.tail_samples_consumed == result.tail_samples_offered
+    assert result.native_endpoint is False
+    assert result.endpoint_reason == "tail_exhausted"
+    assert result.event_origin == "none"
+    assert result.encoder_frame is None
+    assert result.encoder_time_seconds is None
+    assert result.endpoint_sample is None
+
+
+def test_early_first_eou_prevents_later_complete_source_eou_from_authorizing():
+    payload = _tail_exhausted_parakeet_cpp_payload()
+    payload["observed_events"] = [
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 1_280,
+            "encoder_frame": 1,
+            "encoder_time_seconds": 0.08,
+        },
+        {
+            "event_type": "eob",
+            "event_origin": "feed",
+            "observed_sample": 15_360,
+            "encoder_frame": 12,
+            "encoder_time_seconds": 0.96,
+        },
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 16_640,
+            "encoder_frame": 13,
+            "encoder_time_seconds": 1.04,
+        },
+    ]
+
+    result = parse_response(encode_message(payload))
+
+    assert isinstance(result, ParakeetCppFinalEvent)
+    assert result.observed_events[0].observed_sample == 1_280
+    assert result.source_samples_consumed == result.source_samples_offered
+    assert result.tail_samples_consumed == result.tail_samples_offered
+    assert result.endpoint_reason == "tail_exhausted"
+    assert result.endpoint_sample is None
+    assert result.encoder_frame is None
+    assert result.authoritative is False
+
+
+def test_eob_before_complete_source_eou_does_not_block_acceptance():
+    payload = _parakeet_cpp_final_payload()
+    payload["observed_events"] = [
+        {
+            "event_type": "eob",
+            "event_origin": "feed",
+            "observed_sample": 1_280,
+            "encoder_frame": 1,
+            "encoder_time_seconds": 0.08,
+        },
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 16_640,
+            "encoder_frame": 13,
+            "encoder_time_seconds": 1.04,
+        },
+    ]
+
+    result = parse_response(encode_message(payload))
+
+    assert isinstance(result, ParakeetCppFinalEvent)
+    assert result.observed_events[0].event_type == "eob"
+    assert result.endpoint_reason == "eou"
+    assert result.endpoint_sample == 16_640
+    assert result.encoder_frame == 13
+    assert result.authoritative is True
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"authoritative": False},
+        {"endpoint_reason": "eob", "authoritative": True},
+        {"event_origin": "finalize"},
+        {"native_endpoint": False},
+        {"encoder_frame": 12},
+        {"encoder_time_seconds": 0.96},
+        {"endpoint_sample": 16_000},
+        {"endpoint_latency_ms": 79.0},
+        {
+            "observed_events": [
+                {
+                    "event_type": "eou",
+                    "event_origin": "feed",
+                    "observed_sample": 1_280,
+                    "encoder_frame": 1,
+                    "encoder_time_seconds": 0.08,
+                }
+            ],
+        },
+    ],
+)
+def test_parakeet_cpp_terminal_must_match_first_accepted_observation(updates):
+    payload = _parakeet_cpp_final_payload()
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+def test_first_observed_complete_source_eou_is_the_only_accepted_terminal():
+    payload = _parakeet_cpp_final_payload()
+    payload["observed_events"] = [
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 16_640,
+            "encoder_frame": 12,
+            "encoder_time_seconds": 0.96,
+        },
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 16_640,
+            "encoder_frame": 13,
+            "encoder_time_seconds": 1.04,
+        },
+    ]
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+    payload.update({"encoder_frame": 12, "encoder_time_seconds": 0.96})
+    parsed = parse_response(encode_message(payload))
+    assert isinstance(parsed, ParakeetCppFinalEvent)
+    assert parsed.encoder_frame == 12
+
+
+def test_exact_observed_event_maximum_is_accepted_and_one_more_is_rejected():
+    payload = _tail_exhausted_parakeet_cpp_payload()
+    events = [
+        {
+            "event_type": "eob",
+            "event_origin": "finalize",
+            "observed_sample": 64_000,
+            "encoder_frame": frame,
+            "encoder_time_seconds": frame * 0.08,
+        }
+        for frame in range(MAX_PARAKEET_CPP_OBSERVED_EVENTS)
+    ]
+    payload["observed_events"] = events
+
+    parsed = parse_response(encode_message(payload))
+    assert isinstance(parsed, ParakeetCppFinalEvent)
+    assert len(parsed.observed_events) == MAX_PARAKEET_CPP_OBSERVED_EVENTS
+
+    events.append(
+        {
+            "event_type": "eob",
+            "event_origin": "finalize",
+            "observed_sample": 64_000,
+            "encoder_frame": MAX_PARAKEET_CPP_OBSERVED_EVENTS,
+            "encoder_time_seconds": MAX_PARAKEET_CPP_OBSERVED_EVENTS * 0.08,
+        }
+    )
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 1_281,
+                "encoder_frame": 1,
+                "encoder_time_seconds": 0.08,
+            }
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.0399995,
+            },
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 17_920,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            },
+        ],
+    ],
+)
+def test_parakeet_cpp_rejects_impossible_feed_geometry_and_near_duplicates(
+    events,
+):
+    payload = _tail_exhausted_parakeet_cpp_payload()
+    payload["observed_events"] = events
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        None,
+        {},
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+                "extra": 0,
+            }
+        ],
+        [
+            {
+                "event_type": "silence",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "callback",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": True,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": True,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": float("inf"),
+            }
+        ],
+    ],
+)
+def test_parakeet_cpp_observed_events_have_an_exact_bounded_shape(events):
+    payload = _parakeet_cpp_final_payload()
+    payload["observed_events"] = events
+
+    with pytest.raises(ProtocolError):
+        parse_response(json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 0,
+                "encoder_frame": 0,
+                "encoder_time_seconds": 0.0,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 17_281,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 1_280,
+                "encoder_frame": 2,
+                "encoder_time_seconds": 0.16,
+            }
+        ],
+        [
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.03,
+            }
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 2_560,
+                "encoder_frame": 2,
+                "encoder_time_seconds": 0.16,
+            },
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 1_280,
+                "encoder_frame": 3,
+                "encoder_time_seconds": 0.24,
+            },
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 1_280,
+                "encoder_frame": 2,
+                "encoder_time_seconds": 0.16,
+            },
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 2_560,
+                "encoder_frame": 1,
+                "encoder_time_seconds": 0.08,
+            },
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "finalize",
+                "observed_sample": 16_640,
+                "encoder_frame": 12,
+                "encoder_time_seconds": 0.96,
+            },
+            {
+                "event_type": "eou",
+                "event_origin": "feed",
+                "observed_sample": 16_640,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            },
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "finalize",
+                "observed_sample": 16_000,
+                "encoder_frame": 13,
+                "encoder_time_seconds": 1.04,
+            }
+        ],
+        [
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 1_280,
+                "encoder_frame": 1,
+                "encoder_time_seconds": 0.08,
+            },
+            {
+                "event_type": "eob",
+                "event_origin": "feed",
+                "observed_sample": 2_560,
+                "encoder_frame": 1,
+                "encoder_time_seconds": 0.08,
+            },
+        ],
+    ],
+)
+def test_parakeet_cpp_observations_reject_bad_order_boundaries_and_duplicates(
+    events,
+):
+    payload = _parakeet_cpp_final_payload()
+    payload["observed_events"] = events
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"v": NATIVE_ENDPOINT_PROTOCOL_VERSION},
+        {"type": "native_final"},
+        {"endpoint_reason": "silence"},
+        {"endpoint_reason": {}},
+        {"event_origin": "callback"},
+        {"event_origin": []},
+        {"native_endpoint": 1},
+        {"source_samples_offered": True},
+        {"tail_samples_offered": 48_001},
+        {"encoder_frame": True},
+        {"encoder_time_seconds": float("inf")},
+        {"observed_events": "events"},
+        {"endpoint_probability": 0.75},
+    ],
+)
+def test_parakeet_cpp_final_rejects_wrong_version_shape_and_unbounded_fields(
+    updates,
+):
+    payload = _parakeet_cpp_final_payload()
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"samples_seen": 17_279},
+        {"source_samples_offered": 15_999},
+        {"tail_samples_offered": 639},
+        {
+            "source_samples_consumed": 15_999,
+            "tail_samples_consumed": 1_281,
+        },
+        {"endpoint_sample": 17_279},
+        {"model_padding_samples": 1, "endpoint_sample": 17_281},
+        {"encoder_frame": None},
+        {"encoder_time_seconds": None},
+        {"encoder_frame": 17_281},
+        {"encoder_time_seconds": 1.081},
+        {"encoder_frame": 0},
+        {"event_origin": "none"},
+        {"endpoint_latency_ms": None},
+        {"endpoint_latency_ms": 79.0},
+        {"native_endpoint": False},
+    ],
+)
+def test_parakeet_cpp_final_rejects_relationally_inconsistent_evidence(updates):
+    payload = _parakeet_cpp_final_payload()
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"source_samples_consumed": 15_999, "samples_seen": 63_999},
+        {"tail_samples_consumed": 47_999, "samples_seen": 63_999},
+        {"native_endpoint": True},
+        {"authoritative": True},
+        {"endpoint_reason": "eob"},
+        {"event_origin": "feed"},
+        {"encoder_frame": 1},
+        {"encoder_time_seconds": 0.08},
+        {"endpoint_sample": 64_000},
+        {"endpoint_latency_ms": 0.0},
+    ],
+)
+def test_tail_exhaustion_remains_terminal_when_events_are_only_informational(
+    updates,
+):
+    payload = _tail_exhausted_parakeet_cpp_payload()
+    payload["observed_events"] = [
+        {
+            "event_type": "eou",
+            "event_origin": "feed",
+            "observed_sample": 1_280,
+            "encoder_frame": 1,
+            "encoder_time_seconds": 0.08,
+        },
+        {
+            "event_type": "eou",
+            "event_origin": "finalize",
+            "observed_sample": 64_000,
+            "encoder_frame": 50,
+            "encoder_time_seconds": 4.0,
+        },
+    ]
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+def test_v4_rejects_v3_probability_bearing_native_final():
+    payload = _native_final_payload()
+    payload["v"] = PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
 
 
 @pytest.mark.parametrize("padding", [-1, 32_001, True])

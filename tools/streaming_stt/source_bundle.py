@@ -30,6 +30,7 @@ WORKER_SOURCE_FILES = (
     "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/parakeet_cpp.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
@@ -420,6 +421,10 @@ def stage_worker_source_bundle(
                 "tools/streaming_stt/adapters/nemotron.py": (
                     adapter_descriptor,
                     "nemotron.py",
+                ),
+                "tools/streaming_stt/adapters/parakeet_cpp.py": (
+                    adapter_descriptor,
+                    "parakeet_cpp.py",
                 ),
                 "tools/streaming_stt/adapters/parakeet_realtime_eou.py": (
                     adapter_descriptor,

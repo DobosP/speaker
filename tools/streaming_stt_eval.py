@@ -41,12 +41,14 @@ from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
+    PARAKEET_CPP_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
+    ParakeetCppConfig,
     ParakeetRealtimeEouConfig,
     SherpaZipformerConfig,
     WorkerManifest,
@@ -61,6 +63,7 @@ from tools.streaming_stt.metrics import (
 from tools.streaming_stt.protocol import (
     MAX_PCM_BYTES,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     PcmInput,
     StreamConfig,
@@ -113,6 +116,16 @@ _PARAKEET_CGROUP_EVIDENCE = {
     "oom_policy": "kill",
     "verified": True,
 }
+_PARAKEET_CPP_CGROUP_EVIDENCE = {
+    "kind": "systemd-user-scope-cgroup-v2",
+    "memory_high_bytes": 2_147_483_648,
+    "memory_max_bytes": 3_221_225_472,
+    "memory_swap_max_bytes": 0,
+    "cpu_quota_percent": 100,
+    "tasks_max": 64,
+    "oom_policy": "kill",
+    "verified": True,
+}
 _EVALUATOR_FILES = (
     "tools/streaming_stt_eval.py",
     "tools/streaming_stt/bounded_io.py",
@@ -130,8 +143,10 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/parakeet_cpp.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
+    "tools/streaming_stt/native/parakeet_cpp_bridge.cpp",
     "tools/__init__.py",
     "tools/recorded_stt_eval.py",
     "core/wer.py",
@@ -346,6 +361,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
+        PARAKEET_CPP_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     }:
@@ -377,6 +393,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
             MOONSHINE_ADAPTER,
             MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
+            PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         },
         "model_executed": adapter != _FAKE_ADAPTER,
@@ -390,6 +407,10 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
             raise ValueError
         return None
     if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+        if "runtime-receipt" in manifest.artifact_by_name:
+            raise ValueError
+        return None
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
         if "runtime-receipt" in manifest.artifact_by_name:
             raise ValueError
         return None
@@ -463,6 +484,12 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
 
 
 def _verified_model_receipt_digest(manifest: WorkerManifest) -> str | None:
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        config = manifest.adapter_config
+        artifact = manifest.artifact_by_name.get("model-receipt")
+        if not isinstance(config, ParakeetCppConfig) or artifact is None:
+            raise ValueError
+        return artifact.sha256
     if manifest.adapter != FASTER_WHISPER_ENDPOINT_ADAPTER:
         if "model-receipt" in manifest.artifact_by_name:
             raise ValueError
@@ -536,6 +563,7 @@ def _worker_binding(
         SHERPA_ZIPFORMER_ADAPTER: 4,
         PARAKEET_REALTIME_EOU_ADAPTER: 5,
         FASTER_WHISPER_ENDPOINT_ADAPTER: 6,
+        PARAKEET_CPP_ADAPTER: 8,
     }.get(manifest.adapter)
     if (
         expected_schema is None
@@ -559,19 +587,27 @@ def _worker_binding(
             and not isinstance(manifest.adapter_config, FasterWhisperEndpointConfig)
         )
         or (
-            manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
+            manifest.adapter == PARAKEET_CPP_ADAPTER
+            and not isinstance(manifest.adapter_config, ParakeetCppConfig)
+        )
+        or (
+            manifest.adapter
+            in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
             and runtime_receipt_sha256 is not None
         )
         or (
-            manifest.adapter != SHERPA_ZIPFORMER_ADAPTER
+            manifest.adapter
+            not in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
             and runtime_receipt_sha256 is None
         )
         or (
-            manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+            manifest.adapter
+            in {FASTER_WHISPER_ENDPOINT_ADAPTER, PARAKEET_CPP_ADAPTER}
             and model_receipt_sha256 is None
         )
         or (
-            manifest.adapter != FASTER_WHISPER_ENDPOINT_ADAPTER
+            manifest.adapter
+            not in {FASTER_WHISPER_ENDPOINT_ADAPTER, PARAKEET_CPP_ADAPTER}
             and model_receipt_sha256 is not None
         )
     ):
@@ -600,6 +636,7 @@ def _worker_binding(
             if isinstance(manifest.adapter_config, FasterWhisperEndpointConfig)
             else set()
         ),
+        PARAKEET_CPP_ADAPTER: set(ParakeetCppConfig().as_dict()),
     }[manifest.adapter]
     if set(adapter_config) != expected_config_fields:
         raise ValueError
@@ -621,18 +658,28 @@ def _validated_parakeet_cgroup_evidence(
     manifest: WorkerManifest,
     value: Mapping[str, object] | None,
 ) -> dict[str, object] | None:
-    """Bind only schema-v5 reports to the supervisor-verified hard scope."""
+    """Bind only native endpoint candidates to their verified hard scope."""
 
-    if manifest.adapter != PARAKEET_REALTIME_EOU_ADAPTER:
+    expected = {
+        (PARAKEET_REALTIME_EOU_ADAPTER, 5): _PARAKEET_CGROUP_EVIDENCE,
+        (PARAKEET_CPP_ADAPTER, 8): _PARAKEET_CPP_CGROUP_EVIDENCE,
+    }.get((manifest.adapter, manifest.schema_version))
+    if expected is None:
+        if manifest.adapter in {
+            PARAKEET_REALTIME_EOU_ADAPTER,
+            PARAKEET_CPP_ADAPTER,
+        }:
+            raise ValueError
         return None
-    if manifest.schema_version != 5 or not isinstance(value, Mapping):
+    if not isinstance(value, Mapping):
         raise ValueError
-    if set(value) != set(_PARAKEET_CGROUP_EVIDENCE) or any(
-        type(value[name]) is not type(expected) or value[name] != expected
-        for name, expected in _PARAKEET_CGROUP_EVIDENCE.items()
+    if set(value) != set(expected) or any(
+        type(value[name]) is not type(expected_value)
+        or value[name] != expected_value
+        for name, expected_value in expected.items()
     ):
         raise ValueError
-    result = {name: value[name] for name in _PARAKEET_CGROUP_EVIDENCE}
+    result = {name: value[name] for name in expected}
     _strict_json(result)
     return result
 
@@ -661,6 +708,7 @@ def _evidence_binding(
         FasterWhisperEndpointConfig
         | MoonshineExternalEndpointConfig
         | NemotronConfig
+        | ParakeetCppConfig
         | SherpaZipformerConfig
         | ParakeetRealtimeEouConfig
         | None
@@ -674,6 +722,7 @@ def _evidence_binding(
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
+        PARAKEET_CPP_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     } or pace not in {
@@ -681,6 +730,7 @@ def _evidence_binding(
         "realtime",
     }:
         raise ValueError
+    parakeet_cpp_config = None
     if adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
         if type(adapter_config) is not MoonshineExternalEndpointConfig:
             raise ValueError
@@ -713,6 +763,15 @@ def _evidence_binding(
         zipformer_config = None
         parakeet_config = adapter_config
         faster_whisper_config = None
+    elif adapter == PARAKEET_CPP_ADAPTER:
+        if not isinstance(adapter_config, ParakeetCppConfig):
+            raise ValueError
+        external_moonshine_config = None
+        config = None
+        zipformer_config = None
+        parakeet_config = None
+        parakeet_cpp_config = adapter_config
+        faster_whisper_config = None
     elif adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
         if not isinstance(adapter_config, FasterWhisperEndpointConfig):
             raise ValueError
@@ -740,6 +799,7 @@ def _evidence_binding(
             MOONSHINE_ADAPTER,
             MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
+            PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         },
         "model_executed": candidate_executed,
@@ -771,7 +831,8 @@ def _evidence_binding(
         "controller_ipc_included": False,
         "capture_to_text_latency": False,
         "vad": False,
-        "endpointing": adapter == PARAKEET_REALTIME_EOU_ADAPTER,
+        "endpointing": adapter
+        in {PARAKEET_REALTIME_EOU_ADAPTER, PARAKEET_CPP_ADAPTER},
         "aec": False,
         "live_hardware": False,
         "adoption_authority": False,
@@ -967,6 +1028,98 @@ def _evidence_binding(
                     "maximum_tail_padding_samples": (
                         parakeet_config.maximum_tail_padding_samples
                     ),
+                },
+            }
+        )
+    if parakeet_cpp_config is not None:
+        binding.update(
+            {
+                "benchmark_only": True,
+                "input_contract": "externally_bounded_single_utterance_pcm",
+                "streaming_recognizer": True,
+                "final_source": (
+                    "first_observed_eou_if_complete_source_feed_else_declared_tail_exhaustion"
+                ),
+                "native_endpoint_source": (
+                    "first_candidate_bounded_typed_eou_observation_eob_ignored"
+                ),
+                "response_authority": (
+                    "visible_text_through_first_observed_eou_document_only"
+                ),
+                "tool_authority": False,
+                "live_runtime_authority": False,
+                "endpoint_stop_policy": (
+                    "first_observed_eou_accept_if_complete_source_feed_else_tail_exhaustion"
+                ),
+                "endpoint_qualification_domain": (
+                    "observed_feed_boundary_not_encoder_timestamp"
+                ),
+                "observation_policy": {
+                    "eob": "telemetry_only_continue",
+                    "first_source_early_eou": (
+                        "blocks_later_acceptance_continue_to_tail_exhaustion"
+                    ),
+                    "first_complete_source_feed_eou": (
+                        "accept_and_stop_optional_tail"
+                    ),
+                    "first_finalize_eou": (
+                        "blocks_later_acceptance_tail_exhausted"
+                    ),
+                    "later_eou": "telemetry_only_never_terminal",
+                    "finalize": "telemetry_only_never_terminal",
+                },
+                "turn_text_policy": {
+                    "document_text": "upstream_newly_finalized_json_delta",
+                    "visible_assembly": (
+                        "append_through_first_observed_eou_document"
+                    ),
+                    "after_first_eou": (
+                        "visible_final_and_partials_frozen_later_deltas_telemetry_only"
+                    ),
+                },
+                "source_completion_policy": (
+                    "consume_complete_source_before_terminal"
+                ),
+                "endpoint_ground_truth": False,
+                "endpoint_latency_scope": (
+                    "declared_source_end_to_observed_feed_boundary"
+                ),
+                "endpoint_sample_domain": (
+                    "offered_source_plus_consumed_optional_tail_feed_boundary"
+                ),
+                "encoder_time_domain": (
+                    "native_encoder_frame_times_receipt_bound_frame_sec"
+                ),
+                "encoder_time_capture_authority": False,
+                "source_tail_accounting": "worker_reported_supervisor_validated",
+                "capture_accrual_included": False,
+                "resource_control": {
+                    "kind": "systemd-user-scope-cgroup-v2",
+                    "profile": "cpu-only",
+                    "proof_source": "supervisor_cgroup_files_before_ready",
+                    "receipt_field": "worker.cgroup_evidence",
+                    "requested_device": parakeet_cpp_config.requested_device,
+                    "actual_device": parakeet_cpp_config.actual_device,
+                    "network_namespace": "unshared",
+                    "nvidia_device_nodes_exposed": False,
+                    "hard_host_memory_limit": True,
+                    "hard_cpu_quota": True,
+                    "hard_tasks_limit": True,
+                    "hard_vram_limit": False,
+                },
+                "native_stream_geometry": {
+                    "sample_rate_hz": parakeet_cpp_config.sample_rate,
+                    "chunk_samples": parakeet_cpp_config.native_chunk_samples,
+                    "chunk_ms": round(
+                        parakeet_cpp_config.native_chunk_samples
+                        * 1000.0
+                        / parakeet_cpp_config.sample_rate,
+                        3,
+                    ),
+                    "maximum_tail_padding_samples": (
+                        parakeet_cpp_config.maximum_tail_padding_samples
+                    ),
+                    "encoder_frame_sec": parakeet_cpp_config.frame_sec,
                 },
             }
         )
@@ -1212,10 +1365,26 @@ def _validated_stream(
     return parsed.stream
 
 
-def _default_stream(manifest: WorkerManifest) -> StreamConfig:
+def _wire_protocol_version(manifest: WorkerManifest) -> int:
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        return PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
     if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        return NATIVE_ENDPOINT_PROTOCOL_VERSION
+    return PROTOCOL_VERSION
+
+
+def _default_stream(manifest: WorkerManifest) -> StreamConfig:
+    if manifest.adapter in {
+        PARAKEET_REALTIME_EOU_ADAPTER,
+        PARAKEET_CPP_ADAPTER,
+    }:
         config = manifest.adapter_config
-        if not isinstance(config, ParakeetRealtimeEouConfig):
+        expected_type = (
+            ParakeetCppConfig
+            if manifest.adapter == PARAKEET_CPP_ADAPTER
+            else ParakeetRealtimeEouConfig
+        )
+        if not isinstance(config, expected_type):
             raise ValueError
         return StreamConfig(
             chunk_samples=config.native_chunk_samples,
@@ -1279,11 +1448,7 @@ def _selected_stream(
     partial_interval_ms: int | None,
     tail_padding_samples: int | None,
 ) -> StreamConfig:
-    protocol_version = (
-        NATIVE_ENDPOINT_PROTOCOL_VERSION
-        if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
-        else PROTOCOL_VERSION
-    )
+    protocol_version = _wire_protocol_version(manifest)
     overrides = (
         chunk_samples,
         pace,
@@ -1318,10 +1483,18 @@ def _selected_stream(
             ),
             protocol_version=protocol_version,
         )
-    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+    if manifest.adapter in {
+        PARAKEET_REALTIME_EOU_ADAPTER,
+        PARAKEET_CPP_ADAPTER,
+    }:
         config = manifest.adapter_config
+        expected_type = (
+            ParakeetCppConfig
+            if manifest.adapter == PARAKEET_CPP_ADAPTER
+            else ParakeetRealtimeEouConfig
+        )
         if (
-            not isinstance(config, ParakeetRealtimeEouConfig)
+            not isinstance(config, expected_type)
             or selected.chunk_samples != config.native_chunk_samples
             or selected.tail_padding_samples > config.maximum_tail_padding_samples
         ):
@@ -1386,11 +1559,11 @@ def run_benchmark(
         if any(value is not None for value in overrides):
             raise ValueError
         # Reject geometry that is invalid under every supported protocol before
-        # touching caller-supplied inputs. The exact v2/v3 bound is applied
+        # touching caller-supplied inputs. The exact v2/v3/v4 bound is applied
         # after the manifest selects the worker protocol.
         _validated_stream(
             stream,
-            protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
+            protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
         )
     run_lock = _BenchmarkRunLock.acquire(_HOST_LOCK_PATH)
     try:
@@ -1495,11 +1668,7 @@ def _run_benchmark_locked(
                             samples=case.samples,
                         ),
                         stream=selected_stream,
-                        protocol_version=(
-                            NATIVE_ENDPOINT_PROTOCOL_VERSION
-                            if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
-                            else PROTOCOL_VERSION
-                        ),
+                        protocol_version=_wire_protocol_version(manifest),
                     )
                     records.append(
                         RunRecord(
@@ -1581,6 +1750,7 @@ def _run_benchmark_locked(
                             NemotronConfig,
                             MoonshineExternalEndpointConfig,
                             SherpaZipformerConfig,
+                            ParakeetCppConfig,
                             ParakeetRealtimeEouConfig,
                             FasterWhisperEndpointConfig,
                         ),

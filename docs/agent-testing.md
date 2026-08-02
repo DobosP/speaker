@@ -27,11 +27,12 @@
 | BPE streaming-hotword context | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_sherpa_models.py tests/test_setup_doctor.py tests/test_recorded_stt_eval.py tests/test_capture_replay_eval.py tests/test_install.py tests/test_asr_postprocess.py tests/test_file_replay_engine.py tests/test_livekit_engine.py -q` | constructor/stream fail-closed behavior across local, replay, and LiveKit; exact uppercase grammar; immutable complete-family setup; pre-download exporter check; readiness; conditional install; and exact active/inert replay provenance pass without a model, network, GPU, audio device, transcript output, or live claim (ADR-0114) |
 | Exact private final-input evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_diagnostic_bundle.py tests/test_reference_recording.py tests/test_sherpa_diagnostic_observations.py tests/test_asr_final_async.py tests/test_prepare_diagnostic_streaming_stt_corpus.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_app_replay_safety.py -q` | diagnostic schema-v1 read-only validation, schema-v2 exact f32le binding/lifecycle/tamper/backpressure, private schema-v3 bit-for-bit export, public schema-v2 separation, aggregate-only CLI privacy, and synchronized-directory replay refusal pass headlessly; no owner corpus, model, GPU, audio device, WER, latency, or live claim (ADR-0108) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced synchronous Sherpa session seam, fixed aggregate conditions/privacy, evaluator, deterministic AMI preparation, and explicit production-owner rejection pass without a model or audio device; the digest binds but replay does not execute the dedicated owner (ADR-0092/0111) |
-| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine Tiny/Small/Medium, Nemotron, and Parakeet private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091/0099/0115) |
+| Isolated streaming-STT harness | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_*.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `966 passed, 5 deselected`: fake, Moonshine Tiny/Small/Medium, Nemotron, Parakeet NeMo, and parakeet.cpp private-source/exact-runtime or native-artifact, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass without a model or audio device; run the bounded-read race separately (ADR-0089/0090/0091/0099/0115/0119) |
+| Exact parakeet.cpp CPU candidate contracts | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_parakeet_cpp.py tests/test_streaming_stt_metrics_parakeet_cpp.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_protocol.py tests/test_streaming_stt_supervisor.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `464 passed, 1 deselected`: schema-v8 closed receipts and no-load provision, exact bridge/source/ELF/ABI binding, protocol-v4 first-EOU/text-freeze policy, no-network/no-NVIDIA sandbox, verified hard scope, aggregate metrics, evaluator binding, privacy, and teardown pass with fakes; no real model, device, live, tool, or adoption claim (ADR-0119) |
 | Faster-Whisper final-only comparator | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_faster_whisper_endpoint_candidate.py tests/test_streaming_stt_faster_whisper_endpoint.py -q` | separate runtime/model receipts, no-download provision, final-only adapter, evaluator provenance, PCM/tree tamper rejection, and schema-v6 worker serialization pass without importing/loading a candidate, GPU, network, or audio device (ADR-0102) |
 | Public matrix + production-model STT control | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_zipformer.py -m "not real_model" -q` | no-download license/receipt/selection/privacy contracts and exact fp32 Zipformer Bubblewrap control pass without a corpus, model load, network, or audio device (ADR-0098) |
 | Licensed stratified STT evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_demand_noise_streaming_stt_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_streaming_stt_faster_whisper_endpoint.py tests/test_streaming_stt_suite.py -q` | exact DEMAND/license/runtime receipts, outside-Git publication, Rochester label fail-closed behavior, bounded strata, N/A zero-attempt command recall, evaluator binding, sequential cells, failure checkpoints, and aggregate privacy pass without a model, network, GPU, or audio device (ADR-0109) |
-| Public short-command/noise gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_command_noise_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `235 passed, 1 deselected`: exact official-archive/catalog/license/lock binding, bounded direct archive reads, deterministic 57-case selection, schema-v4 assertion and receipt integrity, final/partial positive and forbidden-target metrics, aggregate privacy, and no-clobber outside-Git publication pass without downloading, loading a model, using a GPU, network, or audio device (ADR-0117) |
+| Public short-command/noise gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_command_noise_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `246 passed, 1 deselected`: exact official-archive/catalog/license/lock binding, bounded direct archive reads, deterministic 57-case selection, schema-v4 assertion and receipt integrity, final/partial positive and forbidden-target metrics, aggregate privacy, and no-clobber outside-Git publication pass without downloading, loading a model, using a GPU, network, or audio device (ADR-0117/0119) |
 | Configured final-command FileReplay gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_production_final_stt_eval.py tests/test_streaming_stt_final_metrics.py tests/test_recorded_stt_eval.py tests/test_file_replay_engine.py -q` | decision-boundary-preserving aggregate metrics, exact private corpus/config/model/source/runtime/provider binding, ASR-only FileReplay ownership, verifier warm/decode attestation, close-time privacy/mutation checks, model-output suppression, and failure-clean atomic no-clobber publication pass with fakes; selected output explicitly lacks live VAD-owned duration/recovery, and no model, GPU, device, capture, AEC, barge-in, tool, or live claim follows (ADR-0118) |
 | Bounded-read race isolation | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `1 passed`; keep this pre-existing timestamp-sensitive mutation check isolated from the broad streaming manifest gate and report both conditions |
 | Public conversation/STT fixture lock | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_public_conversation_fixture.py tests/test_prepare_harper_valley_conversation_fixture.py tests/test_prepare_edacc_conversation_fixture.py tests/test_prepare_ami_conversation_fixture.py tests/test_prepare_common_voice_conversation_fixture.py tests/test_public_voice_eval_matrix.py tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_suite.py -q` | matrix-v5 conversation-source pins/licenses, raw-source materializer contracts, self-digested 24x4 lock, explicit slots, private receipt/corpus/reference/PCM cross-binding, source balance/pairing, CV parent re-decode/private-input binding, integrated pre/post sequential-suite validation, and single-layer plus coordinated-parent tamper rejection pass. Materializer outputs are non-production; production-shaped validator grammar fixtures are consistency tests only. No download, complete real corpus, model, GPU, network, audio device, or live evidence (ADR-0113/0117) |
@@ -277,6 +278,77 @@ Preparation, provisioning, and evaluation refuse overwrite. They download
 nothing and open no audio device. Preserve reports privately. These runs begin
 after PCM is available and cannot validate capture, VAD, AEC, turn ground
 truth, conversational latency, live audio, or a default change (ADR-0099).
+
+## Exact parakeet.cpp CPU benchmark setup
+
+Start with two existing private mode-0700 roots. The native root must contain
+only `source-receipt.json`, `build-receipt.json`, `libparakeet.so`, and
+`libspeaker_parakeet_bridge.so`; the model root must contain only
+`model-receipt.json` and `realtime_eou_120m-v1-f16.gguf`. Files are
+owner-private, single-link regular files matching the schema-v8 receipts. This
+route verifies the supplied build; it does not clone, patch, compile, download,
+import, execute, or load the candidate during provisioning. Every destination
+must be a new absolute private path:
+
+```bash
+export PARAKEET_CPP_NATIVE=/absolute/private/parakeet-cpp-native
+export PARAKEET_CPP_MODEL=/absolute/private/parakeet-cpp-model
+export PARAKEET_CPP_PROVISION=/absolute/private/new-parakeet-cpp-candidate
+export STREAMING_CORPUS=/absolute/private/prepared-public-corpus/corpus.json
+export PARAKEET_CPP_BURST_SCRATCH=/absolute/private/new-parakeet-cpp-burst-scratch
+export PARAKEET_CPP_BURST_REPORT=/absolute/private/new-parakeet-cpp-burst-report.json
+export PARAKEET_CPP_PACED_SCRATCH=/absolute/private/new-parakeet-cpp-paced-scratch
+export PARAKEET_CPP_PACED_REPORT=/absolute/private/new-parakeet-cpp-paced-report.json
+```
+
+```bash
+/home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.provision_parakeet_cpp_candidate \
+  --python /usr/bin/python3.12 \
+  --native-root "$PARAKEET_CPP_NATIVE" \
+  --model-root "$PARAKEET_CPP_MODEL" \
+  --output-dir "$PARAKEET_CPP_PROVISION"
+```
+
+Run the selected strict-fidelity burst cell, then one matched paced repeat.
+Keep the controller at nice 15: nice 19 prevents the worker's verified systemd
+scope from being created. The explicit tags are part of the report contract:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$PARAKEET_CPP_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 3 --chunk-samples 1280 \
+  --partial-interval-ms 80 --tail-padding-samples 8000 --pace burst \
+  --stratum-tag command-negative --stratum-tag command-positive \
+  --stratum-tag eccc --stratum-tag gsc --stratum-tag noisy \
+  --stratum-tag public-command-noise --stratum-tag silence \
+  --stratum-tag speech-negative --scratch-root "$PARAKEET_CPP_BURST_SCRATCH" \
+  --output "$PARAKEET_CPP_BURST_REPORT"
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$PARAKEET_CPP_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 1 --chunk-samples 1280 \
+  --partial-interval-ms 80 --tail-padding-samples 8000 --pace realtime \
+  --stratum-tag command-negative --stratum-tag command-positive \
+  --stratum-tag eccc --stratum-tag gsc --stratum-tag noisy \
+  --stratum-tag public-command-noise --stratum-tag silence \
+  --stratum-tag speech-negative --scratch-root "$PARAKEET_CPP_PACED_SCRATCH" \
+  --output "$PARAKEET_CPP_PACED_REPORT"
+```
+
+Protocol v4 accepts only the first `feed` EOU observed after complete source
+consumption. It appends text deltas through that EOU document, then freezes
+visible text; EOB, finalize EOU, and later events are telemetry. A source-early
+first EOU forces complete tail exhaustion. Bubblewrap exposes no network or
+NVIDIA nodes, and the supervisor verifies one CPU, 2 GiB memory high, 3 GiB
+memory max, zero swap, 64 tasks, and OOM kill before Ready. Preserve aggregate
+reports privately. These runs begin after PCM and do not validate capture,
+VAD/endpoint ground truth, AEC, barge-in, identity, tools, a device, live
+conversation, or a default change (ADR-0119).
 
 ## Exact Faster-Whisper final-only benchmark setup
 

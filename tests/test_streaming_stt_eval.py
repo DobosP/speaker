@@ -31,14 +31,18 @@ from tools.streaming_stt.manifest import (
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
     NEMOTRON_ARTIFACT_NAMES,
+    PARAKEET_CPP_ADAPTER,
+    PARAKEET_CPP_ARTIFACT_NAMES,
     PARAKEET_REALTIME_EOU_ADAPTER,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
+    ParakeetCppConfig,
     ParakeetRealtimeEouConfig,
 )
 from tools.streaming_stt.protocol import (
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     CaseTrace,
     FinalEvent,
@@ -209,6 +213,10 @@ def _command_trace(
 
 def _parakeet_config() -> ParakeetRealtimeEouConfig:
     return ParakeetRealtimeEouConfig()
+
+
+def _parakeet_cpp_config() -> ParakeetCppConfig:
+    return ParakeetCppConfig()
 
 
 def _parakeet_ready(
@@ -936,6 +944,167 @@ def test_parakeet_schema_v5_binding_and_native_endpoint_evidence_are_closed(
     ]
 
 
+def test_parakeet_cpp_schema_v8_binding_is_receipt_bound_and_benchmark_only(
+    tmp_path,
+):
+    config = _parakeet_cpp_config()
+    artifacts = tuple(
+        SimpleNamespace(
+            name=name,
+            sha256=f"{index + 1:064x}",
+            size_bytes=index + 1,
+            path=tmp_path / f"private-parakeet-cpp-{index}",
+        )
+        for index, name in enumerate(PARAKEET_CPP_ARTIFACT_NAMES)
+    )
+    manifest = SimpleNamespace(
+        digest="a" * 64,
+        schema_version=8,
+        model_id="parakeet-cpp-realtime-eou-120m-v1-f16-cpu",
+        adapter=PARAKEET_CPP_ADAPTER,
+        python=SimpleNamespace(sha256="b" * 64),
+        worker=SimpleNamespace(sha256="c" * 64),
+        artifacts=artifacts,
+        adapter_config=config,
+    )
+    source_bundle = SimpleNamespace(tree_sha256="d" * 64, files=(object(),))
+    model_receipt_sha256 = artifacts[2].sha256
+
+    binding = streaming_stt_eval._worker_binding(
+        manifest,
+        source_bundle,
+        runtime_receipt_sha256=None,
+        model_receipt_sha256=model_receipt_sha256,
+    )
+    evidence = streaming_stt_eval._evidence_binding(
+        PARAKEET_CPP_ADAPTER,
+        pace="realtime",
+        adapter_config=config,
+    )
+
+    assert binding["manifest_schema_version"] == 8
+    assert binding["adapter_config"] == config.as_dict()
+    assert binding["model_receipt_sha256"] == model_receipt_sha256
+    assert "runtime_receipt_sha256" not in binding
+    assert evidence["production_model"] is False
+    assert evidence["real_candidate_model"] is True
+    assert evidence["benchmark_only"] is True
+    assert evidence["adoption_authority"] is False
+    assert evidence["tool_authority"] is False
+    assert evidence["live_runtime_authority"] is False
+    assert evidence["endpointing"] is True
+    assert evidence["endpoint_ground_truth"] is False
+    assert evidence["response_authority"] == (
+        "visible_text_through_first_observed_eou_document_only"
+    )
+    assert evidence["final_source"] == (
+        "first_observed_eou_if_complete_source_feed_else_declared_tail_exhaustion"
+    )
+    assert evidence["native_endpoint_source"] == (
+        "first_candidate_bounded_typed_eou_observation_eob_ignored"
+    )
+    assert evidence["endpoint_stop_policy"] == (
+        "first_observed_eou_accept_if_complete_source_feed_else_tail_exhaustion"
+    )
+    assert evidence["endpoint_qualification_domain"] == (
+        "observed_feed_boundary_not_encoder_timestamp"
+    )
+    assert evidence["observation_policy"] == {
+        "eob": "telemetry_only_continue",
+        "first_source_early_eou": (
+            "blocks_later_acceptance_continue_to_tail_exhaustion"
+        ),
+        "first_complete_source_feed_eou": (
+            "accept_and_stop_optional_tail"
+        ),
+        "first_finalize_eou": (
+            "blocks_later_acceptance_tail_exhausted"
+        ),
+        "later_eou": "telemetry_only_never_terminal",
+        "finalize": "telemetry_only_never_terminal",
+    }
+    assert evidence["turn_text_policy"] == {
+        "document_text": "upstream_newly_finalized_json_delta",
+        "visible_assembly": "append_through_first_observed_eou_document",
+        "after_first_eou": (
+            "visible_final_and_partials_frozen_later_deltas_telemetry_only"
+        ),
+    }
+    assert evidence["source_completion_policy"] == (
+        "consume_complete_source_before_terminal"
+    )
+    assert evidence["endpoint_sample_domain"] == (
+        "offered_source_plus_consumed_optional_tail_feed_boundary"
+    )
+    assert evidence["encoder_time_capture_authority"] is False
+    assert evidence["native_stream_geometry"] == {
+        "sample_rate_hz": 16_000,
+        "chunk_samples": 1_280,
+        "chunk_ms": 80.0,
+        "maximum_tail_padding_samples": 48_000,
+        "encoder_frame_sec": 0.08,
+    }
+    assert evidence["resource_control"] == {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "profile": "cpu-only",
+        "proof_source": "supervisor_cgroup_files_before_ready",
+        "receipt_field": "worker.cgroup_evidence",
+        "requested_device": "cpu",
+        "actual_device": "cpu",
+        "network_namespace": "unshared",
+        "nvidia_device_nodes_exposed": False,
+        "hard_host_memory_limit": True,
+        "hard_cpu_quota": True,
+        "hard_tasks_limit": True,
+        "hard_vram_limit": False,
+    }
+    evaluator = streaming_stt_eval._evaluator_binding(PARAKEET_CPP_ADAPTER)
+    assert evaluator["real_candidate_model"] is True
+    assert "tools/streaming_stt/adapters/parakeet_cpp.py" in evaluator["files"]
+    assert "tools/streaming_stt/native/parakeet_cpp_bridge.cpp" in evaluator["files"]
+
+    with pytest.raises(ValueError):
+        streaming_stt_eval._worker_binding(
+            manifest,
+            source_bundle,
+            runtime_receipt_sha256="e" * 64,
+            model_receipt_sha256=model_receipt_sha256,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._worker_binding(
+            manifest,
+            source_bundle,
+            runtime_receipt_sha256=None,
+            model_receipt_sha256=None,
+        )
+
+
+def test_parakeet_cpp_uses_no_python_runtime_receipt_and_binds_model_receipt():
+    model_receipt = SimpleNamespace(sha256="a" * 64)
+    manifest = SimpleNamespace(
+        adapter=PARAKEET_CPP_ADAPTER,
+        adapter_config=_parakeet_cpp_config(),
+        artifact_by_name={"model-receipt": model_receipt},
+    )
+
+    assert streaming_stt_eval._verified_runtime_receipt_digest(manifest) is None
+    assert (
+        streaming_stt_eval._verified_model_receipt_digest(manifest)
+        == model_receipt.sha256
+    )
+
+    manifest.artifact_by_name["runtime-receipt"] = SimpleNamespace(
+        sha256="b" * 64
+    )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._verified_runtime_receipt_digest(manifest)
+
+    manifest.artifact_by_name.pop("runtime-receipt")
+    manifest.artifact_by_name.pop("model-receipt")
+    with pytest.raises(ValueError):
+        streaming_stt_eval._verified_model_receipt_digest(manifest)
+
+
 def _parakeet_cgroup_evidence() -> dict[str, object]:
     return {
         "kind": "systemd-user-scope-cgroup-v2",
@@ -947,6 +1116,44 @@ def _parakeet_cgroup_evidence() -> dict[str, object]:
         "oom_policy": "kill",
         "verified": True,
     }
+
+
+def _parakeet_cpp_cgroup_evidence() -> dict[str, object]:
+    return {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "memory_high_bytes": 2_147_483_648,
+        "memory_max_bytes": 3_221_225_472,
+        "memory_swap_max_bytes": 0,
+        "cpu_quota_percent": 100,
+        "tasks_max": 64,
+        "oom_policy": "kill",
+        "verified": True,
+    }
+
+
+def test_parakeet_cpp_worker_report_binds_exact_cpu_only_cgroup_receipt():
+    manifest = SimpleNamespace(adapter=PARAKEET_CPP_ADAPTER, schema_version=8)
+    binding = {"adapter": PARAKEET_CPP_ADAPTER}
+    runtime = {"python": "3.12.3", "platform": "linux"}
+
+    report = streaming_stt_eval._worker_report(
+        manifest,
+        binding,
+        runtime,
+        _parakeet_cpp_cgroup_evidence(),
+    )
+
+    assert report == {
+        "adapter": PARAKEET_CPP_ADAPTER,
+        "runtime": runtime,
+        "cgroup_evidence": _parakeet_cpp_cgroup_evidence(),
+    }
+    mutated = _parakeet_cpp_cgroup_evidence()
+    mutated["cpu_quota_percent"] = 200
+    with pytest.raises(ValueError):
+        streaming_stt_eval._worker_report(manifest, binding, runtime, mutated)
+    with pytest.raises(ValueError):
+        streaming_stt_eval._worker_report(manifest, binding, runtime, None)
 
 
 def test_parakeet_worker_report_binds_exact_verified_cgroup_receipt():
@@ -1124,6 +1331,60 @@ def test_parakeet_default_stream_uses_exact_native_chunk_and_declared_tail():
     assert selected == StreamConfig(1_280, "burst", 80, 48_000)
 
 
+def test_parakeet_cpp_default_and_selected_stream_use_v4_exact_geometry(
+    monkeypatch,
+):
+    manifest = SimpleNamespace(
+        adapter=PARAKEET_CPP_ADAPTER,
+        adapter_config=_parakeet_cpp_config(),
+    )
+    observed_versions: list[int] = []
+    real_parse_request = streaming_stt_eval.parse_request
+
+    def capture_protocol(raw):
+        parsed = real_parse_request(raw)
+        observed_versions.append(parsed.protocol_version)
+        return parsed
+
+    monkeypatch.setattr(streaming_stt_eval, "parse_request", capture_protocol)
+
+    assert (
+        streaming_stt_eval._wire_protocol_version(manifest)
+        == PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    )
+    assert streaming_stt_eval._default_stream(manifest) == StreamConfig(
+        1_280, "burst", 80, 48_000
+    )
+    assert streaming_stt_eval._selected_stream(
+        manifest,
+        None,
+        chunk_samples=None,
+        pace=None,
+        partial_interval_ms=None,
+        tail_padding_samples=None,
+    ) == StreamConfig(1_280, "burst", 80, 48_000)
+    assert observed_versions == [PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION]
+
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            StreamConfig(640, "burst", 80, 48_000),
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=None,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._selected_stream(
+            manifest,
+            StreamConfig(1_280, "burst", 80, 48_001),
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=None,
+        )
+
+
 def test_evaluator_stream_validation_preserves_v2_and_v3_tail_bounds():
     legacy = StreamConfig(1_600, "burst", 200, 16_000)
     native = StreamConfig(1_280, "burst", 80, 48_000)
@@ -1136,6 +1397,10 @@ def test_evaluator_stream_validation_preserves_v2_and_v3_tail_bounds():
         native,
         protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
     ) == native
+    assert streaming_stt_eval._validated_stream(
+        native,
+        protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+    ) == native
 
     with pytest.raises(ValueError):
         streaming_stt_eval._validated_stream(
@@ -1146,6 +1411,11 @@ def test_evaluator_stream_validation_preserves_v2_and_v3_tail_bounds():
         streaming_stt_eval._validated_stream(
             replace(native, tail_padding_samples=48_001),
             protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
+        )
+    with pytest.raises(ValueError):
+        streaming_stt_eval._validated_stream(
+            replace(native, tail_padding_samples=48_001),
+            protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
         )
 
 

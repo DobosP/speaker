@@ -32,6 +32,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/parakeet_cpp.py",
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
@@ -426,12 +427,14 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
+    PARAKEET_CPP_ADAPTER,
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
+    ParakeetCppConfig,
     ParakeetRealtimeEouConfig,
     WorkerManifest,
     load_worker_manifest,
@@ -440,11 +443,14 @@ from tools.streaming_stt.protocol import (  # noqa: E402
     MAX_CORPUS_BYTES,
     MAX_LINE_BYTES,
     MAX_MODEL_PADDING_SAMPLES,
+    MAX_PARAKEET_CPP_OBSERVED_EVENTS,
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     MAX_STREAM_SAMPLES,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
+    ParakeetCppObservedEvent,
     ProtocolError,
     ShutdownRequest,
     TranscribeRequest,
@@ -504,11 +510,11 @@ def _external_moonshine_config(
 
 
 def _wire_protocol_version(manifest: WorkerManifest) -> int:
-    return (
-        NATIVE_ENDPOINT_PROTOCOL_VERSION
-        if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
-        else PROTOCOL_VERSION
-    )
+    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        return NATIVE_ENDPOINT_PROTOCOL_VERSION
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        return PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    return PROTOCOL_VERSION
 
 
 def _safe_fatal(protocol_version: int) -> dict[str, object]:
@@ -662,6 +668,226 @@ def _native_final_payload(
     }
 
 
+def _parakeet_cpp_final_payload(
+    request: TranscribeRequest,
+    case,
+    config: ParakeetCppConfig,
+    *,
+    partial_count: int,
+) -> dict[str, object]:
+    """Validate and serialize probability-free parakeet.cpp evidence."""
+
+    integer_fields = {
+        "source_samples_offered": getattr(case, "source_samples_offered", None),
+        "source_samples_consumed": getattr(case, "source_samples_consumed", None),
+        "tail_samples_offered": getattr(case, "tail_samples_offered", None),
+        "tail_samples_consumed": getattr(case, "tail_samples_consumed", None),
+        "chunks_yielded": getattr(case, "chunks_yielded", None),
+        "model_padding_samples": getattr(case, "model_padding_samples", None),
+    }
+    if any(
+        type(value) is not int or value < 0
+        for value in integer_fields.values()
+    ):
+        raise ProtocolError()
+    source_offered = integer_fields["source_samples_offered"]
+    source_consumed = integer_fields["source_samples_consumed"]
+    tail_offered = integer_fields["tail_samples_offered"]
+    tail_consumed = integer_fields["tail_samples_consumed"]
+    chunks = integer_fields["chunks_yielded"]
+    model_padding = integer_fields["model_padding_samples"]
+    assert isinstance(source_offered, int)
+    assert isinstance(source_consumed, int)
+    assert isinstance(tail_offered, int)
+    assert isinstance(tail_consumed, int)
+    assert isinstance(chunks, int)
+    assert isinstance(model_padding, int)
+    samples_seen = source_consumed + tail_consumed
+    reason = getattr(case, "endpoint_reason", None)
+    native = getattr(case, "native_endpoint", None)
+    encoder_frame = getattr(case, "encoder_frame", None)
+    encoder_time = getattr(case, "encoder_time_seconds", None)
+    event_origin = getattr(case, "event_origin", None)
+    endpoint_sample = getattr(case, "endpoint_sample", None)
+    endpoint_latency = getattr(case, "endpoint_latency_ms", None)
+    authoritative = getattr(case, "authoritative", None)
+    observed_events = getattr(case, "observed_events", None)
+    expected_chunks = (
+        samples_seen + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples
+    source_complete = source_consumed == source_offered
+    if (
+        source_offered != request.pcm.samples
+        or tail_offered != request.stream.tail_padding_samples
+        or source_consumed > source_offered
+        or tail_consumed > tail_offered
+        or (source_consumed < source_offered and tail_consumed != 0)
+        or samples_seen <= 0
+        or chunks != expected_chunks
+        or model_padding != 0
+        or type(native) is not bool
+        or type(authoritative) is not bool
+        or not isinstance(observed_events, tuple)
+        or len(observed_events) > MAX_PARAKEET_CPP_OBSERVED_EVENTS
+    ):
+        raise ProtocolError()
+
+    serialized_observations: list[dict[str, object]] = []
+    seen_observations: set[tuple[str, int]] = set()
+    last_frame = -1
+    last_time = -1.0
+    last_observed_sample = -1
+    finalize_seen = False
+    first_eou_event: ParakeetCppObservedEvent | None = None
+    for observation in observed_events:
+        if type(observation) is not ParakeetCppObservedEvent:
+            raise ProtocolError()
+        observation_time = observation.encoder_time_seconds
+        observation_key = (
+            observation.event_type,
+            observation.encoder_frame,
+        )
+        if (
+            observation.event_type not in {"eou", "eob"}
+            or observation.event_origin not in {"feed", "finalize"}
+            or type(observation.observed_sample) is not int
+            or not 0 < observation.observed_sample <= samples_seen
+            or type(observation.encoder_frame) is not int
+            or observation.encoder_frame < 0
+            or isinstance(observation_time, bool)
+            or not isinstance(observation_time, (int, float))
+            or not math.isfinite(float(observation_time))
+            or not math.isclose(
+                float(observation_time),
+                observation.encoder_frame * config.frame_sec,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+            or observation.encoder_frame < last_frame
+            or float(observation_time) + 1e-9 < last_time
+            or observation.observed_sample < last_observed_sample
+            or observation_key in seen_observations
+            or (
+                observation.event_origin == "feed"
+                and (
+                    finalize_seen
+                    or (
+                        observation.observed_sample
+                        != source_offered + tail_offered
+                        and observation.observed_sample
+                        % config.native_chunk_samples
+                        != 0
+                    )
+                    or float(observation_time)
+                    > observation.observed_sample / request.pcm.sample_rate + 1e-9
+                )
+            )
+            or (
+                observation.event_origin == "finalize"
+                and observation.observed_sample != samples_seen
+            )
+        ):
+            raise ProtocolError()
+        if observation.event_origin == "finalize":
+            finalize_seen = True
+        if first_eou_event is None and observation.event_type == "eou":
+            first_eou_event = observation
+        seen_observations.add(observation_key)
+        last_frame = observation.encoder_frame
+        last_time = float(observation_time)
+        last_observed_sample = observation.observed_sample
+        serialized_observations.append(
+            {
+                "event_type": observation.event_type,
+                "event_origin": observation.event_origin,
+                "observed_sample": observation.observed_sample,
+                "encoder_frame": observation.encoder_frame,
+                "encoder_time_seconds": observation.encoder_time_seconds,
+            }
+        )
+
+    accepted_event = (
+        first_eou_event
+        if first_eou_event is not None
+        and first_eou_event.event_origin == "feed"
+        and first_eou_event.observed_sample >= source_offered
+        else None
+    )
+    if accepted_event is not None:
+        expected_latency = tail_consumed * 1000.0 / request.pcm.sample_rate
+        if (
+            not source_complete
+            or samples_seen != accepted_event.observed_sample
+            or native is not True
+            or authoritative is not True
+            or reason != "eou"
+            or event_origin != "feed"
+            or encoder_frame != accepted_event.encoder_frame
+            or isinstance(encoder_time, bool)
+            or not isinstance(encoder_time, (int, float))
+            or not math.isclose(
+                float(encoder_time),
+                accepted_event.encoder_time_seconds,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+            or endpoint_sample != accepted_event.observed_sample
+            or isinstance(endpoint_latency, bool)
+            or not isinstance(endpoint_latency, (int, float))
+            or not math.isfinite(float(endpoint_latency))
+            or not math.isclose(
+                float(endpoint_latency),
+                expected_latency,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise ProtocolError()
+    elif (
+        native is not False
+        or authoritative is not False
+        or reason != "tail_exhausted"
+        or event_origin != "none"
+        or encoder_frame is not None
+        or encoder_time is not None
+        or endpoint_sample is not None
+        or endpoint_latency is not None
+        or not source_complete
+        or tail_consumed != tail_offered
+    ):
+        raise ProtocolError()
+    return {
+        "v": PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+        "id": request.request_id,
+        "type": "parakeet_cpp_final",
+        "seq": partial_count,
+        "text": case.final,
+        "samples_seen": samples_seen,
+        "elapsed_ms": case.elapsed_ms,
+        "finalization_ms": case.finalization_ms,
+        "compute_ms": case.compute_ms,
+        "audio_seconds": request.pcm.samples / request.pcm.sample_rate,
+        "chunks": chunks,
+        "deadline_misses": case.deadline_misses,
+        "max_backlog_ms": case.max_backlog_ms,
+        "model_padding_samples": model_padding,
+        "resources": _resource_dict(case.resources),
+        "source_samples_offered": source_offered,
+        "source_samples_consumed": source_consumed,
+        "tail_samples_offered": tail_offered,
+        "tail_samples_consumed": tail_consumed,
+        "observed_events": serialized_observations,
+        "endpoint_reason": reason,
+        "native_endpoint": native,
+        "encoder_frame": encoder_frame,
+        "encoder_time_seconds": encoder_time,
+        "event_origin": event_origin,
+        "endpoint_sample": endpoint_sample,
+        "endpoint_latency_ms": endpoint_latency,
+        "authoritative": authoritative,
+    }
+
+
 def _load_pcm(request: TranscribeRequest, scratch_root: Path) -> bytes:
     try:
         snapshot = read_regular_bounded(
@@ -742,6 +968,12 @@ def _verify_runtime_receipt(
     manifest: WorkerManifest,
 ) -> RuntimeTreeReceipt | None:
     if manifest.adapter == "fake-json-v1":
+        return None
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        if manifest.schema_version != 8 or not isinstance(
+            manifest.adapter_config, ParakeetCppConfig
+        ):
+            raise ManifestError()
         return None
     if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
         return None
@@ -933,6 +1165,23 @@ def _activate_candidate_runtime(
         ):
             raise ManifestError()
         return
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        if (
+            receipt is not None
+            or manifest.schema_version != 8
+            or not isinstance(manifest.adapter_config, ParakeetCppConfig)
+            or sys.flags.no_site != 1
+            or sys.flags.no_user_site != 1
+            or sys.flags.ignore_environment != 1
+            or sys.flags.isolated != 1
+            or sys.flags.dont_write_bytecode != 1
+            or any(
+                name == "ctypes" or name.startswith("ctypes.")
+                for name in sys.modules
+            )
+        ):
+            raise ManifestError()
+        return
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
@@ -1041,6 +1290,37 @@ def _create_adapter(manifest: WorkerManifest):
                 config=manifest.adapter_config,
             ),
             FasterWhisperEndpointAdapterError,
+        )
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        if (
+            manifest.schema_version != 8
+            or not isinstance(manifest.adapter_config, ParakeetCppConfig)
+        ):
+            raise ManifestError()
+        artifacts = manifest.artifact_by_name
+        try:
+            model = artifacts["model-gguf"]
+            library = artifacts["libparakeet"]
+            bridge = artifacts["bridge-library"]
+        except KeyError:
+            raise ManifestError() from None
+        from tools.streaming_stt.adapters.parakeet_cpp import (  # noqa: PLC0415
+            ParakeetCppAdapter,
+            ParakeetCppAdapterError,
+        )
+
+        return (
+            ParakeetCppAdapter(
+                model.path,
+                library.path,
+                bridge.path,
+                config=manifest.adapter_config,
+                library_sha256=library.sha256,
+                library_size_bytes=library.size_bytes,
+                bridge_sha256=bridge.sha256,
+                bridge_size_bytes=bridge.size_bytes,
+            ),
+            ParakeetCppAdapterError,
         )
     model_artifacts = tuple(
         artifact
@@ -1173,6 +1453,18 @@ def _run(
     if final_only_endpoint and manifest.schema_version != 6:
         raise ManifestError()
     adapter, adapter_error = _create_adapter(manifest)
+    if manifest.adapter == PARAKEET_CPP_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            not isinstance(config, ParakeetCppConfig)
+            or adapter.ready.requested_device != config.requested_device
+            or adapter.ready.actual_device != config.actual_device
+            or adapter.ready.num_threads != config.num_threads
+            or adapter.ready.bridge_abi_version != config.bridge_abi_version
+            or adapter.ready.c_api_version != config.c_api_version
+        ):
+            _close_adapter(adapter)
+            raise ManifestError()
     _write(
         {
             "v": protocol_version,
@@ -1232,6 +1524,16 @@ def _run(
                         or request.pcm.samples > config.maximum_source_samples
                     ):
                         raise ProtocolError()
+                if manifest.adapter == PARAKEET_CPP_ADAPTER:
+                    config = manifest.adapter_config
+                    if (
+                        not isinstance(config, ParakeetCppConfig)
+                        or request.stream.chunk_samples
+                        != config.native_chunk_samples
+                        or request.stream.tail_padding_samples
+                        > config.maximum_tail_padding_samples
+                    ):
+                        raise ProtocolError()
 
                 pcm = _load_pcm(request, scratch_root)
                 if request.pcm.sha256 not in consumed_inputs:
@@ -1270,6 +1572,19 @@ def _run(
                         _native_final_payload(
                             request,
                             case,
+                            partial_count=partial_count,
+                        )
+                    )
+                    continue
+                if manifest.adapter == PARAKEET_CPP_ADAPTER:
+                    config = manifest.adapter_config
+                    if not isinstance(config, ParakeetCppConfig):
+                        raise ProtocolError()
+                    _write(
+                        _parakeet_cpp_final_payload(
+                            request,
+                            case,
+                            config,
                             partial_count=partial_count,
                         )
                     )

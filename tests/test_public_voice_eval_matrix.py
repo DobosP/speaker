@@ -62,15 +62,24 @@ def test_matrix_has_one_track_per_separate_task_metric_family():
 
 
 def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
-    assert matrix.MATRIX_VERSION == 4
+    assert matrix.MATRIX_VERSION == 5
     speech = matrix.dataset_by_id("speech_commands_v002_test")
-    assert speech.revision == "57ba463ab37e1e7845e0626539a6f6d0fcfbe64a"
+    assert speech.upstream_id == "tensorflow:speech_commands:v0.02:test"
+    assert speech.revision == "v0.02"
+    assert speech.canonical_url == (
+        "https://www.tensorflow.org/datasets/catalog/speech_commands"
+    )
     assert speech.selection.expected_examples == 4_890
-    assert _artifact(
-        "speech_commands_v002_test", "test-archive"
-    ).checksum == matrix.Checksum(
+    speech_archive = _artifact("speech_commands_v002_test", "test-archive")
+    assert speech_archive.locator == (
+        "https://storage.googleapis.com/download.tensorflow.org/data/"
+        "speech_commands_test_set_v0.02.tar.gz"
+    )
+    assert speech_archive.filename == "speech_commands_test_set_v0.02.tar.gz"
+    assert speech_archive.size_bytes == 112_563_277
+    assert speech_archive.checksum == matrix.Checksum(
         matrix.ChecksumAlgorithm.SHA256,
-        "af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58",
+        "cc2a00c1147c2254e9be3fa0f779d8c17421dc349b86366567a8edfa9acd51df",
         "upstream",
     )
 
@@ -230,6 +239,103 @@ def test_ami_local_freeze_is_exact_and_warns_about_training_overlap():
     )
 
 
+def test_eccc_local_freeze_and_command_noise_scope_are_exact(tmp_path):
+    dataset = matrix.dataset_by_id("english_consistent_confusion_v1_2")
+    assert dataset.revision == "1.2"
+    assert dataset.canonical_url == "https://spandh.dcs.shef.ac.uk/ECCC/"
+    assert dataset.license.license_id == "CC-BY-4.0"
+    artifact = _artifact("english_consistent_confusion_v1_2", "archive")
+    assert artifact.locator == (
+        "https://spandh.dcs.shef.ac.uk/ECCC/data/EnglishCCC_v1.2.zip"
+    )
+    assert artifact.filename == "EnglishCCC_v1.2.zip"
+    assert artifact.size_bytes == 173_138_764
+    assert artifact.integrity is matrix.IntegrityKind.LOCAL_SHA256_RECEIPT
+    assert artifact.checksum == matrix.Checksum(
+        matrix.ChecksumAlgorithm.SHA256,
+        "dc3a1722d9737f08b8efcbee835cbe711dd8f2267441d1489b058c7b791ae92e",
+        "local-freeze",
+    )
+    assert "no cryptographic digest" in artifact.integrity_note
+    assert dataset.selection.expected_examples == 27
+    assert dataset.selection.algorithm is matrix.SelectionAlgorithm.FIXED_IDS
+    assert dataset.selection.identity_fields == ("id",)
+    assert dataset.selection.fixed_ids == (
+        "4767",
+        "5457",
+        "6605",
+        "7043",
+        "8656",
+        "11589",
+        "16266",
+        "17433",
+        "19696",
+        "20838",
+        "20943",
+        "22199",
+        "22713",
+        "25518",
+        "26181",
+        "28918",
+        "29569",
+        "32062",
+        "32602",
+        "33010",
+        "34213",
+        "34682",
+        "38922",
+        "39830",
+        "40011",
+        "41414",
+        "42408",
+    )
+    rows = tuple(
+        {"id": row_id, "untrusted": f"row-{index}"}
+        for index, row_id in enumerate(reversed(dataset.selection.fixed_ids))
+    )
+    selected = matrix.select_subset_rows(dataset.selection, rows)
+    assert tuple(row["id"] for row in selected) == dataset.selection.fixed_ids
+    with pytest.raises(matrix.MatrixError, match="insufficient exact rows"):
+        matrix.select_subset_rows(dataset.selection, rows[:-1])
+    assert "57-case" in dataset.selection.description
+    assert "not commands" in dataset.evidence_note
+    assert "nor held-out" in dataset.evidence_note
+
+    noise = next(track for track in matrix.TRACKS if track.track_id == "noise-reverb")
+    stop = next(track for track in matrix.TRACKS if track.track_id == "stop-keyword")
+    assert dataset.dataset_id in noise.dataset_ids
+    assert dataset.dataset_id not in stop.dataset_ids
+    assert matrix.Metric.NOISY_LITERAL_WER in noise.metrics
+    assert "no paired clean decode" in noise.protocol
+
+    plan_kwargs = {
+        "root": tmp_path / "corpora",
+        "accepted_terms": ALL_TERMS,
+        "environ": {},
+    }
+    with pytest.raises(matrix.MatrixError, match="explicit SHA-256"):
+        matrix.build_acquisition_plan((dataset.dataset_id,), **plan_kwargs)
+    matching = artifact.checksum
+    assert matching is not None
+    plan = matrix.build_acquisition_plan(
+        (dataset.dataset_id,),
+        checksum_receipts={f"{dataset.dataset_id}/archive": matching},
+        **plan_kwargs,
+    )
+    assert plan.artifacts[0].checksum == matching
+    with pytest.raises(matrix.MatrixError, match="does not match the catalog pin"):
+        matrix.build_acquisition_plan(
+            (dataset.dataset_id,),
+            checksum_receipts={
+                f"{dataset.dataset_id}/archive": replace(
+                    matching,
+                    digest="e" * 64,
+                )
+            },
+            **plan_kwargs,
+        )
+
+
 def test_public_conversation_fixture_sources_are_exact_and_track_scoped(tmp_path):
     harper = matrix.dataset_by_id("harper_valley_bank_v1")
     assert harper.revision == "0bd721e877c4a85d8c13ff837e68661ea6200a98"
@@ -315,7 +421,7 @@ def test_public_conversation_fixture_sources_are_exact_and_track_scoped(tmp_path
     assert next(
         item for item in plan.artifacts if item.artifact_id == "es2004a-mix-headset"
     ).checksum == receipt
-    assert len(matrix.DATASETS) == 18
+    assert len(matrix.DATASETS) == 19
 
 
 def test_unlicensed_challenge_only_and_nc_sources_are_non_selectable():

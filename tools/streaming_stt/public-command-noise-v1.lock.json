@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "kind": "public-command-noise-recipe-lock-v1",
+  "fixture_id": "public-command-noise-v1",
+  "recipe_sha256": "4d4e7a1cab6e498fdcda7a74cfab08a01e6bd8ac9c292a4ad940f4c09046433e",
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "provenance": {
+    "kind": "public-command-noise-v1",
+    "suite": "command-noise-v1"
+  },
+  "required_terms": ["CC-BY-4.0"],
+  "selection_seed": "speaker-public-command-noise-v1-2026-08-02",
+  "command_vocabulary": [
+    "yes",
+    "no",
+    "up",
+    "down",
+    "left",
+    "right",
+    "on",
+    "off",
+    "stop",
+    "go"
+  ],
+  "sample_format": {
+    "encoding": "f32le",
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "totals": {
+    "sources": 2,
+    "cases": 57,
+    "command_positive": 26,
+    "command_negative": 26,
+    "assertions": {
+      "transcript": 47,
+      "speech_negative": 5,
+      "silence": 5
+    }
+  },
+  "sources": [
+    {
+      "source_id": "google-speech-commands-v002-test",
+      "dataset_id": "speech_commands_v002_test",
+      "dataset": "Google Speech Commands v0.02 official test archive",
+      "canonical_url": "https://www.tensorflow.org/datasets/catalog/speech_commands",
+      "download_url": "https://storage.googleapis.com/download.tensorflow.org/data/speech_commands_test_set_v0.02.tar.gz",
+      "filename": "speech_commands_test_set_v0.02.tar.gz",
+      "license_id": "CC-BY-4.0",
+      "archive_format": "tar.gz",
+      "size_bytes": 112563277,
+      "sha256": "cc2a00c1147c2254e9be3fa0f779d8c17421dc349b86366567a8edfa9acd51df",
+      "members": 4905,
+      "files": 4892,
+      "uncompressed_bytes": 156714470,
+      "readme": {
+        "size_bytes": 659,
+        "sha256": "5ff4874c997ef1fb792a064140418e57c16c8f949123266a87521e96078bb7d5"
+      },
+      "license_file": {
+        "size_bytes": 18651,
+        "sha256": "fd3a263fe19ed8faa9068b43abaebafc02c77897b0c6fc09abc04bb592e5f16e"
+      },
+      "selection": {
+        "algorithm": "deterministic-global-speaker-first-v1",
+        "per_command": 2,
+        "unknown_speech": 5,
+        "silence": 5,
+        "speech_source_speakers": "exactly-25-distinct"
+      }
+    },
+    {
+      "source_id": "english-consistent-confusion-v1.2",
+      "dataset_id": "english_consistent_confusion_v1_2",
+      "dataset": "English Consistent Confusion Corpus v1.2",
+      "canonical_url": "https://spandh.dcs.shef.ac.uk/ECCC/",
+      "download_url": "https://spandh.dcs.shef.ac.uk/ECCC/data/EnglishCCC_v1.2.zip",
+      "filename": "EnglishCCC_v1.2.zip",
+      "license_id": "CC-BY-4.0",
+      "archive_format": "zip",
+      "size_bytes": 173138764,
+      "sha256": "dc3a1722d9737f08b8efcbee835cbe711dd8f2267441d1489b058c7b791ae92e",
+      "members": 3219,
+      "files": 3216,
+      "uncompressed_bytes": 229458509,
+      "csv": {
+        "member": "EnglishCCC_v1.2/confusionCorpus_v1.2.csv",
+        "rows": 3207,
+        "size_bytes": 820168,
+        "sha256": "1c64d248099a6461ccd733067136ea3f6475646875febb6e086d2b37826f2620"
+      },
+      "readme": {
+        "member": "EnglishCCC_v1.2/README.md",
+        "size_bytes": 1787,
+        "sha256": "f1b2ec45ae2dc7f6e6865471cee175a06a8e10d9d1285217f42c49a8aa155bbd"
+      },
+      "license_file": {
+        "member": "EnglishCCC_v1.2/LICENSE",
+        "size_bytes": 472,
+        "sha256": "55c01319cfcf305a9a5edb1e62188a133f6fcacca509896766d5598cd2035609"
+      },
+      "selection": {
+        "algorithm": "all-target-command-or-documented-command-confusion-v1",
+        "command_positive": 6,
+        "command_negative": 21
+      },
+      "mix": "stereo-pcm16-left-clean-plus-right-masker-to-mono"
+    }
+  ],
+  "privacy": {
+    "audio_committed": false,
+    "selected_public_eccc_row_ids_committed_in_matrix": true,
+    "selected_archive_member_names_committed_in_lock": false,
+    "selected_speakers_committed": false,
+    "local_paths_committed": false,
+    "receipt": "aggregate-and-hash-only"
+  },
+  "evidence_scope": {
+    "development_only": true,
+    "isolated_commands": true,
+    "noisy_word_confusions": true,
+    "capture": false,
+    "vad_endpoint": false,
+    "aec_barge_in": false,
+    "speaker_identity": false,
+    "agent_tools": false,
+    "live_latency": false,
+    "default_promotion": false
+  }
+}

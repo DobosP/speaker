@@ -26,7 +26,7 @@ from typing import Mapping
 from urllib.parse import urlparse
 
 
-MATRIX_VERSION = 4
+MATRIX_VERSION = 5
 SELECTION_SEED = "speaker-public-eval-v1-2026-08-01"
 MDC_TOKEN_ENV = "MDC_TOKEN"
 
@@ -65,6 +65,7 @@ class Metric(str, Enum):
     FALSE_ALARMS_PER_HOUR = "false_alarms_per_hour"
     PAIRED_WER_DELTA = "paired_wer_delta"
     WER_DEGRADATION_GRID = "wer_degradation_grid"
+    NOISY_LITERAL_WER = "noisy_literal_wer"
     ERLE_DB = "erle_db"
     AECMOS = "aecmos"
     NEAR_END_ATTENUATION_DB = "near_end_attenuation_db"
@@ -320,19 +321,19 @@ DATASETS: tuple[Dataset, ...] = (
     Dataset(
         "speech_commands_v002_test",
         "Google Speech Commands v0.02 test",
-        "google/speech_commands:v0.02:test",
-        "57ba463ab37e1e7845e0626539a6f6d0fcfbe64a",
-        "https://huggingface.co/datasets/google/speech_commands",
+        "tensorflow:speech_commands:v0.02:test",
+        "v0.02",
+        "https://www.tensorflow.org/datasets/catalog/speech_commands",
         CC_BY_4,
         (
             Artifact(
                 "test-archive",
-                "https://s3.amazonaws.com/datasets.huggingface.co/SpeechCommands/v0.02/v0.02_test.tar.gz",
-                "v0.02_test.tar.gz",
-                None,
+                "https://storage.googleapis.com/download.tensorflow.org/data/speech_commands_test_set_v0.02.tar.gz",
+                "speech_commands_test_set_v0.02.tar.gz",
+                112_563_277,
                 IntegrityKind.PINNED,
                 _sha256(
-                    "af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58"
+                    "cc2a00c1147c2254e9be3fa0f779d8c17421dc349b86366567a8edfa9acd51df"
                 ),
             ),
         ),
@@ -340,6 +341,83 @@ DATASETS: tuple[Dataset, ...] = (
         evidence_note=(
             "Parakeet training includes Speech Commands; use this as a STOP "
             "diagnostic, not independent candidate-selection evidence."
+        ),
+    ),
+    Dataset(
+        "english_consistent_confusion_v1_2",
+        "Sheffield English Consistent Confusion Corpus v1.2",
+        "sheffield:ECCC:EnglishCCC_v1.2",
+        "1.2",
+        "https://spandh.dcs.shef.ac.uk/ECCC/",
+        CC_BY_4,
+        (
+            Artifact(
+                "archive",
+                "https://spandh.dcs.shef.ac.uk/ECCC/data/EnglishCCC_v1.2.zip",
+                "EnglishCCC_v1.2.zip",
+                173_138_764,
+                IntegrityKind.LOCAL_SHA256_RECEIPT,
+                _sha256(
+                    "dc3a1722d9737f08b8efcbee835cbe711dd8f2267441d1489b058c7b791ae92e",
+                    "local-freeze",
+                ),
+                (
+                    "The upstream page publishes an approximate archive size but "
+                    "no cryptographic digest. Require an explicit locally computed "
+                    "SHA-256 receipt matching this catalog freeze before use."
+                ),
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "For the bounded 57-case command/noise diagnostic, retain every "
+                "row whose normalized target or documented majority confusion is "
+                "one of yes/no/up/down/left/right/on/off/stop/go. The frozen v1.2 "
+                "CSV yields exactly these 27 fixed public row IDs. Preserve "
+                "target/confusion direction and masker, pair downstream with "
+                "exactly 30 Speech Commands controls, and score the spoken target "
+                "as the reference."
+            ),
+            algorithm=SelectionAlgorithm.FIXED_IDS,
+            split="all",
+            identity_fields=("id",),
+            expected_examples=27,
+            fixed_ids=(
+                "4767",
+                "5457",
+                "6605",
+                "7043",
+                "8656",
+                "11589",
+                "16266",
+                "17433",
+                "19696",
+                "20838",
+                "20943",
+                "22199",
+                "22713",
+                "25518",
+                "26181",
+                "28918",
+                "29569",
+                "32062",
+                "32602",
+                "33010",
+                "34213",
+                "34682",
+                "38922",
+                "39830",
+                "40011",
+                "41414",
+                "42408",
+            ),
+        ),
+        evidence_note=(
+            "This corpus contains noise-induced British English isolated-word "
+            "misperceptions, not commands. The 27 command-related cases are a "
+            "development confusion diagnostic within a 57-case combined recipe; "
+            "ECCC is neither a command corpus nor held-out candidate-selection "
+            "evidence."
         ),
     ),
     Dataset(
@@ -987,9 +1065,20 @@ TRACKS: tuple[EvaluationTrack, ...] = (
     EvaluationTrack(
         "noise-reverb",
         TaskCategory.NOISE_REVERB,
-        ("rirs_noises", "speechocean762", "demand_domestic_16k"),
-        (Metric.WER_DEGRADATION_GRID,),
-        "Apply the fixed seed grid to pinned reference speech and report degradation from its clean decode.",
+        (
+            "rirs_noises",
+            "speechocean762",
+            "demand_domestic_16k",
+            "english_consistent_confusion_v1_2",
+        ),
+        (Metric.WER_DEGRADATION_GRID, Metric.NOISY_LITERAL_WER),
+        (
+            "Apply the fixed seed grid to pinned reference speech and report "
+            "degradation from its clean decode. For ECCC only, report literal WER "
+            "on the published speech-plus-masker mixture as a separate absolute "
+            "hard-noise diagnostic; this recipe has no paired clean decode, and "
+            "listener confusions are not references."
+        ),
     ),
     EvaluationTrack(
         "aec-double-talk",
@@ -1115,7 +1204,9 @@ _ALLOWED_METRICS: Mapping[TaskCategory, frozenset[Metric]] = {
     TaskCategory.FAR_FIELD_DEVICE: frozenset(
         {Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.PAIRED_WER_DELTA}
     ),
-    TaskCategory.NOISE_REVERB: frozenset({Metric.WER_DEGRADATION_GRID}),
+    TaskCategory.NOISE_REVERB: frozenset(
+        {Metric.WER_DEGRADATION_GRID, Metric.NOISY_LITERAL_WER}
+    ),
     TaskCategory.AEC_DOUBLE_TALK: frozenset(
         {
             Metric.ERLE_DB,
@@ -1184,7 +1275,10 @@ def _receipt_for(
     key = f"{dataset.dataset_id}/{artifact.artifact_id}"
     if artifact.checksum is not None:
         _validate_checksum(artifact.checksum)
-        if artifact.integrity is not IntegrityKind.MDC_API_SHA256:
+        if artifact.integrity not in {
+            IntegrityKind.MDC_API_SHA256,
+            IntegrityKind.LOCAL_SHA256_RECEIPT,
+        }:
             return artifact.checksum
     try:
         receipt = receipts[key]
@@ -1205,11 +1299,14 @@ def _receipt_for(
         if artifact.checksum.algorithm is not ChecksumAlgorithm.SHA256:
             raise MatrixError(f"{key} catalog pin must use sha256")
         if receipt.digest != artifact.checksum.digest:
-            raise MatrixError(f"{key} MDC API receipt does not match the catalog pin")
+            raise MatrixError(f"{key} receipt does not match the catalog pin")
+        source = artifact.checksum.source
+        if receipt.source != source:
+            source = f"{source}+{receipt.source}"
         return Checksum(
             ChecksumAlgorithm.SHA256,
             artifact.checksum.digest,
-            f"{artifact.checksum.source}+mdc-api",
+            source,
         )
     return receipt
 

@@ -2,9 +2,10 @@
 
 Architecture and evidence policy are recorded in
 [ADR-0098](adr/0098-separate-public-voice-evidence-and-bind-production-baseline.md)
-and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). Matrix v4 has
-eight metric-isolated tracks, 18 selectable sources, and 11 explicit
-exclusions.
+and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). The bounded
+short-command/noise fixture is recorded in
+[ADR-0117](adr/0117-add-public-short-command-noise-gate.md). Matrix v5 has eight
+metric-isolated tracks, 19 selectable sources, and 11 explicit exclusions.
 `tools.public_voice_eval_matrix` is a typed catalog and acquisition planner; it
 does not download, extract, or run any corpus.
 
@@ -13,7 +14,7 @@ does not download, extract, or run any corpus.
 | STT/accent | Common Voice 26, Common Voice SPS 4 English, SpeechOcean762, MInDS-14, HarperValleyBank, EdAcc test | literal/canonical WER and CER |
 | STOP | Speech Commands v0.02 test | precision, recall, confusions, false alarms |
 | Far field/device | DR-VCTK Small, AMI array evidence, paired AMI ES2004a close/far | absolute and paired WER delta |
-| Noise/reverb | RIRS_NOISES plus pinned speech | fixed-grid WER degradation |
+| Noise/reverb | RIRS_NOISES plus pinned speech; English Consistent Confusion Corpus v1.2 | fixed-grid WER degradation; ECCC noisy literal WER and documented confusions |
 | AEC/double-talk | Microsoft AEC synthetic pairs | ERLE/AECMOS, near-end loss, barge errors/latency |
 | Overlap/turns | AMI manual timing | overlap WER, early cuts, delay, backchannels |
 | Spoken intent | MInDS-14 | intent accuracy, separate from WER |
@@ -36,6 +37,11 @@ own `recipe_sha256` field. It contains no audio, literal reference, selected
 source identity, or local path. The root seed contributes to the receipt-hash
 domain; each source recipe separately records the seed its executable selector
 actually uses.
+
+Matrix v5 redigests only this lock's root `matrix_version` and
+`recipe_sha256`; its four source recipes and 96 slots are unchanged. Existing
+private corpora prepared against the earlier root digest must be regenerated or
+will fail closed at receipt validation.
 
 | Source | Exact acquisition binding | Fixture selection |
 |---|---|---|
@@ -111,6 +117,62 @@ MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
 Preserve private aggregate reports; this is after-PCM development evidence,
 not native capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or
 live evidence.
+
+## Public short-command/noise fixture
+
+The committed `tools/streaming_stt/public-command-noise-v1.lock.json` binds the
+exact official Google Speech Commands v0.02 test archive, English Consistent
+Confusion Corpus v1.2 archive, transform, selection, license, counts, and output
+format. The preparer reads both archives directly without extracting them and
+publishes a new private schema-v4 corpus outside Git. Inputs must be canonical,
+owner-private, mode-0600 regular files with one link; the output must not exist
+and must have no Git ancestor:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.prepare_public_command_noise_corpus \
+  --speech-commands-archive /absolute/private/speech_commands_test_set_v0.02.tar.gz \
+  --eccc-archive /absolute/private/EnglishCCC_v1.2.zip \
+  --output-dir /absolute/private/new-public-command-noise-v1 \
+  --accept-term CC-BY-4.0
+```
+
+Success prints only aggregate counts and hashes. The new mode-0700 directory
+contains 57 mode-0600 f32le clips, `corpus.json`, and
+`preparation-receipt.json`: 26 command positives, 26 non-silence command
+negatives, five silence cases, and 47 literal transcript assertions. The
+receipt contains no local paths, archive members, source speakers, selected
+ECCC rows, or per-case transcript text. The private corpus necessarily contains
+literal references for scoring.
+
+Run each receipt-bound model sequentially and request all six aggregate strata.
+Use a fresh scratch and output path for every cell:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.streaming_stt_eval \
+  --worker-manifest /absolute/private/candidate/worker-manifest.json \
+  --corpus /absolute/private/new-public-command-noise-v1/corpus.json \
+  --scratch-root /absolute/private/new-candidate-command-scratch \
+  --output /absolute/private/new-candidate-command-report.json \
+  --repeats 1 --chunk-samples 1600 --partial-interval-ms 200 \
+  --tail-padding-samples 0 --pace burst \
+  --stratum-tag command-positive --stratum-tag command-negative \
+  --stratum-tag gsc --stratum-tag eccc \
+  --stratum-tag speech-negative --stratum-tag silence
+```
+
+For the schema-v4 Zipformer control only, a separate
+`--tail-padding-samples 16000` cell supplies the one second of trailing zero
+context needed by short isolated clips. It is a flush/context diagnostic: the
+adapter does not call the native endpoint API, and tail compute is divided by
+source-only duration. Do not interpret its endpoint or RTF values as a live
+comparison. ECCC has no paired clean decode, so report its literal noisy WER
+and documented command-confusion metrics rather than a clean/noisy delta.
 
 ## Common Voice spontaneous English P0
 

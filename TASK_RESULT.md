@@ -1,83 +1,112 @@
 Valid until: main advances beyond this task's landing commit — then treat as
 history.
 
-# Task result — stock Moonshine external endpoint
+# Task result — public short-command/noise gate
 
 ## Outcome
 
-Added a receipt-bound, opt-in schema-v7 benchmark for the only safe stock
-Moonshine Voice 0.1.0 VAD-bypass path: externally presegmented complete PCM,
-exact threshold `+0.0`, 1,280-sample chunks, a 500 ms partial cadence, zero
-caller tail, and 2,560-sample authoritative batch alignment. The adapter
-verifies the exact native stream-free ABI and zero return code before one
-complete-input batch final. Worker, supervisor, adapter, manifest, and
-evaluator independently reject geometry drift.
+Added the first deterministic public gate that scores Speaker's short-command
+failure mode directly. Public matrix v5 now has 8 tracks, 19 selectable sources,
+and 11 exclusions; it uses the official Google Speech Commands v0.02 test
+archive and adds the Sheffield English Consistent Confusion Corpus v1.2. The
+existing 96-case conversation lock was redigested at matrix v5 without changing
+its four source recipes or slots.
 
-The profile is rejected for live use by ADR-0116. Legacy schema v2 is
-unchanged, and no production dependency, setup selector, `core/` path,
-configuration default, or `./live.sh` behavior changed. The transcript-free
-receipt is `docs/evidence/2026-08-02-moonshine-external-endpoint.json`.
+The new no-download preparer publishes one private schema-v4 corpus with 57
+isolated clips: 26 command positives, 26 non-silence command negatives, and five
+silence cases. Positive and forbidden command targets are normalized,
+duplicate-free, disjoint, and reference-consistent at both writer and loader
+boundaries. Aggregate metrics distinguish final and partial recall, target
+precision, target-pair and case false positives, documented confusions, silence,
+and false-positive clips per monitored negative audio hour.
 
-## Corrected native design
+No runtime model, setup selector, `core/` path, `./live.sh`, enrollment rule,
+agent tool, or default changed. ADR-0117 retains both evaluated recognizers as
+development comparators and rejects default promotion.
 
-The initial internal/external pair was discarded after exact v0.1.0 source
-review. Stock internal VAD uses a process-global recurrent Silero instance that
-is not reset per stream, and its 512-aligned segments can lose up to 1,279
-samples at the streaming model's 1,280-sample boundary. Whole-input padding
-does not repair those per-segment losses. Forced updates also decode the whole
-growing segment again, so the initial 80 ms cadence timed out on a 16.2-second
-clip.
+## Exact corpus evidence
 
-Schema v7 therefore admits external-presegmented threshold-zero input only.
-Threshold zero bypasses Silero and creates one whole-input segment; padding to
-2,560 makes that segment exact for both the 512- and 1,280-sample stages. A
-direct native free is necessary because stock Python `Stream.close()` ignores
-the C return code. The A-B-A native smoke repeated A's final and partial
-sequences exactly after B.
+- Corpus manifest: 57 cases, 928,726 samples/58.045375 seconds, SHA-256
+  `50ec2c1ec7ad7ef2ca58d56d3330ca1a496db3784b78d41be9c8804413c552b9`.
+- Preparation receipt: SHA-256
+  `bf6cf442e4fb02e489dc7ceef763df3b39c1a4ef2178a5f8f2d2dab664517ac2`;
+  PCM set `b0eeb32c314b5d9b4078fa640331378f8d9e31372436aca178dfdef4c7fbadd4`.
+- Recipe lock: SHA-256
+  `1ae5a5845a70b69aa7e1d32e6f799566e2c715f8202b2d86760a6cef73d51564`;
+  source set `3f74cabd5b827ef2c4ef7afc628b3ce0eb5e237fe672d1555b1357940566d246`.
+- The real preparation completed twice deterministically; the fresh audited run
+  published all 57 cases in 6.4 seconds with identical hashes.
+- Aggregate-only committed evidence is
+  `docs/evidence/2026-08-02-public-command-noise.json`. It contains no selected
+  speaker/member identity, local path, per-case transcript, or model output row.
 
-## Real candidate evidence
+## Real model findings
 
-- Exact external manifest SHA-256: `3e49e9c02899266a03a301973b6b0a4ec0dd61cf68559ea7ee101cdfc91882ab`.
-- The 14-case, 136.615-second MInDS-14 burst had WER/CER 0.8750/0.8373,
-  candidate-call RTF 0.9950, and only 10 nonempty known-speech finals.
-- Finalization p50/p95 was 608.292/4,906.783 ms; seven cases had no stable
-  partial; maximum reported RSS was 1,634.965 MiB.
-- A fresh legacy control with identical 1,280-sample/500 ms geometry had
-  WER/CER 0.6685/0.6342, RTF 0.2971, all 14 finals nonempty, finalization
-  p50/p95 0.918/1.496 ms, no missing stable partial, and 1,094.664 MiB RSS.
-- Both reports bind the same artifact set, runtime receipt, worker, source
-  bundle, corpus, config geometry, and empty stderr. They are aggregate-only;
-  no transcript rows, audio paths, or identities are committed.
+Faster-Whisper Small ran on CUDA float16 with beam 5 and final-only decoding.
+Its current-source report is
+`4aed945464d51718512ce799bf76f2428f058cfa2fd0c75b5e314d17fdd095e3`:
 
-The external profile regressed WER by 0.2065, consumed 3.349 times the
-candidate-call compute, added 540.301 MiB reported RSS, and introduced four
-empty known-speech finals. Paced and repeated cells were stopped after this
-decisive burst rejection.
+- Google Speech Commands: WER 0.10, 18/20 command recall, zero monitored command
+  false positives; four of five silence clips had non-command text.
+- ECCC: literal WER 1.4074, 1/6 requested commands, and 11/21 documented command
+  confusions on negative targets.
+- Overall: WER 0.8511, 19/26 command recall, target precision 0.6333, and 11/31
+  monitored negative-case false positives. RTF was 0.0254 after PCM; there were
+  no partials, so this is not streaming or endpoint evidence.
+
+The production GigaSpeech Zipformer CPU control first ran with its legacy zero
+tail and emitted no final for any of the 20 clean commands. The retained
+current-source diagnostic report is
+`f35eafac6ecb7e857f847cc3ef854153608303728f2a2fa83f6eaacbb68d73ce`.
+One legal 16,000-sample zero tail then supplied enough context to clear its
+configured 0.8-second rule-2 silence. The current-source report is
+`10848d74f10379512ca7c2e7342c2ea450b79bac811f2b54ed3ad0a309a69b49`:
+
+- Google Speech Commands: WER 0.20, 16/20 command recall, zero monitored command
+  false positives, and empty finals on all five silence clips.
+- ECCC: literal WER 1.2593, 1/6 requested commands, and 0/21 documented command
+  confusions on negative targets.
+- Overall: WER 0.8085, 17/26 command recall, target precision 1.0, and 0/31
+  monitored negative-case false positives. Source-only-denominator RTF was
+  0.1038 with 76 partial events.
+
+The Zipformer adapter never calls the native endpoint API; it finalizes after
+declared input. Tail compute is divided by source-only duration. Its padded RTF,
+partials, and finalization therefore describe a short-clip context diagnostic,
+not live endpoint latency or a fair latency comparison with Faster-Whisper.
 
 ## Verification
 
-- Integrated focused manifest/provision/adapter/worker/supervisor/evaluator
-  gate: 326 passed, 2 real-model tests deselected.
-- Exact external A-B-A worker smoke: 1 passed in 8.70 seconds.
-- Independent final code/native audit: no correctness, isolation, or privacy
-  blockers; candidate rejection and documentation were required.
-- Split-condition non-real gate: 7,489 low-priority broad passes plus all 31
-  condition-sensitive reruns, for 7,520 passing checks; 14 skipped, 24
-  model-only deselected, and 11 warnings. The reruns used normal logging,
-  repository-lock mode 600, and isolated async-loop timing.
-- APM/DTD regression: 6 passed.
-- Ruff, `git diff --check`, evidence JSON parsing, and committed/private receipt
-  hash-and-size binding checks passed at the final landing gate.
+- Public command/noise focused split: 235 passed together; the pre-existing
+  timestamp-sensitive bounded-read mutation test passed 1/1 in isolation.
+- Matrix-v5 lock/materializer focused rerun (six files): 93 passed; the full
+  documented fixture suite is covered by the repository-wide pass below.
+- Repository-wide non-model split: 7,566 low-priority broad passes plus three
+  exact-condition passes (logging enabled, repository lock mode 0600, and the
+  bounded-read race isolated); 13 skipped, 24 model-only deselected, 11 known
+  warnings. Effective total: 7,569 passing checks.
+- Required APM/double-talk regression: 6 passed.
+- Ruff, `git diff --check`, JSON parsing, mode checks, report/receipt hash and
+  size checks, and STATUS's 100-line limit passed.
+- Two independent final audits found no remaining code, metric, privacy,
+  documentation, or evidence mismatch. All 63 evaluator-file bindings across
+  the three final reports match current source files.
 
 ## Limits and next work
 
-This is CPU-only after-PCM benchmark evidence. It does not execute Speaker's
-endpoint, microphone capture, VAD quality validation, AEC, barge-in,
-enrollment, commands, agent tools, device hardware, or live conversation. The
-public corpus has zero command attempts and is not an adoption gate.
+This is after-PCM isolated-word development evidence. It does not validate
+microphone capture, VAD, native endpointing, AEC, barge-in, open-speaker STOP,
+enrollment or multi-voice identity, agent tools, device latency, natural
+conversation, or training disjointness. ECCC has no paired clean decode and is
+not a command corpus; its literal noisy WER and documented confusions must stay
+separate from clean/noisy degradation claims.
 
-Do not revive stock internal VAD as a causal control. A future pair needs a
-receipt-bound native patch that resets Silero per stream and pads every VAD
-segment, or a deliberately fresh process per case. The next data work is the
-bounded mini Speech Commands and ECCC command/noise slice, followed later by
-Paul's fresh exact recordings and live open-speaker validation.
+The preparer checks that output is outside Git before its bounded archive pass;
+a concurrent external `git init` can change that classification before
+publication, although descriptor binding, exclusive creation, and private modes
+still prevent redirection or overwrite. Systemic writer-level hardening can
+close that shared residual later.
+
+Next, collect fresh owner target and negative phrases, then use this gate to
+evaluate noise-robust model/front-end changes before a separate `./live.sh`
+open-speaker validation. Do not promote a model from this corpus alone.

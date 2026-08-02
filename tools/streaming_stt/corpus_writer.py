@@ -30,10 +30,13 @@ _SAFE_SIDECAR_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PUBLIC_PROVENANCE_KIND = "public-voice-v1"
 _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND = "private-diagnostic-v1"
+_PUBLIC_COMMAND_NOISE_PROVENANCE_KIND = "public-command-noise-v1"
 _SCHEMA_BY_PROVENANCE_KIND = {
     _PUBLIC_PROVENANCE_KIND: 2,
     _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND: 3,
+    _PUBLIC_COMMAND_NOISE_PROVENANCE_KIND: 4,
 }
+_PREPARATION_RECEIPT_FILENAME = "preparation-receipt.json"
 _MAX_CASES = 512
 _MAX_PURPOSE_CHARS = 512
 _MAX_REFERENCE_CHARS = 4096
@@ -58,6 +61,8 @@ class CorpusWriteCase:
     reference: str = field(repr=False)
     tags: tuple[str, ...]
     commands: tuple[str, ...] = field(default=(), repr=False)
+    assertion: str = "transcript"
+    forbidden_commands: tuple[str, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,18 @@ class _WrittenPrivateFile:
     snapshot: tuple[int, int, int, int, int, int, int, int, int]
     size_bytes: int
     sha256: str
+
+
+def _contains_tokens(
+    tokens: tuple[str, ...],
+    target: tuple[str, ...],
+) -> bool:
+    if not target or len(target) > len(tokens):
+        return False
+    return any(
+        tokens[index : index + len(target)] == target
+        for index in range(len(tokens) - len(target) + 1)
+    )
 
 
 def _identity(metadata: os.stat_result) -> tuple[int, int, int]:
@@ -368,6 +385,7 @@ def _preflight(
         or _SHA256_RE.fullmatch(provenance.source_set_sha256) is None
     ):
         raise CorpusWriterError()
+    schema_version = _SCHEMA_BY_PROVENANCE_KIND[provenance.kind]
     prepared_rows: list[CorpusWriteCase] = []
     total_bytes = 0
     identifiers: list[str] = []
@@ -381,6 +399,33 @@ def _preflight(
                 break
             if index >= _MAX_CASES:
                 raise CorpusWriterError()
+            commands_valid = (
+                isinstance(case, CorpusWriteCase)
+                and isinstance(case.commands, tuple)
+                and len(case.commands) <= 16
+                and all(
+                    isinstance(command, str)
+                    and command
+                    and len(command) <= 128
+                    and normalize(command)
+                    for command in case.commands
+                )
+                and len(set(case.commands)) == len(case.commands)
+            )
+            forbidden_commands_valid = (
+                isinstance(case, CorpusWriteCase)
+                and isinstance(case.forbidden_commands, tuple)
+                and len(case.forbidden_commands) <= 16
+                and all(
+                    isinstance(command, str)
+                    and command
+                    and len(command) <= 128
+                    and normalize(command)
+                    for command in case.forbidden_commands
+                )
+                and len(set(case.forbidden_commands))
+                == len(case.forbidden_commands)
+            )
             if (
                 not isinstance(case, CorpusWriteCase)
                 or not isinstance(case.case_id, str)
@@ -392,8 +437,6 @@ def _preflight(
                 or len(case.audio_bytes) > MAX_PCM_BYTES
                 or not isinstance(case.reference, str)
                 or len(case.reference) > _MAX_REFERENCE_CHARS
-                or not case.reference.strip()
-                or not normalize(case.reference)
                 or not isinstance(case.tags, tuple)
                 or len(case.tags) > _MAX_TAGS
                 or any(
@@ -404,16 +447,56 @@ def _preflight(
                     for tag in case.tags
                 )
                 or len(set(case.tags)) != len(case.tags)
-                or not isinstance(case.commands, tuple)
-                or len(case.commands) > 16
-                or any(
-                    not isinstance(command, str)
-                    or not command
-                    or len(command) > 128
-                    or not normalize(command)
-                    for command in case.commands
+                or not commands_valid
+                or not forbidden_commands_valid
+            ):
+                raise CorpusWriterError()
+            normalized_commands = tuple(tuple(normalize(value)) for value in case.commands)
+            normalized_forbidden = tuple(
+                tuple(normalize(value)) for value in case.forbidden_commands
+            )
+            reference_tokens = tuple(normalize(case.reference))
+            if schema_version in {2, 3}:
+                if (
+                    case.assertion != "transcript"
+                    or case.forbidden_commands
+                    or not case.reference.strip()
+                    or not normalize(case.reference)
+                ):
+                    raise CorpusWriterError()
+            elif (
+                case.assertion not in {"transcript", "speech_negative", "silence"}
+                or len(set(normalized_commands)) != len(normalized_commands)
+                or len(set(normalized_forbidden)) != len(normalized_forbidden)
+                or set(normalized_commands).intersection(normalized_forbidden)
+                or (
+                    case.assertion == "transcript"
+                    and (
+                        not case.reference.strip()
+                        or not reference_tokens
+                        or not (case.commands or case.forbidden_commands)
+                        or any(
+                            not _contains_tokens(reference_tokens, target)
+                            for target in normalized_commands
+                        )
+                        or any(
+                            _contains_tokens(reference_tokens, target)
+                            for target in normalized_forbidden
+                        )
+                    )
                 )
-                or len(set(case.commands)) != len(case.commands)
+                or (
+                    case.assertion == "speech_negative"
+                    and (
+                        case.reference != ""
+                        or case.commands
+                        or not case.forbidden_commands
+                    )
+                )
+                or (
+                    case.assertion == "silence"
+                    and (case.reference != "" or case.commands)
+                )
             ):
                 raise CorpusWriterError()
             total_bytes += len(case.audio_bytes)
@@ -466,6 +549,16 @@ def _preflight(
         except Exception:
             raise CorpusWriterError() from None
         prepared_sidecars = tuple(sorted(sidecar_rows))
+    if schema_version == 4:
+        preparation_receipt = dict(prepared_sidecars).get(
+            _PREPARATION_RECEIPT_FILENAME
+        )
+        if (
+            preparation_receipt is None
+            or hashlib.sha256(preparation_receipt).hexdigest()
+            != provenance.metadata_sha256
+        ):
+            raise CorpusWriterError()
     return prepared, prepared_sidecars
 
 
@@ -481,18 +574,21 @@ def _serialize_manifest(
     rows: list[dict[str, object]] = []
     for case in cases:
         raw = case.audio_bytes
-        rows.append(
-            {
-                "id": case.case_id,
-                "file": f"{case.case_id}.f32le",
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "samples": len(raw) // 4,
-                "expected_text": case.reference,
-                "assertion": "transcript",
-                "commands": list(case.commands),
-                "tags": list(case.tags),
-            }
-        )
+        row: dict[str, object] = {
+            "id": case.case_id,
+            "file": f"{case.case_id}.f32le",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "samples": len(raw) // 4,
+            "expected_text": case.reference,
+            "assertion": (
+                case.assertion if schema_version == 4 else "transcript"
+            ),
+            "commands": list(case.commands),
+            "tags": list(case.tags),
+        }
+        if schema_version == 4:
+            row["forbidden_commands"] = list(case.forbidden_commands)
+        rows.append(row)
     try:
         payload = (
             json.dumps(

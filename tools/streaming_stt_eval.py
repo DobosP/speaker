@@ -1014,13 +1014,24 @@ def _mark_endpoint_deadline_metrics_not_applicable(
 
 def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
     case_set = [
-        {
-            "sha256": case.sha256,
-            "samples": case.samples,
-            "assertion": case.assertion,
-            "commands": len(case.commands),
-            "tags": list(case.tags),
-        }
+        (
+            {
+                "sha256": case.sha256,
+                "samples": case.samples,
+                "assertion": case.assertion,
+                "commands": len(case.commands),
+                "forbidden_commands": len(case.forbidden_commands),
+                "tags": list(case.tags),
+            }
+            if corpus.schema_version == 4
+            else {
+                "sha256": case.sha256,
+                "samples": case.samples,
+                "assertion": case.assertion,
+                "commands": len(case.commands),
+                "tags": list(case.tags),
+            }
+        )
         for case in corpus.cases
     ]
     binding: dict[str, object] = {
@@ -1034,7 +1045,7 @@ def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
         if corpus.provenance is not None:
             raise ValueError
         return binding
-    if corpus.schema_version not in {2, 3} or corpus.provenance is None:
+    if corpus.schema_version not in {2, 3, 4} or corpus.provenance is None:
         raise ValueError
     binding.update(
         {

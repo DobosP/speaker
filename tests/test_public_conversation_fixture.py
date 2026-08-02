@@ -286,7 +286,7 @@ def test_committed_lock_binds_four_sources_and_all_96_abstract_slots():
     lock = fixture.load_fixture_lock()
 
     assert lock.recipe_sha256 == (
-        "256d453166ad974a39ec6bf9a3b2073a1ed033e0b7e194c8a14d5acd331173eb"
+        "7a35945d20bb1e91f251edac155d126ca6cb8abe44880e359be5725f48ca212e"
     )
     assert tuple(item.source_id for item in lock.sources) == fixture.SOURCE_IDS
     assert tuple(item.dataset_id for item in lock.sources) == fixture.DATASET_IDS

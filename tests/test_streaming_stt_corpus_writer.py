@@ -9,7 +9,12 @@ import struct
 
 import pytest
 
-from tools.streaming_stt.corpus import CorpusError, CorpusProvenance, load_corpus
+from tools.streaming_stt.corpus import (
+    CorpusError,
+    CorpusProvenance,
+    load_corpus,
+    verify_corpus_snapshot,
+)
 from tools.streaming_stt import corpus_writer
 
 
@@ -29,6 +34,44 @@ def _case(case_id: str = "speaker-01") -> corpus_writer.CorpusWriteCase:
         audio_bytes=struct.pack("<ffff", 0.0, 0.25, -0.25, 0.0),
         reference="a spontaneous answer",
         tags=("public-voice", "spontaneous-en"),
+    )
+
+
+def _command_provenance(receipt: bytes) -> CorpusProvenance:
+    return CorpusProvenance(
+        kind="public-command-noise-v1",
+        suite="short-command-noise",
+        manifest_sha256="d" * 64,
+        metadata_sha256=hashlib.sha256(receipt).hexdigest(),
+        source_set_sha256="e" * 64,
+    )
+
+
+def _command_cases() -> tuple[corpus_writer.CorpusWriteCase, ...]:
+    return (
+        replace(
+            _case("positive"),
+            reference="turn on the light",
+            commands=("turn on",),
+            forbidden_commands=("turn off",),
+        ),
+        replace(
+            _case("speech-negative"),
+            reference="",
+            assertion="speech_negative",
+            forbidden_commands=("turn on", "turn off"),
+        ),
+        replace(
+            _case("transcript-negative"),
+            reference="the dog is barking",
+            forbidden_commands=("dark",),
+        ),
+        replace(
+            _case("silence"),
+            reference="",
+            assertion="silence",
+            forbidden_commands=("turn on", "turn off"),
+        ),
     )
 
 
@@ -89,6 +132,186 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
     )
     with pytest.raises(CorpusError):
         load_corpus(destination / "corpus.json")
+
+
+def test_public_command_noise_schema_v4_binds_receipt_and_assertion_fields(
+    tmp_path: Path,
+):
+    destination = tmp_path / "command-noise-corpus"
+    receipt = b'{"schema_version":1,"kind":"public-command-noise"}\n'
+    provenance = _command_provenance(receipt)
+
+    loaded = corpus_writer.publish_private_corpus(
+        cases=_command_cases(),
+        provenance=provenance,
+        output_dir=destination,
+        purpose="bounded public short-command and noise evaluation",
+        sidecars={"preparation-receipt.json": receipt},
+    )
+
+    assert loaded.schema_version == 4
+    assert loaded.provenance == provenance
+    assert [case.assertion for case in loaded.cases] == [
+        "transcript",
+        "speech_negative",
+        "transcript",
+        "silence",
+    ]
+    assert loaded.cases[0].commands == ("turn on",)
+    assert loaded.cases[0].forbidden_commands == ("turn off",)
+    assert loaded.cases[1].expected_text == ""
+    assert loaded.cases[1].commands == ()
+    assert loaded.cases[1].forbidden_commands == ("turn on", "turn off")
+    assert loaded.cases[2].commands == ()
+    assert loaded.cases[2].forbidden_commands == ("dark",)
+    verify_corpus_snapshot(loaded)
+
+    payload = json.loads((destination / "corpus.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 4
+    assert [row["assertion"] for row in payload["cases"]] == [
+        "transcript",
+        "speech_negative",
+        "transcript",
+        "silence",
+    ]
+    assert all("forbidden_commands" in row for row in payload["cases"])
+    assert hashlib.sha256(
+        (destination / "preparation-receipt.json").read_bytes()
+    ).hexdigest() == payload["provenance"]["metadata_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("case", "receipt_mode"),
+    (
+        (
+            replace(
+                _case(),
+                assertion="silence",
+                reference="",
+                commands=("turn on",),
+            ),
+            "valid",
+        ),
+        (_case(), "valid"),
+        (
+            replace(
+                _case(),
+                assertion="speech_negative",
+                reference="",
+                forbidden_commands=(),
+            ),
+            "valid",
+        ),
+        (
+            replace(
+                _case(),
+                assertion="speech_negative",
+                reference="",
+                commands=("turn on",),
+                forbidden_commands=("turn off",),
+            ),
+            "valid",
+        ),
+        (
+            replace(
+                _case(),
+                commands=("Turn on!",),
+                forbidden_commands=("turn-on",),
+            ),
+            "valid",
+        ),
+        (
+            replace(
+                _case(),
+                reference="turn on the light",
+                commands=("turn off",),
+            ),
+            "valid",
+        ),
+        (
+            replace(
+                _case(),
+                reference="turn on the light",
+                forbidden_commands=("turn on",),
+            ),
+            "valid",
+        ),
+        (_command_cases()[0], "missing"),
+        (_command_cases()[0], "mismatch"),
+    ),
+)
+def test_schema_v4_invalid_assertion_or_receipt_contract_is_preflight_rejected(
+    tmp_path: Path,
+    case: corpus_writer.CorpusWriteCase,
+    receipt_mode: str,
+):
+    destination = tmp_path / "invalid-command-noise"
+    receipt = b'{"schema_version":1}\n'
+    sidecars = (
+        None
+        if receipt_mode == "missing"
+        else {
+            "preparation-receipt.json": (
+                b'{"schema_version":2}\n'
+                if receipt_mode == "mismatch"
+                else receipt
+            )
+        }
+    )
+
+    with pytest.raises(corpus_writer.CorpusWriterError):
+        corpus_writer.publish_private_corpus(
+            cases=(case,),
+            provenance=_command_provenance(receipt),
+            output_dir=destination,
+            purpose="invalid schema v4 contract",
+            sidecars=sidecars,
+        )
+
+    assert not destination.exists()
+
+
+def test_schema_v4_reference_target_binding_uses_normalized_token_boundaries(
+    tmp_path: Path,
+):
+    receipt = b'{"schema_version":1}\n'
+    case = replace(
+        _case("token-boundary"),
+        reference="Only proceed now.",
+        commands=("PROCEED!",),
+        forbidden_commands=("on", "off"),
+    )
+
+    loaded = corpus_writer.publish_private_corpus(
+        cases=(case,),
+        provenance=_command_provenance(receipt),
+        output_dir=tmp_path / "token-boundary-command-noise",
+        purpose="normalized command target boundary",
+        sidecars={"preparation-receipt.json": receipt},
+    )
+
+    assert loaded.cases[0].commands == ("PROCEED!",)
+    assert loaded.cases[0].forbidden_commands == ("on", "off")
+
+
+def test_legacy_schema_rows_keep_the_exact_field_set_and_ignore_no_new_defaults():
+    rows, _payload = corpus_writer._serialize_manifest(
+        (_case(),),
+        _provenance(),
+        "legacy byte compatibility",
+    )
+
+    assert set(rows[0]) == {
+        "id",
+        "file",
+        "sha256",
+        "samples",
+        "expected_text",
+        "assertion",
+        "commands",
+        "tags",
+    }
+    assert rows[0]["assertion"] == "transcript"
 
 
 def test_publication_preserves_explicit_command_targets(tmp_path: Path):

@@ -182,7 +182,15 @@ def _aggregate_metrics_for_cases(
     repeats: int,
     expected_case_indices: frozenset[int] | None = None,
 ) -> dict[str, object]:
-    """Reduce selected cases without exposing their text or identifiers."""
+    """Reduce selected cases without exposing their text or identifiers.
+
+    Schema-v4 target counters use ``(evaluation, target)`` pairs as their unit.
+    A target contributes at most once to each partial/final counter even when
+    it occurs in more than one hypothesis event. Case counters contribute at
+    most once per evaluation. Monitored negative audio has no positive command
+    and has at least one explicit forbidden target; this includes silence and
+    excludes unmonitored silence rows whose forbidden-target list is empty.
+    """
 
     selected_case_indices = (
         frozenset(range(len(corpus.cases)))
@@ -215,6 +223,23 @@ def _aggregate_metrics_for_cases(
     silence_nonempty_finals = 0
     command_attempts = 0
     command_hits = 0
+    positive_command_true_positives = 0
+    positive_command_false_negatives = 0
+    forbidden_final_false_positives = 0
+    forbidden_final_true_negatives = 0
+    negative_pair_false_positives = 0
+    negative_pair_true_negatives = 0
+    positive_command_confusion_hits = 0
+    partial_positive_hits = 0
+    positive_forbidden_partial_target_hits = 0
+    positive_forbidden_retracted_target_hits = 0
+    negative_forbidden_partial_target_hits = 0
+    negative_forbidden_retracted_target_hits = 0
+    negative_partial_case_false_positives = 0
+    negative_final_case_false_positives = 0
+    negative_final_case_true_negatives = 0
+    monitored_negative_evaluations_including_silence = 0
+    monitored_negative_audio_seconds_including_silence = 0.0
     final_by_case: dict[int, set[tuple[str, ...]]] = {}
     peak_rss = ready.resources.rss_mb
     peak_threads = ready.resources.threads
@@ -364,21 +389,79 @@ def _aggregate_metrics_for_cases(
         elif ready.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
             raise ValueError("missing native endpoint record")
         hypothesis = trace.final.text
+        hyp_tokens = tuple(normalize(hypothesis))
+        partial_token_rows = tuple(
+            tuple(normalize(event.text)) for event in trace.partials
+        )
         if case.assertion == "transcript":
             accuracy = _sum_accuracy(
                 accuracy,
                 _measure(((case.expected_text, hypothesis),)),
             )
-            hyp_tokens = tuple(normalize(hypothesis))
             for command in case.commands:
+                command_tokens = tuple(normalize(command))
                 command_attempts += 1
-                if _contains_tokens(hyp_tokens, tuple(normalize(command))):
+                final_hit = _contains_tokens(hyp_tokens, command_tokens)
+                if final_hit:
                     command_hits += 1
-        else:
+                if corpus.schema_version == 4:
+                    if final_hit:
+                        positive_command_true_positives += 1
+                    else:
+                        positive_command_false_negatives += 1
+                    partial_positive_hits += any(
+                        _contains_tokens(tokens, command_tokens)
+                        for tokens in partial_token_rows
+                    )
+        elif case.assertion == "silence":
             silence_nonempty_partials += sum(
                 _silence_hallucination(event.text) for event in trace.partials
             )
             silence_nonempty_finals += _silence_hallucination(hypothesis)
+
+        if corpus.schema_version == 4:
+            monitored_negative = not case.commands and bool(
+                case.forbidden_commands
+            )
+            negative_final_case_hit = False
+            negative_partial_case_hit = False
+            for command in case.forbidden_commands:
+                command_tokens = tuple(normalize(command))
+                final_hit = _contains_tokens(hyp_tokens, command_tokens)
+                partial_hit = any(
+                    _contains_tokens(tokens, command_tokens)
+                    for tokens in partial_token_rows
+                )
+                if final_hit:
+                    forbidden_final_false_positives += 1
+                    if case.commands:
+                        positive_command_confusion_hits += 1
+                else:
+                    forbidden_final_true_negatives += 1
+                if case.commands:
+                    positive_forbidden_partial_target_hits += partial_hit
+                    positive_forbidden_retracted_target_hits += (
+                        partial_hit and not final_hit
+                    )
+                elif monitored_negative:
+                    negative_forbidden_partial_target_hits += partial_hit
+                    negative_forbidden_retracted_target_hits += (
+                        partial_hit and not final_hit
+                    )
+                    negative_final_case_hit |= final_hit
+                    negative_partial_case_hit |= partial_hit
+                    if final_hit:
+                        negative_pair_false_positives += 1
+                    else:
+                        negative_pair_true_negatives += 1
+            if monitored_negative:
+                monitored_negative_evaluations_including_silence += 1
+                monitored_negative_audio_seconds_including_silence += (
+                    case.samples / _SAMPLE_RATE_HZ
+                )
+                negative_final_case_false_positives += negative_final_case_hit
+                negative_final_case_true_negatives += not negative_final_case_hit
+                negative_partial_case_false_positives += negative_partial_case_hit
 
         first, stable, churn, retractions = _stability(trace)
         if case.assertion == "transcript":
@@ -473,6 +556,131 @@ def _aggregate_metrics_for_cases(
             "rss_scope": "maximum_of_ready_and_final_samples_not_process_peak",
         },
     }
+    if corpus.schema_version == 4:
+        positive_total = (
+            positive_command_true_positives + positive_command_false_negatives
+        )
+        final_positive_predictions = (
+            positive_command_true_positives + forbidden_final_false_positives
+        )
+        negative_pair_total = (
+            negative_pair_false_positives + negative_pair_true_negatives
+        )
+        negative_final_case_total = (
+            negative_final_case_false_positives
+            + negative_final_case_true_negatives
+        )
+        result["accuracy"].update(
+            {
+                "positive_command_true_positives": (
+                    positive_command_true_positives
+                ),
+                "positive_command_false_negatives": (
+                    positive_command_false_negatives
+                ),
+                "positive_command_recall": (
+                    round(positive_command_true_positives / positive_total, 4)
+                    if positive_total
+                    else None
+                ),
+                "positive_partial_command_recall": (
+                    round(partial_positive_hits / positive_total, 4)
+                    if positive_total
+                    else None
+                ),
+                "forbidden_final_false_positives": (
+                    forbidden_final_false_positives
+                ),
+                "forbidden_final_true_negatives": forbidden_final_true_negatives,
+                "final_command_target_precision": (
+                    round(
+                        positive_command_true_positives
+                        / final_positive_predictions,
+                        4,
+                    )
+                    if final_positive_predictions
+                    else None
+                ),
+                "negative_pair_false_positives": negative_pair_false_positives,
+                "negative_pair_true_negatives": negative_pair_true_negatives,
+                "negative_pair_false_positive_rate": (
+                    round(negative_pair_false_positives / negative_pair_total, 4)
+                    if negative_pair_total
+                    else None
+                ),
+                "negative_pair_partial_false_positive_rate": (
+                    round(
+                        negative_forbidden_partial_target_hits
+                        / negative_pair_total,
+                        4,
+                    )
+                    if negative_pair_total
+                    else None
+                ),
+                "positive_command_confusion_hits": (
+                    positive_command_confusion_hits
+                ),
+                "partial_positive_hits": partial_positive_hits,
+                "positive_forbidden_partial_target_hits": (
+                    positive_forbidden_partial_target_hits
+                ),
+                "positive_forbidden_retracted_target_hits": (
+                    positive_forbidden_retracted_target_hits
+                ),
+                "negative_forbidden_partial_target_hits": (
+                    negative_forbidden_partial_target_hits
+                ),
+                "negative_forbidden_retracted_target_hits": (
+                    negative_forbidden_retracted_target_hits
+                ),
+                "negative_partial_case_false_positives": (
+                    negative_partial_case_false_positives
+                ),
+                "negative_partial_case_false_positive_rate": (
+                    round(
+                        negative_partial_case_false_positives
+                        / monitored_negative_evaluations_including_silence,
+                        4,
+                    )
+                    if monitored_negative_evaluations_including_silence
+                    else None
+                ),
+                "negative_final_case_false_positives": (
+                    negative_final_case_false_positives
+                ),
+                "negative_final_case_true_negatives": (
+                    negative_final_case_true_negatives
+                ),
+                "negative_final_case_false_positive_rate": (
+                    round(
+                        negative_final_case_false_positives
+                        / negative_final_case_total,
+                        4,
+                    )
+                    if negative_final_case_total
+                    else None
+                ),
+                "monitored_negative_evaluations_including_silence": (
+                    monitored_negative_evaluations_including_silence
+                ),
+                "monitored_negative_audio_seconds_including_silence": round(
+                    monitored_negative_audio_seconds_including_silence,
+                    6,
+                ),
+                "isolated_clip_lexical_false_positives_per_negative_audio_hour": (
+                    round(
+                        negative_final_case_false_positives
+                        / (
+                            monitored_negative_audio_seconds_including_silence
+                            / 3600.0
+                        ),
+                        4,
+                    )
+                    if monitored_negative_audio_seconds_including_silence
+                    else None
+                ),
+            }
+        )
     if endpoint_records:
         source_dropped = endpoint_source_offered - endpoint_source_consumed
         tail_unconsumed = endpoint_tail_declared - endpoint_tail_consumed

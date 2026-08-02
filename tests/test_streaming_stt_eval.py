@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -103,6 +104,107 @@ def _benchmark_fixture(tmp_path: Path) -> tuple[Path, Path]:
         ],
     )
     return manifest, corpus
+
+
+def _command_noise_corpus(tmp_path: Path):
+    receipt = b'{"schema_version":1,"kind":"command-noise-test"}\n'
+    audio = bytes(16_000 * 4)
+    cases = (
+        CorpusWriteCase(
+            case_id="positive-on",
+            audio_bytes=audio,
+            reference="turn on the light",
+            tags=("command-positive",),
+            commands=("turn on",),
+            forbidden_commands=("turn off",),
+        ),
+        CorpusWriteCase(
+            case_id="positive-off",
+            audio_bytes=audio,
+            reference="turn off the light",
+            tags=("command-positive",),
+            commands=("turn off",),
+            forbidden_commands=("turn on",),
+        ),
+        CorpusWriteCase(
+            case_id="speech-negative",
+            audio_bytes=audio,
+            reference="",
+            tags=("command-negative",),
+            assertion="speech_negative",
+            forbidden_commands=("turn on", "turn off"),
+        ),
+        CorpusWriteCase(
+            case_id="silence-negative",
+            audio_bytes=audio,
+            reference="",
+            tags=("command-negative", "silence"),
+            assertion="silence",
+            forbidden_commands=("turn on", "turn off"),
+        ),
+        CorpusWriteCase(
+            case_id="transcript-negative",
+            audio_bytes=audio,
+            reference="the dog is barking",
+            tags=("command-negative",),
+            forbidden_commands=("turn on",),
+        ),
+        CorpusWriteCase(
+            case_id="unmonitored-silence",
+            audio_bytes=audio,
+            reference="",
+            tags=("command-negative", "silence"),
+            assertion="silence",
+        ),
+    )
+    return publish_private_corpus(
+        cases=cases,
+        provenance=CorpusProvenance(
+            kind="public-command-noise-v1",
+            suite="short-command-noise",
+            manifest_sha256="c" * 64,
+            metadata_sha256=hashlib.sha256(receipt).hexdigest(),
+            source_set_sha256="d" * 64,
+        ),
+        output_dir=tmp_path / "command-noise-corpus",
+        purpose="deterministic aggregate command metric contract",
+        sidecars={"preparation-receipt.json": receipt},
+    )
+
+
+def _command_trace(
+    usage: ResourceUsage,
+    *,
+    partials: tuple[str, ...],
+    final: str,
+) -> CaseTrace:
+    return CaseTrace(
+        partials=tuple(
+            PartialEvent(
+                request_id="private-request",
+                seq=index,
+                text=text,
+                samples_seen=(index + 1) * 8_000,
+                elapsed_ms=(index + 1) * 100.0,
+                decode_ms=2.0,
+            )
+            for index, text in enumerate(partials)
+        ),
+        final=FinalEvent(
+            request_id="private-request",
+            seq=len(partials),
+            text=final,
+            samples_seen=16_000,
+            elapsed_ms=500.0,
+            finalization_ms=20.0,
+            compute_ms=10.0,
+            audio_seconds=1.0,
+            chunks=2,
+            deadline_misses=0,
+            max_backlog_ms=0.0,
+            resources=usage,
+        ),
+    )
 
 
 def _parakeet_config() -> ParakeetRealtimeEouConfig:
@@ -1511,6 +1613,233 @@ def test_metric_reducer_aggregates_nonzero_ordinary_final_padding(tmp_path):
 
     assert metrics["streaming"]["model_padding_total_samples"] == 2_400
     assert metrics["streaming"]["model_padding_max_samples"] == 2_400
+
+
+def test_schema_v4_command_metrics_use_exact_normalized_target_pairs(tmp_path):
+    corpus = _command_noise_corpus(tmp_path)
+    usage = ResourceUsage(rss_mb=10.0, threads=1, vram_mb=None)
+    ready = ReadyEvent(
+        model_id="aggregate-only-test",
+        manifest_sha256="a" * 64,
+        source_bundle_sha256="b" * 64,
+        adapter="fake-json-v1",
+        model_load_ms=5.0,
+        resources=usage,
+        runtime={"python": "3.12", "platform": "linux"},
+    )
+    records = (
+        RunRecord(
+            0,
+            0,
+            _command_trace(
+                usage,
+                partials=("TURN-OFF!", "turn on"),
+                final="please TURN ON now",
+            ),
+        ),
+        RunRecord(
+            1,
+            0,
+            _command_trace(
+                usage,
+                partials=("turn off", "turn on"),
+                final="turn on",
+            ),
+        ),
+        RunRecord(
+            2,
+            0,
+            _command_trace(
+                usage,
+                partials=("turn off", "turn on"),
+                final="turn on then turn off",
+            ),
+        ),
+        RunRecord(
+            3,
+            0,
+            _command_trace(
+                usage,
+                partials=("turn off",),
+                final="",
+            ),
+        ),
+        RunRecord(
+            4,
+            0,
+            _command_trace(
+                usage,
+                partials=(),
+                final="turn on",
+            ),
+        ),
+        RunRecord(
+            5,
+            0,
+            _command_trace(
+                usage,
+                partials=(),
+                final="turn on",
+            ),
+        ),
+    )
+
+    metrics = aggregate_metrics(
+        corpus,
+        records,
+        ready,
+        repeats=1,
+        stratum_tags=("command-positive", "command-negative"),
+    )
+
+    accuracy = metrics["accuracy"]
+    assert accuracy["command_attempts"] == 2
+    assert accuracy["command_hits"] == 1
+    assert accuracy["command_recall"] == 0.5
+    assert accuracy["positive_command_true_positives"] == 1
+    assert accuracy["positive_command_false_negatives"] == 1
+    assert accuracy["positive_command_recall"] == 0.5
+    assert accuracy["positive_partial_command_recall"] == 1.0
+    assert accuracy["forbidden_final_false_positives"] == 4
+    assert accuracy["forbidden_final_true_negatives"] == 3
+    assert accuracy["final_command_target_precision"] == 0.2
+    assert accuracy["negative_pair_false_positives"] == 3
+    assert accuracy["negative_pair_true_negatives"] == 2
+    assert accuracy["negative_pair_false_positive_rate"] == 0.6
+    assert accuracy["negative_pair_partial_false_positive_rate"] == 0.6
+    assert accuracy["positive_command_confusion_hits"] == 1
+    assert accuracy["partial_positive_hits"] == 2
+    assert accuracy["positive_forbidden_partial_target_hits"] == 2
+    assert accuracy["positive_forbidden_retracted_target_hits"] == 1
+    assert accuracy["negative_forbidden_partial_target_hits"] == 3
+    assert accuracy["negative_forbidden_retracted_target_hits"] == 1
+    assert accuracy["negative_partial_case_false_positives"] == 2
+    assert accuracy["negative_partial_case_false_positive_rate"] == 0.6667
+    assert accuracy["negative_final_case_false_positives"] == 2
+    assert accuracy["negative_final_case_true_negatives"] == 1
+    assert accuracy["negative_final_case_false_positive_rate"] == 0.6667
+    assert accuracy["monitored_negative_evaluations_including_silence"] == 3
+    assert accuracy["monitored_negative_audio_seconds_including_silence"] == 3.0
+    assert (
+        accuracy[
+            "isolated_clip_lexical_false_positives_per_negative_audio_hour"
+        ]
+        == 2400.0
+    )
+    assert accuracy["silence_nonempty_partials"] == 1
+    assert accuracy["silence_nonempty_finals"] == 1
+
+    positive = metrics["strata"][1]["metrics"]["accuracy"]
+    negative_metrics = metrics["strata"][0]["metrics"]
+    negative = negative_metrics["accuracy"]
+    assert positive["positive_command_recall"] == 0.5
+    assert positive["positive_partial_command_recall"] == 1.0
+    assert positive["negative_pair_false_positive_rate"] is None
+    assert positive["negative_final_case_false_positive_rate"] is None
+    assert positive["monitored_negative_evaluations_including_silence"] == 0
+    assert positive["monitored_negative_audio_seconds_including_silence"] == 0.0
+    assert (
+        positive[
+            "isolated_clip_lexical_false_positives_per_negative_audio_hour"
+        ]
+        is None
+    )
+    assert negative["positive_command_recall"] is None
+    assert negative["positive_partial_command_recall"] is None
+    assert negative_metrics["evaluations"] == 4
+    assert negative["negative_pair_false_positive_rate"] == 0.6
+    assert negative["negative_pair_partial_false_positive_rate"] == 0.6
+    assert negative["negative_final_case_false_positive_rate"] == 0.6667
+    assert negative["negative_partial_case_false_positive_rate"] == 0.6667
+    assert negative["monitored_negative_evaluations_including_silence"] == 3
+    assert negative["monitored_negative_audio_seconds_including_silence"] == 3.0
+
+    binding = streaming_stt_eval._corpus_binding(corpus)
+    assert binding["schema_version"] == 4
+    assert binding["provenance"]["kind"] == "public-command-noise-v1"
+    assert binding["case_set_sha256"] == streaming_stt_eval._canonical_digest(
+        [
+            {
+                "sha256": case.sha256,
+                "samples": case.samples,
+                "assertion": case.assertion,
+                "commands": len(case.commands),
+                "forbidden_commands": len(case.forbidden_commands),
+                "tags": list(case.tags),
+            }
+            for case in corpus.cases
+        ]
+    )
+    encoded = json.dumps(metrics, sort_keys=True)
+    for private in ("turn on", "turn off", "positive-on", "private-request"):
+        assert private not in encoded
+
+
+def test_schema_v4_command_metrics_do_not_use_substring_matches(tmp_path):
+    receipt = b'{"schema_version":1}\n'
+    corpus = publish_private_corpus(
+        cases=(
+            CorpusWriteCase(
+                case_id="exact-token-boundary",
+                audio_bytes=bytes(16_000 * 4),
+                reference="turn on",
+                tags=("exact-token",),
+                commands=("turn on",),
+            ),
+        ),
+        provenance=CorpusProvenance(
+            kind="public-command-noise-v1",
+            suite="exact-command-token",
+            manifest_sha256="c" * 64,
+            metadata_sha256=hashlib.sha256(receipt).hexdigest(),
+            source_set_sha256="d" * 64,
+        ),
+        output_dir=tmp_path / "exact-token-corpus",
+        purpose="exact normalized token containment",
+        sidecars={"preparation-receipt.json": receipt},
+    )
+    usage = ResourceUsage(rss_mb=10.0, threads=1, vram_mb=None)
+    metrics = aggregate_metrics(
+        corpus,
+        (
+            RunRecord(
+                0,
+                0,
+                _command_trace(
+                    usage,
+                    partials=("return onward",),
+                    final="turning onward",
+                ),
+            ),
+        ),
+        ReadyEvent(
+            model_id="aggregate-only-test",
+            manifest_sha256="a" * 64,
+            source_bundle_sha256="b" * 64,
+            adapter="fake-json-v1",
+            model_load_ms=5.0,
+            resources=usage,
+            runtime={"python": "3.12", "platform": "linux"},
+        ),
+        repeats=1,
+    )
+
+    accuracy = metrics["accuracy"]
+    assert accuracy["positive_command_true_positives"] == 0
+    assert accuracy["positive_command_false_negatives"] == 1
+    assert accuracy["positive_command_recall"] == 0.0
+    assert accuracy["positive_partial_command_recall"] == 0.0
+    assert accuracy["partial_positive_hits"] == 0
+    assert accuracy["final_command_target_precision"] is None
+    assert accuracy["negative_pair_false_positive_rate"] is None
+    assert accuracy["negative_pair_partial_false_positive_rate"] is None
+    assert accuracy["negative_partial_case_false_positive_rate"] is None
+    assert (
+        accuracy[
+            "isolated_clip_lexical_false_positives_per_negative_audio_hour"
+        ]
+        is None
+    )
 
 
 def test_metric_reducer_reports_exact_native_endpoint_source_and_tail_accounting(

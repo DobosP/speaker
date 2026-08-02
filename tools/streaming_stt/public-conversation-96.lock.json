@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "public-conversation-fixture-lock-v1",
   "fixture_id": "public-conversation-96-v1",
-  "matrix_version": 4,
+  "matrix_version": 5,
   "selection_seed": "speaker-public-conversation-96-v1-2026-08-02",
   "sample_format": {
     "encoding": "f32le",
@@ -1159,5 +1159,5 @@
       "scoreability": "hard_wer"
     }
   ],
-  "recipe_sha256": "256d453166ad974a39ec6bf9a3b2073a1ed033e0b7e194c8a14d5acd331173eb"
+  "recipe_sha256": "7a35945d20bb1e91f251edac155d126ca6cb8abe44880e359be5725f48ca212e"
 }

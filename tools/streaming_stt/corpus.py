@@ -22,7 +22,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _ROOT_V1_FIELDS = {"schema_version", "purpose", "cases"}
 _ROOT_V2_FIELDS = {*_ROOT_V1_FIELDS, "provenance"}
 _ROOT_V3_FIELDS = _ROOT_V2_FIELDS
-_CASE_FIELDS = {
+_ROOT_V4_FIELDS = _ROOT_V2_FIELDS
+_LEGACY_CASE_FIELDS = {
     "id",
     "file",
     "sha256",
@@ -32,6 +33,7 @@ _CASE_FIELDS = {
     "commands",
     "tags",
 }
+_V4_CASE_FIELDS = {*_LEGACY_CASE_FIELDS, "forbidden_commands"}
 _PROVENANCE_FIELDS = {
     "kind",
     "suite",
@@ -41,6 +43,9 @@ _PROVENANCE_FIELDS = {
 }
 _PUBLIC_PROVENANCE_KIND = "public-voice-v1"
 _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND = "private-diagnostic-v1"
+_PUBLIC_COMMAND_NOISE_PROVENANCE_KIND = "public-command-noise-v1"
+_PREPARATION_RECEIPT_FILENAME = "preparation-receipt.json"
+_MAX_PREPARATION_RECEIPT_BYTES = 256 * 1024
 _MAX_CORPUS_MANIFEST_BYTES = 256 * 1024
 _MAX_CASES = 512
 _MAX_REFERENCE_CHARS = 4096
@@ -59,6 +64,7 @@ class CorpusCase:
     expected_text: str = field(repr=False)
     assertion: str
     commands: tuple[str, ...] = field(repr=False)
+    forbidden_commands: tuple[str, ...] = field(repr=False)
     tags: tuple[str, ...]
     audio_bytes: bytes = field(repr=False)
 
@@ -123,6 +129,18 @@ def _sha256(value: object) -> str:
     return value
 
 
+def _contains_tokens(
+    tokens: tuple[str, ...],
+    target: tuple[str, ...],
+) -> bool:
+    if not target or len(target) > len(tokens):
+        return False
+    return any(
+        tokens[index : index + len(target)] == target
+        for index in range(len(tokens) - len(target) + 1)
+    )
+
+
 def _provenance(value: object, *, schema_version: int) -> CorpusProvenance:
     if not isinstance(value, dict) or set(value) != _PROVENANCE_FIELDS:
         raise CorpusError()
@@ -130,6 +148,7 @@ def _provenance(value: object, *, schema_version: int) -> CorpusProvenance:
     expected_kind = {
         2: _PUBLIC_PROVENANCE_KIND,
         3: _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND,
+        4: _PUBLIC_COMMAND_NOISE_PROVENANCE_KIND,
     }.get(schema_version)
     if kind != expected_kind:
         raise CorpusError()
@@ -181,9 +200,13 @@ def _load_case(
     root: Path,
     value: object,
     *,
+    schema_version: int,
     remaining_bytes: int,
 ) -> CorpusCase:
-    if not isinstance(value, dict) or set(value) != _CASE_FIELDS:
+    expected_fields = (
+        _V4_CASE_FIELDS if schema_version == 4 else _LEGACY_CASE_FIELDS
+    )
+    if not isinstance(value, dict) or set(value) != expected_fields:
         raise CorpusError()
     case_id = _safe_id(value.get("id"))
     filename = value.get("file")
@@ -230,7 +253,12 @@ def _load_case(
     if (
         not isinstance(expected_text, str)
         or len(expected_text) > _MAX_REFERENCE_CHARS
-        or assertion not in {"transcript", "silence"}
+        or assertion
+        not in (
+            {"transcript", "speech_negative", "silence"}
+            if schema_version == 4
+            else {"transcript", "silence"}
+        )
     ):
         raise CorpusError()
     commands = _string_list(
@@ -238,19 +266,68 @@ def _load_case(
         maximum_items=16,
         maximum_chars=128,
     )
+    forbidden_commands = (
+        _string_list(
+            value.get("forbidden_commands"),
+            maximum_items=16,
+            maximum_chars=128,
+        )
+        if schema_version == 4
+        else ()
+    )
     tags = _string_list(
         value.get("tags"),
         maximum_items=32,
         maximum_chars=64,
         safe_ids=True,
     )
-    if (assertion == "transcript" and not expected_text.strip()) or (
-        assertion == "silence" and (expected_text != "" or commands)
-    ):
-        raise CorpusError()
-    if assertion == "transcript" and (
-        not normalize(expected_text)
-        or any(not normalize(command) for command in commands)
+    normalized_commands = tuple(tuple(normalize(value)) for value in commands)
+    normalized_forbidden = tuple(
+        tuple(normalize(value)) for value in forbidden_commands
+    )
+    reference_tokens = tuple(normalize(expected_text))
+    if schema_version == 4:
+        if (
+            any(not tokens for tokens in (*normalized_commands, *normalized_forbidden))
+            or len(set(normalized_commands)) != len(normalized_commands)
+            or len(set(normalized_forbidden)) != len(normalized_forbidden)
+            or set(normalized_commands).intersection(normalized_forbidden)
+            or (
+                assertion == "transcript"
+                and (
+                    not expected_text.strip()
+                    or not reference_tokens
+                    or not (commands or forbidden_commands)
+                    or any(
+                        not _contains_tokens(reference_tokens, target)
+                        for target in normalized_commands
+                    )
+                    or any(
+                        _contains_tokens(reference_tokens, target)
+                        for target in normalized_forbidden
+                    )
+                )
+            )
+            or (
+                assertion == "speech_negative"
+                and (expected_text != "" or commands or not forbidden_commands)
+            )
+            or (
+                assertion == "silence"
+                and (expected_text != "" or commands)
+            )
+        ):
+            raise CorpusError()
+    elif (
+        (assertion == "transcript" and not expected_text.strip())
+        or (assertion == "silence" and (expected_text != "" or commands))
+        or (
+            assertion == "transcript"
+            and (
+                not normalize(expected_text)
+                or any(not normalize(command) for command in commands)
+            )
+        )
     ):
         raise CorpusError()
     return CorpusCase(
@@ -261,6 +338,7 @@ def _load_case(
         expected_text=expected_text,
         assertion=str(assertion),
         commands=commands,
+        forbidden_commands=forbidden_commands,
         tags=tags,
         audio_bytes=raw,
     )
@@ -281,7 +359,7 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     if (
         not isinstance(value, dict)
         or type(value.get("schema_version")) is not int
-        or value.get("schema_version") not in {1, 2, 3}
+        or value.get("schema_version") not in {1, 2, 3, 4}
         or not isinstance(value.get("purpose"), str)
         or not str(value.get("purpose")).strip()
         or len(str(value.get("purpose"))) > 512
@@ -292,6 +370,7 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
         1: _ROOT_V1_FIELDS,
         2: _ROOT_V2_FIELDS,
         3: _ROOT_V3_FIELDS,
+        4: _ROOT_V4_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise CorpusError()
@@ -304,12 +383,28 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     if not isinstance(raw_cases, list) or not raw_cases or len(raw_cases) > _MAX_CASES:
         raise CorpusError()
     root = resolved.parent.resolve(strict=True)
+    if schema_version == 4:
+        try:
+            receipt = read_regular_bounded(
+                root / _PREPARATION_RECEIPT_FILENAME,
+                maximum_bytes=_MAX_PREPARATION_RECEIPT_BYTES,
+            )
+            if (
+                receipt.path.parent != root
+                or provenance is None
+                or hashlib.sha256(receipt.data).hexdigest()
+                != provenance.metadata_sha256
+            ):
+                raise CorpusError()
+        except BoundedReadError:
+            raise CorpusError() from None
     loaded_cases: list[CorpusCase] = []
     total = 0
     for item in raw_cases:
         case = _load_case(
             root,
             item,
+            schema_version=schema_version,
             remaining_bytes=MAX_CORPUS_BYTES - total,
         )
         loaded_cases.append(case)
@@ -340,6 +435,19 @@ def verify_corpus_snapshot(corpus: LoadedCorpus) -> None:
         )
         if hashlib.sha256(manifest.data).hexdigest() != corpus.digest:
             raise CorpusError()
+        if corpus.schema_version == 4:
+            if corpus.provenance is None:
+                raise CorpusError()
+            receipt = read_regular_bounded(
+                corpus.path.parent / _PREPARATION_RECEIPT_FILENAME,
+                maximum_bytes=_MAX_PREPARATION_RECEIPT_BYTES,
+            )
+            if (
+                receipt.path.parent != corpus.path.parent
+                or hashlib.sha256(receipt.data).hexdigest()
+                != corpus.provenance.metadata_sha256
+            ):
+                raise CorpusError()
         for case in corpus.cases:
             snapshot = read_regular_bounded(
                 case.source_path,

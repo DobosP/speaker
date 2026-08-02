@@ -62,6 +62,47 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     return manifest, corpus
 
 
+def _schema_v4_corpus(tmp_path: Path) -> Path:
+    audio = tmp_path / "negative.f32le"
+    audio.write_bytes(bytes(16))
+    receipt = tmp_path / "preparation-receipt.json"
+    receipt.write_bytes(b'{"schema_version":1,"kind":"command-noise"}\n')
+    corpus = tmp_path / "command-noise-corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "purpose": "schema v4 loader contract",
+                "provenance": {
+                    "kind": "public-command-noise-v1",
+                    "suite": "short-command-noise",
+                    "manifest_sha256": "a" * 64,
+                    "metadata_sha256": hashlib.sha256(
+                        receipt.read_bytes()
+                    ).hexdigest(),
+                    "source_set_sha256": "b" * 64,
+                },
+                "cases": [
+                    {
+                        "id": "negative",
+                        "file": audio.name,
+                        "sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                        "samples": 4,
+                        "expected_text": "",
+                        "assertion": "speech_negative",
+                        "commands": [],
+                        "forbidden_commands": ["turn on", "turn off"],
+                        "tags": ["speech-negative"],
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return corpus
+
+
 def _moonshine_manifest(
     tmp_path: Path,
     monkeypatch,
@@ -643,6 +684,137 @@ def test_corpus_loads_finite_exact_f32_and_hides_text_from_repr(tmp_path):
     assert corpus.audio_bytes == 16
     assert corpus.cases[0].samples == 4
     assert "stop now" not in repr(corpus)
+
+
+def test_schema_v4_loader_binds_fixed_preparation_receipt_and_forbidden_targets(
+    tmp_path,
+):
+    corpus_path = _schema_v4_corpus(tmp_path)
+
+    corpus = load_corpus(corpus_path)
+
+    assert corpus.schema_version == 4
+    assert corpus.provenance is not None
+    assert corpus.provenance.kind == "public-command-noise-v1"
+    assert corpus.cases[0].assertion == "speech_negative"
+    assert corpus.cases[0].expected_text == ""
+    assert corpus.cases[0].commands == ()
+    assert corpus.cases[0].forbidden_commands == ("turn on", "turn off")
+    assert "turn on" not in repr(corpus)
+    verify_corpus_snapshot(corpus)
+
+
+def test_schema_v4_transcript_negative_keeps_wer_reference_without_positive_target(
+    tmp_path,
+):
+    corpus_path = _schema_v4_corpus(tmp_path)
+    payload = json.loads(corpus_path.read_text(encoding="utf-8"))
+    payload["cases"][0].update(
+        {
+            "expected_text": "the dog is barking",
+            "assertion": "transcript",
+            "commands": [],
+            "forbidden_commands": ["dark"],
+        }
+    )
+    corpus_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    corpus = load_corpus(corpus_path)
+
+    assert corpus.cases[0].expected_text == "the dog is barking"
+    assert corpus.cases[0].commands == ()
+    assert corpus.cases[0].forbidden_commands == ("dark",)
+
+
+def test_schema_v4_receipt_tamper_fails_load_and_loaded_snapshot_verification(
+    tmp_path,
+):
+    corpus_path = _schema_v4_corpus(tmp_path)
+    corpus = load_corpus(corpus_path)
+    receipt = tmp_path / "preparation-receipt.json"
+    original = receipt.read_bytes()
+    receipt.write_bytes(original.replace(b"command-noise", b"command-voice"))
+    assert receipt.stat().st_size == len(original)
+
+    with pytest.raises(CorpusError):
+        verify_corpus_snapshot(corpus)
+    with pytest.raises(CorpusError):
+        load_corpus(corpus_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing-forbidden-field",
+        "normalized-duplicate",
+        "positive-on-negative",
+        "empty-negative-forbidden",
+        "missing-positive-reference",
+        "forbidden-present-in-reference",
+        "legacy-extra-field",
+    ),
+)
+def test_corpus_schema_versions_reject_cross_schema_or_ambiguous_command_rows(
+    tmp_path,
+    mutation,
+):
+    corpus_path = _schema_v4_corpus(tmp_path)
+    payload = json.loads(corpus_path.read_text(encoding="utf-8"))
+    row = payload["cases"][0]
+    if mutation == "missing-forbidden-field":
+        row.pop("forbidden_commands")
+    elif mutation == "normalized-duplicate":
+        row["forbidden_commands"] = ["Turn on!", "turn-on"]
+    elif mutation == "positive-on-negative":
+        row["commands"] = ["turn on"]
+    elif mutation == "empty-negative-forbidden":
+        row["forbidden_commands"] = []
+    elif mutation == "missing-positive-reference":
+        row.update(
+            {
+                "expected_text": "turn on the light",
+                "assertion": "transcript",
+                "commands": ["turn off"],
+                "forbidden_commands": [],
+            }
+        )
+    elif mutation == "forbidden-present-in-reference":
+        row.update(
+            {
+                "expected_text": "turn on the light",
+                "assertion": "transcript",
+                "commands": [],
+                "forbidden_commands": ["turn on"],
+            }
+        )
+    else:
+        payload["schema_version"] = 3
+        payload["provenance"]["kind"] = "private-diagnostic-v1"
+    corpus_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(CorpusError):
+        load_corpus(corpus_path)
+
+
+def test_schema_v4_loader_reference_binding_uses_token_not_substring_matches(
+    tmp_path,
+):
+    corpus_path = _schema_v4_corpus(tmp_path)
+    payload = json.loads(corpus_path.read_text(encoding="utf-8"))
+    payload["cases"][0].update(
+        {
+            "expected_text": "only proceed now",
+            "assertion": "transcript",
+            "commands": ["PROCEED!"],
+            "forbidden_commands": ["on", "off"],
+        }
+    )
+    corpus_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    corpus = load_corpus(corpus_path)
+
+    assert corpus.cases[0].commands == ("PROCEED!",)
+    assert corpus.cases[0].forbidden_commands == ("on", "off")
 
 
 @pytest.mark.parametrize("mutation", ["hash", "unknown-field", "duplicate-key"])

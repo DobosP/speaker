@@ -1,0 +1,314 @@
+{
+  "corpus": {
+    "audio_bytes": 3714904,
+    "audio_seconds": 58.045375,
+    "cases": 57,
+    "command_negative_non_silence": 26,
+    "command_positive": 26,
+    "manifest_sha256": "50ec2c1ec7ad7ef2ca58d56d3330ca1a496db3784b78d41be9c8804413c552b9",
+    "pcm_set_sha256": "b0eeb32c314b5d9b4078fa640331378f8d9e31372436aca178dfdef4c7fbadd4",
+    "preparation_receipt_sha256": "bf6cf442e4fb02e489dc7ceef763df3b39c1a4ef2178a5f8f2d2dab664517ac2",
+    "recipe_lock_sha256": "1ae5a5845a70b69aa7e1d32e6f799566e2c715f8202b2d86760a6cef73d51564",
+    "recipe_sha256": "4d4e7a1cab6e498fdcda7a74cfab08a01e6bd8ac9c292a4ad940f4c09046433e",
+    "schema_version": 4,
+    "source_set_sha256": "3f74cabd5b827ef2c4ef7afc628b3ce0eb5e237fe672d1555b1357940566d246",
+    "suite": "command-noise-v1"
+  },
+  "date": "2026-08-02",
+  "parakeet_realtime_eou_120m": {
+    "config": {
+      "chunk_samples": 1280,
+      "contract_sha256": "5a41a0f080dcfa27121c7a10061d9491662bc264b1eddb5a28db5c18e872e077",
+      "native_chunk_ms": 80,
+      "pace": "burst",
+      "partial_interval_ms": 80,
+      "repeats": 1,
+      "tail_padding_samples_maximum": 48000
+    },
+    "metrics": {
+      "eccc_noisy": {
+        "cases": 27,
+        "command_attempts": 6,
+        "command_hits": 2,
+        "command_recall": 0.3333,
+        "negative_case_false_positive_rate": 0.381,
+        "negative_case_false_positives": 8,
+        "negative_evaluations": 21,
+        "wer": 0.963
+      },
+      "endpointing": {
+        "authoritative_endpoints": 10,
+        "early_source_endpoints": 26,
+        "native_endpoints": 36,
+        "tail_exhaustions": 21
+      },
+      "gsc_clean": {
+        "cases": 30,
+        "command_attempts": 20,
+        "command_hits": 19,
+        "command_recall": 0.95,
+        "negative_case_false_positives": 0,
+        "negative_evaluations": 10,
+        "wer": 0.05
+      },
+      "overall": {
+        "command_attempts": 26,
+        "command_hits": 21,
+        "command_recall": 0.8077,
+        "evaluations": 57,
+        "final_command_target_precision": 0.7241,
+        "negative_case_false_positive_rate": 0.2581,
+        "negative_case_false_positives": 8,
+        "negative_case_true_negatives": 23,
+        "positive_command_confusion_hits": 0,
+        "wer": 0.5745
+      },
+      "resources": {
+        "max_reported_rss_mb": 1900.398,
+        "peak_threads": 5,
+        "peak_vram_mb": 924.0
+      },
+      "timing_and_throughput": {
+        "compute_total_ms": 42607.018,
+        "model_input_rtf": 0.3574,
+        "model_load_ms": 21935.275,
+        "source_audio_rtf": 0.734
+      }
+    },
+    "receipts": {
+      "artifact_set_sha256": "e4034183ad901e0ab2ac90802a8960d76ad8f43db86f06d63073377d8555cdd7",
+      "manifest_sha256": "e529cc09b920ff279ea5cf655abfc8cb3465beb92824adb9f9aa195587a266da",
+      "runtime_receipt_sha256": "c6d1f88a8a7157471c736ce1e774c3a2f88c4bd4b22588560e5bdfabeeca7ad0",
+      "source_bundle_sha256": "db3791f62f6249f3ce6f6ee2fb4db5e6129c8d426f1fbf54f3f8843603f69ccc",
+      "worker_sha256": "9d927ee61f9ba27c1443a3a31b1bbe9475be6b2e37c312f74b7940d1923d3746"
+    },
+    "report": {
+      "sha256": "e973b085902cd887b51a6246756758ab382f30dc016fdf4b7231e15b798d8175",
+      "size_bytes": 30829
+    }
+  },
+  "configured_file_replay_final_selection": {
+    "config": {
+      "configured_chain": {
+        "offline": {
+          "backend": "nemo_transducer",
+          "compute_type": "int8",
+          "model": "parakeet-unified-en",
+          "provider": "cpu"
+        },
+        "streaming": {
+          "model": "gigaspeech-zipformer",
+          "provider": "cpu",
+          "threads": 4
+        },
+        "verifier": {
+          "backend": "faster_whisper",
+          "compute_type": "float16",
+          "device": "cuda:0",
+          "model": "small"
+        }
+      },
+      "device_profile": "desktop_gpu_4090",
+      "effective_config_sha256": "746fdc3a67f79eb50ed4f8bfaa02604de4a2adbf54005c16f62ae887c5ae03ad",
+      "evaluator_source_files": 27,
+      "evaluator_source_sha256": "1222c8d5cd274fef31daaa8ccf8eaa5abf9bce536931fadd5d9522e55537d2ea",
+      "model_artifacts_sha256": "14cf95445bf1b459dba750be2653e3c6cd0e2fbb0a113308beaf09972647d44e",
+      "path": "file-replay-production-final-selection",
+      "selection_inputs": {
+        "offline_recovery_authorization": false,
+        "vad_owned_speech_duration": false
+      },
+      "stratum_tags": [
+        "command-negative",
+        "command-positive",
+        "eccc",
+        "gsc",
+        "noisy",
+        "silence",
+        "speech-negative"
+      ],
+      "transport": {
+        "block_ms": 100,
+        "synthetic_tail_ms": 600
+      }
+    },
+    "execution": {
+      "decisions": 58,
+      "evaluations": 57,
+      "multi_decision_evaluations": 1,
+      "offline_outcomes": {
+        "decoded": 51,
+        "empty": 6,
+        "skipped": 1
+      },
+      "selected_sources": {
+        "none": 16,
+        "streaming": 32,
+        "verifier_consensus": 10
+      },
+      "verifier_outcomes": {
+        "consensus": 28,
+        "empty": 5,
+        "empty_streaming_guard": 4,
+        "no_quorum": 1,
+        "skipped": 1,
+        "tie": 19
+      },
+      "zero_decision_evaluations": 0
+    },
+    "provider_attestation": {
+      "streaming_offline": "explicit_cpu_provider_available",
+      "verifier": "cuda_only_adapter_completed_decode"
+    },
+    "report": {
+      "schema_version": 2,
+      "sha256": "4e36cb1564934e78167f12801e213dd3ecf348844ea00d2e0bd25df2c335610a",
+      "size_bytes": 23913
+    },
+    "runtime": {
+      "distributions": {
+        "ctranslate2": {
+          "record_sha256": "f2e61741285d8720d1a5dbce10ad8d04d52275b8bf4f113448a2e3dd858e0825",
+          "version": "4.8.1"
+        },
+        "faster_whisper": {
+          "record_sha256": "29ed5a95b02eb8cec2a5167ffe2e0de885cc4012df9af523cefd4eeb20e2febe",
+          "version": "1.2.1"
+        },
+        "numpy": {
+          "record_sha256": "0b86772b7b8a2b7b2536d40d9d5f6f1b41047d471150f603d59413017a954e70",
+          "version": "2.4.6"
+        },
+        "onnxruntime": {
+          "record_sha256": "aa92a56f68d3a3d22db43a06b96240ac0b880c262d4aecafc0ff34d985f2345c",
+          "version": "1.27.0"
+        },
+        "sherpa_onnx": {
+          "record_sha256": "1576878220470dc414695ea9ce5e48f39d4079db5ff0f59f047f1af09a3d7b42",
+          "version": "1.13.3"
+        }
+      },
+      "python": {
+        "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+        "version": "3.12.3"
+      }
+    },
+    "views": {
+      "file_replay_streaming_raw": {
+        "eccc_noisy": {
+          "command_attempts": 6,
+          "command_hits": 1,
+          "command_recall": 0.1667,
+          "negative_case_false_positive_rate": 0.0476,
+          "negative_case_false_positives": 1,
+          "negative_evaluations": 21,
+          "wer": 1.3333
+        },
+        "gsc_clean": {
+          "command_attempts": 20,
+          "command_hits": 16,
+          "command_recall": 0.8,
+          "negative_case_false_positives": 0,
+          "negative_evaluations": 10,
+          "wer": 0.3
+        },
+        "overall": {
+          "command_attempts": 26,
+          "command_hits": 17,
+          "command_recall": 0.6538,
+          "final_command_target_precision": 0.8095,
+          "negative_case_false_positive_rate": 0.0323,
+          "negative_case_false_positives": 1,
+          "negative_case_true_negatives": 30,
+          "positive_command_confusion_hits": 3,
+          "wer": 0.8936
+        }
+      },
+      "file_replay_selected_without_owned_timing_recovery": {
+        "eccc_noisy": {
+          "command_attempts": 6,
+          "command_hits": 1,
+          "command_recall": 0.1667,
+          "negative_case_false_positive_rate": 0.2381,
+          "negative_case_false_positives": 5,
+          "negative_evaluations": 21,
+          "wer": 1.3333
+        },
+        "gsc_clean": {
+          "command_attempts": 20,
+          "command_hits": 18,
+          "command_recall": 0.9,
+          "negative_case_false_positives": 0,
+          "negative_evaluations": 10,
+          "wer": 0.1
+        },
+        "overall": {
+          "command_attempts": 26,
+          "command_hits": 19,
+          "command_recall": 0.7308,
+          "final_command_target_precision": 0.7308,
+          "negative_case_false_positive_rate": 0.1613,
+          "negative_case_false_positives": 5,
+          "negative_case_true_negatives": 26,
+          "positive_command_confusion_hits": 2,
+          "wer": 0.8085
+        }
+      }
+    }
+  },
+  "schema_version": 1,
+  "scope": {
+    "aec_validated": false,
+    "after_pcm": true,
+    "agent_tools_validated": false,
+    "aggregate_only": true,
+    "audio_device_opened": false,
+    "barge_in_validated": false,
+    "capture_mailbox_validated": false,
+    "capture_validated": false,
+    "chatbot_built": false,
+    "default_or_setup_changed": false,
+    "development_only": true,
+    "enrollment_or_identity_validated": false,
+    "gpu_model_executed": true,
+    "live_hardware": false,
+    "live_selection_input_equivalence": false,
+    "local_paths_present": false,
+    "model_executed": true,
+    "native_execution_watchdog": false,
+    "native_reader_validated": false,
+    "offline_recovery_authorization_supplied": false,
+    "reference_or_hypothesis_rows_present": false,
+    "runtime_default_promotion": false,
+    "training_disjoint": false,
+    "tts_executed": false,
+    "vad_endpoint_accuracy_validated": false,
+    "vad_owned_speech_duration_supplied": false
+  },
+  "verdict": {
+    "decision": "retain_diagnostic_evaluator_reject_both_noisy_command_promotions",
+    "live_validation": {
+      "required": true,
+      "run": false
+    },
+    "next_gate": [
+      "fresh_owner_target_and_negative_recordings",
+      "separate_live_open_speaker_ab",
+      "receipt_bound_parakeet_cpp_portable_candidate",
+      "precision_or_confirmation_policy_before_action"
+    ],
+    "parakeet_realtime_eou_120m": [
+      "highest_observed_recall",
+      "eight_of_twenty_one_eccc_negative_false_activations",
+      "accelerated_after_pcm_never_live_turn_taking_evidence",
+      "retain_rejected_nemo_reference"
+    ],
+    "file_replay_selected_without_owned_timing_recovery": [
+      "two_clean_command_hits_recovered_over_same_run_streaming",
+      "no_noisy_command_recall_improvement",
+      "four_additional_noisy_false_activations",
+      "not_complete_live_selection_evidence",
+      "not_stable_for_command_or_action_promotion"
+    ]
+  }
+}

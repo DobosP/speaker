@@ -27,20 +27,84 @@
 | BPE streaming-hotword context | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_sherpa_models.py tests/test_setup_doctor.py tests/test_recorded_stt_eval.py tests/test_capture_replay_eval.py tests/test_install.py tests/test_asr_postprocess.py tests/test_file_replay_engine.py tests/test_livekit_engine.py -q` | constructor/stream fail-closed behavior across local, replay, and LiveKit; exact uppercase grammar; immutable complete-family setup; pre-download exporter check; readiness; conditional install; and exact active/inert replay provenance pass without a model, network, GPU, audio device, transcript output, or live claim (ADR-0114) |
 | Exact private final-input evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_diagnostic_bundle.py tests/test_reference_recording.py tests/test_sherpa_diagnostic_observations.py tests/test_asr_final_async.py tests/test_prepare_diagnostic_streaming_stt_corpus.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_app_replay_safety.py -q` | diagnostic schema-v1 read-only validation, schema-v2 exact f32le binding/lifecycle/tamper/backpressure, private schema-v3 bit-for-bit export, public schema-v2 separation, aggregate-only CLI privacy, and synchronized-directory replay refusal pass headlessly; no owner corpus, model, GPU, audio device, WER, latency, or live claim (ADR-0108) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced synchronous Sherpa session seam, fixed aggregate conditions/privacy, evaluator, deterministic AMI preparation, and explicit production-owner rejection pass without a model or audio device; the digest binds but replay does not execute the dedicated owner (ADR-0092/0111) |
-| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, Nemotron, and Parakeet private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091/0099) |
+| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine Tiny/Small/Medium, Nemotron, and Parakeet private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091/0099/0115) |
 | Faster-Whisper final-only comparator | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_faster_whisper_endpoint_candidate.py tests/test_streaming_stt_faster_whisper_endpoint.py -q` | separate runtime/model receipts, no-download provision, final-only adapter, evaluator provenance, PCM/tree tamper rejection, and schema-v6 worker serialization pass without importing/loading a candidate, GPU, network, or audio device (ADR-0102) |
 | Public matrix + production-model STT control | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_zipformer.py -m "not real_model" -q` | no-download license/receipt/selection/privacy contracts and exact fp32 Zipformer Bubblewrap control pass without a corpus, model load, network, or audio device (ADR-0098) |
 | Licensed stratified STT evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_demand_noise_streaming_stt_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_streaming_stt_faster_whisper_endpoint.py tests/test_streaming_stt_suite.py -q` | exact DEMAND/license/runtime receipts, outside-Git publication, Rochester label fail-closed behavior, bounded strata, N/A zero-attempt command recall, evaluator binding, sequential cells, failure checkpoints, and aggregate privacy pass without a model, network, GPU, or audio device (ADR-0109) |
 | Public conversation/STT fixture lock | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_public_conversation_fixture.py tests/test_prepare_harper_valley_conversation_fixture.py tests/test_prepare_edacc_conversation_fixture.py tests/test_prepare_ami_conversation_fixture.py tests/test_prepare_common_voice_conversation_fixture.py tests/test_public_voice_eval_matrix.py tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_suite.py -q` | matrix-v4 pins/licenses, raw-source materializer contracts, self-digested 24x4 lock, explicit slots, private receipt/corpus/reference/PCM cross-binding, source balance/pairing, CV parent re-decode/private-input binding, integrated pre/post sequential-suite validation, and single-layer plus coordinated-parent tamper rejection pass. Materializer outputs are non-production; production-shaped validator grammar fixtures are consistency tests only. No download, complete real corpus, model, GPU, network, audio device, or live evidence (ADR-0113) |
 | Common Voice spontaneous P0 preparation | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_public_voice_eval_matrix.py -q` | exact release/API receipt, twice-hashed private archive, safe tar/TSV, speaker-first quota matching, bounded publication/provenance, and synthetic decode pass; the two real-PyAV checks run only when the pinned optional `requirements-evaluation.txt` environment is installed. No corpus download, model, network, GPU, or audio device (ADR-0101) |
 | VoxPopuli Romanian-accented English P0 preparation | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_voxpopuli_ro_accent.py tests/test_streaming_stt_corpus_writer.py -q` | exact two-shard/revision/license pins, explicit-local-only descriptor transport, exact float32-WAV/fact/empty-row contracts, finite identity conversion, deterministic 24-speaker four-band assignment, aggregate privacy, and hardened schema-v2 publication pass synthetically. The first real attempt failed closed; no real corpus was published and no model, network, GPU, or audio device runs here (ADR-0106) |
-| Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs; no install, download, network, audio device, or adoption claim (ADR-0090) |
+| Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs with no installer/downloader or audio device; the worker lacks a network namespace and supplies no adoption claim (ADR-0090/0115) |
 | Exact Nemotron worker smoke | prepare and provision new private paths as shown below, then run the candidate-specific `real_model` command | one exact pre-provisioned case passes through no-network Bubblewrap and the bound inputs still pass close-time rehash; no audio device or adoption claim (ADR-0091) |
 | Opt-in selected final STT setup | `./install.sh --skip-system --final-asr parakeet-unified-en --final-verifier faster-whisper-small` | verify/stage the four-file Parakeet package and pinned Linux/NVIDIA verifier, publish atomically, and pass doctor; normal sessions still use `./live.sh` (ADR-0080) |
 | Verifier recording A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval --set asr_final_verifier_backend=faster_whisper --set asr_final_verifier_model=/home/dobo/work/speaker/pretrained_models/sherpa/faster_whisper_small-536b0662742c --keyword vault` | aggregate-only baseline/candidate comparison, verifier outcome counts, and artifact-bound provenance; no transcript rows or audio device (ADR-0078/0080) |
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Exact Moonshine Medium reference setup
+
+Start with a disposable private Python 3.12 environment whose
+`include-system-site-packages` marker is false, the exact Moonshine Voice 0.1.0
+Linux wheel, the seven already-downloaded official Medium Streaming files, and
+a prepared schema-v2 corpus. Do not import Moonshine before provisioning:
+generated `__pycache__` files correctly make the exact wheel/tree check fail.
+Every destination below must be a new absolute private path:
+
+```bash
+export MOONSHINE_RUNTIME=/absolute/private/moonshine-runtime
+export MOONSHINE_WHEEL=/absolute/private/moonshine_voice-0.1.0-py3-none-manylinux_2_34_x86_64.whl
+export MOONSHINE_MODEL=/absolute/private/medium-streaming-en
+export MOONSHINE_PROVISION=/absolute/private/new-moonshine-medium-candidate
+export STREAMING_CORPUS=/absolute/private/prepared-public-corpus/corpus.json
+```
+
+Bind the existing runtime, exact wheel, and model without installing,
+downloading, importing the candidate, or opening an audio device:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.provision_moonshine_candidate \
+  --venv-root "$MOONSHINE_RUNTIME" --wheel "$MOONSHINE_WHEEL" \
+  --model-root "$MOONSHINE_MODEL" --model-arch medium-streaming \
+  --output-dir "$MOONSHINE_PROVISION"
+```
+
+Run the one-case receipt smoke, then use new private scratch/report paths for
+the aggregate burst and paced cells:
+
+```bash
+SPEAKER_MOONSHINE_WORKER_MANIFEST="$MOONSHINE_PROVISION/worker-manifest.json" \
+SPEAKER_MOONSHINE_STREAMING_CORPUS="$STREAMING_CORPUS" \
+  /home/dobo/work/speaker/.venv/bin/python -B -m pytest \
+  tests/test_streaming_stt_moonshine_worker.py -m real_model -q
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$MOONSHINE_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 3 --chunk-samples 1600 \
+  --partial-interval-ms 500 --tail-padding-samples 0 --pace burst \
+  --scratch-root /absolute/private/new-moonshine-burst-scratch \
+  --output /absolute/private/new-moonshine-burst-report.json
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$MOONSHINE_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 1 --chunk-samples 1600 \
+  --partial-interval-ms 200 --tail-padding-samples 0 --pace realtime \
+  --scratch-root /absolute/private/new-moonshine-paced-scratch \
+  --output /absolute/private/new-moonshine-paced-report.json
+```
+
+The native 0.1.0 worker is CPU-only. It sanitizes thread settings and runs
+sequentially, but has no Bubblewrap network namespace or independently verified
+hard RAM/CPU limit. These aggregate runs begin after PCM is available and do
+not validate capture, VAD/endpoint ownership, AEC, commands, live latency, or
+adoption (ADR-0115).
 
 ## Timestamped capture-loop replay
 

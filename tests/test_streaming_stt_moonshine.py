@@ -166,7 +166,11 @@ class FakeTranscriberFactory:
 
 class FakeApi:
     __version__ = "0.1.0"
-    ModelArch = SimpleNamespace(TINY_STREAMING=2, SMALL_STREAMING=4)
+    ModelArch = SimpleNamespace(
+        TINY_STREAMING=2,
+        SMALL_STREAMING=4,
+        MEDIUM_STREAMING=5,
+    )
 
     def __init__(
         self,
@@ -302,6 +306,7 @@ def test_exact_chunks_append_only_declared_zero_tail(tmp_path):
     [
         ("tiny-streaming", 2),
         ("small-streaming", 4),
+        ("medium-streaming", 5),
     ],
 )
 def test_transcriber_uses_only_closed_cpu_low_metadata_options(

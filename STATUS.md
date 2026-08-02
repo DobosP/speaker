@@ -4,8 +4,8 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-02 on Linux ROG.
 
-- Current non-real logic gate: 7,425 passing checks as 7,424 low-priority broad passes plus 1 required-condition logging rerun; 13 skipped, 23 model-only deselected, 9 prior warnings plus 2 SentencePiece wrapper deprecations. BPE focused gate: 366 + 1 optional model skip. Exact headless CLI 42/42 + 12/12; current APM/DTD 6.
-- Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
+- Current non-real logic gate: 7,428 passing checks as 7,426 low-priority broad passes plus 2 exact-condition reruns (logging enabled and repository lock mode 600); 13 skipped, 23 model-only deselected, 11 warnings. Moonshine Medium focused gate: 237 + 1 model deselection; exact worker smoke 1. BPE focused gate: 366 + 1 optional model skip; current APM/DTD 6.
+- Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine Tiny/Small/Medium, Nemotron, and Parakeet NeMo stay rejected (ADR-0090/0091/0099/0115).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
@@ -62,8 +62,7 @@ Last verified: 2026-08-02 on Linux ROG.
 - Common Voice SPS v4 real-archive/model compatibility is unrun. VoxPopuli's first real preparation failed closed on its superseded PCM16 assumption; aggregate inspection found the exact float32 container and a feasible 24-case selection, but no real corpus/model run exists and the slice is not command, domestic, capture/AEC, tool, live, or training-disjoint evidence (ADR-0101/0106).
 - Strict sequential clean/noisy WER is .6685/.6757 for final-only Faster-Whisper Small, .6848/.6830 for Turbo, and .7283/.9076 for CPU Zipformer. Small wins this 14-source development slice but has no endpoint, live, or adoption validity (ADR-0102/0109).
 - Parakeet clean/noisy WER is .6576/.5429; paced clean first/stable partial p50 is 1.692/5.612 s with two misses/120 ms backlog. Native EOU ended 85/126 noisy evaluations early and one source disagreed across repeats, so it remains rejected after-PCM evidence (ADR-0099/0109).
-- Exact Moonshine 0.1.0 is benchmark-only. Small WER is .6884 burst/.6957 real-time;
-  at 200 ms: RTF 1.1864, first partial p50 2.02 s, 1,000 misses, 22.01 s backlog. Tiny WER is .8478 (ADR-0090).
+- Exact Moonshine 0.1.0 is benchmark-only. Medium improved Small on the MInDS-14 development slice: deterministic burst WER/CER/RTF .6630/.6300/.3201; paced WER/RTF .6739/.6508. It still had 1.969 s first-partial p50, 660 misses, 7.174 s backlog, and no command attempts. Tiny WER is .8478; Small burst/paced WER is .6884/.6957 (ADR-0090/0115).
 - Nemotron burst WER/CER/RTF: LA0 .7065/.6606/.4331; LA3 .7065/.6592/.1395;
   LA6 .6957/.6551/.0859; LA13 .6902/.6467/.0556. LA6 real-time was
   .6957 WER/.0992 RTF, first-partial p50 1.666 s, one miss, 10.439 ms backlog.
@@ -80,7 +79,7 @@ Last verified: 2026-08-02 on Linux ROG.
 
 ## Next
 
-- Acquire, prepare, and validate all four private conversation/STT corpora, then compare isolated GPU model/configuration cells sequentially without changing runtime defaults; keep live promotion dependent on fresh private recording A/B (ADR-0112/0113).
+- Acquire and validate the four private conversation/STT corpora. Add bounded mini Speech Commands and ECCC command/noise slices, and compare Moonshine's explicitly VAD-disabled/external-endpoint configuration separately before more candidate work; never change runtime defaults from development evidence (ADR-0112/0113/0115).
 - Capture fresh exact target and negative recordings for the configured VAULT/OBSIDIAN/name phrases plus `./live.sh` open-speaker evidence, export owner-labelled inputs, then run recorded and live BPE A/B; add disjoint command/multi-voice strata, native-reader/gap, and AEC replay (ADR-0092/0100/0108/0109/0114).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 

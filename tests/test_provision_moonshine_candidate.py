@@ -108,7 +108,11 @@ def _inputs(tmp_path: Path, monkeypatch, *, install_moonshine: bool = True):
                 )
                 for name, path in model_paths.items()
             }
-            for arch in ("tiny-streaming", "small-streaming")
+            for arch in (
+                "tiny-streaming",
+                "small-streaming",
+                "medium-streaming",
+            )
         },
     )
     return venv, site_packages, wheel, model
@@ -175,20 +179,25 @@ def test_provision_is_no_overwrite_and_preserves_first_receipt(
     assert manifest.path.read_bytes() == before
 
 
-def test_provision_selects_closed_small_streaming_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model_arch", ["small-streaming", "medium-streaming"])
+def test_provision_selects_closed_nondefault_streaming_receipt(
+    tmp_path,
+    monkeypatch,
+    model_arch,
+):
     venv, _site_packages, wheel, model = _inputs(tmp_path, monkeypatch)
 
     manifest = provision.provision_candidate(
         venv_root=venv,
         wheel=wheel,
         model_root=model,
-        output_dir=tmp_path / "small-receipt",
-        model_arch="small-streaming",
+        output_dir=tmp_path / f"{model_arch}-receipt",
+        model_arch=model_arch,
     )
 
-    assert manifest.model_id == "moonshine-voice-0.1.0-small-streaming-en-cpu"
+    assert manifest.model_id == f"moonshine-voice-0.1.0-{model_arch}-en-cpu"
     assert manifest.adapter_config is not None
-    assert manifest.adapter_config.model_arch == "small-streaming"
+    assert manifest.adapter_config.model_arch == model_arch
 
 
 def test_provision_rejects_hardlinked_runtime_before_manifest_publish(

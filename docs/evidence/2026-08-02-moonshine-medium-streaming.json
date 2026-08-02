@@ -1,0 +1,78 @@
+{
+  "candidate": {
+    "adapter": "moonshine-voice-stream-v1",
+    "language": "en",
+    "model_arch": "medium-streaming",
+    "model_id": "moonshine-voice-0.1.0-medium-streaming-en-cpu",
+    "provider": "cpu",
+    "upstream_commit": "cc1695646a560f2eec7f7c058f3c4d580f039e4b",
+    "version": "0.1.0"
+  },
+  "corpus": {
+    "case_set_sha256": "cdb651158c4c45d5d24cc68cf15b31c60b7c1e7cd57eeea1dcf51bd69cfc9cc4",
+    "cases": 14,
+    "dataset": "MInDS-14 en-US",
+    "decision_reference": "ADR-0087",
+    "kind": "public-voice-v1",
+    "manifest_sha256": "a9c6859289d28b3bcc79665d890c9934f1f7b17dd7f3fe34b83a8d69a61ed3fe",
+    "source_revision": "40ce77cb32a384e4d50a568e1ec39ac804019d33",
+    "suite": "intent-asr"
+  },
+  "date": "2026-08-02",
+  "model_artifacts": {
+    "adapter.ort": {"crc32c_base64": "T4ZPsw==", "sha256": "16307442b7f4229f2f1511fc51b545cec9616e55872c588f3a297bbc6f4762ea", "size_bytes": 3647712},
+    "cross_kv.ort": {"crc32c_base64": "iy7jtw==", "sha256": "354b9a955caeb768b528f447f0a36ce4b850ca7b4531900165df304d97904fba", "size_bytes": 11544952},
+    "decoder_kv.ort": {"crc32c_base64": "jDzNQA==", "sha256": "fa67aa87521247f5bf44d3e44d4e4978e58c1f114249c3c6909c882624056715", "size_bytes": 146216448},
+    "encoder.ort": {"crc32c_base64": "vGp6QA==", "sha256": "a5f11167a62eef61787fe8410453257d6ddb8eba90af461a9604e5f2e93d5322", "size_bytes": 94202872},
+    "frontend.ort": {"crc32c_base64": "qm1RfA==", "sha256": "378fe8a5d7090a1b9ab88bbb1fc95bde010cdd64ec23419350d2d23c675636e9", "size_bytes": 47467256},
+    "streaming_config.json": {"crc32c_base64": "+1bE9Q==", "sha256": "28e83b7a28e91472692a035e0dae3116422ae43aeb2bef5ed822c44ce89b88af", "size_bytes": 513},
+    "tokenizer.bin": {"crc32c_base64": "B7s10Q==", "sha256": "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d", "size_bytes": 249974}
+  },
+  "receipts": {
+    "artifact_set_sha256": "fa8d31d6df4ab0791e1b8074da7cbced067f98908b3e3d89a00934f9245526f1",
+    "manifest_sha256": "390eb9f01bf4a10134404b3f6a5f05eb7f6c6ddfafc86f2087af2d71f666fa3b",
+    "runtime_receipt_sha256": "0f695be826bc9a2b0d86ba8184ae076275378165db401629af534c8f0b9140f5",
+    "wheel_sha256": "0f833deb43bad5dcfb4cfd3257b6df83ef9abd3f27be3199622fe41932e8d916",
+    "wheel_size_bytes": 56369045
+  },
+  "runs": [
+    {
+      "config": {"chunk_samples": 1600, "pace": "burst", "partial_interval_ms": 500, "repeats": 1, "tail_padding_samples": 0},
+      "metrics": {"cer": 0.63, "final_disagreements": 0, "first_partial_p50_ms": 98.377, "max_reported_rss_mb": 1079.871, "rtf": 0.3247, "wer": 0.663},
+      "report_sha256": "bacbb4d0f9a5e95ffd5a926eb4aadc450241e13db73f441d122ea1c1b7b93212",
+      "report_size_bytes": 7396
+    },
+    {
+      "config": {"chunk_samples": 1600, "pace": "burst", "partial_interval_ms": 500, "repeats": 3, "tail_padding_samples": 0},
+      "metrics": {"cer": 0.63, "final_disagreements": 0, "first_partial_p50_ms": 93.532, "max_reported_rss_mb": 1091.645, "rtf": 0.3201, "stable_partial_p95_ms": 8942.444, "wer": 0.663},
+      "report_sha256": "4f239be72a2b37da199838bd01627764d7f4da9059b0b9c1e76ee8679e0e6281",
+      "report_size_bytes": 7403
+    },
+    {
+      "config": {"chunk_samples": 1600, "pace": "realtime", "partial_interval_ms": 200, "repeats": 1, "tail_padding_samples": 0},
+      "metrics": {"cer": 0.637, "deadline_misses": 660, "first_partial_p50_ms": 1968.764, "max_backlog_ms": 7173.8, "max_reported_rss_mb": 1083.145, "rtf": 0.6508, "stable_partial_p50_ms": 6694.493, "stable_partial_p95_ms": 28620.972, "wer": 0.6739},
+      "report_sha256": "4b6d95dbc59daef8636edc13e0bb8b444c257c3045fb26c4d6781babc9104d8e",
+      "report_size_bytes": 7409
+    }
+  ],
+  "schema_version": 1,
+  "upstream_catalog": {
+    "crc32c_match": true,
+    "model_total_size_bytes": 303329727,
+    "source_commit": "cc1695646a560f2eec7f7c058f3c4d580f039e4b"
+  },
+  "scope": {
+    "adoption_authority": false,
+    "command_attempts": 0,
+    "gpu": false,
+    "live_hardware": false,
+    "model_executed": true,
+    "transcript_rows_present": false,
+    "vad_or_endpoint_validity": false
+  },
+  "verdict": {
+    "decision": "benchmark_only_reject_live_primary",
+    "default_changed": false,
+    "reasons": ["slow_partial_text", "paced_deadline_misses", "paced_backlog", "no_command_or_live_evidence"]
+  }
+}

@@ -297,6 +297,36 @@ _MOONSHINE_MODEL_RECEIPTS = {
             249_974,
         ),
     },
+    "medium-streaming": {
+        "model-adapter": (
+            "16307442b7f4229f2f1511fc51b545cec9616e55872c588f3a297bbc6f4762ea",
+            3_647_712,
+        ),
+        "model-cross-kv": (
+            "354b9a955caeb768b528f447f0a36ce4b850ca7b4531900165df304d97904fba",
+            11_544_952,
+        ),
+        "model-decoder-kv": (
+            "fa67aa87521247f5bf44d3e44d4e4978e58c1f114249c3c6909c882624056715",
+            146_216_448,
+        ),
+        "model-encoder": (
+            "a5f11167a62eef61787fe8410453257d6ddb8eba90af461a9604e5f2e93d5322",
+            94_202_872,
+        ),
+        "model-frontend": (
+            "378fe8a5d7090a1b9ab88bbb1fc95bde010cdd64ec23419350d2d23c675636e9",
+            47_467_256,
+        ),
+        "model-config": (
+            "28e83b7a28e91472692a035e0dae3116422ae43aeb2bef5ed822c44ce89b88af",
+            513,
+        ),
+        "model-tokenizer": (
+            "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d",
+            249_974,
+        ),
+    },
 }
 NEMOTRON_ARTIFACT_NAMES = (
     "runtime-receipt",
@@ -507,7 +537,8 @@ class MoonshineConfig:
             self.package_version != "0.1.0"
             or type(self.api_version) is not int
             or self.api_version != 30000
-            or self.model_arch not in {"tiny-streaming", "small-streaming"}
+            or self.model_arch
+            not in {"tiny-streaming", "small-streaming", "medium-streaming"}
             or self.provider != "cpu"
             or self.language != "en"
         ):

@@ -182,20 +182,22 @@ def test_manifest_v2_binds_closed_moonshine_runtime_and_retains_venv_launcher(
     assert manifest.python.path.is_symlink()
 
 
-def test_manifest_v2_accepts_exact_pinned_small_streaming_model(
+@pytest.mark.parametrize("model_arch", ["small-streaming", "medium-streaming"])
+def test_manifest_v2_accepts_exact_pinned_nondefault_streaming_model(
     tmp_path,
     monkeypatch,
+    model_arch,
 ):
     path = _moonshine_manifest(
         tmp_path,
         monkeypatch,
-        model_arch="small-streaming",
+        model_arch=model_arch,
     )
 
     manifest = load_worker_manifest(path)
 
     assert manifest.adapter_config is not None
-    assert manifest.adapter_config.model_arch == "small-streaming"
+    assert manifest.adapter_config.model_arch == model_arch
 
 
 @pytest.mark.parametrize(

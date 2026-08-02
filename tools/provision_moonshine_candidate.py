@@ -186,7 +186,11 @@ def provision_candidate(
 ) -> WorkerManifest:
     """Verify supplied inputs and create one new private model receipt."""
 
-    if model_arch not in {"tiny-streaming", "small-streaming"}:
+    if model_arch not in {
+        "tiny-streaming",
+        "small-streaming",
+        "medium-streaming",
+    }:
         raise ProvisionError()
     venv = _canonical_directory(venv_root, require_private=True)
     site_packages = _site_packages(venv)
@@ -327,7 +331,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--model-arch",
-        choices=("tiny-streaming", "small-streaming"),
+        choices=("tiny-streaming", "small-streaming", "medium-streaming"),
         default="tiny-streaming",
     )
     return parser

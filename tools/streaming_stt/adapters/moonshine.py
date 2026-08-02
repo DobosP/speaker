@@ -43,6 +43,7 @@ _DISABLED_AUTO_UPDATE_SECONDS = MAX_STREAM_SAMPLES / _SAMPLE_RATE + 1.0
 _ARCH_ATTRIBUTE = {
     "tiny-streaming": "TINY_STREAMING",
     "small-streaming": "SMALL_STREAMING",
+    "medium-streaming": "MEDIUM_STREAMING",
 }
 _TRANSCRIBER_OPTIONS = {
     "return_audio_data": "false",

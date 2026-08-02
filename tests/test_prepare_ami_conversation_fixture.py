@@ -407,6 +407,69 @@ def test_wrong_wav_contract_and_terms_fail_closed(tmp_path):
         )
 
 
+def test_production_output_ignores_empty_git_sentinel(tmp_path):
+    cache = tmp_path / "non-git-cache"
+    cache.mkdir()
+    sentinel = cache / ".git"
+    sentinel.mkdir()
+    (sentinel / "info").mkdir()
+    output = cache / "new-output"
+
+    assert prepare._has_git_ancestor(cache) is False
+    assert prepare._validated_output(output, production_evidence=True) == output
+    assert not output.exists()
+
+
+def test_production_output_rejects_git_marker_mutated_during_probe(
+    tmp_path,
+    monkeypatch,
+):
+    cache = tmp_path / "mutating-cache"
+    cache.mkdir()
+    marker = cache / ".git"
+    marker.mkdir()
+    output = cache / "must-not-exist"
+    original_stat = prepare.os.stat
+    mutated = False
+
+    def mutating_stat(path, *args, **kwargs):
+        nonlocal mutated
+        if path == "HEAD" and kwargs.get("dir_fd") is not None and not mutated:
+            mutated = True
+            marker.rename(cache / ".git-moved")
+            marker.mkdir()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(prepare.os, "stat", mutating_stat)
+
+    with pytest.raises(prepare.AmiConversationPreparationError):
+        prepare._validated_output(output, production_evidence=True)
+    assert mutated is True
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("git_marker", ("file", "directory", "symlink"))
+def test_production_output_rejects_real_or_unsafe_git_marker(tmp_path, git_marker):
+    repository = tmp_path / f"checkout-{git_marker}"
+    repository.mkdir()
+    marker = repository / ".git"
+    if git_marker == "file":
+        marker.write_text("gitdir: private-metadata\n", encoding="utf-8")
+    elif git_marker == "directory":
+        marker.mkdir()
+        (marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    else:
+        target = tmp_path / "private-metadata"
+        target.mkdir()
+        marker.symlink_to(target, target_is_directory=True)
+    output = repository / "must-not-exist"
+
+    assert prepare._has_git_ancestor(repository) is True
+    with pytest.raises(prepare.AmiConversationPreparationError):
+        prepare._validated_output(output, production_evidence=True)
+    assert not output.exists()
+
+
 def test_close_and_far_must_be_distinct_source_recordings(tmp_path):
     sources = _sources(tmp_path)
     far = Path(sources["far_wav"])

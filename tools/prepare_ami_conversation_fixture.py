@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -30,7 +31,11 @@ from tools.public_voice_eval_matrix import (
     dataset_by_id,
     selection_policy_sha256,
 )
-from tools.streaming_stt.bounded_io import BoundedReadError, read_regular_bounded
+from tools.streaming_stt.bounded_io import (
+    BoundedReadError,
+    opened_directory_nofollow,
+    read_regular_bounded,
+)
 from tools.streaming_stt.corpus import CorpusProvenance, LoadedCorpus
 from tools.streaming_stt.corpus_writer import CorpusWriteCase, publish_private_corpus
 from tools.streaming_stt.protocol import MAX_CORPUS_BYTES, MAX_PCM_BYTES
@@ -653,6 +658,79 @@ def _repo_file_sha256(relative: str) -> str:
         raise AmiConversationPreparationError() from None
 
 
+def _directory_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _git_marker_present(directory_fd: int) -> bool:
+    """Recognize a real Git marker while ignoring an empty sandbox sentinel."""
+
+    marker_fd = -1
+    try:
+        try:
+            marker = os.stat(".git", dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if stat.S_ISREG(marker.st_mode):
+            return marker.st_size > 0
+        if stat.S_ISLNK(marker.st_mode) or not stat.S_ISDIR(marker.st_mode):
+            return True
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        marker_fd = os.open(".git", flags, dir_fd=directory_fd)
+        opened = os.fstat(marker_fd)
+        if _directory_identity(opened) != _directory_identity(marker):
+            raise AmiConversationPreparationError()
+        try:
+            os.stat("HEAD", dir_fd=marker_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            has_head = False
+        else:
+            has_head = True
+        current_marker = os.stat(
+            ".git",
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _directory_identity(os.fstat(marker_fd))
+            != _directory_identity(opened)
+            or _directory_identity(current_marker) != _directory_identity(marker)
+        ):
+            raise AmiConversationPreparationError()
+        return has_head
+    except AmiConversationPreparationError:
+        raise
+    except (OSError, OverflowError, ValueError):
+        raise AmiConversationPreparationError() from None
+    finally:
+        if marker_fd >= 0:
+            try:
+                os.close(marker_fd)
+            except OSError:
+                pass
+
+
+def _has_git_ancestor(directory: Path) -> bool:
+    try:
+        for ancestor in (directory, *directory.parents):
+            with opened_directory_nofollow(ancestor) as (_stable, descriptor):
+                if _git_marker_present(descriptor):
+                    return True
+    except AmiConversationPreparationError:
+        raise
+    except (OSError, RuntimeError, ValueError, BoundedReadError):
+        raise AmiConversationPreparationError() from None
+    return False
+
+
 def _validated_output(path: Path | str, *, production_evidence: bool) -> Path:
     supplied = Path(path).expanduser()
     if not supplied.is_absolute():
@@ -661,10 +739,8 @@ def _validated_output(path: Path | str, *, production_evidence: bool) -> Path:
     repo_root = Path(__file__).resolve().parents[1]
     try:
         parent = candidate.parent.resolve(strict=True)
-        inside_git = production_evidence and any(
-            os.path.lexists(ancestor / ".git") for ancestor in (parent, *parent.parents)
-        )
-    except (OSError, RuntimeError, ValueError):
+        inside_git = production_evidence and _has_git_ancestor(parent)
+    except (OSError, RuntimeError, ValueError, AmiConversationPreparationError):
         raise AmiConversationPreparationError() from None
     if (
         candidate.name in {"", ".", ".."}

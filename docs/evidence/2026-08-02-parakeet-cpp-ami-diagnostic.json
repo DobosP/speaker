@@ -1,0 +1,177 @@
+{
+  "candidate": {
+    "adapter": "parakeet-cpp-realtime-eou-v1",
+    "artifact_set_sha256": "129bc34127eab9d518284a96efde98e0371b486eff21b8328027db32198f74e8",
+    "harness_commit": "d80c58682c89d6fa30dbc9dce373ffaf59f743e7",
+    "manifest_sha256": "906d1feb277780056b636f4c837ea7ca7985b5fb02eef9cc24a50e5e84c381c4",
+    "source_bundle_sha256": "5cec2babe4b353caa4b846176b0a1686bad52be759b0aeefe5636990674384a2",
+    "worker_sha256": "be12f93f0bb5328d4b44b6be01d6ec1cb5653f6fddbbfc6979355eadfb460df7"
+  },
+  "corpus": {
+    "audio_bytes": 3802880,
+    "audio_seconds": 59.42,
+    "case_set_sha256": "293f8f8c4f6600f6e6cad14bfddd95e6b841db9b9318c03a54365f9886c3194c",
+    "cases": 24,
+    "manifest_sha256": "5a8ba97f71c5c6c69013def3682c62bc6f4f902fc51d24a2a51ea92f46333c7f",
+    "metadata_sha256": "8545454b88001e32319bcb41ed33d4d3c9d828b3a5d1c8282be73fb69c0ffd6b",
+    "preparation_receipt_sha256": "c6ca84004344c275498c787b760df0d3dfdad65876c24e84816bd8d74ba33810",
+    "source_id": "ami-es2004a-close-far",
+    "strata": {
+      "close": 12,
+      "far": 12,
+      "isolated": 16,
+      "turn_transition": 8
+    },
+    "training_disjointness": {
+      "dataset_family_disclosed_in_training": true,
+      "established": false,
+      "exact_clip_membership_known": false,
+      "model_card_checked": "2026-08-02",
+      "model_card_revision": "a7e2b4629593dce0ec19f600e00e9904353fda2d",
+      "model_card_url": "https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1/blob/a7e2b4629593dce0ec19f600e00e9904353fda2d/README.md"
+    }
+  },
+  "date": "2026-08-02",
+  "decision": "retain_isolated_diagnostic_only",
+  "reports": {
+    "burst_repeat_3": {
+      "config": {
+        "chunk_samples": 1280,
+        "contract_sha256": "5b4be682d4351dbc21bde5116088238f1d7cfc8a2a82cda9d02bdad3c584b67f",
+        "pace": "burst",
+        "partial_interval_ms": 80,
+        "repeats": 3,
+        "tail_padding_samples": 8000
+      },
+      "metrics": {
+        "accuracy": {
+          "cer": 0.4113,
+          "exact": 21,
+          "nonempty": 42,
+          "wer": 0.4684,
+          "word_errors": 222,
+          "reference_words": 474
+        },
+        "determinism": {
+          "cases_with_final_disagreement": 0,
+          "paced_accuracy_exactly_equal": true
+        },
+        "endpointing": {
+          "accepted_endpoints": 18,
+          "eou_observations": 54,
+          "source_early_eou_observations": 3,
+          "tail_exhaustions": 54
+        },
+        "resources": {
+          "max_reported_rss_mb": 307.535,
+          "peak_threads": 1,
+          "peak_vram_mb": null
+        },
+        "source_accounting": {
+          "consumed_samples": 2852160,
+          "dropped_samples": 0,
+          "offered_samples": 2852160
+        },
+        "strata": {
+          "close": {
+            "cer": 0.1743,
+            "exact": 18,
+            "nonempty": 33,
+            "wer": 0.2278
+          },
+          "far": {
+            "cer": 0.6483,
+            "exact": 3,
+            "nonempty": 9,
+            "wer": 0.7089
+          },
+          "isolated": {
+            "cer": 0.526,
+            "exact": 21,
+            "nonempty": 27,
+            "wer": 0.5465
+          },
+          "turn_transition": {
+            "cer": 0.2825,
+            "exact": 0,
+            "nonempty": 15,
+            "wer": 0.375
+          }
+        },
+        "throughput": {
+          "model_input_rtf": 0.3171,
+          "source_audio_rtf": 0.3767
+        }
+      },
+      "report": {
+        "sha256": "cbf25522a43513d7443fd9cb6c15f21732bf7ccb1460beeab601b68669d1d221",
+        "size_bytes": 30971
+      }
+    },
+    "paced_repeat_1": {
+      "config": {
+        "chunk_samples": 1280,
+        "contract_sha256": "db8a2eb879a2ca3390c0ce6eee71895f14a28d034c6d153db8ad68e81bcc1642",
+        "pace": "realtime",
+        "partial_interval_ms": 80,
+        "repeats": 1,
+        "tail_padding_samples": 8000
+      },
+      "metrics": {
+        "accuracy": {
+          "cer": 0.4113,
+          "exact": 7,
+          "nonempty": 14,
+          "wer": 0.4684,
+          "word_errors": 74,
+          "reference_words": 158
+        },
+        "endpointing": {
+          "accepted_endpoint_latency_max_ms": 490.0,
+          "accepted_endpoint_latency_p50_ms": 290.0,
+          "accepted_endpoint_latency_p95_ms": 490.0,
+          "accepted_endpoints": 6,
+          "tail_exhaustions": 18
+        },
+        "latency": {
+          "first_nonempty_partial_p50_ms": 622.543,
+          "first_nonempty_partial_p95_ms": 2369.12,
+          "stable_partial_missing": 10,
+          "stable_partial_p50_ms": 1413.874,
+          "stable_partial_p95_ms": 5741.848
+        },
+        "resources": {
+          "max_reported_rss_mb": 308.105,
+          "peak_threads": 1,
+          "peak_vram_mb": null
+        },
+        "streaming": {
+          "deadline_misses": 2,
+          "max_backlog_ms": 14.831,
+          "partial_events": 89
+        },
+        "throughput": {
+          "model_input_rtf": 0.3677,
+          "source_audio_rtf": 0.4367
+        }
+      },
+      "report": {
+        "sha256": "02ce75d6f1e6382fd84c4d4bcb008596f0de24053f7c369b62d6244dc9041cbe",
+        "size_bytes": 30863
+      }
+    }
+  },
+  "scope": {
+    "accelerated_burst": true,
+    "aggregate_only": true,
+    "capture": false,
+    "endpoint_ground_truth": false,
+    "endpoint_latency_scope": "accepted_endpoints_only_declared_source_end_to_observed_feed_boundary",
+    "four_source_fixture_evidence": false,
+    "live": false,
+    "runtime_or_default_authority": false,
+    "single_source": true,
+    "stt_model_run": true,
+    "tools_or_agent_behavior": false
+  }
+}

@@ -4,9 +4,12 @@ All pure / injected fakes -- no network, no audio, no Ollama, no models.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 
 import pytest
 
@@ -37,7 +40,11 @@ class _FakeSD16k:
 from tools.setup_models import (
     FILE_KEYS,
     dest_for,
+    export_bpe_vocab,
     extract_member,
+    fetch_bpe_hotword_context,
+    fetch_bpe_hotword_vocab,
+    require_bpe_hotword_exporter,
     publish_config_atomic,
     required_selected_artifact_errors,
     wire_sherpa_paths,
@@ -49,6 +56,13 @@ def test_asr_and_tts_tokens_download_to_separate_dirs():
     # folder or one clobbers the other (wrong ASR vocab -> garbage + crash).
     assert dest_for("/m", "asr_tokens") != dest_for("/m", "tts_tokens")
     assert dest_for("/m", "asr_encoder") == dest_for("/m", "asr_tokens")
+
+
+def test_bpe_context_is_not_part_of_the_benchmark_manifest():
+    from tools.bench.models import DEFAULT_MANIFEST
+
+    assert "asr_bpe_model" not in DEFAULT_MANIFEST
+    assert "asr_bpe_vocab" not in DEFAULT_MANIFEST
 
 
 def test_apply_accuracy_high_uses_fp32_weights():
@@ -87,6 +101,321 @@ def test_wire_sherpa_paths_creates_sherpa_section_when_absent():
     cfg: dict = {}
     wire_sherpa_paths(cfg, {"asr_tokens": "t.txt"}, abspath=lambda p: p)
     assert cfg["sherpa"]["asr_tokens"] == "t.txt"
+
+
+def test_ordinary_setup_preserves_complete_prepared_bpe_asr_family(tmp_path):
+    resolved = _fake_bpe_context(tmp_path)
+    config = {
+        "sherpa": {
+            **resolved,
+            "asr_modeling_unit": "bpe",
+        }
+    }
+
+    preserved = setup_models.existing_bpe_hotword_asr_paths(config)
+
+    assert preserved == {
+        key: resolved[key] for key in setup_models.ASR_FILE_KEYS
+    }
+
+
+def test_ordinary_setup_rejects_incomplete_prepared_bpe_family(tmp_path):
+    config = {
+        "sherpa": {
+            "asr_modeling_unit": "bpe",
+            "asr_bpe_vocab": str(tmp_path / "missing.vocab"),
+        }
+    }
+
+    with pytest.raises(ValueError, match="incomplete"):
+        setup_models.existing_bpe_hotword_asr_paths(config)
+
+
+class _FakeSentencePiece:
+    pieces = ("<blk>", "▁vault", "s")
+    scores = (0.0, -1.25, -2.5)
+
+    def Load(self, _path):
+        return True
+
+    def get_piece_size(self):
+        return len(self.pieces)
+
+    def id_to_piece(self, index):
+        return self.pieces[index]
+
+    def piece_to_id(self, piece):
+        return self.pieces.index(piece)
+
+    def get_score(self, index):
+        return self.scores[index]
+
+
+def test_export_bpe_vocab_is_deterministic_and_atomic(tmp_path):
+    target = tmp_path / "bpe.vocab"
+    target.write_text("old\n", encoding="utf-8")
+
+    result = export_bpe_vocab(
+        str(tmp_path / "bpe.model"),
+        str(target),
+        processor_factory=_FakeSentencePiece,
+    )
+
+    assert result == str(target)
+    assert target.read_text(encoding="utf-8") == (
+        "<blk>\t0.0\n▁vault\t-1.25\ns\t-2.5\n"
+    )
+    assert list(tmp_path.glob(".bpe.vocab.*.tmp")) == []
+
+
+def test_export_bpe_vocab_preserves_previous_file_on_failure(tmp_path):
+    class _BrokenSentencePiece(_FakeSentencePiece):
+        def get_score(self, index):
+            if index == 1:
+                return float("nan")
+            return super().get_score(index)
+
+    target = tmp_path / "bpe.vocab"
+    target.write_bytes(b"previous")
+
+    with pytest.raises(ValueError, match="non-finite"):
+        export_bpe_vocab(
+            str(tmp_path / "bpe.model"),
+            str(target),
+            processor_factory=_BrokenSentencePiece,
+        )
+
+    assert target.read_bytes() == b"previous"
+    assert list(tmp_path.glob(".bpe.vocab.*.tmp")) == []
+
+
+def test_bpe_hotword_exporter_requires_the_pinned_sentencepiece_version():
+    class WrongVersion:
+        __version__ = "0.2.2"
+
+    with pytest.raises(RuntimeError, match=r"needs sentencepiece==0\.2\.1"):
+        require_bpe_hotword_exporter(module_loader=lambda _name: WrongVersion())
+
+
+def test_bpe_context_preflights_exporter_before_any_download(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def unavailable():
+        raise RuntimeError("exporter unavailable")
+
+    monkeypatch.setattr(
+        setup_models, "require_bpe_hotword_exporter", unavailable
+    )
+    with pytest.raises(RuntimeError, match="exporter unavailable"):
+        fetch_bpe_hotword_context(
+            str(tmp_path),
+            accuracy="fast",
+            token=None,
+            force=False,
+            download=lambda **kwargs: calls.append(kwargs),
+        )
+
+    assert calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_bpe_hotword_vocab_binds_revision_and_both_checksums(
+    tmp_path, monkeypatch
+):
+    model_bytes = b"pinned-bpe-model"
+    vocab_bytes = b"piece\t-1.0\n"
+    calls = []
+
+    def download(**kwargs):
+        calls.append(kwargs)
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        path.write_bytes(model_bytes)
+        return str(path)
+
+    def export(_model, output):
+        Path(output).write_bytes(vocab_bytes)
+        return output
+
+    monkeypatch.setattr(setup_models, "export_bpe_vocab", export)
+    coords = {
+        "repo": "example/bpe",
+        "file": "bpe.model",
+        "revision": "a" * 40,
+        "sha256": hashlib.sha256(model_bytes).hexdigest(),
+        "vocab_sha256": hashlib.sha256(vocab_bytes).hexdigest(),
+    }
+
+    result = fetch_bpe_hotword_vocab(
+        str(tmp_path), coords, token=None, force=False, download=download
+    )
+
+    assert Path(result).read_bytes() == vocab_bytes
+    assert Path(result).name == (
+        f"bpe-{hashlib.sha256(vocab_bytes).hexdigest()}.vocab"
+    )
+    assert calls == [
+        {
+            "repo_id": "example/bpe",
+            "filename": "bpe.model",
+            "local_dir": str(tmp_path),
+            "token": None,
+            "force_download": False,
+            "revision": "a" * 40,
+        }
+    ]
+
+
+@pytest.mark.parametrize("revision", ["", "main", "a" * 39, "G" * 40])
+def test_fetch_bpe_hotword_vocab_rejects_mutable_revision_before_download(
+    tmp_path, revision
+):
+    calls = []
+    coords = {
+        "repo": "example/bpe",
+        "file": "bpe.model",
+        "revision": revision,
+        "sha256": "0" * 64,
+        "vocab_sha256": "1" * 64,
+    }
+
+    with pytest.raises(ValueError, match="full commit hash"):
+        fetch_bpe_hotword_vocab(
+            str(tmp_path),
+            coords,
+            token=None,
+            force=False,
+            download=lambda **kwargs: calls.append(kwargs),
+        )
+
+    assert calls == []
+
+
+def test_fetch_bpe_hotword_context_stages_complete_family_once(
+    tmp_path, monkeypatch
+):
+    filenames = dict(setup_models.BPE_HOTWORD_ASR_FILES["fast"])
+    payloads = {
+        filename: f"payload:{key}".encode("ascii")
+        for key, filename in filenames.items()
+    }
+    payloads["bpe.model"] = b"sentence-piece-model"
+    vocab_bytes = b"<unk>\t0.0\nA\t-1.0\n"
+    monkeypatch.setitem(
+        setup_models.BPE_HOTWORD_ASR_SHA256,
+        "fast",
+        {
+            key: hashlib.sha256(payloads[filename]).hexdigest()
+            for key, filename in filenames.items()
+        },
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "BPE_HOTWORD_MODEL",
+        {
+            **setup_models.BPE_HOTWORD_MODEL,
+            "sha256": hashlib.sha256(payloads["bpe.model"]).hexdigest(),
+            "vocab_sha256": hashlib.sha256(vocab_bytes).hexdigest(),
+        },
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "export_bpe_vocab",
+        lambda _model, output: (
+            Path(output).write_bytes(vocab_bytes) and str(output)
+        ),
+    )
+    calls = []
+    cache = tmp_path / "hub-cache"
+    cache.mkdir()
+
+    def download(**kwargs):
+        calls.append(kwargs)
+        cached = cache / kwargs["filename"]
+        cached.write_bytes(payloads[kwargs["filename"]])
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        try:
+            path.symlink_to(cached)
+        except OSError:
+            # Windows without Developer Mode may not permit test symlinks; an
+            # external cache pathname still exercises canonical materialization.
+            return str(cached)
+        return str(path)
+
+    first = fetch_bpe_hotword_context(
+        str(tmp_path),
+        accuracy="fast",
+        token=None,
+        force=False,
+        download=download,
+    )
+
+    assert len(calls) == 5
+    assert {call["revision"] for call in calls} == {
+        setup_models.BPE_HOTWORD_REVISION
+    }
+    parents = {Path(path).parent for path in first.values()}
+    assert len(parents) == 1
+    published = parents.pop()
+    assert published.name.startswith("asr-bpe-")
+    assert not published.name.startswith(".")
+    assert all(not Path(path).is_symlink() for path in first.values())
+    assert not list(tmp_path.glob(".asr-bpe-*-staging-*"))
+
+    calls.clear()
+    second = fetch_bpe_hotword_context(
+        str(tmp_path),
+        accuracy="fast",
+        token=None,
+        force=True,
+        download=download,
+    )
+    assert second == first
+    assert calls == []
+
+    original_model_sha = setup_models.BPE_HOTWORD_MODEL["sha256"]
+    payloads["bpe.model"] = b"replacement-sentence-piece-model"
+    setup_models.BPE_HOTWORD_MODEL["sha256"] = hashlib.sha256(
+        payloads["bpe.model"]
+    ).hexdigest()
+    real_rename = setup_models.os.rename
+    raced = []
+
+    def publish_concurrent_winner(source, target):
+        raced.append((source, target))
+        shutil.copytree(source, target)
+        return real_rename(source, target)
+
+    monkeypatch.setattr(setup_models.os, "rename", publish_concurrent_winner)
+    replacement = fetch_bpe_hotword_context(
+        str(tmp_path),
+        accuracy="fast",
+        token=None,
+        force=False,
+        download=download,
+    )
+    assert Path(replacement["asr_bpe_vocab"]).parent != published
+    assert len(calls) == 5
+    assert len(raced) == 1
+    monkeypatch.setattr(setup_models.os, "rename", real_rename)
+
+    setup_models.BPE_HOTWORD_MODEL["sha256"] = original_model_sha
+
+    external = tmp_path / "external-family"
+    published.rename(external)
+    try:
+        published.symlink_to(external, target_is_directory=True)
+    except OSError:
+        return
+    with pytest.raises(ValueError, match="real local directory"):
+        fetch_bpe_hotword_context(
+            str(tmp_path),
+            accuracy="fast",
+            token=None,
+            force=False,
+            download=download,
+        )
 
 
 def test_required_selected_artifacts_cover_shipped_profile(tmp_path):
@@ -448,6 +777,188 @@ def test_required_selected_success_publishes_one_complete_config(
     assert list(tmp_path.glob(".config.local.json.*.tmp")) == []
 
 
+def _fake_bpe_context(tmp_path: Path) -> dict[str, str]:
+    root = tmp_path / "models" / "pinned-family"
+    root.mkdir(parents=True, exist_ok=True)
+    resolved = {}
+    for key in setup_models.ASR_FILE_KEYS:
+        path = root / f"{key}.onnx"
+        path.write_bytes(key.encode("ascii"))
+        resolved[key] = str(path)
+    vocab = root / "bpe-pinned.vocab"
+    vocab.write_text("<unk>\t0.0\nA\t-1.0\n", encoding="utf-8")
+    resolved["asr_bpe_vocab"] = str(vocab)
+    return resolved
+
+
+def _bpe_setup_args(tmp_path: Path) -> list[str]:
+    return [
+        "--dest", str(tmp_path / "models"),
+        "--config", str(tmp_path / "config.local.json"),
+        "--bpe-hotwords",
+    ]
+
+
+def test_bpe_hotword_setup_isolated_and_adds_no_phrase(tmp_path, monkeypatch):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        '{"unrelated":{"kept":true},"sherpa":{"sample_rate":16000}}\n',
+        encoding="utf-8",
+    )
+    resolved = _fake_bpe_context(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_bpe_hotword_context",
+        lambda *args, **kwargs: (calls.append((args, kwargs)) or resolved),
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_speaker_model",
+        lambda *_args, **_kwargs: pytest.fail("speaker-ID fetch was not isolated"),
+    )
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 0
+    written = json.loads(config.read_text(encoding="utf-8"))
+    sherpa = written["sherpa"]
+
+    assert len(calls) == 1
+    assert written["unrelated"] == {"kept": True}
+    assert sherpa["sample_rate"] == 16000
+    assert sherpa["asr_modeling_unit"] == "bpe"
+    assert sherpa["asr_hotwords_case_policy"] == "upper_ascii_words"
+    assert sherpa["asr_bpe_vocab_sha256"] == (
+        setup_models.BPE_HOTWORD_MODEL["vocab_sha256"]
+    )
+    assert Path(sherpa["asr_bpe_vocab"]).is_file()
+    assert all(Path(sherpa[key]).is_file() for key in setup_models.ASR_FILE_KEYS)
+    assert not sherpa.get("asr_hotwords")
+    assert "speaker_embedding_model" not in sherpa
+    assert "tts_model" not in sherpa
+    assert "vad_model" not in sherpa
+
+
+def test_failed_bpe_context_fetch_preserves_machine_config(tmp_path, monkeypatch):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_bpe_hotword_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("synthetic export failure")
+        ),
+    )
+    config = tmp_path / "config.local.json"
+    original = b'{"unrelated": {"kept": true}}\n'
+    config.write_bytes(original)
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == original
+
+
+def test_bpe_setup_refuses_mid_download_config_change(tmp_path, monkeypatch):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    original = b'{"owner":"before"}\n'
+    external = b'{"owner":"newer-external-edit"}\n'
+    config.write_bytes(original)
+    resolved = _fake_bpe_context(tmp_path)
+
+    def fetch(*_args, **_kwargs):
+        config.write_bytes(external)
+        return resolved
+
+    monkeypatch.setattr(setup_models, "fetch_bpe_hotword_context", fetch)
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == external
+
+
+def test_bpe_config_publish_failure_keeps_old_referenced_artifact(
+    tmp_path, monkeypatch
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    old_vocab = tmp_path / "old.vocab"
+    old_vocab.write_bytes(b"old-stable-bytes")
+    config = tmp_path / "config.local.json"
+    original = json.dumps(
+        {"sherpa": {"asr_bpe_vocab": str(old_vocab)}}
+    ).encode("utf-8") + b"\n"
+    config.write_bytes(original)
+    new_context = _fake_bpe_context(tmp_path)
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_bpe_hotword_context",
+        lambda *_args, **_kwargs: new_context,
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "publish_config_atomic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic config fsync failure")
+        ),
+    )
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == original
+    assert old_vocab.read_bytes() == b"old-stable-bytes"
+    assert all(Path(path).is_file() for path in new_context.values())
+
+
+def test_bpe_setup_rejects_lowercase_existing_phrases_before_fetch(
+    tmp_path, monkeypatch
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        '{"sherpa":{"asr_hotwords":"vault\\nOBSIDIAN"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_bpe_hotword_context",
+        lambda *_args, **_kwargs: pytest.fail("downloaded invalid phrase config"),
+    )
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 1
+
+
+@pytest.mark.parametrize(
+    "decoding_method",
+    ["greedy_search", " modified_beam_search "],
+)
+def test_bpe_setup_rejects_invalid_existing_phrase_decoder_before_fetch(
+    tmp_path, monkeypatch, decoding_method
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    original = json.dumps(
+        {
+            "sherpa": {
+                "asr_hotwords": "VAULT",
+                "asr_decoding_method": decoding_method,
+            }
+        },
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    config.write_bytes(original)
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_bpe_hotword_context",
+        lambda *_args, **_kwargs: pytest.fail("downloaded invalid phrase config"),
+    )
+
+    assert setup_models.main(_bpe_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == original
+    assert not (tmp_path / "models").exists()
+
+
+def test_bpe_setup_rejects_mixed_model_selection(tmp_path):
+    with pytest.raises(SystemExit) as raised:
+        setup_models.main([*_bpe_setup_args(tmp_path), "--sense-voice"])
+    assert raised.value.code == 2
+
+
 def test_required_selected_parakeet_publishes_backend_and_four_paths(
     tmp_path,
     monkeypatch,
@@ -662,6 +1173,111 @@ def test_check_sherpa_models_path_set_but_file_absent():
     assert not res.ok
     assert "missing on disk" in res.detail
     assert "config.local.json" in res.detail
+
+
+def test_check_sherpa_models_validates_only_active_hotword_context(tmp_path):
+    base = _complete_sherpa_paths()
+    stale = {**base, "asr_bpe_vocab": "/stale/bpe.vocab"}
+    assert check_sherpa_models(
+        {"sherpa": stale}, exists=lambda path: path in set(base.values())
+    ).ok
+
+    missing_unit = {**base, "asr_hotwords": "vault"}
+    result = check_sherpa_models(
+        {"sherpa": missing_unit}, exists=lambda _path: True
+    )
+    assert not result.ok
+    assert "asr_modeling_unit" in result.detail
+
+    bpe = {
+        **base,
+        "asr_hotwords": "VAULT\nOBSIDIAN",
+        "asr_decoding_method": "modified_beam_search",
+        "asr_modeling_unit": "bpe",
+        "asr_bpe_vocab": str(tmp_path / "bpe.vocab"),
+        "asr_hotwords_case_policy": "upper_ascii_words",
+    }
+    present = set(base.values())
+    result = check_sherpa_models(
+        {"sherpa": bpe}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "hotword BPE vocabulary" in result.detail
+
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("<unk>\t0.0\n▁\t-1.0\nV\t-2.0\n", encoding="utf-8")
+    present.add(str(vocab))
+    assert check_sherpa_models(
+        {"sherpa": bpe}, exists=lambda path: path in present
+    ).ok
+
+    lowercase = {**bpe, "asr_hotwords": "vault\nObsidian"}
+    result = check_sherpa_models(
+        {"sherpa": lowercase}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "UPPERCASE ASCII" in result.detail
+
+    greedy = {**bpe, "asr_decoding_method": "greedy_search"}
+    result = check_sherpa_models(
+        {"sherpa": greedy}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "modified_beam_search" in result.detail
+
+    padded = {**bpe, "asr_decoding_method": " modified_beam_search "}
+    result = check_sherpa_models(
+        {"sherpa": padded}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "modified_beam_search" in result.detail
+
+    cjkchar = {
+        **base,
+        "asr_hotwords": "停止",
+        "asr_decoding_method": "modified_beam_search",
+        "asr_modeling_unit": "cjkchar",
+        "asr_bpe_vocab": "/stale/missing.vocab",
+    }
+    assert check_sherpa_models(
+        {"sherpa": cjkchar}, exists=lambda path: path in set(base.values())
+    ).ok
+
+
+@pytest.mark.parametrize(
+    "kind, expected",
+    [
+        ("directory", "regular file|unreadable"),
+        ("empty", "empty"),
+        ("malformed", "malformed"),
+    ],
+)
+def test_check_sherpa_models_rejects_invalid_bpe_vocab(
+    tmp_path, kind, expected
+):
+    base = _complete_sherpa_paths()
+    vocab = tmp_path / "bpe.vocab"
+    if kind == "directory":
+        vocab.mkdir()
+    elif kind == "empty":
+        vocab.write_bytes(b"")
+    else:
+        vocab.write_text("not-two-columns\n", encoding="utf-8")
+    config = {
+        **base,
+        "asr_hotwords": "VAULT",
+        "asr_modeling_unit": "bpe",
+        "asr_bpe_vocab": str(vocab),
+        "asr_hotwords_case_policy": "upper_ascii_words",
+    }
+    present = set(base.values()) | {str(vocab)}
+
+    result = check_sherpa_models(
+        {"sherpa": config}, exists=lambda path: path in present
+    )
+
+    assert not result.ok
+    assert re.search(expected, result.detail)
 
 
 def _complete_sherpa_paths():

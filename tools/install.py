@@ -46,6 +46,7 @@ RUNTIME_DEPS = [
     "huggingface-hub",  # model downloads
     "psutil",        # CPU/RAM telemetry in the run summary
 ]
+BPE_HOTWORD_SETUP_DEPS = ("sentencepiece==0.2.1",)
 
 
 def normal_voice_entry(platform_name: str | None = None) -> str:
@@ -136,6 +137,8 @@ def runtime_deps(args: argparse.Namespace) -> list[str]:
     result = list(RUNTIME_DEPS)
     if getattr(args, "final_verifier", None):
         result.extend(FINAL_VERIFIER_RUNTIME_DEPS)
+    if getattr(args, "bpe_hotwords", False):
+        result.extend(BPE_HOTWORD_SETUP_DEPS)
     return result
 
 
@@ -150,6 +153,18 @@ def selected_model_args(args: argparse.Namespace) -> tuple[str, ...]:
     if verifier:
         result.extend(("--final-verifier", verifier))
     return tuple(result)
+
+
+def model_setup_commands(args: argparse.Namespace, python: str) -> list[list[str]]:
+    """Return ordered, non-overlapping speech-model setup transactions."""
+    commands = [
+        [python, "-m", "tools.setup_models", *selected_model_args(args)]
+    ]
+    if getattr(args, "bpe_hotwords", False):
+        commands.append(
+            [python, "-m", "tools.setup_models", "--bpe-hotwords"]
+        )
+    return commands
 
 
 def running_in_conda() -> bool:
@@ -191,11 +206,14 @@ def install_plan(args, *, system: str | None = None) -> list[str]:
         f"install runtime deps into {py}: {', '.join(runtime_deps(args))}",
     ]
     if not args.skip_models:
-        flags = " ".join(selected_model_args(args))
-        steps.append(
-            f"{py} -m tools.setup_models {flags}  "
-            "(download the selected speech stack + atomically wire config.local.json)"
-        )
+        for index, command in enumerate(model_setup_commands(args, py)):
+            detail = (
+                "download the selected speech stack + atomically wire "
+                "config.local.json"
+                if index == 0
+                else "atomically select the pinned BPE streaming-ASR family"
+            )
+            steps.append(f"{' '.join(command)}  ({detail})")
         setup_args = capability_setup_args(args)
         if setup_args:
             steps.append(
@@ -311,6 +329,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--bpe-hotwords",
+        action="store_true",
+        help=(
+            "prepare the pinned English Zipformer BPE hotword context during "
+            "model setup without adding any phrase"
+        ),
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="print the plan and the exact commands, but change nothing",
     )
@@ -353,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_args = capability_setup_args(args)
 
+    if args.skip_models and args.bpe_hotwords:
+        parser.error("--bpe-hotwords cannot be combined with --skip-models")
+
     if args.final_verifier and not final_verifier_supported():
         print(
             "--final-verifier currently requires Linux x86_64 with an NVIDIA "
@@ -376,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\nRun without --dry-run to execute.")
         return 0
 
-    step_count = 5 if setup_args else 4
+    model_commands = model_setup_commands(args, "/pending/venv/python")
+    model_step_count = 1 if args.skip_models else len(model_commands)
+    step_count = 3 + model_step_count + (1 if setup_args else 0)
     print(f"==> 1/{step_count} Python virtual environment")
     py = create_venv(args.venv, base_python=args.base_python,
                      recreate=args.recreate, dry_run=False)
@@ -387,17 +418,28 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if not args.skip_models:
-        print(f"==> 3/{step_count} Speech models + config wiring")
-        setup_rc = _run(
-            [py, "-m", "tools.setup_models", *selected_model_args(args)],
-            dry_run=False,
-        )
-        if setup_rc != 0:
-            print(
-                "    selected speech-model setup failed; config was not published.",
-                file=sys.stderr,
+        model_commands = model_setup_commands(args, py)
+        for offset, command in enumerate(model_commands):
+            label = (
+                "Speech models + config wiring"
+                if offset == 0
+                else "Pinned BPE streaming-ASR context"
             )
-            return setup_rc
+            print(f"==> {3 + offset}/{step_count} {label}")
+            setup_rc = _run(command, dry_run=False)
+            if setup_rc != 0:
+                if offset == 0:
+                    detail = (
+                        "selected speech-model setup failed; the selected "
+                        "profile was not published."
+                    )
+                else:
+                    detail = (
+                        "BPE context setup failed; the base speech stack may "
+                        "already be published, but no BPE context was selected."
+                    )
+                print(f"    {detail}", file=sys.stderr)
+                return setup_rc
     else:
         print(f"==> 3/{step_count} Speech models (skipped: --skip-models)")
         print(
@@ -409,7 +451,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if setup_args:
-        print(f"==> 4/{step_count} Optional assistant capabilities")
+        capability_step = 3 + model_step_count
+        print(f"==> {capability_step}/{step_count} Optional assistant capabilities")
         capability_rc = _run(
             [py, "-m", "tools.setup_assistant", *setup_args],
             dry_run=False,
@@ -421,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return capability_rc
 
-    doctor_step = 5 if setup_args else 4
+    doctor_step = step_count
     print(f"==> {doctor_step}/{step_count} Base-runtime preflight (Ollama deferred)")
     doctor_rc = _run(
         [py, "-m", "tools.doctor", "--defer-ollama"], dry_run=False

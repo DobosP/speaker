@@ -14,6 +14,8 @@ from core.engines._sherpa_models import (
     build_recognizer,
     build_tts,
     build_vad,
+    create_recognizer_stream,
+    validate_bpe_vocab_file,
 )
 from core.engines.sherpa import SherpaConfig
 
@@ -133,14 +135,18 @@ def test_build_recognizer_passes_config(fake_sherpa):
     assert rec.kwargs["enable_endpoint_detection"] is True
 
 
-def test_build_recognizer_wires_decoding_and_endpoint_rules(fake_sherpa):
+def test_build_recognizer_wires_decoding_and_endpoint_rules(fake_sherpa, tmp_path):
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("piece\t-1.0\n", encoding="utf-8")
     c = SherpaConfig(
         asr_encoder="enc",
         asr_tokens="tok",
         asr_decoding_method="modified_beam_search",
         asr_max_active_paths=6,
-        asr_hotwords="Flurry\nParis",
+        asr_hotwords="FLURRY\nPARIS",
         asr_hotwords_score=2.0,
+        asr_modeling_unit="bpe",
+        asr_bpe_vocab=str(vocab),
         asr_rule2_min_trailing_silence=0.7,
     )
     rec = build_recognizer(c)
@@ -149,6 +155,199 @@ def test_build_recognizer_wires_decoding_and_endpoint_rules(fake_sherpa):
     assert rec.kwargs["rule2_min_trailing_silence"] == 0.7
     # Hotword score is passed only with beam search.
     assert rec.kwargs["hotwords_score"] == 2.0
+    assert rec.kwargs["modeling_unit"] == "bpe"
+    assert rec.kwargs["bpe_vocab"] == str(vocab)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"asr_hotwords": "Flurry"},
+        {"asr_hotwords": "Flurry", "asr_modeling_unit": "bpe"},
+        {"asr_hotwords": "Flurry", "asr_modeling_unit": "unsupported"},
+        {
+            "asr_hotwords": "Flurry",
+            "asr_modeling_unit": "bpe",
+            "asr_bpe_vocab": "/missing/bpe.vocab",
+        },
+    ],
+)
+def test_build_recognizer_rejects_incomplete_active_hotword_context(
+    fake_sherpa, kwargs
+):
+    with pytest.raises(ValueError, match="hotword|Hotword"):
+        build_recognizer(
+            SherpaConfig(asr_encoder="enc", asr_tokens="tok", **kwargs)
+        )
+
+
+def test_build_recognizer_ignores_prepared_context_without_phrases(fake_sherpa):
+    rec = build_recognizer(
+        SherpaConfig(
+            asr_encoder="enc",
+            asr_tokens="tok",
+            asr_modeling_unit="bpe",
+            asr_bpe_vocab="bpe.vocab",
+        )
+    )
+
+    assert "modeling_unit" not in rec.kwargs
+    assert "bpe_vocab" not in rec.kwargs
+
+
+def test_build_recognizer_rejects_runtime_without_context_arguments(
+    fake_sherpa, tmp_path
+):
+    class _NarrowOnlineRecognizer:
+        @staticmethod
+        def from_transducer(tokens, encoder):
+            return _FakeRecognizer(tokens=tokens, encoder=encoder)
+
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("piece\t-1.0\n", encoding="utf-8")
+    fake_sherpa.OnlineRecognizer = _NarrowOnlineRecognizer
+
+    with pytest.raises(RuntimeError, match="lacks selected streaming hotword"):
+        build_recognizer(
+            SherpaConfig(
+                asr_encoder="enc",
+                asr_tokens="tok",
+                asr_hotwords="VAULT",
+                asr_modeling_unit="bpe",
+                asr_bpe_vocab=str(vocab),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "constructor, missing",
+    [
+        (
+            lambda tokens, encoder, modeling_unit, bpe_vocab, hotwords_score: (
+                _FakeRecognizer(tokens=tokens, encoder=encoder)
+            ),
+            "decoding_method",
+        ),
+        (
+            lambda tokens, encoder, modeling_unit, bpe_vocab, decoding_method: (
+                _FakeRecognizer(tokens=tokens, encoder=encoder)
+            ),
+            "hotwords_score",
+        ),
+    ],
+)
+def test_build_recognizer_requires_every_active_hotword_control_argument(
+    fake_sherpa, tmp_path, constructor, missing
+):
+    fake_sherpa.OnlineRecognizer = type(
+        "NarrowOnlineRecognizer",
+        (),
+        {"from_transducer": staticmethod(constructor)},
+    )
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("piece\t-1.0\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=missing):
+        build_recognizer(
+            SherpaConfig(
+                asr_encoder="enc",
+                asr_tokens="tok",
+                asr_hotwords="VAULT",
+                asr_decoding_method="modified_beam_search",
+                asr_modeling_unit="bpe",
+                asr_bpe_vocab=str(vocab),
+            )
+        )
+
+
+def test_active_hotword_stream_typeerror_fails_closed():
+    calls = []
+
+    class _NoKeywordStream:
+        def create_stream(self, **kwargs):
+            calls.append(kwargs)
+            if "hotwords" in kwargs:
+                raise TypeError("unexpected keyword")
+            return object()
+
+    with pytest.raises(RuntimeError, match="per-stream hotword"):
+        create_recognizer_stream(
+            _NoKeywordStream(),
+            SherpaConfig(
+                asr_decoding_method="modified_beam_search",
+                asr_hotwords="VAULT",
+            ),
+        )
+
+    assert calls == [{"hotwords": "VAULT"}]
+
+
+@pytest.mark.parametrize("explicit", [None, []])
+def test_empty_hotwords_create_plain_stream(explicit):
+    sentinel = object()
+    calls = []
+
+    class _PlainStream:
+        def create_stream(self, **kwargs):
+            calls.append(kwargs)
+            return sentinel
+
+    result = create_recognizer_stream(
+        _PlainStream(), SherpaConfig(), hotwords=explicit
+    )
+
+    assert result is sentinel
+    assert calls == [{}]
+
+
+def test_pinned_phrase_policy_rejects_lowercase_with_valid_vocab(
+    fake_sherpa, tmp_path
+):
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("<unk>\t0.0\n▁\t-1.0\nV\t-2.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="UPPERCASE ASCII"):
+        build_recognizer(
+            SherpaConfig(
+                asr_encoder="enc",
+                asr_tokens="tok",
+                asr_hotwords="vault",
+                asr_modeling_unit="bpe",
+                asr_bpe_vocab=str(vocab),
+                asr_hotwords_case_policy="upper_ascii_words",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        (b"", "empty"),
+        (b"piece-only\n", "malformed"),
+        (b"piece\tnan\n", "non-finite"),
+    ],
+)
+def test_bpe_vocab_validation_rejects_invalid_regular_files(
+    tmp_path, payload, message
+):
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_bytes(payload)
+
+    with pytest.raises(ValueError, match=message):
+        validate_bpe_vocab_file(str(vocab))
+
+
+def test_bpe_vocab_validation_rejects_directory(tmp_path):
+    with pytest.raises(ValueError, match="regular file|unreadable"):
+        validate_bpe_vocab_file(str(tmp_path))
+
+
+def test_bpe_vocab_validation_enforces_expected_digest(tmp_path):
+    vocab = tmp_path / "bpe.vocab"
+    vocab.write_text("piece\t-1.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        validate_bpe_vocab_file(str(vocab), expected_sha256="0" * 64)
 
 
 def test_build_recognizer_no_hotword_score_under_greedy(fake_sherpa):
@@ -156,8 +355,8 @@ def test_build_recognizer_no_hotword_score_under_greedy(fake_sherpa):
         asr_encoder="enc", asr_tokens="tok",
         asr_decoding_method="greedy_search", asr_hotwords="Flurry",
     )
-    rec = build_recognizer(c)
-    assert "hotwords_score" not in rec.kwargs
+    with pytest.raises(ValueError, match="modified_beam_search"):
+        build_recognizer(c)
 
 
 def test_supported_drops_unknown_kwargs_for_narrow_signature():

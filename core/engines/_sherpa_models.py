@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import math
+import os
+import re
+import stat
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -8,6 +13,132 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger("speaker.sherpa_models")
+_MAX_BPE_VOCAB_BYTES = 4 * 1024 * 1024
+_UPPER_ASCII_WORDS = re.compile(r"[A-Z]+(?: [A-Z]+)*")
+
+
+def validate_bpe_vocab_file(path: str, *, expected_sha256: str = "") -> str:
+    """Validate and hash the small two-column vocabulary consumed by Sherpa."""
+    expected = str(expected_sha256 or "").strip()
+    if expected and re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValueError("BPE vocabulary SHA-256 must be 64 lowercase hex characters")
+    try:
+        with open(path, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("BPE streaming hotword vocabulary is not a regular file")
+            if before.st_size <= 0:
+                raise ValueError("BPE streaming hotword vocabulary is empty")
+            if before.st_size > _MAX_BPE_VOCAB_BYTES:
+                raise ValueError("BPE streaming hotword vocabulary is unexpectedly large")
+            payload = handle.read(_MAX_BPE_VOCAB_BYTES + 1)
+            after = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise ValueError("BPE streaming hotword vocabulary is unreadable") from exc
+    if (
+        len(payload) != before.st_size
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+    ):
+        raise ValueError("BPE streaming hotword vocabulary changed while reading")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("BPE streaming hotword vocabulary is not UTF-8") from exc
+    pieces: set[str] = set()
+    for line in text.splitlines():
+        columns = line.split("\t")
+        if len(columns) != 2 or not columns[0]:
+            raise ValueError("BPE streaming hotword vocabulary is malformed")
+        if columns[0] in pieces:
+            raise ValueError("BPE streaming hotword vocabulary has duplicate pieces")
+        pieces.add(columns[0])
+        try:
+            score = float(columns[1])
+        except ValueError as exc:
+            raise ValueError("BPE streaming hotword vocabulary score is invalid") from exc
+        if not math.isfinite(score):
+            raise ValueError("BPE streaming hotword vocabulary score is non-finite")
+    if not pieces:
+        raise ValueError("BPE streaming hotword vocabulary has no pieces")
+    digest = hashlib.sha256(payload).hexdigest()
+    if expected and digest != expected:
+        raise ValueError("BPE streaming hotword vocabulary checksum mismatch")
+    return digest
+
+
+def _streaming_hotword_context_kwargs(config: "SherpaConfig") -> dict[str, str]:
+    """Return the model-specific context needed to encode active hotwords.
+
+    sherpa-onnx defaults ``modeling_unit`` to ``cjkchar``.  That default cannot
+    encode phrases for an English BPE Zipformer, so accepting an empty unit here
+    would make an explicitly selected hotword candidate look enabled while doing
+    nothing.  Keep inactive/default configurations byte-identical and fail an
+    active, incomplete candidate before the native recognizer is constructed.
+    """
+    phrases = [
+        line.strip()
+        for line in str(getattr(config, "asr_hotwords", "") or "").splitlines()
+        if line.strip()
+    ]
+    if not phrases:
+        return {}
+    _validate_streaming_hotword_phrases(config, phrases)
+    if getattr(config, "asr_decoding_method", "") != "modified_beam_search":
+        raise ValueError(
+            "active streaming hotwords require modified_beam_search"
+        )
+
+    unit = str(getattr(config, "asr_modeling_unit", "") or "").strip().lower()
+    if unit not in {"bpe", "cjkchar", "cjkchar+bpe"}:
+        raise ValueError(
+            "active streaming hotwords require asr_modeling_unit to be one of "
+            "bpe, cjkchar, or cjkchar+bpe"
+        )
+    kwargs = {"modeling_unit": unit}
+    if unit in {"bpe", "cjkchar+bpe"}:
+        vocab = str(getattr(config, "asr_bpe_vocab", "") or "").strip()
+        if not vocab:
+            raise ValueError(
+                "BPE streaming hotwords require an asr_bpe_vocab file"
+            )
+        validate_bpe_vocab_file(
+            vocab,
+            expected_sha256=str(
+                getattr(config, "asr_bpe_vocab_sha256", "") or ""
+            ),
+        )
+        kwargs["bpe_vocab"] = vocab
+    return kwargs
+
+
+def _validate_streaming_hotword_phrases(
+    config: "SherpaConfig", phrases: list[str] | tuple[str, ...]
+) -> None:
+    """Validate an explicit phrase contract without constraining custom BPEs.
+
+    The pinned English Zipformer setup selects ``upper`` because its token table
+    cannot encode lowercase domain words without the unknown token. Custom BPE
+    models keep the default empty policy and may define their own casing.
+    """
+    policy = str(
+        getattr(config, "asr_hotwords_case_policy", "") or ""
+    ).strip().lower()
+    if policy not in {"", "upper_ascii_words"}:
+        raise ValueError(
+            "active streaming hotwords have an unsupported "
+            "asr_hotwords_case_policy"
+        )
+    if policy == "upper_ascii_words":
+        invalid = [
+            phrase for phrase in phrases
+            if _UPPER_ASCII_WORDS.fullmatch(phrase) is None
+        ]
+        if invalid:
+            raise ValueError(
+                "the selected English BPE context requires UPPERCASE ASCII "
+                "word phrases separated by single spaces"
+            )
 
 
 def create_recognizer_stream(
@@ -21,27 +152,30 @@ def create_recognizer_stream(
 
     Live capture and recorded replay must use the same per-stream hotword seam;
     otherwise a recording A/B silently measures an un-biased recognizer even
-    though the live engine is biased. Older sherpa-onnx builds may reject the
-    keyword, so retain the existing plain-stream fallback.
+    though the live engine is biased. An active phrase list fails closed when
+    the runtime rejects the per-stream argument; silently retrying a plain
+    stream would invalidate both live behavior and an A/B result.
     """
     phrases = list(hotwords) if hotwords is not None else [
         line.strip()
         for line in (getattr(config, "asr_hotwords", "") or "").splitlines()
         if line.strip()
     ]
-    if (
-        phrases
-        and getattr(config, "asr_decoding_method", "") == "modified_beam_search"
-    ):
-        try:
-            kwargs = {"hotwords": "\n".join(phrases)}
-            if stream_role is not None:
-                kwargs["role"] = stream_role
-            return recognizer.create_stream(**kwargs)
-        except TypeError:
-            log.warning(
-                "this sherpa-onnx build ignores per-stream hotwords; biasing disabled"
+    if phrases:
+        _validate_streaming_hotword_phrases(config, phrases)
+        if getattr(config, "asr_decoding_method", "") != "modified_beam_search":
+            raise ValueError(
+                "active streaming hotwords require modified_beam_search"
             )
+        kwargs = {"hotwords": "\n".join(phrases)}
+        if stream_role is not None:
+            kwargs["role"] = stream_role
+        try:
+            return recognizer.create_stream(**kwargs)
+        except TypeError as exc:
+            raise RuntimeError(
+                "installed sherpa-onnx lacks active per-stream hotword support"
+            ) from exc
     if stream_role is not None:
         return recognizer.create_stream(role=stream_role)
     return recognizer.create_stream()
@@ -61,8 +195,10 @@ def build_recognizer(c: "SherpaConfig"):
     ``decoding_method`` (``modified_beam_search`` is more accurate than greedy
     and is what enables hotword biasing), the endpoint rules (``rule2`` is the
     turn-commit latency knob), and the hotword score for contextual biasing.
-    Extra kwargs are filtered against ``from_transducer``'s real signature so an
-    older sherpa-onnx that lacks one of them still builds instead of crashing."""
+    Extra non-context kwargs are filtered against ``from_transducer``'s real
+    signature. An explicitly selected model-specific hotword context instead
+    fails closed when the installed runtime cannot accept it; otherwise an A/B
+    could silently measure an un-biased recognizer."""
     if not c.asr_encoder:
         return None
     import sherpa_onnx
@@ -85,11 +221,22 @@ def build_recognizer(c: "SherpaConfig"):
     )
     # Contextual biasing is only honored by beam search; pass the hotword score
     # so a phrase list supplied per-stream (see SherpaOnnxEngine) is boosted.
-    if c.asr_hotwords and c.asr_decoding_method == "modified_beam_search":
+    context_kwargs = _streaming_hotword_context_kwargs(c)
+    if context_kwargs:
         kwargs["hotwords_score"] = c.asr_hotwords_score
-    return sherpa_onnx.OnlineRecognizer.from_transducer(**_supported(
-        sherpa_onnx.OnlineRecognizer.from_transducer, kwargs
-    ))
+        kwargs.update(context_kwargs)
+    constructor = sherpa_onnx.OnlineRecognizer.from_transducer
+    supported = _supported(constructor, kwargs)
+    required_hotword_args = set(context_kwargs)
+    if context_kwargs:
+        required_hotword_args.update({"decoding_method", "hotwords_score"})
+    missing_hotword_args = required_hotword_args.difference(supported)
+    if missing_hotword_args:
+        raise RuntimeError(
+            "installed sherpa-onnx lacks selected streaming hotword "
+            f"arguments: {', '.join(sorted(missing_hotword_args))}"
+        )
+    return constructor(**supported)
 
 
 def build_final_recognizer(c: "SherpaConfig"):

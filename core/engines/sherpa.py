@@ -838,6 +838,19 @@ class SherpaConfig:
     # fields above (homophone replacement) instead. See docs/asr_biasing.md.
     asr_hotwords: str = ""
     asr_hotwords_score: float = 1.5
+    # Optional phrase-shape contract. The pinned English BPE setup selects
+    # ``upper_ascii_words`` because that grammar is encodable without <unk> by
+    # its verified token table. Empty leaves custom models extensible.
+    asr_hotwords_case_policy: str = ""
+    # sherpa-onnx needs an explicit modeling unit to encode a hotword phrase.
+    # Its implicit cjkchar fallback is wrong for the shipped English BPE
+    # Zipformer. These fields are consulted only when a non-empty hotword list
+    # uses modified beam search; empty defaults preserve the recognizer exactly.
+    # BPE and mixed cjkchar+bpe units require the two-column SentencePiece vocab
+    # exported by ``tools.setup_models --bpe-hotwords``.
+    asr_modeling_unit: str = ""
+    asr_bpe_vocab: str = ""
+    asr_bpe_vocab_sha256: str = ""
     # Endpoint rules (the turn-commit latency knobs). rule1 fires on trailing
     # silence with no decoded text; rule2 fires on trailing silence AFTER speech
     # (this is the one that decides how long we wait before committing a final --
@@ -5511,12 +5524,13 @@ class SherpaOnnxEngine(AudioEngine):
         """Create a recognizer stream, with hotword biasing when available.
 
         Contextual biasing is per-stream in sherpa-onnx and only honored by
-        ``modified_beam_search``. We try the hotword-aware factory and fall back
-        to the plain one, so an older build (or greedy decoding) still works.
+        ``modified_beam_search``. Active phrases fail closed if the runtime
+        cannot create a biased stream; only an empty phrase list uses a plain
+        stream.
 
         ``recognizer`` is the run-scoped decode session in production. The
-        fallback exists only for narrow stream-factory unit tests that inject a
-        fake recognizer without starting capture.
+        Direct narrow stream-factory tests may inject a fake recognizer without
+        starting capture.
         """
         owner = recognizer
         if owner is None:

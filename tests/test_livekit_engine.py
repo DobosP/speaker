@@ -12,6 +12,7 @@ import types
 import numpy as np
 import pytest
 
+import core.engines.livekit as livekit_module
 from always_on_agent.acoustic import AcousticSource, EndpointReason
 from core.engine import (
     EngineCallbacks,
@@ -280,6 +281,97 @@ def _fake_livekit_module(monkeypatch):
 
 def _engine():
     return LiveKitEngine(SherpaConfig(), url="ws://localhost:7880", token="t")
+
+
+def test_asr_loop_uses_shared_hotword_stream_helper(monkeypatch):
+    config = SherpaConfig(asr_hotwords="VAULT")
+    eng = LiveKitEngine(config, url="ws://localhost:7880", token="t")
+    recognizer = object()
+    sentinel = object()
+    calls = []
+    eng._recognizer = recognizer
+
+    def create(rec, cfg):
+        calls.append((rec, cfg))
+        return sentinel
+
+    monkeypatch.setattr(livekit_module, "create_recognizer_stream", create)
+    eng._asr_loop()
+
+    assert calls == [(recognizer, config)]
+    assert eng._asr_startup.is_set()
+    assert eng._asr_stream is None  # retired on the owning worker
+
+
+def test_start_fails_closed_before_livekit_loop_without_hotword_stream_support(
+    monkeypatch,
+):
+    class _NoHotwordRecognizer:
+        plain_calls = 0
+
+        def create_stream(self):
+            self.plain_calls += 1
+            return _FakeStream()
+
+    recognizer = _NoHotwordRecognizer()
+    monkeypatch.setattr(
+        livekit_module, "build_recognizer", lambda _config: recognizer
+    )
+    monkeypatch.setattr(livekit_module, "build_vad", lambda _config: None)
+    monkeypatch.setattr(livekit_module, "build_tts", lambda _config: None)
+    eng = LiveKitEngine(
+        SherpaConfig(asr_hotwords="VAULT"),
+        url="ws://localhost:7880",
+        token="t",
+    )
+
+    with pytest.raises(RuntimeError, match="ASR stream startup failed"):
+        eng.start(EngineCallbacks())
+
+    assert recognizer.plain_calls == 0
+    assert not eng._running.is_set()
+    assert eng._asr_stream is None
+    assert eng._asr_thread is None
+    assert eng._loop_thread is None
+
+
+def test_blocked_asr_startup_retains_worker_until_native_call_returns(
+    monkeypatch,
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingRecognizer:
+        def create_stream(self):
+            entered.set()
+            assert release.wait(2.0)
+            return _FakeStream()
+
+    monkeypatch.setattr(
+        livekit_module,
+        "build_recognizer",
+        lambda _config: _BlockingRecognizer(),
+    )
+    monkeypatch.setattr(livekit_module, "build_vad", lambda _config: None)
+    monkeypatch.setattr(livekit_module, "build_tts", lambda _config: None)
+    monkeypatch.setattr(livekit_module, "ASR_START_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(livekit_module, "ASR_START_JOIN_TIMEOUT_SEC", 0.01)
+    eng = _engine()
+
+    with pytest.raises(RuntimeError, match="native worker retained"):
+        eng.start(EngineCallbacks())
+
+    assert entered.is_set()
+    assert eng._asr_thread is not None
+    assert eng._asr_thread.is_alive()
+    assert eng._loop_thread is None
+    assert not eng._running.is_set()
+    release.set()
+    eng._asr_thread.join(1.0)
+    assert not eng._asr_thread.is_alive()
+    assert eng._asr_stream is None
+    eng.stop()
+    assert eng._asr_thread is None
 
 
 def test_feed_asr_legacy_callbacks_remain_fallback():

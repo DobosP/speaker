@@ -133,6 +133,42 @@ def test_artifact_digest_binds_bias_dictionary_contents(tmp_path):
     assert first != second
 
 
+def test_artifact_digest_binds_only_active_bpe_hotword_vocab(tmp_path):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_encoder: str
+        asr_hotwords: str
+        asr_decoding_method: str
+        asr_modeling_unit: str
+        asr_bpe_vocab: str
+
+    model = tmp_path / "model.onnx"
+    vocab = tmp_path / "bpe.vocab"
+    model.write_bytes(b"model")
+    vocab.write_bytes(b"first")
+    active = _Config(
+        str(model), "VAULT", "modified_beam_search", "bpe", str(vocab)
+    )
+
+    first = stt_eval._model_digest(active)
+    vocab.write_bytes(b"second")
+    second = stt_eval._model_digest(active)
+
+    assert first != second
+    stale = _Config(
+        str(model), "", "modified_beam_search", "bpe", str(tmp_path / "missing.vocab")
+    )
+    clean = _Config(str(model), "", "modified_beam_search", "bpe", "")
+    assert stt_eval._model_digest(stale) == stt_eval._model_digest(clean)
+    for method, unit in (("greedy_search", "bpe"), ("modified_beam_search", "cjkchar")):
+        inert = _Config(
+            str(model), "VAULT", method, unit, str(tmp_path / "missing.vocab")
+        )
+        assert stt_eval._model_digest(inert) == stt_eval._model_digest(
+            _Config(str(model), "VAULT", method, unit, "")
+        )
+
+
 def test_artifact_digest_binds_final_verifier_snapshot_contents(tmp_path):
     @dataclass(frozen=True)
     class _Config:

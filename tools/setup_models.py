@@ -7,10 +7,11 @@ Run once, then start the assistant:
     python -m tools.setup_models
     ./live.sh  # normal Linux physical-session entry
 
-Reuses the shared model manifest (tools/bench/models.py) so the coordinates live
-in one place (override with the SPEAKER_BENCH_*_REPO / _FILE env vars). Models
-land in pretrained_models/sherpa/ with flat, predictable filenames. The desktop
-default serves the LLM via Ollama, so no GGUF is fetched by default; pass
+Ordinary setup reuses the shared model manifest (tools/bench/models.py), with
+SPEAKER_BENCH_*_REPO / _FILE overrides, and uses flat model paths. The isolated
+``--bpe-hotwords`` transaction instead publishes its pinned ASR/BPE family in a
+nested content-addressed directory; benchmark setup never fetches that context.
+The desktop default serves the LLM via Ollama, so no GGUF is fetched by default; pass
 ``--gguf`` to also fetch the on-device MiniCPM5 GGUF weights (the llamacpp backend
 used by the phone / phone_lite device profiles) into ``models/``. Idempotent:
 re-running only fills missing files unless you pass --force.
@@ -26,9 +27,14 @@ publication.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import importlib
 import json
+import math
 import os
+import re
+import stat
 import sys
 import tempfile
 from typing import Callable
@@ -51,6 +57,56 @@ FILE_KEYS = [
     "tts_model",
     "tts_tokens",
 ]
+ASR_FILE_KEYS = (
+    "asr_tokens",
+    "asr_encoder",
+    "asr_decoder",
+    "asr_joiner",
+)
+# The English hotword context is a setup-only, immutable ASR-family selection.
+# Keep it out of tools.bench.models: benchmarks must not download an unused
+# artifact, and this setup must bind the vocabulary to the exact consumers.
+BPE_HOTWORD_REPO = (
+    "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+)
+BPE_HOTWORD_REVISION = "672fbf1b30579d6585301139bb363f42a0ad4a24"
+BPE_HOTWORD_MODEL = {
+    "repo": BPE_HOTWORD_REPO,
+    "file": "bpe.model",
+    "revision": BPE_HOTWORD_REVISION,
+    "sha256": "c53433de083c4a6ad12d034550ef22de68cec62c4f58932a7b6b8b2f1e743fa5",
+    "vocab_sha256": "f191a4935f668fa8cd8e607bcd378404f948321cd3134a5ea13d324ba921673d",
+}
+BPE_HOTWORD_SENTENCEPIECE_VERSION = "0.2.1"
+_BPE_HOTWORD_ASR_SUFFIX = "epoch-99-avg-1-chunk-16-left-128"
+BPE_HOTWORD_ASR_FILES = {
+    "high": {
+        "asr_tokens": "tokens.txt",
+        "asr_encoder": f"encoder-{_BPE_HOTWORD_ASR_SUFFIX}.onnx",
+        "asr_decoder": f"decoder-{_BPE_HOTWORD_ASR_SUFFIX}.onnx",
+        "asr_joiner": f"joiner-{_BPE_HOTWORD_ASR_SUFFIX}.onnx",
+    },
+    "fast": {
+        "asr_tokens": "tokens.txt",
+        "asr_encoder": f"encoder-{_BPE_HOTWORD_ASR_SUFFIX}.int8.onnx",
+        "asr_decoder": f"decoder-{_BPE_HOTWORD_ASR_SUFFIX}.onnx",
+        "asr_joiner": f"joiner-{_BPE_HOTWORD_ASR_SUFFIX}.int8.onnx",
+    },
+}
+BPE_HOTWORD_ASR_SHA256 = {
+    "high": {
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "asr_encoder": "a423883ce5754507fd941755ab0b5bc426a84ac670cbe21cf060e9e2c66dc660",
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+    },
+    "fast": {
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "asr_encoder": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_joiner": "d944208d660d67c8d72cd2acaeac971fa5ceb8c80e76c1968148846fedd6e297",
+    },
+}
 # The ASR and TTS models each ship their OWN tokens.txt with different
 # vocabularies, so they must land in separate folders -- a flat dir lets the
 # second tokens.txt clobber the first, which loads the recognizer with the
@@ -233,6 +289,383 @@ KWS_KEYWORDS_FILE = "keywords_barge.txt"
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
     return os.path.join(base, SUBDIR.get(key, ""))
+
+
+def _fsync_directory(path: str) -> None:
+    """Best-effort persistence for an atomic rename's containing directory."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        os.fsync(descriptor)
+    except OSError:
+        # Some Windows/filesystem combinations cannot fsync directories. The
+        # content itself is already fsynced and atomically renamed.
+        pass
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def export_bpe_vocab(
+    bpe_model: str,
+    output_path: str,
+    *,
+    processor_factory: Callable[[], object] | None = None,
+) -> str:
+    """Atomically export sherpa-onnx's two-column hotword BPE vocabulary.
+
+    The file format intentionally matches upstream ``export_bpe_vocab.py``:
+    one SentencePiece token and its score per line.  A temporary sibling is
+    fully written and fsynced before replacement, so a failed export cannot
+    truncate a previously prepared context artifact.
+    """
+    if processor_factory is None:
+        try:
+            import sentencepiece as spm
+        except ImportError as exc:
+            raise RuntimeError(
+                "BPE hotword setup needs sentencepiece==0.2.1"
+            ) from exc
+        processor_factory = spm.SentencePieceProcessor
+
+    processor = processor_factory()
+    loaded = processor.Load(bpe_model)  # type: ignore[attr-defined]
+    if loaded is False:
+        raise ValueError("SentencePiece refused the selected BPE model")
+    piece_count = int(processor.get_piece_size())  # type: ignore[attr-defined]
+    if piece_count <= 0:
+        raise ValueError("SentencePiece model has no vocabulary")
+
+    target = os.path.abspath(output_path)
+    parent = os.path.dirname(target) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target)}.", suffix=".tmp", dir=parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            for index in range(piece_count):
+                piece = str(processor.id_to_piece(index))  # type: ignore[attr-defined]
+                if not piece or any(char in piece for char in "\t\r\n"):
+                    raise ValueError("SentencePiece vocabulary contains an unsafe token")
+                if int(processor.piece_to_id(piece)) != index:  # type: ignore[attr-defined]
+                    raise ValueError("SentencePiece vocabulary is not bijective")
+                score = float(processor.get_score(index))  # type: ignore[attr-defined]
+                if not math.isfinite(score):
+                    raise ValueError("SentencePiece vocabulary contains a non-finite score")
+                handle.write(f"{piece}\t{score}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        temporary = ""
+        _fsync_directory(parent)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    return target
+
+
+def require_bpe_hotword_exporter(
+    *,
+    module_loader: Callable[[str], object] = importlib.import_module,
+) -> None:
+    """Fail before model downloads when the pinned BPE exporter is absent."""
+    try:
+        sentencepiece = module_loader("sentencepiece")
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "BPE hotword setup needs sentencepiece=="
+            f"{BPE_HOTWORD_SENTENCEPIECE_VERSION}; run "
+            "python tools/install.py --bpe-hotwords"
+        ) from exc
+    installed = str(getattr(sentencepiece, "__version__", ""))
+    if installed != BPE_HOTWORD_SENTENCEPIECE_VERSION:
+        raise RuntimeError(
+            "BPE hotword setup needs sentencepiece=="
+            f"{BPE_HOTWORD_SENTENCEPIECE_VERSION}; found "
+            f"{installed or 'unknown'}"
+        )
+
+
+def _materialize_verified_regular_file(
+    source_path: str,
+    target_path: str,
+    *,
+    expected_sha256: str,
+) -> str:
+    """Copy a hub result into one durable canonical regular file.
+
+    Older huggingface-hub releases may return a symlink into their cache for a
+    ``local_dir`` download. Never publish that external dependency as part of
+    an immutable family: copy, hash, fsync, then replace the staging pathname.
+    """
+    parent = os.path.dirname(os.path.abspath(target_path)) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target_path)}.", suffix=".materialize",
+        dir=parent,
+    )
+    digest = hashlib.sha256()
+    try:
+        with open(source_path, "rb") as source, os.fdopen(
+            descriptor, "wb"
+        ) as target:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                target.write(chunk)
+                digest.update(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError(
+                f"downloaded artifact {os.path.basename(target_path)} checksum mismatch"
+            )
+        os.replace(temporary, target_path)
+        temporary = ""
+        metadata = os.lstat(target_path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("materialized model artifact is not a regular file")
+        _fsync_directory(parent)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    return target_path
+
+
+def fetch_bpe_hotword_vocab(
+    dest_dir: str,
+    coords: dict[str, str],
+    *,
+    token: str | None,
+    force: bool,
+    download: Callable[..., str],
+) -> str:
+    """Fetch one pinned BPE model and publish a content-addressed vocabulary.
+
+    The runtime filename contains the complete verified digest and is never
+    replaced. A later config-publication failure can therefore leave only an
+    inert artifact; it cannot mutate bytes behind the previous config's path.
+    """
+    expected_model = str(coords.get("sha256", "") or "")
+    expected_vocab = str(coords.get("vocab_sha256", "") or "")
+    for label, value in (
+        ("BPE model SHA-256", expected_model),
+        ("BPE vocabulary SHA-256", expected_vocab),
+    ):
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError(f"{label} must be 64 lowercase hex characters")
+
+    os.makedirs(dest_dir, exist_ok=True)
+    kwargs = {
+        "repo_id": coords["repo"],
+        "filename": coords["file"],
+        "local_dir": dest_dir,
+        "token": token,
+        "force_download": force,
+    }
+    revision = str(coords.get("revision", "") or "")
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError("BPE model revision must be a full commit hash")
+    kwargs["revision"] = revision
+    downloaded_model = download(**kwargs)
+    model_path = _materialize_verified_regular_file(
+        downloaded_model,
+        os.path.join(dest_dir, os.path.basename(coords["file"])),
+        expected_sha256=expected_model,
+    )
+
+    target = os.path.join(dest_dir, f"bpe-{expected_vocab}.vocab")
+    if os.path.exists(target):
+        if not os.path.isfile(target) or _sha256_file(target) != expected_vocab:
+            raise ValueError(
+                "content-addressed BPE vocabulary path has unexpected bytes"
+            )
+        return target
+    descriptor, candidate = tempfile.mkstemp(
+        prefix=".bpe-vocab-candidate-", dir=dest_dir
+    )
+    os.close(descriptor)
+    os.unlink(candidate)
+    try:
+        export_bpe_vocab(model_path, candidate)
+        if _sha256_file(candidate) != expected_vocab:
+            raise ValueError("exported BPE vocabulary checksum mismatch")
+        try:
+            os.link(candidate, target)
+        except FileExistsError:
+            if not os.path.isfile(target) or _sha256_file(target) != expected_vocab:
+                raise ValueError(
+                    "content-addressed BPE vocabulary path has unexpected bytes"
+                )
+        os.unlink(candidate)
+        candidate = ""
+        _fsync_directory(dest_dir)
+    finally:
+        if candidate:
+            try:
+                os.unlink(candidate)
+            except FileNotFoundError:
+                pass
+    return target
+
+
+def fetch_bpe_hotword_context(
+    dest_root: str,
+    *,
+    accuracy: str,
+    token: str | None,
+    force: bool,
+    download: Callable[..., str],
+) -> dict[str, str]:
+    """Fetch one revision-bound English Zipformer family plus its BPE vocab."""
+    try:
+        filenames = BPE_HOTWORD_ASR_FILES[accuracy]
+        expected_hashes = BPE_HOTWORD_ASR_SHA256[accuracy]
+    except KeyError as exc:
+        raise ValueError("BPE hotword accuracy must be high or fast") from exc
+    if re.fullmatch(r"[0-9a-f]{40}", BPE_HOTWORD_REVISION) is None:
+        raise ValueError("BPE hotword ASR revision must be a full commit hash")
+
+    family_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "repo": BPE_HOTWORD_REPO,
+                "revision": BPE_HOTWORD_REVISION,
+                "files": filenames,
+                "sha256": expected_hashes,
+                "bpe_model": {
+                    key: BPE_HOTWORD_MODEL[key]
+                    for key in (
+                        "repo",
+                        "file",
+                        "revision",
+                        "sha256",
+                        "vocab_sha256",
+                    )
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    context_dir = os.path.join(
+        dest_root,
+        f"asr-bpe-{BPE_HOTWORD_REVISION}-{accuracy}-{family_digest}",
+    )
+
+    def resolve_and_validate(root: str) -> dict[str, str]:
+        try:
+            root_metadata = os.lstat(root)
+        except OSError as exc:
+            raise ValueError("pinned BPE context directory is missing") from exc
+        if (
+            stat.S_ISLNK(root_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+        ):
+            raise ValueError(
+                "pinned BPE context root must be a real local directory"
+            )
+        resolved = {
+            key: os.path.join(root, filename)
+            for key, filename in filenames.items()
+        }
+        resolved["asr_bpe_vocab"] = os.path.join(
+            root,
+            f"bpe-{BPE_HOTWORD_MODEL['vocab_sha256']}.vocab",
+        )
+        for key in ASR_FILE_KEYS:
+            path = resolved[key]
+            try:
+                metadata = os.lstat(path)
+            except OSError as exc:
+                raise ValueError(f"pinned BPE context {key} is missing") from exc
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or _sha256_file(path) != expected_hashes[key]
+            ):
+                raise ValueError(f"pinned BPE context {key} checksum mismatch")
+        for label, path, expected in (
+            (
+                "source model",
+                os.path.join(root, os.path.basename(BPE_HOTWORD_MODEL["file"])),
+                BPE_HOTWORD_MODEL["sha256"],
+            ),
+            (
+                "vocabulary",
+                resolved["asr_bpe_vocab"],
+                BPE_HOTWORD_MODEL["vocab_sha256"],
+            ),
+        ):
+            try:
+                metadata = os.lstat(path)
+            except OSError as exc:
+                raise ValueError(f"pinned BPE context {label} is missing") from exc
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or _sha256_file(path) != expected
+            ):
+                raise ValueError(f"pinned BPE context {label} checksum mismatch")
+        return resolved
+
+    if os.path.exists(context_dir):
+        # A revision/hash-addressed family is immutable once published. Even
+        # --force validates and reuses it rather than mutating active paths.
+        return resolve_and_validate(context_dir)
+
+    require_bpe_hotword_exporter()
+    os.makedirs(dest_root, exist_ok=True)
+    staging = tempfile.mkdtemp(
+        prefix=f".asr-bpe-{BPE_HOTWORD_REVISION}-{accuracy}-staging-",
+        dir=dest_root,
+    )
+    try:
+        for key in ASR_FILE_KEYS:
+            downloaded = download(
+                repo_id=BPE_HOTWORD_REPO,
+                filename=filenames[key],
+                local_dir=staging,
+                token=token,
+                force_download=force,
+                revision=BPE_HOTWORD_REVISION,
+            )
+            _materialize_verified_regular_file(
+                downloaded,
+                os.path.join(staging, filenames[key]),
+                expected_sha256=expected_hashes[key],
+            )
+        fetch_bpe_hotword_vocab(
+            staging,
+            dict(BPE_HOTWORD_MODEL),
+            token=token,
+            force=force,
+            download=download,
+        )
+        resolve_and_validate(staging)
+        _fsync_directory(staging)
+        try:
+            os.rename(staging, context_dir)
+            staging = ""
+            _fsync_directory(dest_root)
+        except OSError as exc:
+            # POSIX may report a losing directory rename as ENOTEMPTY rather
+            # than EEXIST. Treat only those two collision errors as a
+            # concurrent winner; every other publication failure remains fatal.
+            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise
+            resolve_and_validate(context_dir)
+        return resolve_and_validate(context_dir)
+    finally:
+        if staging:
+            import shutil
+
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def fetch_faster_whisper_verifier(
@@ -780,6 +1213,96 @@ def wire_sherpa_paths(
     return config
 
 
+def _config_source_identity(path: str) -> str:
+    try:
+        with open(path, "rb") as handle:
+            marker = b"present\0" + handle.read()
+    except FileNotFoundError:
+        marker = b"missing\0"
+    return hashlib.sha256(marker).hexdigest()
+
+
+def load_local_config_snapshot(path: str) -> tuple[dict, str]:
+    """Read one config plus the exact source identity used for publication CAS."""
+    try:
+        with open(path, "rb") as handle:
+            payload = handle.read()
+    except FileNotFoundError:
+        return {}, hashlib.sha256(b"missing\0").hexdigest()
+    config = json.loads(payload.decode("utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("existing local config must contain a JSON object")
+    identity = hashlib.sha256(b"present\0" + payload).hexdigest()
+    return config, identity
+
+
+def load_local_config(path: str) -> dict:
+    """Read one machine-local JSON object before any model mutation/download."""
+    return load_local_config_snapshot(path)[0]
+
+
+def existing_bpe_hotword_asr_paths(
+    config: dict,
+    *,
+    isfile: Callable[[str], bool] = os.path.isfile,
+) -> dict[str, str]:
+    """Return a complete prepared BPE family's ASR paths for preservation.
+
+    Ordinary setup must not rewire the four consuming model paths while leaving
+    a prepared vocabulary behind. A complete custom/pinned selection is kept;
+    an incomplete one fails before downloads and must be repaired explicitly.
+    """
+    sherpa = config.get("sherpa") if isinstance(config.get("sherpa"), dict) else {}
+    unit = str((sherpa or {}).get("asr_modeling_unit", "") or "").strip().lower()
+    vocab = str((sherpa or {}).get("asr_bpe_vocab", "") or "").strip()
+    if unit not in {"bpe", "cjkchar+bpe"} or not vocab:
+        return {}
+    selected = {
+        key: str((sherpa or {}).get(key, "") or "").strip()
+        for key in ASR_FILE_KEYS
+    }
+    missing = [key for key, path in selected.items() if not path or not isfile(path)]
+    if not isfile(vocab):
+        missing.append("asr_bpe_vocab")
+    if missing:
+        raise ValueError(
+            "prepared BPE hotword context is incomplete; rerun "
+            "tools.setup_models --bpe-hotwords before ordinary model setup"
+        )
+    return selected
+
+
+def validate_pinned_bpe_hotword_phrases(config: dict) -> None:
+    """Reject phrases that the pinned 500-piece English model could map to unk."""
+    sherpa = config.get("sherpa") if isinstance(config.get("sherpa"), dict) else {}
+    phrases = [
+        line.strip()
+        for line in str((sherpa or {}).get("asr_hotwords", "") or "").splitlines()
+        if line.strip()
+    ]
+    decoding_method = str(
+        (sherpa or {}).get(
+            "asr_decoding_method", "modified_beam_search"
+        )
+        or ""
+    )
+    if phrases and decoding_method != "modified_beam_search":
+        raise ValueError(
+            "existing asr_hotwords require asr_decoding_method="
+            "modified_beam_search before pinned BPE setup"
+        )
+    invalid = [
+        phrase
+        for phrase in phrases
+        if re.fullmatch(r"[A-Z]+(?: [A-Z]+)*", phrase) is None
+    ]
+    if invalid:
+        raise ValueError(
+            "the pinned English BPE context requires existing asr_hotwords to "
+            "be UPPERCASE ASCII word phrases separated by single spaces"
+        )
+
+
 def required_selected_artifact_errors(
     resolved: dict[str, str],
     *,
@@ -836,7 +1359,12 @@ def required_selected_artifact_errors(
     return errors
 
 
-def publish_config_atomic(config: dict, path: str) -> None:
+def publish_config_atomic(
+    config: dict,
+    path: str,
+    *,
+    expected_source_identity: str | None = None,
+) -> None:
     """Atomically replace the machine-local JSON configuration.
 
     A failed serialization/fsync/replace leaves the previous config byte-for-
@@ -855,6 +1383,14 @@ def publish_config_atomic(config: dict, path: str) -> None:
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
+        if (
+            expected_source_identity is not None
+            and _config_source_identity(target) != expected_source_identity
+        ):
+            raise RuntimeError(
+                "machine-local config changed during model setup; refusing to "
+                "overwrite the newer edit"
+            )
         os.replace(temporary, target)
         temporary = ""
         directory_fd = -1
@@ -923,6 +1459,15 @@ def main(argv: list[str] | None = None) -> int:
         default="high",
         help="ASR weights: 'high' = fp32 (more accurate, default for a capable PC); "
         "'fast' = int8 (smaller, phone-tier)",
+    )
+    parser.add_argument(
+        "--bpe-hotwords",
+        action="store_true",
+        help=(
+            "in an isolated setup mode, atomically prepare the checksum-pinned "
+            "English Zipformer family plus its BPE vocabulary; touches no "
+            "VAD/TTS/final-ASR/speaker model and adds no phrase"
+        ),
     )
     parser.add_argument("--dest", default=DEST, help=f"download dir (default: {DEST})")
     parser.add_argument(
@@ -1119,21 +1664,114 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--require-selected cannot be combined with --no-speaker-model")
     if args.sense_voice and args.final_asr:
         parser.error("--sense-voice and --final-asr are mutually exclusive")
+    if args.bpe_hotwords:
+        conflicts = [
+            name
+            for name, selected in (
+                ("--require-selected", args.require_selected),
+                ("--no-speaker-model", not args.speaker_model),
+                ("--punct-model", args.punct_model),
+                ("--denoise-model", args.denoise_model),
+                ("--turn-model", args.turn_model),
+                ("--sense-voice", args.sense_voice),
+                ("--final-asr", bool(args.final_asr)),
+                ("--final-verifier", bool(args.final_verifier)),
+                ("--kokoro", args.kokoro),
+                ("--kws", args.kws),
+                ("--aec-model", args.aec_model),
+                ("--gguf", args.gguf),
+            )
+            if selected
+        ]
+        if conflicts:
+            parser.error(
+                "--bpe-hotwords is an isolated setup mode and cannot be "
+                f"combined with {', '.join(conflicts)}"
+            )
+
+    try:
+        cfg, config_source_identity = load_local_config_snapshot(args.config)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            "[models] existing config is invalid; no download or config change "
+            f"was attempted ({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
     except ImportError:
         raise SystemExit("Need huggingface_hub: python -m pip install huggingface-hub")
+    token = os.environ.get("HUGGINGFACE_TOKEN") or None
+
+    if args.bpe_hotwords:
+        try:
+            validate_pinned_bpe_hotword_phrases(cfg)
+            resolved = fetch_bpe_hotword_context(
+                args.dest,
+                accuracy=args.accuracy,
+                token=token,
+                force=args.force,
+                download=hf_hub_download,
+            )
+            wire_sherpa_paths(cfg, resolved)
+            sherpa = cfg.setdefault("sherpa", {})
+            sherpa["asr_modeling_unit"] = "bpe"
+            sherpa["asr_hotwords_case_policy"] = "upper_ascii_words"
+            sherpa["asr_bpe_vocab_sha256"] = BPE_HOTWORD_MODEL[
+                "vocab_sha256"
+            ]
+            publish_config_atomic(
+                cfg,
+                args.config,
+                expected_source_identity=config_source_identity,
+            )
+        except Exception as exc:  # noqa: BLE001 - explicit selection fails closed
+            print(
+                "[models] isolated BPE hotword context setup failed; previous "
+                "config and referenced artifacts were preserved "
+                f"({type(exc).__name__}: {exc})",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "[models] pinned BPE hotword ASR family prepared atomically; no "
+            "phrase, VAD, TTS, final-ASR, or speaker-ID setting was changed."
+        )
+        if str(sherpa.get("asr_hotwords", "") or "").strip():
+            print(
+                "Existing uppercase machine-local phrases were left unchanged; "
+                "run tools.doctor and tools.recorded_stt_eval before a live A/B."
+            )
+        else:
+            print(
+                "No phrases were added. Set explicit uppercase machine-local "
+                "asr_hotwords and run tools.recorded_stt_eval before a live A/B."
+            )
+        return 0
+
     from tools.bench.models import load_manifest
 
-    token = os.environ.get("HUGGINGFACE_TOKEN") or None
     manifest = apply_accuracy(load_manifest(None), args.accuracy)
     print(f"[models] accuracy={args.accuracy} (ASR encoder: {manifest['asr_encoder']['file']})")
     os.makedirs(args.dest, exist_ok=True)
 
-    resolved: dict[str, str] = {}
+    try:
+        preserved_bpe_paths = existing_bpe_hotword_asr_paths(cfg)
+    except ValueError as exc:
+        print(f"[models] {exc}; config was not changed", file=sys.stderr)
+        return 1
+    if preserved_bpe_paths:
+        print(
+            "[models] preserving the complete prepared BPE streaming-ASR "
+            "family; ordinary setup will not rewire its consuming paths"
+        )
+    resolved: dict[str, str] = dict(preserved_bpe_paths)
     selected_failures: list[str] = []
     for key in FILE_KEYS:
+        if key in preserved_bpe_paths:
+            continue
         coords = manifest[key]
         dest = dest_for(args.dest, key)
         os.makedirs(dest, exist_ok=True)
@@ -1463,12 +2101,6 @@ def main(argv: list[str] | None = None) -> int:
     # overrides survive; any read/write error is a failed setup, never a
     # partially-truncated config that the installer could mistake for success.
     try:
-        cfg: dict = {}
-        if os.path.exists(args.config):
-            with open(args.config, "r", encoding="utf-8") as fh:
-                cfg = json.load(fh)
-            if not isinstance(cfg, dict):
-                raise ValueError("existing local config must contain a JSON object")
         if preserve_existing_kokoro_selection(
             cfg, resolved, want_kokoro=bool(args.kokoro)
         ):
@@ -1489,8 +2121,12 @@ def main(argv: list[str] | None = None) -> int:
             cfg.setdefault("sherpa", {})[
                 "asr_final_verifier_backend"
             ] = "faster_whisper"
-        publish_config_atomic(cfg, args.config)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        publish_config_atomic(
+            cfg,
+            args.config,
+            expected_source_identity=config_source_identity,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(
             f"[models] config publish failed; previous config was preserved "
             f"({type(exc).__name__}: {exc})",
@@ -1506,6 +2142,7 @@ def main(argv: list[str] | None = None) -> int:
         "asr_final_model", "asr_final_tokens", "asr_final_decoder",
         "asr_final_joiner",
         "asr_final_verifier_model",
+        "asr_bpe_vocab",
         "endpoint_prosody_model", "aec_model",
         "kws_encoder", "kws_decoder", "kws_joiner", "kws_tokens",
         "kws_keywords_file",
@@ -1515,12 +2152,19 @@ def main(argv: list[str] | None = None) -> int:
             "denoise_model", "asr_final_model", "asr_final_tokens",
             "asr_final_decoder", "asr_final_joiner",
             "asr_final_verifier_model",
+            "asr_bpe_vocab",
             "endpoint_prosody_model", "aec_model",
             "kws_encoder", "kws_decoder", "kws_joiner", "kws_tokens",
             "kws_keywords_file",
         ) and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
+    if sherpa.get("asr_bpe_vocab"):
+        print(
+            "\nBPE streaming-ASR paths were preserved. Phrase and activation "
+            "state were not changed; run tools.doctor and "
+            "tools.recorded_stt_eval before a live A/B."
+        )
     if sherpa.get("speaker_embedding_model"):
         print("\nSpeaker-ID model ready. Enroll your voice:  python -m core --enroll")
     if sherpa.get("denoise_model"):

@@ -82,6 +82,7 @@ _MODEL_PATH_FIELDS = (
     "asr_decoder",
     "asr_joiner",
     "asr_tokens",
+    "asr_bpe_vocab",
     "vad_model",
     "asr_final_model",
     "asr_final_tokens",
@@ -100,6 +101,7 @@ _MAX_RECEIPT_BYTES = 4_096
 _WORKER_ENV = "SPEAKER_CAPTURE_REPLAY_WORKER"
 _LOWER_HEX = frozenset("0123456789abcdef")
 _MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
+_MAX_BPE_VOCAB_BYTES = 4 * 1024 * 1024
 _EVALUATOR_SOURCE_FILES = (
     "always_on_agent/acoustic.py",
     "core/asr_verifier.py",
@@ -476,10 +478,21 @@ def _evaluator_source_digest() -> str:
 
 
 def _artifact_metadata_digest(config: SherpaConfig) -> str:
-    """Bind local artifact metadata without exposing names or reading GBs."""
+    """Bind model metadata plus the bounded active BPE vocabulary bytes."""
 
-    rows: list[tuple[str, str, int, int, int]] = []
+    rows: list[tuple[str, str, int, int, int, str]] = []
     for field_name in _MODEL_PATH_FIELDS:
+        if field_name == "asr_bpe_vocab":
+            unit = str(
+                getattr(config, "asr_modeling_unit", "") or ""
+            ).strip().lower()
+            if not (
+                bool(str(getattr(config, "asr_hotwords", "") or "").strip())
+                and getattr(config, "asr_decoding_method", "")
+                == "modified_beam_search"
+                and unit in {"bpe", "cjkchar+bpe"}
+            ):
+                continue
         raw = getattr(config, field_name, "")
         if not isinstance(raw, str) or not raw:
             continue
@@ -487,6 +500,13 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
             root = Path(raw).expanduser().resolve(strict=True)
             if root.is_file():
                 metadata = root.stat()
+                content_sha256 = ""
+                if field_name == "asr_bpe_vocab":
+                    snapshot = read_regular_bounded(
+                        root,
+                        maximum_bytes=_MAX_BPE_VOCAB_BYTES,
+                    )
+                    content_sha256 = hashlib.sha256(snapshot.data).hexdigest()
                 rows.append(
                     (
                         field_name,
@@ -494,6 +514,7 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
                         int(metadata.st_size),
                         int(metadata.st_mtime_ns),
                         1,
+                        content_sha256,
                     )
                 )
             elif root.is_dir():
@@ -513,10 +534,12 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
                     latest = max(latest, int(metadata.st_mtime_ns))
                 if count <= 0:
                     raise CaptureReplayEvaluationError()
-                rows.append((field_name, "directory", total, latest, count))
+                rows.append(
+                    (field_name, "directory", total, latest, count, "")
+                )
             else:
                 raise CaptureReplayEvaluationError()
-        except (OSError, RuntimeError, ValueError):
+        except (BoundedReadError, OSError, RuntimeError, ValueError):
             raise CaptureReplayEvaluationError() from None
     if not rows:
         raise CaptureReplayEvaluationError()

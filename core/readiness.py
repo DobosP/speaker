@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Optional
@@ -18,6 +19,7 @@ from .minicpm_identity import (
     is_minicpm_model_name,
     verify_minicpm_q8_identity,
 )
+from .engines._sherpa_models import validate_bpe_vocab_file
 
 RUNTIME_IMPORTS = ("numpy", "scipy", "sounddevice", "sherpa_onnx")
 SHERPA_REQUIRED = (
@@ -84,7 +86,9 @@ def check_imports(
 
 
 def check_sherpa_models(
-    config: dict, exists: Callable[[str], bool] = os.path.exists
+    config: dict,
+    exists: Callable[[str], bool] = os.path.exists,
+    bpe_vocab_validator: Callable[..., str] = validate_bpe_vocab_file,
 ) -> Check:
     sherpa = (config or {}).get("sherpa", {}) or {}
     problems: list[str] = []
@@ -115,6 +119,65 @@ def check_sherpa_models(
 
     for key in SHERPA_REQUIRED:
         require(key)
+
+    # Contextual biasing is selected by the phrase list, not by an inert vocab
+    # path. sherpa-onnx otherwise defaults to cjkchar and silently mis-encodes
+    # English BPE phrases, so active context must be explicit and complete.
+    hotwords = str(sherpa.get("asr_hotwords", "") or "").strip()
+    if hotwords:
+        decoding_method = str(
+            sherpa.get("asr_decoding_method", "modified_beam_search") or ""
+        )
+        if decoding_method != "modified_beam_search":
+            problems.append(
+                "asr_hotwords requires asr_decoding_method='modified_beam_search'"
+            )
+        modeling_unit = str(
+            sherpa.get("asr_modeling_unit", "") or ""
+        ).strip().lower()
+        case_policy = str(
+            sherpa.get("asr_hotwords_case_policy", "") or ""
+        ).strip().lower()
+        if case_policy not in {"", "upper_ascii_words"}:
+            problems.append(
+                "asr_hotwords_case_policy unsupported for active hotwords"
+            )
+        elif case_policy == "upper_ascii_words":
+            phrases = [
+                line.strip() for line in hotwords.splitlines() if line.strip()
+            ]
+            if any(
+                re.fullmatch(r"[A-Z]+(?: [A-Z]+)*", phrase) is None
+                for phrase in phrases
+            ):
+                problems.append(
+                    "selected English BPE context requires UPPERCASE ASCII "
+                    "word phrases separated by single spaces"
+                )
+        if modeling_unit not in {"bpe", "cjkchar", "cjkchar+bpe"}:
+            problems.append(
+                "asr_modeling_unit unsupported for active hotwords "
+                "(expected bpe, cjkchar, or cjkchar+bpe)"
+            )
+        elif modeling_unit in {"bpe", "cjkchar+bpe"}:
+            vocab = str(sherpa.get("asr_bpe_vocab", "") or "").strip()
+            if not vocab:
+                problems.append("streaming hotword BPE vocabulary unset")
+            elif not exists(vocab):
+                problems.append("streaming hotword BPE vocabulary missing on disk")
+            else:
+                try:
+                    bpe_vocab_validator(
+                        vocab,
+                        expected_sha256=str(
+                            sherpa.get("asr_bpe_vocab_sha256", "") or ""
+                        ),
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    problems.append(
+                        "streaming hotword BPE vocabulary invalid: "
+                        f"{exc}"
+                    )
 
     # ``tts_voices`` selects Kokoro instead of the VITS/Piper constructor.  Its
     # native loader hard-aborts on a missing voices file; configured data/lexicon

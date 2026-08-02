@@ -180,7 +180,7 @@ class SherpaStreamingDecodeSession:
         *,
         hotwords: str | None = None,
     ) -> SherpaStreamingDecodeStream:
-        """Create an opaque stream and preserve older-Sherpa fallback semantics."""
+        """Create an opaque stream while preserving the caller's hotword intent."""
 
         recognizer, _, orphaned = self._begin_native_call()
         orphaned.clear()  # native stream destruction stays on the owner thread

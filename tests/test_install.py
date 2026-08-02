@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from tools.install import (
+    BPE_HOTWORD_SETUP_DEPS,
     FINAL_VERIFIER_RUNTIME_DEPS,
     RUNTIME_DEPS,
     SELECTED_MODEL_ARGS,
@@ -17,6 +20,7 @@ from tools.install import (
     install_plan,
     is_windows,
     main,
+    model_setup_commands,
     needs_fresh_venv,
     normal_voice_entry,
     portaudio_hint,
@@ -78,6 +82,7 @@ def _args(**over):
         skip_models=False,
         final_asr=None,
         final_verifier=None,
+        bpe_hotwords=False,
         obsidian_vault=None,
         disable_obsidian=False,
         enable_reminders=False,
@@ -101,6 +106,13 @@ def test_install_plan_includes_deps_and_models():
 def test_lean_runtime_deps_include_required_signal_resamplers():
     assert "scipy>=1.13" in RUNTIME_DEPS
     assert "soxr>=0.3" in RUNTIME_DEPS
+    assert "sentencepiece==0.2.1" not in RUNTIME_DEPS
+
+
+def test_sentencepiece_is_installed_only_for_explicit_bpe_setup():
+    assert not any("sentencepiece" in dep for dep in runtime_deps(_args()))
+    selected = runtime_deps(_args(bpe_hotwords=True))
+    assert all(dep in selected for dep in BPE_HOTWORD_SETUP_DEPS)
 
 
 def test_final_verifier_is_explicit_linux_x86_64_opt_in():
@@ -124,6 +136,25 @@ def test_parakeet_final_asr_replaces_fresh_install_sensevoice_selection():
 
     assert "--sense-voice" not in selected
     assert selected[-2:] == ("--final-asr", "parakeet-unified-en")
+
+
+def test_bpe_hotword_context_is_an_explicit_setup_option():
+    default = selected_model_args(_args())
+    selected = selected_model_args(_args(bpe_hotwords=True))
+    commands = model_setup_commands(
+        _args(bpe_hotwords=True), "/venv/bin/python"
+    )
+
+    assert "--bpe-hotwords" not in default
+    assert selected == default
+    assert len(commands) == 2
+    assert commands[0][-len(SELECTED_MODEL_ARGS):] == list(SELECTED_MODEL_ARGS)
+    assert commands[1] == [
+        "/venv/bin/python", "-m", "tools.setup_models", "--bpe-hotwords",
+    ]
+    assert "--bpe-hotwords" in "\n".join(
+        install_plan(_args(bpe_hotwords=True), system="linux")
+    )
 
 
 def test_install_plan_includes_selected_final_verifier_only_when_requested():
@@ -244,6 +275,46 @@ def test_installer_forwards_parakeet_final_asr_selection(monkeypatch):
     assert "sherpa-onnx==1.13.3" in calls[0]
 
 
+def test_installer_runs_bpe_as_second_isolated_model_transaction(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 0, 0),
+        "--bpe-hotwords",
+    )
+
+    assert rc == 0
+    assert all(dep in calls[0] for dep in BPE_HOTWORD_SETUP_DEPS)
+    assert calls[1] == [
+        "/venv/bin/python", "-m", "tools.setup_models", *SELECTED_MODEL_ARGS,
+    ]
+    assert calls[2] == [
+        "/venv/bin/python", "-m", "tools.setup_models", "--bpe-hotwords",
+    ]
+    assert calls[3] == [
+        "/venv/bin/python", "-m", "tools.doctor", "--defer-ollama",
+    ]
+
+
+def test_installer_bpe_failure_stops_before_capability_and_doctor(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 7),
+        "--bpe-hotwords",
+        "--enable-reminders",
+    )
+
+    assert rc == 7
+    assert calls[-1][-1] == "--bpe-hotwords"
+    assert all("tools.setup_assistant" not in call for call in calls)
+    assert all("tools.doctor" not in call for call in calls)
+
+
+def test_installer_rejects_bpe_with_skip_models():
+    with pytest.raises(SystemExit) as raised:
+        main(["--skip-models", "--bpe-hotwords"])
+    assert raised.value.code == 2
+
+
 def test_installer_propagates_deferred_doctor_failure(monkeypatch):
     rc, calls = _run_installer(monkeypatch, (0, 0, 9))
 
@@ -253,12 +324,16 @@ def test_installer_propagates_deferred_doctor_failure(monkeypatch):
     ]
 
 
-def test_installer_skip_models_is_explicitly_incomplete(monkeypatch):
+def test_installer_skip_models_is_explicitly_incomplete(monkeypatch, capsys):
     rc, calls = _run_installer(monkeypatch, (0,), "--skip-models")
 
     assert rc == 2
     assert len(calls) == 1
     assert calls[0][2:4] == ["pip", "install"]
+    output = capsys.readouterr().out
+    assert "==> 1/4" in output
+    assert "==> 2/4" in output
+    assert "==> 3/4 Speech models (skipped" in output
 
 
 def test_installer_success_stops_at_base_ready(monkeypatch, capsys):

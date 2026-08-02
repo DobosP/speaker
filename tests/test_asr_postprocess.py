@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from threading import Event
 
+import pytest
+
 from core.engines._sherpa_streaming_decode import (
     SherpaStreamingDecodeSession,
     SherpaStreamingDecodeStream,
@@ -86,58 +88,59 @@ class _NoHotwordRecognizer:
 
 def test_new_asr_stream_passes_hotwords_with_beam_search():
     eng = SherpaOnnxEngine(
-        SherpaConfig(asr_decoding_method="modified_beam_search", asr_hotwords="Flurry\nParis")
+        SherpaConfig(asr_decoding_method="modified_beam_search", asr_hotwords="FLURRY\nPARIS")
     )
     rec = _FakeRecognizer()
     eng._recognizer = rec
-    eng._hotwords = ["Flurry", "Paris"]
+    eng._hotwords = ["FLURRY", "PARIS"]
     eng._new_asr_stream()
-    assert rec.hotwords_arg == "Flurry\nParis"
+    assert rec.hotwords_arg == "FLURRY\nPARIS"
 
 
-def test_new_asr_stream_no_hotwords_under_greedy():
+def test_new_asr_stream_rejects_active_hotwords_under_greedy():
     eng = SherpaOnnxEngine(
         SherpaConfig(asr_decoding_method="greedy_search", asr_hotwords="Flurry")
     )
     rec = _FakeRecognizer()
     eng._recognizer = rec
     eng._hotwords = ["Flurry"]
-    eng._new_asr_stream()
-    # Greedy search must not pass hotwords (the recognizer wouldn't honor them).
-    assert rec.hotwords_arg is None
+    with pytest.raises(ValueError, match="modified_beam_search"):
+        eng._new_asr_stream()
+    assert rec.hotwords_arg == "UNSET"
 
 
-def test_new_asr_stream_falls_back_when_build_rejects_hotwords():
+def test_new_asr_stream_fails_closed_when_build_rejects_hotwords():
     eng = SherpaOnnxEngine(
         SherpaConfig(asr_decoding_method="modified_beam_search", asr_hotwords="Flurry")
     )
     rec = _NoHotwordRecognizer()
     eng._recognizer = rec
     eng._hotwords = ["Flurry"]
-    eng._new_asr_stream()  # TypeError on hotwords= -> retried plain
-    assert rec.plain_calls == 1
+    with pytest.raises(RuntimeError, match="per-stream hotword"):
+        eng._new_asr_stream()
+    assert rec.plain_calls == 0
 
 
 def test_decode_session_preserves_hotword_stream_creation():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
-            asr_hotwords="Flurry\nParis",
+            asr_hotwords="FLURRY\nPARIS",
         )
     )
     rec = _FakeRecognizer()
     session = SherpaStreamingDecodeSession(rec)
     session.bind_current_thread()
-    eng._hotwords = ["Flurry", "Paris"]
+    eng._hotwords = ["FLURRY", "PARIS"]
 
     stream = eng._new_asr_stream(session)
 
     assert type(stream) is SherpaStreamingDecodeStream
-    assert rec.hotwords_arg == "Flurry\nParis"
+    assert rec.hotwords_arg == "FLURRY\nPARIS"
     session.close()
 
 
-def test_decode_session_preserves_older_sherpa_plain_stream_fallback():
+def test_decode_session_fails_closed_without_hotword_stream_support():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
@@ -149,10 +152,10 @@ def test_decode_session_preserves_older_sherpa_plain_stream_fallback():
     session.bind_current_thread()
     eng._hotwords = ["Flurry"]
 
-    stream = eng._new_asr_stream(session)
+    with pytest.raises(RuntimeError, match="per-stream hotword"):
+        eng._new_asr_stream(session)
 
-    assert type(stream) is SherpaStreamingDecodeStream
-    assert rec.plain_calls == 1
+    assert rec.plain_calls == 0
     assert session.snapshot().native_calls_failed == 1
     session.close()
 
@@ -188,22 +191,22 @@ def test_dedicated_owner_preserves_hotwords_for_both_stream_roles():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
-            asr_hotwords="Flurry\nParis",
+            asr_hotwords="FLURRY\nPARIS",
         )
     )
     rec = _FakeRecognizer()
-    eng._hotwords = ["Flurry", "Paris"]
+    eng._hotwords = ["FLURRY", "PARIS"]
 
     owner, session, streams = _run_owner_stream_creation(eng, rec)
 
     assert all(type(stream) is SherpaStreamingDecodeStream for stream in streams)
-    assert rec.hotword_args == ["Flurry\nParis", "Flurry\nParis"]
+    assert rec.hotword_args == ["FLURRY\nPARIS", "FLURRY\nPARIS"]
     assert owner.streams_created == 2
     assert owner.streams_retired == 2
     assert session.native_calls_failed == 0
 
 
-def test_dedicated_owner_preserves_old_sherpa_fallback_for_both_roles():
+def test_dedicated_owner_fails_startup_without_hotword_stream_support():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
@@ -213,10 +216,23 @@ def test_dedicated_owner_preserves_old_sherpa_fallback_for_both_roles():
     rec = _NoHotwordRecognizer()
     eng._hotwords = ["Flurry"]
 
-    owner, session, streams = _run_owner_stream_creation(eng, rec)
+    session = SherpaStreamingDecodeSession(rec)
 
-    assert all(type(stream) is SherpaStreamingDecodeStream for stream in streams)
-    assert rec.plain_calls == 2
-    assert owner.streams_created == 2
-    assert owner.streams_retired == 2
-    assert session.native_calls_failed == 2
+    def process(owner):
+        eng._new_asr_stream(owner, role=DecodeStreamRole.PRIMARY)
+
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=process,
+    )
+
+    with pytest.raises(RuntimeError, match="startup failed: RuntimeError"):
+        owner.start(timeout=1.0)
+    assert owner.close(timeout=2.0)
+    assert rec.plain_calls == 0
+    snapshot = owner.snapshot()
+    assert snapshot.streams_created == 0
+    assert snapshot.streams_retired == 0
+    assert session.snapshot().native_calls_failed == 1

@@ -388,13 +388,15 @@ def test_file_replay_uses_production_stream_hotwords(monkeypatch):
             asr_encoder="x",
             tts_model="y",
             asr_decoding_method="modified_beam_search",
-            asr_hotwords="vault\nObsidian",
+            asr_hotwords="VAULT\nOBSIDIAN",
+            asr_modeling_unit="bpe",
+            asr_bpe_vocab="bpe.vocab",
         )
     )
 
     engine.start(EngineCallbacks())
     try:
-        assert recognizer.hotwords == "vault\nObsidian"
+        assert recognizer.hotwords == "VAULT\nOBSIDIAN"
     finally:
         engine.stop()
 

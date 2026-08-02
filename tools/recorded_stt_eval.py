@@ -56,6 +56,7 @@ _ARTIFACT_FIELDS = (
     "asr_encoder",
     "asr_decoder",
     "asr_joiner",
+    "asr_bpe_vocab",
     "asr_final_model",
     "asr_final_tokens",
     "asr_final_decoder",
@@ -468,6 +469,20 @@ def _model_digest(config) -> str:
     try:
         found = 0
         for name in _ARTIFACT_FIELDS:
+            if name == "asr_bpe_vocab":
+                unit = str(
+                    getattr(config, "asr_modeling_unit", "") or ""
+                ).strip().lower()
+                active_bpe_context = (
+                    bool(str(getattr(config, "asr_hotwords", "") or "").strip())
+                    and getattr(config, "asr_decoding_method", "")
+                    == "modified_beam_search"
+                    and unit in {"bpe", "cjkchar+bpe"}
+                )
+                if not active_bpe_context:
+                    # Match the recognizer exactly: prepared/greedy/cjkchar
+                    # vocab paths are inert and must not poison model evidence.
+                    continue
             raw_value = str(getattr(config, name, "") or "").strip()
             if not raw_value:
                 continue

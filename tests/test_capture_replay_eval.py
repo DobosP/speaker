@@ -55,6 +55,58 @@ def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
     assert set(digest) <= set("0123456789abcdef")
 
 
+def test_artifact_metadata_binds_only_active_bpe_hotword_vocab(tmp_path) -> None:
+    model = tmp_path / "encoder.onnx"
+    vocab = tmp_path / "bpe.vocab"
+    model.write_bytes(b"model")
+    vocab.write_bytes(b"first")
+    active = SherpaConfig(
+        asr_encoder=str(model),
+        asr_hotwords="VAULT",
+        asr_modeling_unit="bpe",
+        asr_bpe_vocab=str(vocab),
+    )
+
+    first = evaluate._artifact_metadata_digest(active)
+    original_stat = vocab.stat()
+    vocab.write_bytes(b"other")  # same byte length as ``first``
+    os.utime(
+        vocab,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    second = evaluate._artifact_metadata_digest(active)
+
+    assert first != second
+    stale = SherpaConfig(
+        asr_encoder=str(model),
+        asr_bpe_vocab=str(tmp_path / "missing.vocab"),
+    )
+    clean = SherpaConfig(asr_encoder=str(model))
+    assert evaluate._artifact_metadata_digest(stale) == (
+        evaluate._artifact_metadata_digest(clean)
+    )
+    for method, unit in (
+        ("greedy_search", "bpe"),
+        ("modified_beam_search", "cjkchar"),
+    ):
+        inert = SherpaConfig(
+            asr_encoder=str(model),
+            asr_hotwords="VAULT",
+            asr_decoding_method=method,
+            asr_modeling_unit=unit,
+            asr_bpe_vocab=str(tmp_path / "missing.vocab"),
+        )
+        without_vocab = SherpaConfig(
+            asr_encoder=str(model),
+            asr_hotwords="VAULT",
+            asr_decoding_method=method,
+            asr_modeling_unit=unit,
+        )
+        assert evaluate._artifact_metadata_digest(inert) == (
+            evaluate._artifact_metadata_digest(without_vocab)
+        )
+
+
 def test_multi_case_replay_reuses_one_synchronous_session_then_closes_it(
     tmp_path,
 ) -> None:

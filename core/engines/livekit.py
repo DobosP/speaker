@@ -50,7 +50,12 @@ from ..engine import (
     TranscriptAbortReason,
 )
 from ._acoustic_turn import AcousticTurnTracker
-from ._sherpa_models import build_recognizer, build_tts, build_vad
+from ._sherpa_models import (
+    build_recognizer,
+    build_tts,
+    build_vad,
+    create_recognizer_stream,
+)
 from .sherpa import SherpaConfig
 
 log = logging.getLogger("speaker.livekit")
@@ -58,6 +63,8 @@ log = logging.getLogger("speaker.livekit")
 OUT_SR = 48000  # LiveKit-friendly output sample rate for published TTS
 STT_SR = 16000  # sherpa streaming-ASR input rate
 FRAME_MS = 20   # published audio frame size
+ASR_START_TIMEOUT_SEC = 5.0
+ASR_START_JOIN_TIMEOUT_SEC = 1.0
 
 
 _LIVEKIT_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
@@ -162,6 +169,8 @@ class LiveKitEngine(AudioEngine):
         self._room = None
         self._source = None
         self._asr_thread: Optional[threading.Thread] = None
+        self._asr_startup = threading.Event()
+        self._asr_start_error: Optional[BaseException] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._session_task: Optional[asyncio.Task] = None
         self._session_cancel_requested = threading.Event()
@@ -194,6 +203,14 @@ class LiveKitEngine(AudioEngine):
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
+        if self._asr_thread is not None:
+            if self._asr_thread.is_alive():
+                raise RuntimeError(
+                    "a prior LiveKit ASR startup is still retained"
+                )
+            self._asr_thread = None
+        if self._asr_stream is not None:
+            raise RuntimeError("a prior LiveKit ASR stream was not retired")
         self._cb = callbacks
         self._output_ready.clear()
         self._session_cancel_requested.clear()
@@ -201,9 +218,32 @@ class LiveKitEngine(AudioEngine):
         self._recognizer = build_recognizer(self._cfg)
         self._vad = build_vad(self._cfg)
         self._tts = build_tts(self._cfg)
+        self._asr_startup.clear()
+        self._asr_start_error = None
         self._running.set()
         self._asr_thread = threading.Thread(target=self._asr_loop, daemon=True)
-        self._asr_thread.start()
+        try:
+            self._asr_thread.start()
+        except BaseException:
+            self._running.clear()
+            self._asr_thread = None
+            raise
+        if not self._asr_startup.wait(ASR_START_TIMEOUT_SEC):
+            self._running.clear()
+            self._asr_thread.join(timeout=ASR_START_JOIN_TIMEOUT_SEC)
+            if self._asr_thread.is_alive():
+                raise RuntimeError(
+                    "LiveKit ASR stream startup timed out; native worker retained"
+                )
+            self._asr_thread = None
+            raise RuntimeError("LiveKit ASR stream startup timed out cleanly")
+        if self._asr_start_error is not None:
+            error = self._asr_start_error
+            self._running.clear()
+            self._asr_thread.join(timeout=ASR_START_JOIN_TIMEOUT_SEC)
+            if not self._asr_thread.is_alive():
+                self._asr_thread = None
+            raise RuntimeError("LiveKit ASR stream startup failed") from error
         self._loop_thread = threading.Thread(target=self._run_loop, daemon=True)
         self._loop_thread.start()
 
@@ -243,6 +283,8 @@ class LiveKitEngine(AudioEngine):
             and self._asr_thread is not threading.current_thread()
         ):
             self._asr_thread.join(timeout=1.0)
+            if not self._asr_thread.is_alive():
+                self._asr_thread = None
         if (
             self._loop_thread is not None
             and self._loop_thread is not threading.current_thread()
@@ -757,16 +799,30 @@ class LiveKitEngine(AudioEngine):
     # --- ASR worker thread (keeps model decode off the event loop) ---
     def _asr_loop(self) -> None:
         rec = self._recognizer
-        self._asr_stream = rec.create_stream() if rec is not None else None
-        while self._running.is_set():
-            try:
-                mono = self._in_q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if self._speaking.is_set():
-                self._watch_barge_in(mono)
-            else:
-                self._feed_asr(mono)
+        try:
+            self._asr_stream = (
+                create_recognizer_stream(rec, self._cfg)
+                if rec is not None
+                else None
+            )
+        except BaseException as exc:
+            self._asr_start_error = exc
+            self._asr_startup.set()
+            return
+        self._asr_startup.set()
+        try:
+            while self._running.is_set():
+                try:
+                    mono = self._in_q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if self._speaking.is_set():
+                    self._watch_barge_in(mono)
+                else:
+                    self._feed_asr(mono)
+        finally:
+            # Retire the native stream on the same worker that owned decode.
+            self._asr_stream = None
 
     def _feed_asr(self, mono) -> None:
         """Feed one 16 kHz mono float32 frame into the streaming recognizer and

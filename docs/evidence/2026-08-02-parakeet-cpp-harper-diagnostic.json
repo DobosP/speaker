@@ -1,0 +1,200 @@
+{
+  "candidate": {
+    "adapter": "parakeet-cpp-realtime-eou-v1",
+    "artifact_set_sha256": "129bc34127eab9d518284a96efde98e0371b486eff21b8328027db32198f74e8",
+    "harness_commit": "d80c58682c89d6fa30dbc9dce373ffaf59f743e7",
+    "manifest_sha256": "906d1feb277780056b636f4c837ea7ca7985b5fb02eef9cc24a50e5e84c381c4",
+    "source_bundle_sha256": "5cec2babe4b353caa4b846176b0a1686bad52be759b0aeefe5636990674384a2",
+    "worker_sha256": "be12f93f0bb5328d4b44b6be01d6ec1cb5653f6fddbbfc6979355eadfb460df7"
+  },
+  "corpus": {
+    "audio_bytes": 2956800,
+    "audio_seconds": 46.2,
+    "case_set_sha256": "7513ae632b3cb36d51f051749900f5d8b68092ea1108cdb4d1c32cc54ef38dd5",
+    "cases": 24,
+    "license": "CC-BY-4.0",
+    "manifest_sha256": "4091a9dd163a604989db2f87f90d719347f0fb43b246b95691c829203f29d2bb",
+    "metadata_sha256": "f3f1333be2ec6f35186e1bb791c39eb4eb2ddf32493ce5bdaad3cb8ff0e2a260",
+    "preparation_receipt_sha256": "ef84709b3d6fb193937ed0f9557ffa8492476f0ad01faf81a2d2779ab0bad266",
+    "provenance_manifest_sha256": "8ed07c5fa5e0279d4864c3becfb7bbb757bcb70638316684abea9cb11bf8207c",
+    "purpose_sha256": "a60d259d031bb22c9c98e473eae50ffa339b516c941f3143236de0d1861f9bdf",
+    "source_commit": "0bd721e877c4a85d8c13ff837e68661ea6200a98",
+    "source_id": "harper-valley",
+    "source_repository": "https://github.com/cricketclub/gridspace-stanford-harper-valley",
+    "source_tree": {
+      "blobs": 5886,
+      "bytes": 2749959069,
+      "entries": 5916
+    },
+    "strata": {
+      "caller": 24,
+      "task_00": 3,
+      "task_01": 3,
+      "task_02": 3,
+      "task_03": 3,
+      "task_04": 3,
+      "task_05": 3,
+      "task_06": 3,
+      "task_07": 3
+    },
+    "training_disjointness": {
+      "dataset_family_disclosed_in_evaluation": false,
+      "dataset_family_disclosed_in_training": false,
+      "established": false,
+      "exact_clip_membership_known": false,
+      "model_card_checked": "2026-08-02",
+      "model_card_revision": "a7e2b4629593dce0ec19f600e00e9904353fda2d",
+      "model_card_url": "https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1/blob/a7e2b4629593dce0ec19f600e00e9904353fda2d/README.md"
+    }
+  },
+  "date": "2026-08-02",
+  "decision": "retain_isolated_diagnostic_only",
+  "reports": {
+    "burst_repeat_3": {
+      "config": {
+        "chunk_samples": 1280,
+        "contract_sha256": "9cc29cfc059095d9b99d81f129be4f9908763148f9a904a019f790c60d259ca1",
+        "pace": "burst",
+        "partial_interval_ms": 80,
+        "repeats": 3,
+        "tail_padding_samples": 8000
+      },
+      "metrics": {
+        "accuracy": {
+          "cer": 0.0677,
+          "exact": 45,
+          "nonempty": 69,
+          "reference_words": 384,
+          "wer": 0.1562,
+          "word_errors": 60
+        },
+        "determinism": {
+          "cases_with_final_disagreement": 0,
+          "paced_accuracy_exactly_equal": true
+        },
+        "endpointing": {
+          "accepted_endpoint_latency_max_ms": 500.0,
+          "accepted_endpoint_latency_p50_ms": 390.0,
+          "accepted_endpoint_latency_p95_ms": 500.0,
+          "accepted_endpoints": 48,
+          "eou_observations": 72,
+          "source_early_eou_observations": 0,
+          "tail_exhaustions": 24
+        },
+        "resources": {
+          "max_reported_rss_mb": 303.895,
+          "peak_threads": 1,
+          "peak_vram_mb": null
+        },
+        "source_accounting": {
+          "consumed_samples": 2217600,
+          "dropped_samples": 0,
+          "model_input_samples": 2702880,
+          "offered_samples": 2217600,
+          "tail_consumed_samples": 485280,
+          "tail_offered_samples": 576000,
+          "tail_unconsumed_samples": 90720
+        },
+        "throughput": {
+          "model_input_rtf": 0.3712,
+          "source_audio_rtf": 0.4524
+        }
+      },
+      "report": {
+        "sha256": "b3eb6cb195266c79ef5f212ffdf528057427675d1f7467456d5b36829bd354c1",
+        "size_bytes": 40323
+      }
+    },
+    "paced_repeat_1": {
+      "config": {
+        "chunk_samples": 1280,
+        "contract_sha256": "e92ecec406f905cf18c9bdd0c790ed906cce4abeb089e9aee84b6295659aaab4",
+        "pace": "realtime",
+        "partial_interval_ms": 80,
+        "repeats": 1,
+        "tail_padding_samples": 8000
+      },
+      "metrics": {
+        "accuracy": {
+          "cer": 0.0677,
+          "exact": 15,
+          "nonempty": 23,
+          "reference_words": 128,
+          "wer": 0.1562,
+          "word_errors": 20
+        },
+        "endpointing": {
+          "accepted_endpoint_latency_max_ms": 500.0,
+          "accepted_endpoint_latency_p50_ms": 390.0,
+          "accepted_endpoint_latency_p95_ms": 500.0,
+          "accepted_endpoints": 16,
+          "tail_exhaustions": 8
+        },
+        "latency": {
+          "finalization_max_ms": 103.869,
+          "finalization_p50_ms": 48.7,
+          "finalization_p95_ms": 60.611,
+          "first_nonempty_partial_p50_ms": 615.498,
+          "first_nonempty_partial_p95_ms": 788.595,
+          "stable_partial_missing": 3,
+          "stable_partial_p50_ms": 1741.534,
+          "stable_partial_p95_ms": 4133.541
+        },
+        "resources": {
+          "max_reported_rss_mb": 304.012,
+          "peak_threads": 1,
+          "peak_vram_mb": null
+        },
+        "source_accounting": {
+          "consumed_samples": 739200,
+          "dropped_samples": 0,
+          "model_input_samples": 900960,
+          "offered_samples": 739200,
+          "tail_consumed_samples": 161760,
+          "tail_offered_samples": 192000,
+          "tail_unconsumed_samples": 30240
+        },
+        "streaming": {
+          "deadline_misses": 4,
+          "max_backlog_ms": 19.843,
+          "max_backlog_p95_ms": 12.366,
+          "partial_events": 117
+        },
+        "task_strata": {
+          "task_00": {"accepted_endpoints": 2, "cer": 0.0351, "exact": 2, "nonempty": 3, "tail_exhaustions": 1, "wer": 0.0909},
+          "task_01": {"accepted_endpoints": 2, "cer": 0.129, "exact": 2, "nonempty": 2, "tail_exhaustions": 1, "wer": 0.1333},
+          "task_02": {"accepted_endpoints": 1, "cer": 0.0741, "exact": 0, "nonempty": 3, "tail_exhaustions": 2, "wer": 0.2105},
+          "task_03": {"accepted_endpoints": 2, "cer": 0.0421, "exact": 1, "nonempty": 3, "tail_exhaustions": 1, "wer": 0.3043},
+          "task_04": {"accepted_endpoints": 3, "cer": 0.0, "exact": 3, "nonempty": 3, "tail_exhaustions": 0, "wer": 0.0},
+          "task_05": {"accepted_endpoints": 3, "cer": 0.0, "exact": 3, "nonempty": 3, "tail_exhaustions": 0, "wer": 0.0},
+          "task_06": {"accepted_endpoints": 1, "cer": 0.0556, "exact": 2, "nonempty": 3, "tail_exhaustions": 2, "wer": 0.0667},
+          "task_07": {"accepted_endpoints": 2, "cer": 0.1494, "exact": 2, "nonempty": 3, "tail_exhaustions": 1, "wer": 0.2632}
+        },
+        "throughput": {
+          "model_input_rtf": 0.3886,
+          "source_audio_rtf": 0.4736
+        }
+      },
+      "report": {
+        "sha256": "1c01daba667ed96ebef33c81413db27e79bf957fb0d859965dc12fca75d8710e",
+        "size_bytes": 40256
+      }
+    }
+  },
+  "scope": {
+    "accelerated_burst": true,
+    "aggregate_only": true,
+    "capture": false,
+    "command_behavior": false,
+    "continuous_conversation": false,
+    "endpoint_ground_truth": false,
+    "endpoint_latency_scope": "accepted_endpoints_only_declared_source_end_to_observed_feed_boundary",
+    "four_source_fixture_evidence": false,
+    "live": false,
+    "multi_speaker": false,
+    "runtime_or_default_authority": false,
+    "single_source": true,
+    "stt_model_run": true,
+    "tools_or_agent_behavior": false
+  }
+}

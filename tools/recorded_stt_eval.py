@@ -1,10 +1,11 @@
 """Privacy-safe, recording-driven STT evaluation.
 
 This command replays a labelled local corpus through the real streaming and
-second-pass recognizers without constructing the chatbot, TTS, tools, or audio
-devices.  References and hypotheses are reduced immediately to aggregate
-accuracy counters; stdout and optional reports contain no transcript, clip id,
-or filesystem path.
+second-pass recognizers without constructing the chatbot, TTS, capability
+providers, voice runtime, or audio devices.  Its opt-in route gate builds only
+inert deterministic matchers.  References and hypotheses are reduced
+immediately to aggregate counters; stdout and optional reports contain no
+transcript, clip id, or filesystem path.
 
 Examples::
 
@@ -16,7 +17,7 @@ Examples::
 Supplying one or more ``--set`` values runs both the machine's current baseline
 and the candidate.  The candidate is promotable only when every labelled clip
 is covered, word and character errors do not regress, target-keyword recall
-does not regress, and at least one of those measures improves.
+does not regress, and accuracy or an enabled dry route gate improves safely.
 """
 from __future__ import annotations
 
@@ -432,6 +433,8 @@ def compare_candidate(
     candidate: EvaluationTotals,
     baseline_selected_errors: Sequence[tuple[int, int]],
     candidate_selected_errors: Sequence[tuple[int, int]],
+    *,
+    additional_improvement: bool = False,
 ) -> CandidateComparison:
     """Compare per-clip selected errors, then enforce aggregate no-regression."""
     if len(baseline_selected_errors) != len(candidate_selected_errors):
@@ -466,6 +469,7 @@ def compare_candidate(
         c.word_errors < b.word_errors
         or c.char_edits < b.char_edits
         or c.keyword_hits > b.keyword_hits
+        or additional_improvement is True
     )
     return CandidateComparison(wins, ties, losses, no_regression and improvement)
 
@@ -951,7 +955,13 @@ def _joined_terminal_text(values: Sequence[str]) -> str:
     return " ".join(value.strip() for value in values if value.strip())
 
 
-def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
+def _evaluate(
+    config,
+    corpus: Sequence[_CorpusItem],
+    keywords: Sequence[str],
+    *,
+    route_gate=None,
+):
     from core.engine import EngineCallbacks
     from core.engines.file_replay import FileReplayEngine
 
@@ -974,6 +984,8 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
             )
             decisions = tuple(result.decisions)
             terminal_texts = _terminal_decision_texts(decisions)
+            if route_gate is not None:
+                route_gate.add_case(item.tags, terminal_texts.selected)
             decisions_total += len(decisions)
             outcomes.update(decision.offline_outcome for decision in decisions)
             verifier_outcomes.update(
@@ -1075,6 +1087,28 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional aggregate-only JSON report (atomically written mode 600)",
     )
+    parser.add_argument(
+        "--tool-route-gate",
+        action="store_true",
+        help="score private schema-v3 expected-tool tags without invoking tools",
+    )
+    parser.add_argument(
+        "--tool-route-vault-enabled",
+        action="store_true",
+        help="model setup-time availability of the read-only vault route",
+    )
+    parser.add_argument(
+        "--tool-route-reminders-enabled",
+        action="store_true",
+        help="model setup-time availability of deterministic reminder matching",
+    )
+    parser.add_argument(
+        "--tool-route-app-alias",
+        action="append",
+        default=[],
+        metavar="ALIAS",
+        help="model one setup-approved app alias; repeat for additional aliases",
+    )
     return parser
 
 
@@ -1085,43 +1119,140 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(loaded_corpus, _CorpusLoad):
             raise EvaluationPrerequisiteError()
         corpus, corpus_digest = loaded_corpus
+        gate_requested = args.tool_route_gate is True
+        if (
+            not gate_requested
+            and (
+                args.tool_route_vault_enabled
+                or args.tool_route_reminders_enabled
+                or args.tool_route_app_alias
+            )
+        ) or (gate_requested and loaded_corpus.witness is _LEGACY_CORPUS_WITNESS):
+            raise EvaluationPrerequisiteError()
+        if gate_requested:
+            from tools.tool_route_gate import (
+                ToolRouteClassifier,
+                ToolRouteGateAccumulator,
+                ToolRouteGateProfile,
+                expected_route,
+                no_regression as tool_route_no_regression,
+                profile_digest as tool_route_profile_digest,
+            )
+        gate_profile = (
+            ToolRouteGateProfile(
+                vault_enabled=args.tool_route_vault_enabled,
+                reminders_enabled=args.tool_route_reminders_enabled,
+                app_aliases=tuple(args.tool_route_app_alias),
+            )
+            if gate_requested
+            else None
+        )
+        gate_profile_digest = None
+        if gate_profile is not None:
+            for item in corpus:
+                expected_route(item.tags)
+            gate_profile_digest = tool_route_profile_digest(gate_profile)
+        baseline_gate_accumulator = (
+            ToolRouteGateAccumulator(ToolRouteClassifier(gate_profile))
+            if gate_profile is not None
+            else None
+        )
         baseline_config = _load_config()
-        baseline, baseline_selected_errors = _evaluate(
-            baseline_config, corpus, tuple(args.keyword)
+        if baseline_gate_accumulator is None:
+            baseline, baseline_selected_errors = _evaluate(
+                baseline_config, corpus, tuple(args.keyword)
+            )
+        else:
+            baseline, baseline_selected_errors = _evaluate(
+                baseline_config,
+                corpus,
+                tuple(args.keyword),
+                route_gate=baseline_gate_accumulator,
+            )
+        baseline_gate = (
+            baseline_gate_accumulator.totals()
+            if baseline_gate_accumulator is not None
+            else None
         )
         _verify_loaded_corpus(loaded_corpus)
+        baseline_payload = baseline.as_dict()
+        if baseline_gate is not None:
+            baseline_payload["tool_route_gate"] = baseline_gate.as_dict()
         payload: dict[str, object] = {
-            "ok": _recorded_evaluation_ok(baseline_config, baseline),
+            "ok": (
+                _recorded_evaluation_ok(baseline_config, baseline)
+                and (baseline_gate is None or baseline_gate.complete)
+            ),
             "corpus_digest": corpus_digest,
             "baseline_config_digest": _config_digest(baseline_config),
             "baseline_model_digest": _model_digest(baseline_config),
-            "baseline": baseline.as_dict(),
+            "baseline": baseline_payload,
         }
+        if gate_profile_digest is not None:
+            payload["tool_route_profile_digest"] = gate_profile_digest
         exit_code = 0 if payload["ok"] else 2
 
         if args.overrides:
             known = {field.name for field in fields(baseline_config)}
             overrides = dict(_parse_override(raw, known) for raw in args.overrides)
             candidate_config = replace(baseline_config, **overrides)
-            candidate, candidate_selected_errors = _evaluate(
-                candidate_config, corpus, tuple(args.keyword)
+            candidate_gate_accumulator = (
+                ToolRouteGateAccumulator(ToolRouteClassifier(gate_profile))
+                if gate_profile is not None
+                else None
+            )
+            if candidate_gate_accumulator is None:
+                candidate, candidate_selected_errors = _evaluate(
+                    candidate_config, corpus, tuple(args.keyword)
+                )
+            else:
+                candidate, candidate_selected_errors = _evaluate(
+                    candidate_config,
+                    corpus,
+                    tuple(args.keyword),
+                    route_gate=candidate_gate_accumulator,
+                )
+            candidate_gate = (
+                candidate_gate_accumulator.totals()
+                if candidate_gate_accumulator is not None
+                else None
             )
             _verify_loaded_corpus(loaded_corpus)
+            route_no_regression = (
+                baseline_gate is not None
+                and candidate_gate is not None
+                and tool_route_no_regression(baseline_gate, candidate_gate)
+            )
+            route_improvement = bool(
+                route_no_regression
+                and candidate_gate is not None
+                and baseline_gate is not None
+                and candidate_gate.complete
+                and not baseline_gate.complete
+            )
             comparison = compare_candidate(
                 baseline,
                 candidate,
                 baseline_selected_errors,
                 candidate_selected_errors,
+                additional_improvement=route_improvement,
             )
             if not (
                 _recorded_evaluation_ok(baseline_config, baseline)
                 and _recorded_evaluation_ok(candidate_config, candidate)
+                and (
+                    candidate_gate is None
+                    or (candidate_gate.complete and route_no_regression)
+                )
             ):
                 comparison = replace(comparison, promotable=False)
+            candidate_payload = candidate.as_dict()
+            if candidate_gate is not None:
+                candidate_payload["tool_route_gate"] = candidate_gate.as_dict()
             payload.update(
                 candidate_config_digest=_config_digest(candidate_config),
                 candidate_model_digest=_model_digest(candidate_config),
-                candidate=candidate.as_dict(),
+                candidate=candidate_payload,
                 comparison=comparison.as_dict(),
                 ok=comparison.promotable,
             )

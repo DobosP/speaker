@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-08-04 on Linux ROG.
+Last verified: 2026-08-05 on Linux ROG.
 
-- Current non-real logic gate: 7,898 passing checks as 7,897 low-priority host-side broad passes plus the bounded-read race isolated; 14 skipped, 24 model-only deselected, 11 warnings. The repository lock passed in broad mode 600. Repeat/memory focused gate: 105; adjacent: 304 + 3 skipped; conversation fixture: 213; candidate/shared 464 + 1 isolated; broad streaming 966; public command/noise 246; private diagnostic selector/adjacent 383 + 1 isolated; current APM/DTD 6.
+- Current non-real logic gate: 7,898 passing checks as 7,897 low-priority host-side broad passes plus the bounded-read race isolated; 14 skipped, 24 model-only deselected, 11 warnings. The repository lock passed in broad mode 600. Repeat/memory focused gate: 105; adjacent: 304 + 3 skipped; conversation fixture: 213; candidate/shared 464 + 1 isolated; broad streaming 966; public command/noise 246; private diagnostic selector/adjacent 383 + 1 isolated; recorded tool-route/production-adjacent 1,277 and selector-adjacent 162 + 2 skipped; current APM/DTD 6.
 - Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine Tiny/Small/Medium, Nemotron, and Parakeet NeMo stay rejected (ADR-0090/0091/0099/0115).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
@@ -82,12 +82,12 @@ Last verified: 2026-08-04 on Linux ROG.
 - Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
 - The LiveKit Agents wrapper has no SDK, network, audio-device, or live A/B evidence; its headless fake-SDK result cannot promote trusted-LAN (ADR-0104).
-- The exact-input-to-selector bridge is headlessly implemented and source-attested, but no owner labels, owner export, model run, or live run exists. ADR-0109 adds licensed aggregate model/noise evidence, not capture, VAD, AEC, barge-in, command, tool, device, training-disjoint, or default validity (ADR-0108/0124).
+- The opt-in exact-input tool-route gate uses retained schema-v3 tags and one selected terminal final to score the production deterministic analyzer/planner/device matcher without invocation; its explicit inert profile is digest-bound and reports aggregates only. No owner-labelled run, provider/tool execution, device, model, or live authority exists (ADR-0108/0124/0125).
 
 ## Next
 
 - Acquire and validate the remaining EdAcc and Common Voice private conversation/STT corpora, then run the exact four-source wrapper; AMI and Harper source preparation are complete. Use the public command/noise gate for hard-noise work; require a patched reset/tail-safe Moonshine build before any causal pair. Never change runtime defaults from development evidence (ADR-0112/0113/0115/0116/0117/0120/0122).
-- Capture fresh exact target and negative recordings for the configured VAULT/OBSIDIAN/name phrases plus `./live.sh` open-speaker evidence, export owner-labelled inputs, then run recorded and live BPE A/B; add disjoint command/multi-voice strata, native-reader/gap, and AEC replay (ADR-0092/0100/0108/0109/0114).
+- Capture fresh exact target and negative recordings for the configured VAULT/OBSIDIAN/name phrases plus `./live.sh` open-speaker evidence, export route-labelled owner inputs, then run final-selector/tool-route and live BPE A/B; add disjoint command/multi-voice strata, native-reader/gap, and AEC replay (ADR-0092/0100/0108/0109/0114/0125).
 - Keep parakeet.cpp isolated; prioritize Common Voice SPS v4 after owner term/token acceptance, then multi-host build receipts, endpoint-ground-truth checks, and live capture validation. Do not change defaults until far-field, command safety, ownership, device, and live gates pass. Continue publisher/mobile/remote work separately (ADR-0099/0118/0119/0121/0122).
 
 ## Standard verification

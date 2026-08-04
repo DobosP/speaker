@@ -120,6 +120,50 @@ or audio device and does not establish capture, VAD/endpoint, AEC, barge-in,
 latency, natural-conversation, or live behavior
 ([ADR-0124](adr/0124-replay-private-diagnostic-inputs-through-final-selector.md)).
 
+## Dry-run recognized-text tool routing
+
+Route-labelled cases may additionally carry exactly one of these private tags:
+`expected-tool.none`, `expected-tool.vault.search`,
+`expected-tool.web.search`, `expected-tool.reminder.create`,
+`expected-tool.reminder.list`, `expected-tool.reminder.cancel`, or
+`expected-tool.app.open`. The `expected-tool.` prefix is reserved; the opt-in
+gate rejects missing, unknown, or multiple annotations before starting a
+model. Include at least one positive route and one `none` case. For example, a
+vault label can add `"expected-tool.vault.search"` to its existing `tags`
+array without adding command fields.
+
+Pass only the inert availability profile represented by the labelled cases:
+
+```bash
+python -m tools.recorded_stt_eval \
+  --manifest /private/path/exact-final-input-corpus/corpus.json \
+  --tool-route-gate \
+  --tool-route-vault-enabled \
+  --tool-route-reminders-enabled \
+  --tool-route-app-alias your_alias \
+  --output /private/path/recorded-tool-route-report.json
+```
+
+Omit availability flags for providers intentionally absent from the profile;
+repeat `--tool-route-app-alias` for each tested allowlisted alias. The
+evaluator does not read machine tool configuration. It emits only a
+domain-separated profile digest, never alias values.
+
+The gate sends exactly one nonempty selected final through the production
+deterministic speech analyzer and task planner, with strict reminder/app
+matching only. It never dispatches or invokes a capability, opens an app,
+reads the vault, creates reminder state, calls a provider or LLM, or constructs
+the voice runtime. Aggregate output counts closed expected-route attempts/hits
+and coarse safety outcomes; text, tags, aliases, paths, reminder identities,
+and per-case rows do not enter stdout or reports. Zero, empty, or multiple
+terminal decisions fail the route gate instead of being joined.
+
+This remains after-endpoint dry evidence. It does not validate capture/VAD,
+AEC, barge-in, enrollment or owner authority, confirmation, provider
+readiness, reminder identity/state, vault results, cleaning/addressing,
+continuation, external effects, devices, or live latency
+([ADR-0125](adr/0125-add-dry-recorded-tool-route-gate.md)).
+
 Generic `python -m core --session replay --replay-dir ...` refuses any directory
 containing a diagnostic manifest. Its input contract is a directory of
 independent utterance fixtures; the bundle WAVs are parallel stage views, not

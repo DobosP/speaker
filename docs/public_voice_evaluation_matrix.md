@@ -93,30 +93,43 @@ MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
   --corpus /absolute/private/cvss4-projection/corpus.json
 ```
 
-For a model run, use the same entry point with one or more receipt-bound worker
-manifests. It validates first, passes the corpora to the existing suite in lock
-order, runs its cross-product strictly one cell at a time, revalidates every
-receipt/manifest/PCM afterward even when the suite fails, and only then wraps
-the private aggregate report:
+For the exact two-model comparison recorded in
+[ADR-0127](adr/0127-require-public-conversation-canonical-strata.md), use the
+additive qualification entry point. It fixes baseline/candidate role order,
+derives the canonical source-specific marginal plan from the lock, checks exact
+case membership before model work, delegates to the existing sequential suite,
+and revalidates the aggregate 2x4 result. AMI is reported as separate
+window-kind and close/far
+marginals rather than four joint recipe labels:
 
 ```bash
 SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
   /home/dobo/work/speaker/.venv/bin/python -B \
-  -m tools.public_conversation_fixture \
+  -m tools.public_conversation_qualification \
   --corpus /absolute/private/harper/corpus.json \
   --corpus /absolute/private/edacc/corpus.json \
   --corpus /absolute/private/ami-close-far/corpus.json \
   --corpus /absolute/private/cvss4-projection/corpus.json \
-  --worker-manifest /absolute/private/candidate/worker-manifest.json \
+  --baseline-worker-manifest /absolute/private/baseline/worker-manifest.json \
+  --candidate-worker-manifest /absolute/private/candidate/worker-manifest.json \
   --scratch-root /absolute/private/new-candidate-scratch \
   --output /absolute/private/new-conversation96-report.json \
   --repeats 1 --pace burst
 ```
 
-Preserve private aggregate reports; this is after-PCM development evidence,
-not native capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or
-live evidence.
+Preserve private aggregate reports. A green result means complete execution and
+stratum coverage only; the wrapper emits `quality_decision=not_evaluated` and
+`promotional=false`. This remains after-PCM development evidence, not native
+capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or live evidence.
+
+Both the scratch root and output parent must be owner-private mode-0700 paths.
+They must be outside every Git worktree and bound corpus or worker
+provision/runtime/model tree. Use a fresh scratch root and a previously absent
+output filename. The retained raw suite checkpoint stays under scratch;
+`--output` is staged, file-synced, and atomically published without clobber only
+after all outer fixture, worker, controller-source, stratum, and privacy checks
+pass.
 
 ## Public short-command/noise fixture
 

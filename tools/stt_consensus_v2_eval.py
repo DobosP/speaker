@@ -50,10 +50,12 @@ from tools.recorded_stt_eval import (
     EvaluationPrerequisiteError,
     EvaluationTotals,
     _config_digest,
+    _guard_output_path,
     _load_corpus,
     _measure,
     _pair_errors,
     _sum_accuracy,
+    _verify_loaded_corpus,
     _write_report,
     compare_candidate,
 )
@@ -769,7 +771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise EvaluationPrerequisiteError()
         corpus_root = args.corpus_root.expanduser().resolve(strict=True)
         recorded_stt_eval._REPO_ROOT = corpus_root
-        corpus, corpus_digest = _load_corpus(args.manifest)
+        loaded_corpus = _load_corpus(args.manifest)
+        corpus, corpus_digest = loaded_corpus
         config, effective_config, config_root = _load_machine_config(args.config_root)
         rows = _production_rows(config, config_root, corpus)
 
@@ -860,6 +863,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.parakeet_threads,
             ),
         )
+        _guard_output_path(loaded_corpus, args.output)
+        _verify_loaded_corpus(loaded_corpus)
         if args.output is not None:
             _write_report(args.output, report)
         print(json.dumps(report, sort_keys=True, separators=(",", ":")))

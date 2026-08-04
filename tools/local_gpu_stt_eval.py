@@ -33,9 +33,11 @@ import tools.recorded_stt_eval as recorded_stt_eval
 from tools.recorded_stt_eval import (
     EvaluationPrerequisiteError,
     _config_digest,
+    _guard_output_path,
     _load_corpus,
     _model_digest,
     _update_artifact_digest,
+    _verify_loaded_corpus,
     _write_report,
 )
 from tools.stt_selector_eval import (
@@ -424,7 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not 2 <= args.decode_repeats <= 8 or not 1 <= args.llm_repeats <= 8:
             raise EvaluationPrerequisiteError()
         recorded_stt_eval._REPO_ROOT = args.corpus_root.expanduser().resolve(strict=True)
-        corpus, corpus_digest = _load_corpus(args.manifest)
+        loaded_corpus = _load_corpus(args.manifest)
+        corpus, corpus_digest = loaded_corpus
         config, effective_config, config_root = _load_machine_config(
             args.config_root
         )
@@ -502,6 +505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not model_deterministic:
                 variant["comparison"]["promotable"] = False
 
+        _guard_output_path(loaded_corpus, args.output)
+        _verify_loaded_corpus(loaded_corpus)
         if args.output is not None:
             _write_report(args.output, report)
         print(json.dumps(report, sort_keys=True, separators=(",", ":")))

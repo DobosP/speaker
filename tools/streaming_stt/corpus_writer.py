@@ -549,14 +549,19 @@ def _preflight(
         except Exception:
             raise CorpusWriterError() from None
         prepared_sidecars = tuple(sorted(sidecar_rows))
-    if schema_version == 4:
+    if schema_version in {3, 4}:
         preparation_receipt = dict(prepared_sidecars).get(
             _PREPARATION_RECEIPT_FILENAME
+        )
+        expected_digest = (
+            provenance.source_set_sha256
+            if schema_version == 3
+            else provenance.metadata_sha256
         )
         if (
             preparation_receipt is None
             or hashlib.sha256(preparation_receipt).hexdigest()
-            != provenance.metadata_sha256
+            != expected_digest
         ):
             raise CorpusWriterError()
     return prepared, prepared_sidecars

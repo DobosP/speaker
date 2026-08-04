@@ -88,6 +88,38 @@ is copied bit-for-bit from the exact f32le spool. The preparation receipt has
 identities and hashes but no paths or transcripts, and command output is
 aggregate-only.
 
+## Replay the configured final selector
+
+Use the exported `corpus.json` directly; do not convert its f32le cases to WAV
+or substitute a continuous diagnostic track:
+
+```bash
+python -m tools.recorded_stt_eval \
+  --manifest /private/path/exact-final-input-corpus/corpus.json \
+  --keyword vault \
+  --output /private/path/recorded-final-selector-report.json
+```
+
+Add one or more `--set FIELD=VALUE` options to compare a candidate Sherpa
+configuration with the current machine baseline. The evaluator passes a new
+owned float32 copy of each exact 16 kHz input to FileReplay with no inferred
+speech duration. It reports aggregate streaming/offline/selected accuracy,
+the closed selected-source counts, and whether those counts attest every
+terminal decision. It retains empty terminal boundaries and case tags only in
+private memory; neither transcript rows nor tags enter stdout or the report.
+
+Schema-v3 replay rechecks the source-set-bound selection receipt, private file
+metadata, manifest, and PCM after copying and again after evaluation before
+publication. The manifest must be a regular single-link file no larger than
+8 MiB. Choose a new report path: an output that names or aliases the manifest,
+receipt, PCM, or a legacy input is rejected without overwriting it. A changed
+or malformed input returns only the detail-free prerequisite error and does
+not publish the requested report. This is
+after-endpoint model-input replay: it starts no chatbot, TTS, tool, recorder,
+or audio device and does not establish capture, VAD/endpoint, AEC, barge-in,
+latency, natural-conversation, or live behavior
+([ADR-0124](adr/0124-replay-private-diagnostic-inputs-through-final-selector.md)).
+
 Generic `python -m core --session replay --replay-dir ...` refuses any directory
 containing a diagnostic manifest. Its input contract is a directory of
 independent utterance fixtures; the bundle WAVs are parallel stage views, not

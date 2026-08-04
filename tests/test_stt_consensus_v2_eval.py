@@ -5,7 +5,6 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
 import tools.stt_consensus_v2_eval as consensus_v2
 
@@ -349,6 +348,102 @@ def test_cli_failure_never_prints_private_exception(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "SENTINEL" not in output
     assert json.loads(output) == consensus_v2._SAFE_ERROR
+
+
+def test_cli_guards_and_reverifies_loaded_corpus_before_report_write(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    corpus = (SimpleNamespace(),)
+    loaded = (corpus, "c" * 64)
+    config = SimpleNamespace()
+    batch = SimpleNamespace(
+        texts=("private",),
+        repeat_disagreements=0,
+        as_dict=lambda: {},
+    )
+    report = {
+        "variants": {
+            "safe": {"comparison": {"strictly_safe": True}},
+        },
+    }
+    monkeypatch.setattr(consensus_v2, "_load_corpus", lambda _path: loaded)
+    monkeypatch.setattr(
+        consensus_v2,
+        "_load_machine_config",
+        lambda _root: (config, config, tmp_path),
+    )
+    monkeypatch.setattr(consensus_v2, "_production_rows", lambda *_args: ())
+    monkeypatch.setattr(
+        consensus_v2,
+        "_local_snapshot",
+        lambda *_args, **_kwargs: tmp_path,
+    )
+    monkeypatch.setattr(consensus_v2, "_parakeet_directory", lambda _path: tmp_path)
+    monkeypatch.setattr(
+        consensus_v2,
+        "_decode_model",
+        lambda *_args, **_kwargs: batch,
+    )
+    monkeypatch.setattr(
+        consensus_v2,
+        "_decode_parakeet",
+        lambda *_args, **_kwargs: batch,
+    )
+    monkeypatch.setattr(consensus_v2, "_make_cases", lambda *_args: ())
+    monkeypatch.setattr(consensus_v2, "_variants", lambda: {})
+    monkeypatch.setattr(
+        consensus_v2,
+        "_evaluate_variants",
+        lambda *_args, **_kwargs: report,
+    )
+    monkeypatch.setattr(consensus_v2, "_direct_accuracy", lambda *_args: {})
+    monkeypatch.setattr(consensus_v2, "_config_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(
+        consensus_v2,
+        "_production_model_digest",
+        lambda *_args: "e" * 64,
+    )
+    monkeypatch.setattr(consensus_v2, "_tree_digest", lambda _path: "f" * 64)
+    monkeypatch.setattr(consensus_v2, "_contract_digest", lambda *_args: "a" * 64)
+    for module in ("faster_whisper", "ctranslate2", "sherpa_onnx"):
+        monkeypatch.setitem(
+            sys.modules,
+            module,
+            SimpleNamespace(__version__="test"),
+        )
+    calls = []
+    monkeypatch.setattr(
+        consensus_v2,
+        "_guard_output_path",
+        lambda _loaded, _output: calls.append("guard"),
+    )
+    monkeypatch.setattr(
+        consensus_v2,
+        "_verify_loaded_corpus",
+        lambda _loaded: calls.append("verify"),
+    )
+    monkeypatch.setattr(
+        consensus_v2,
+        "_write_report",
+        lambda _output, _report: calls.append("write"),
+    )
+
+    assert consensus_v2.main(
+        [
+            "--decode-repeats",
+            "2",
+            "--corpus-root",
+            str(tmp_path),
+            "--config-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "report.json"),
+        ]
+    ) == 0
+    assert calls == ["guard", "verify", "write"]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
 def test_contract_digest_binds_local_acoustic_and_control_rules():

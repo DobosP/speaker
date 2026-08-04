@@ -658,6 +658,10 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
+- [ ] Close the existing recorded-STT offline/verifier outcome maps to the exact
+      production vocabularies before counting or reporting them, with the same
+      detached, detail-free validation used for selected-source accounting.
+      This is follow-up hardening, not part of ADR-0124's selected-source slice.
 - [ ] **`web.search` egress vs the floated turn sensitivity (review nit, 2026-06-08g).**
       `core/websearch.py` gates egress on the raw tool `arg` via `may_leave_device(arg)`,
       independent of `context["sensitivity"]`. Now that the ReAct planner also sees the

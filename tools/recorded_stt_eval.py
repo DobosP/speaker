@@ -26,11 +26,13 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field, fields, replace
 from numbers import Real
 from pathlib import Path
+from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
 from core.wer import normalize, word_error_rate
@@ -39,6 +41,19 @@ from core.wer import normalize, word_error_rate
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_MANIFEST = _REPO_ROOT / "tests" / "fixtures" / "recorded_voice_manifest.json"
 _SAFE_ERROR = {"ok": False, "error": "recorded_stt_prerequisites_unavailable"}
+_PRIVATE_DIAGNOSTIC_SCHEMA_VERSION = 3
+_PRIVATE_DIAGNOSTIC_KIND = "private-diagnostic-v1"
+_PRIVATE_DIAGNOSTIC_SUITE = "final-model-input"
+_PRIVATE_DIAGNOSTIC_TAG = "private-diagnostic"
+_PRIVATE_DIAGNOSTIC_RECEIPT = "preparation-receipt.json"
+_MAX_PRIVATE_DIAGNOSTIC_RECEIPT_BYTES = 256 * 1024
+_MAX_RECORDED_CORPUS_MANIFEST_BYTES = 8 * 1024 * 1024
+_FINAL_INPUT_ROLE_TAGS = frozenset(
+    {"model_gate_segment", "selected_asr_segment"}
+)
+_SELECTED_SOURCES = frozenset(
+    {"none", "streaming", "offline", "verifier_consensus", "established_override"}
+)
 _VERIFIER_COMPLETED_OUTCOMES = frozenset(
     {
         "consensus",
@@ -81,10 +96,44 @@ class _CorpusItem:
     samples: object
     sample_rate: int
     speech_sec: float | None
+    tags: tuple[str, ...] = ()
 
     # A failed assertion must not echo a private label or waveform.
     def __repr__(self) -> str:
         return "_CorpusItem(<private>)"
+
+
+@dataclass(frozen=True)
+class _LegacyCorpusWitness:
+    """Explicit no-op witness for the unchanged legacy WAV contract."""
+
+
+_LEGACY_CORPUS_WITNESS = _LegacyCorpusWitness()
+
+
+@dataclass(frozen=True)
+class _CorpusLoad:
+    items: tuple[_CorpusItem, ...] = field(repr=False)
+    digest: str
+    witness: object = field(repr=False)
+    protected_paths: tuple[Path, ...] = field(default=(), repr=False)
+
+    def __iter__(self):
+        # Preserve the established private two-value unpacking API.
+        yield self.items
+        yield self.digest
+
+
+@dataclass(frozen=True)
+class _DecisionTexts:
+    """Private hypotheses retaining one slot per terminal decision."""
+
+    streaming: tuple[str, ...] = field(repr=False)
+    offline: tuple[str, ...] = field(repr=False)
+    selected: tuple[str, ...] = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "_DecisionTexts(<private>)"
 
 
 @dataclass(frozen=True)
@@ -147,24 +196,99 @@ class EvaluationTotals:
     selected: AccuracyTotals
     clips: int
     decisions: int
-    offline_outcomes: Mapping[str, int]
-    verifier_outcomes: Mapping[str, int] = field(default_factory=dict)
+    offline_outcomes: Mapping[str, int] = field(repr=False)
+    verifier_outcomes: Mapping[str, int] = field(default_factory=dict, repr=False)
+    selected_sources: Mapping[str, int] = field(default_factory=dict, repr=False)
+    selected_sources_attested: bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.selected_sources_attested) is not bool:
+            raise EvaluationPrerequisiteError()
+        selected_sources = {
+            source: count
+            for source, count in _closed_selected_sources(
+                self.selected_sources
+            ).items()
+            if count
+        }
+        object.__setattr__(
+            self,
+            "selected_sources",
+            MappingProxyType(selected_sources),
+        )
 
     @property
     def complete(self) -> bool:
         return self.clips > 0 and self.selected.clips == self.clips
+
+    @property
+    def selected_source_accounting_complete(self) -> bool:
+        if (
+            self.selected_sources_attested is not True
+            or isinstance(self.decisions, bool)
+            or type(self.decisions) is not int
+            or self.decisions <= 0
+        ):
+            return False
+        try:
+            selected_sources = _closed_selected_sources(self.selected_sources)
+        except EvaluationPrerequisiteError:
+            return False
+        return sum(selected_sources.values()) == self.decisions
 
     def as_dict(self) -> dict[str, object]:
         return {
             "clips": self.clips,
             "decisions": self.decisions,
             "complete": self.complete,
+            "selected_sources_attested": self.selected_sources_attested is True,
+            "selected_source_accounting_complete": (
+                self.selected_source_accounting_complete
+            ),
             "offline_outcomes": dict(sorted(self.offline_outcomes.items())),
             "verifier_outcomes": dict(sorted(self.verifier_outcomes.items())),
+            "selected_sources": dict(
+                sorted(_closed_selected_sources(self.selected_sources).items())
+            ),
             "streaming": self.streaming.as_dict(),
             "offline": self.offline.as_dict(),
             "selected": self.selected.as_dict(),
         }
+
+
+def _closed_selected_sources(value: Mapping[str, int]) -> dict[str, int]:
+    """Copy one aggregate source map only when its vocabulary/counts are closed."""
+
+    try:
+        if not isinstance(value, Mapping):
+            raise EvaluationPrerequisiteError()
+        result: dict[str, int] = {}
+        for source, count in value.items():
+            if (
+                type(source) is not str
+                or source not in _SELECTED_SOURCES
+                or type(count) is not int
+                or count < 0
+            ):
+                raise EvaluationPrerequisiteError()
+            result[source] = count
+        return result
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _selected_source(value: object) -> str:
+    try:
+        raw = getattr(value, "value", value)
+        if type(raw) is not str or raw not in _SELECTED_SOURCES:
+            raise EvaluationPrerequisiteError()
+        return raw
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
 
 
 def _enabled_verifier_evaluation_ok(config, totals: EvaluationTotals) -> bool:
@@ -367,13 +491,213 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_corpus(manifest_path: Path) -> tuple[list[_CorpusItem], str]:
-    """Load hash-pinned private audio while keeping all details out of errors."""
+def _strict_manifest_json(raw: bytes) -> object:
+    def pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(
+            raw,
+            object_pairs_hook=pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except (UnicodeError, ValueError, OverflowError):
+        raise EvaluationPrerequisiteError() from None
+
+
+def _private_file_ok(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_nlink == 1
+            and stat.S_IMODE(metadata.st_mode) == 0o600
+            and path.resolve(strict=True) == path
+            and (
+                not hasattr(os, "geteuid")
+                or metadata.st_uid == os.geteuid()
+            )
+        )
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        return False
+
+
+def _require_private_diagnostic_corpus(corpus) -> None:
+    try:
+        root = corpus.path.parent
+        root_metadata = root.lstat()
+        receipt = root / _PRIVATE_DIAGNOSTIC_RECEIPT
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or stat.S_IMODE(root_metadata.st_mode) != 0o700
+            or root.resolve(strict=True) != root
+            or (
+                hasattr(os, "geteuid")
+                and root_metadata.st_uid != os.geteuid()
+            )
+            or not _private_file_ok(corpus.path)
+            or not _private_file_ok(receipt)
+            or any(
+                case.source_path.parent != root
+                or not _private_file_ok(case.source_path)
+                for case in corpus.cases
+            )
+        ):
+            raise EvaluationPrerequisiteError()
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _private_diagnostic_role(tags: Sequence[str]) -> str:
+    roles = tuple(tag for tag in tags if tag in _FINAL_INPUT_ROLE_TAGS)
+    if _PRIVATE_DIAGNOSTIC_TAG not in tags or len(roles) != 1:
+        raise EvaluationPrerequisiteError()
+    return roles[0]
+
+
+def _verify_private_diagnostic_receipt(corpus) -> None:
+    """Bind the retained exact-input receipt to provenance and case PCM."""
+
+    from core.diagnostic_bundle import FinalModelInputReceipt
+    from tools.streaming_stt.bounded_io import BoundedReadError, read_regular_bounded
+
+    try:
+        provenance = corpus.provenance
+        if provenance is None:
+            raise EvaluationPrerequisiteError()
+        snapshot = read_regular_bounded(
+            corpus.path.parent / _PRIVATE_DIAGNOSTIC_RECEIPT,
+            maximum_bytes=_MAX_PRIVATE_DIAGNOSTIC_RECEIPT_BYTES,
+        )
+        if (
+            snapshot.path.parent != corpus.path.parent
+            or hashlib.sha256(snapshot.data).hexdigest()
+            != provenance.source_set_sha256
+        ):
+            raise EvaluationPrerequisiteError()
+        payload = _strict_manifest_json(snapshot.data)
+        if not isinstance(payload, dict) or set(payload) != {
+            "schema_version",
+            "kind",
+            "diagnostic_manifest_sha256",
+            "selected_inputs",
+        }:
+            raise EvaluationPrerequisiteError()
+        selected_inputs = payload.get("selected_inputs")
+        if (
+            type(payload.get("schema_version")) is not int
+            or payload.get("schema_version") != 1
+            or payload.get("kind") != "private-diagnostic-selection-v1"
+            or payload.get("diagnostic_manifest_sha256")
+            != provenance.manifest_sha256
+            or not isinstance(selected_inputs, list)
+            or len(selected_inputs) != len(corpus.cases)
+        ):
+            raise EvaluationPrerequisiteError()
+        receipts = tuple(
+            FinalModelInputReceipt.from_payload(value) for value in selected_inputs
+        )
+        receipt_indexes = tuple(receipt.input_index for receipt in receipts)
+        if receipt_indexes != tuple(sorted(set(receipt_indexes))):
+            raise EvaluationPrerequisiteError()
+        for case, receipt in zip(corpus.cases, receipts):
+            if (
+                receipt.sha256 != case.sha256
+                or receipt.samples != case.samples
+                or receipt.sample_rate_hz != 16_000
+                or receipt.role.value != _private_diagnostic_role(case.tags)
+            ):
+                raise EvaluationPrerequisiteError()
+    except (BoundedReadError, EvaluationPrerequisiteError):
+        raise EvaluationPrerequisiteError() from None
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _load_private_diagnostic_corpus(manifest_path: Path) -> _CorpusLoad:
+    import numpy as np
+
+    from tools.streaming_stt.corpus import load_corpus, verify_corpus_snapshot
+
+    try:
+        corpus = load_corpus(manifest_path)
+        provenance = corpus.provenance
+        if (
+            corpus.schema_version != _PRIVATE_DIAGNOSTIC_SCHEMA_VERSION
+            or provenance is None
+            or provenance.kind != _PRIVATE_DIAGNOSTIC_KIND
+            or provenance.suite != _PRIVATE_DIAGNOSTIC_SUITE
+        ):
+            raise EvaluationPrerequisiteError()
+        _require_private_diagnostic_corpus(corpus)
+        _verify_private_diagnostic_receipt(corpus)
+        items: list[_CorpusItem] = []
+        for case in corpus.cases:
+            _private_diagnostic_role(case.tags)
+            if (
+                case.assertion != "transcript"
+                or case.commands
+                or case.forbidden_commands
+            ):
+                raise EvaluationPrerequisiteError()
+            source_samples = np.frombuffer(case.audio_bytes, dtype="<f4")
+            samples = source_samples.astype(np.float32, copy=True)
+            if (
+                not samples.flags.owndata
+                or samples.dtype != np.dtype(np.float32)
+                or samples.ndim != 1
+                or samples.size != case.samples
+                or not bool(np.array_equal(samples, source_samples))
+            ):
+                raise EvaluationPrerequisiteError()
+            items.append(
+                _CorpusItem(
+                    case.expected_text,
+                    samples,
+                    16_000,
+                    None,
+                    tags=case.tags,
+                )
+            )
+        # The evaluator owns its arrays before rechecking every mutable input.
+        verify_corpus_snapshot(corpus)
+        _require_private_diagnostic_corpus(corpus)
+        _verify_private_diagnostic_receipt(corpus)
+        return _CorpusLoad(
+            tuple(items),
+            corpus.digest,
+            corpus,
+            (
+                corpus.path,
+                corpus.path.parent / _PRIVATE_DIAGNOSTIC_RECEIPT,
+                *(case.source_path for case in corpus.cases),
+            ),
+        )
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _load_legacy_corpus(
+    raw: bytes,
+    manifest: object,
+    manifest_path: Path,
+) -> _CorpusLoad:
+    """Retain the original hash-pinned WAV corpus and digest contract."""
+
     from core.engines.file_replay import load_waveform
 
     try:
-        raw = manifest_path.read_bytes()
-        manifest = json.loads(raw)
+        if not isinstance(manifest, dict):
+            raise ValueError
         entries = manifest.get("clips")
         if not isinstance(entries, list) or not entries:
             raise ValueError
@@ -383,6 +707,7 @@ def _load_corpus(manifest_path: Path) -> tuple[list[_CorpusItem], str]:
         items: list[_CorpusItem] = []
         corpus_hash = hashlib.sha256(raw)
         seen: set[str] = set()
+        protected_paths = [manifest_path]
         for entry in entries:
             clip_id = entry["id"]
             reference = entry["expected_text"]
@@ -400,6 +725,7 @@ def _load_corpus(manifest_path: Path) -> tuple[list[_CorpusItem], str]:
             path = clip_dir / f"{clip_id}.wav"
             if _sha256_file(path) != expected_hash:
                 raise ValueError
+            protected_paths.append(path.resolve(strict=True))
             samples, sample_rate = load_waveform(str(path))
             sample_rate = int(sample_rate)
             if sample_rate <= 0:
@@ -418,9 +744,89 @@ def _load_corpus(manifest_path: Path) -> tuple[list[_CorpusItem], str]:
                     raise ValueError
             items.append(_CorpusItem(reference, samples, sample_rate, speech_sec))
             corpus_hash.update(bytes.fromhex(expected_hash))
-        return items, corpus_hash.hexdigest()
-    except Exception as exc:  # noqa: BLE001 - public error must stay detail-free
-        raise EvaluationPrerequisiteError() from exc
+        return _CorpusLoad(
+            tuple(items),
+            corpus_hash.hexdigest(),
+            _LEGACY_CORPUS_WITNESS,
+            tuple(protected_paths),
+        )
+    except Exception:  # noqa: BLE001 - public error must stay detail-free
+        raise EvaluationPrerequisiteError() from None
+
+
+def _load_corpus(manifest_path: Path) -> _CorpusLoad:
+    """Dispatch legacy WAV or one reserved canonical versioned corpus."""
+
+    try:
+        from tools.streaming_stt.bounded_io import read_regular_bounded
+
+        snapshot = read_regular_bounded(
+            Path(manifest_path).expanduser(),
+            maximum_bytes=_MAX_RECORDED_CORPUS_MANIFEST_BYTES,
+        )
+        raw = snapshot.data
+        # Keep legacy JSON decoding byte-for-byte compatible. A reserved
+        # versioned payload is reparsed strictly by the canonical loader.
+        manifest = json.loads(raw)
+        if isinstance(manifest, dict) and "schema_version" in manifest:
+            if (
+                type(manifest.get("schema_version")) is not int
+                or manifest.get("schema_version")
+                != _PRIVATE_DIAGNOSTIC_SCHEMA_VERSION
+            ):
+                raise EvaluationPrerequisiteError()
+            return _load_private_diagnostic_corpus(snapshot.path)
+        return _load_legacy_corpus(raw, manifest, snapshot.path)
+    except EvaluationPrerequisiteError:
+        raise EvaluationPrerequisiteError() from None
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _verify_loaded_corpus(loaded: _CorpusLoad) -> None:
+    if not isinstance(loaded, _CorpusLoad):
+        raise EvaluationPrerequisiteError()
+    if loaded.witness is _LEGACY_CORPUS_WITNESS:
+        return
+    try:
+        from tools.streaming_stt.corpus import LoadedCorpus, verify_corpus_snapshot
+
+        if not isinstance(loaded.witness, LoadedCorpus):
+            raise EvaluationPrerequisiteError()
+        verify_corpus_snapshot(loaded.witness)
+        _require_private_diagnostic_corpus(loaded.witness)
+        _verify_private_diagnostic_receipt(loaded.witness)
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _guard_output_path(loaded: _CorpusLoad, output: Path | None) -> None:
+    """Reject reports that name or resolve to any loaded corpus input."""
+
+    if output is None:
+        return
+    try:
+        if not isinstance(loaded, _CorpusLoad):
+            raise EvaluationPrerequisiteError()
+        candidate = Path(os.path.abspath(Path(output).expanduser()))
+        resolved_candidate = candidate.resolve(strict=False)
+        for protected in loaded.protected_paths:
+            protected_path = Path(protected)
+            if (
+                candidate == protected_path
+                or resolved_candidate == protected_path
+                or (
+                    (candidate.exists() or candidate.is_symlink())
+                    and os.path.samefile(candidate, protected_path)
+                )
+            ):
+                raise EvaluationPrerequisiteError()
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
 
 
 def _load_config():
@@ -512,6 +918,39 @@ def _model_digest(config) -> str:
         raise EvaluationPrerequisiteError() from exc
 
 
+def _terminal_decision_texts(decisions: Sequence[object]) -> _DecisionTexts:
+    streaming: list[str] = []
+    offline: list[str] = []
+    selected: list[str] = []
+    try:
+        for decision in decisions:
+            streaming_raw = getattr(decision, "streaming_raw")
+            offline_raw = getattr(decision, "offline_raw")
+            selected_raw = getattr(decision, "selected")
+            if (
+                not isinstance(streaming_raw, str)
+                or (offline_raw is not None and not isinstance(offline_raw, str))
+                or not isinstance(selected_raw, str)
+            ):
+                raise EvaluationPrerequisiteError()
+            streaming.append(streaming_raw)
+            offline.append(offline_raw or "")
+            selected.append(selected_raw)
+        return _DecisionTexts(
+            streaming=tuple(streaming),
+            offline=tuple(offline),
+            selected=tuple(selected),
+        )
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _joined_terminal_text(values: Sequence[str]) -> str:
+    return " ".join(value.strip() for value in values if value.strip())
+
+
 def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
     from core.engine import EngineCallbacks
     from core.engines.file_replay import FileReplayEngine
@@ -526,6 +965,7 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
         decisions_total = 0
         outcomes: Counter[str] = Counter()
         verifier_outcomes: Counter[str] = Counter()
+        selected_sources: Counter[str] = Counter()
         for item in corpus:
             result = engine.evaluate_samples(
                 item.samples,
@@ -533,26 +973,18 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
                 speech_sec=item.speech_sec,
             )
             decisions = tuple(result.decisions)
+            terminal_texts = _terminal_decision_texts(decisions)
             decisions_total += len(decisions)
             outcomes.update(decision.offline_outcome for decision in decisions)
             verifier_outcomes.update(
                 decision.verifier_outcome for decision in decisions
             )
-            streaming = " ".join(
-                decision.streaming_raw.strip()
-                for decision in decisions
-                if decision.streaming_raw.strip()
+            selected_sources.update(
+                _selected_source(decision.selected_source) for decision in decisions
             )
-            offline = " ".join(
-                (decision.offline_raw or "").strip()
-                for decision in decisions
-                if (decision.offline_raw or "").strip()
-            )
-            selected = " ".join(
-                decision.selected.strip()
-                for decision in decisions
-                if decision.selected.strip()
-            )
+            streaming = _joined_terminal_text(terminal_texts.streaming)
+            offline = _joined_terminal_text(terminal_texts.offline)
+            selected = _joined_terminal_text(terminal_texts.selected)
             streaming_totals = _sum_accuracy(
                 streaming_totals,
                 _measure([(item.reference, streaming)], keywords=keywords),
@@ -579,8 +1011,20 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
         decisions=decisions_total,
         offline_outcomes=dict(outcomes),
         verifier_outcomes=dict(verifier_outcomes),
+        selected_sources=dict(selected_sources),
+        selected_sources_attested=True,
     )
     return totals, tuple(selected_errors)
+
+
+def _recorded_evaluation_ok(config, totals: EvaluationTotals) -> bool:
+    return (
+        totals.complete
+        and totals.selected.nonempty == totals.clips
+        and totals.selected_source_accounting_complete
+        and _enabled_offline_evaluation_ok(config, totals)
+        and _enabled_verifier_evaluation_ok(config, totals)
+    )
 
 
 def _write_report(path: Path, payload: Mapping[str, object]) -> None:
@@ -637,18 +1081,17 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        corpus, corpus_digest = _load_corpus(args.manifest)
+        loaded_corpus = _load_corpus(args.manifest)
+        if not isinstance(loaded_corpus, _CorpusLoad):
+            raise EvaluationPrerequisiteError()
+        corpus, corpus_digest = loaded_corpus
         baseline_config = _load_config()
         baseline, baseline_selected_errors = _evaluate(
             baseline_config, corpus, tuple(args.keyword)
         )
+        _verify_loaded_corpus(loaded_corpus)
         payload: dict[str, object] = {
-            "ok": (
-                baseline.complete
-                and baseline.selected.nonempty == baseline.clips
-                and _enabled_offline_evaluation_ok(baseline_config, baseline)
-                and _enabled_verifier_evaluation_ok(baseline_config, baseline)
-            ),
+            "ok": _recorded_evaluation_ok(baseline_config, baseline),
             "corpus_digest": corpus_digest,
             "baseline_config_digest": _config_digest(baseline_config),
             "baseline_model_digest": _model_digest(baseline_config),
@@ -663,6 +1106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate, candidate_selected_errors = _evaluate(
                 candidate_config, corpus, tuple(args.keyword)
             )
+            _verify_loaded_corpus(loaded_corpus)
             comparison = compare_candidate(
                 baseline,
                 candidate,
@@ -670,10 +1114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_selected_errors,
             )
             if not (
-                _enabled_offline_evaluation_ok(baseline_config, baseline)
-                and _enabled_offline_evaluation_ok(candidate_config, candidate)
-                and _enabled_verifier_evaluation_ok(baseline_config, baseline)
-                and _enabled_verifier_evaluation_ok(candidate_config, candidate)
+                _recorded_evaluation_ok(baseline_config, baseline)
+                and _recorded_evaluation_ok(candidate_config, candidate)
             ):
                 comparison = replace(comparison, promotable=False)
             payload.update(
@@ -685,6 +1127,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             exit_code = 0 if comparison.promotable else 3
 
+        _guard_output_path(loaded_corpus, args.output)
+        _verify_loaded_corpus(loaded_corpus)
         if args.output is not None:
             _write_report(args.output, payload)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))

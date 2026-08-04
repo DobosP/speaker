@@ -790,6 +790,9 @@ def test_corpus_schema_versions_reject_cross_schema_or_ambiguous_command_rows(
     else:
         payload["schema_version"] = 3
         payload["provenance"]["kind"] = "private-diagnostic-v1"
+        payload["provenance"]["source_set_sha256"] = hashlib.sha256(
+            (tmp_path / "preparation-receipt.json").read_bytes()
+        ).hexdigest()
     corpus_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(CorpusError):

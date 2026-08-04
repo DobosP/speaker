@@ -106,10 +106,12 @@ def test_publishes_private_schema_v2_corpus_and_sidecar(tmp_path: Path):
 
 def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
     destination = tmp_path / "private-diagnostic-corpus"
+    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
     provenance = replace(
         _provenance(),
         kind="private-diagnostic-v1",
         suite="final-model-input",
+        source_set_sha256=hashlib.sha256(receipt).hexdigest(),
     )
 
     loaded = corpus_writer.publish_private_corpus(
@@ -117,6 +119,7 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
         provenance=provenance,
         output_dir=destination,
         purpose="exact private diagnostic final input",
+        sidecars={"preparation-receipt.json": receipt},
     )
 
     assert loaded.schema_version == 3
@@ -132,6 +135,61 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
     )
     with pytest.raises(CorpusError):
         load_corpus(destination / "corpus.json")
+
+
+def test_private_diagnostic_binds_source_set_receipt_on_write_load_and_verify(
+    tmp_path: Path,
+):
+    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
+    provenance = replace(
+        _provenance(),
+        kind="private-diagnostic-v1",
+        suite="final-model-input",
+        source_set_sha256=hashlib.sha256(receipt).hexdigest(),
+    )
+    with pytest.raises(corpus_writer.CorpusWriterError):
+        corpus_writer.publish_private_corpus(
+            cases=(_case(),),
+            provenance=provenance,
+            output_dir=tmp_path / "missing-receipt",
+            purpose="exact private diagnostic final input",
+        )
+    assert not (tmp_path / "missing-receipt").exists()
+    with pytest.raises(corpus_writer.CorpusWriterError):
+        corpus_writer.publish_private_corpus(
+            cases=(_case(),),
+            provenance=replace(provenance, source_set_sha256="0" * 64),
+            output_dir=tmp_path / "mismatched-receipt",
+            purpose="exact private diagnostic final input",
+            sidecars={"preparation-receipt.json": receipt},
+        )
+    assert not (tmp_path / "mismatched-receipt").exists()
+
+    loaded = corpus_writer.publish_private_corpus(
+        cases=(_case(),),
+        provenance=provenance,
+        output_dir=tmp_path / "bound-receipt",
+        purpose="exact private diagnostic final input",
+        sidecars={"preparation-receipt.json": receipt},
+    )
+    receipt_path = loaded.path.parent / "preparation-receipt.json"
+    receipt_path.write_bytes(b"x" * len(receipt))
+    receipt_path.chmod(0o600)
+
+    with pytest.raises(CorpusError):
+        load_corpus(loaded.path)
+    with pytest.raises(CorpusError):
+        verify_corpus_snapshot(loaded)
+
+    receipt_path.write_bytes(receipt)
+    receipt_path.chmod(0o600)
+    assert load_corpus(loaded.path).digest == loaded.digest
+    verify_corpus_snapshot(loaded)
+    receipt_path.unlink()
+    with pytest.raises(CorpusError):
+        load_corpus(loaded.path)
+    with pytest.raises(CorpusError):
+        verify_corpus_snapshot(loaded)
 
 
 def test_public_command_noise_schema_v4_binds_receipt_and_assertion_fields(

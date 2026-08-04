@@ -177,6 +177,89 @@ def test_cli_failure_never_prints_private_exception_detail(monkeypatch, capsys):
     assert json.loads(output) == gpu_eval._SAFE_ERROR
 
 
+def test_cli_guards_and_reverifies_loaded_corpus_before_report_write(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    corpus = (SimpleNamespace(),)
+    loaded = (corpus, "c" * 64)
+    config = SimpleNamespace()
+    batch = SimpleNamespace(
+        texts=("private",),
+        repeat_disagreements=0,
+        as_dict=lambda: {},
+    )
+    report = {
+        "ok": True,
+        "variants": {
+            "gpu_small_direct": {"comparison": {"promotable": True}},
+        },
+    }
+    monkeypatch.setattr(gpu_eval, "_load_corpus", lambda _path: loaded)
+    monkeypatch.setattr(
+        gpu_eval,
+        "_load_machine_config",
+        lambda _root: (config, config, tmp_path),
+    )
+    monkeypatch.setattr(gpu_eval, "_production_rows", lambda *_args: ())
+    monkeypatch.setattr(gpu_eval, "_local_snapshot", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(gpu_eval, "_decode_model", lambda *_args, **_kwargs: batch)
+    monkeypatch.setattr(gpu_eval, "_ollama_identities", lambda _models: ())
+    monkeypatch.setattr(gpu_eval, "_selector_variants", lambda *_args: {})
+    monkeypatch.setattr(gpu_eval, "_cases", lambda *_args: ())
+    monkeypatch.setattr(gpu_eval, "evaluate_variants", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(gpu_eval, "_config_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(
+        gpu_eval,
+        "_production_model_digest",
+        lambda *_args: "e" * 64,
+    )
+    monkeypatch.setattr(gpu_eval, "_tree_digest", lambda _path: "f" * 64)
+    monkeypatch.setattr(gpu_eval, "_contract_digests", lambda **_kwargs: {})
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(__version__="test"),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "ctranslate2",
+        SimpleNamespace(__version__="test"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        gpu_eval,
+        "_guard_output_path",
+        lambda _loaded, _output: calls.append("guard"),
+    )
+    monkeypatch.setattr(
+        gpu_eval,
+        "_verify_loaded_corpus",
+        lambda _loaded: calls.append("verify"),
+    )
+    monkeypatch.setattr(
+        gpu_eval,
+        "_write_report",
+        lambda _output, _report: calls.append("write"),
+    )
+
+    assert gpu_eval.main(
+        [
+            "--decode-repeats",
+            "2",
+            "--corpus-root",
+            str(tmp_path),
+            "--config-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "report.json"),
+        ]
+    ) == 0
+    assert calls == ["guard", "verify", "write"]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
 def test_selector_variants_make_llm_choice_only_and_consensus_explicit():
     variants = gpu_eval._selector_variants((), repeats=2)
 

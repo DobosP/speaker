@@ -21,6 +21,7 @@ from tools.prepare_diagnostic_streaming_stt_corpus import (
     main,
     prepare_diagnostic_corpus,
 )
+from tools import recorded_stt_eval
 from tools.streaming_stt_eval import _corpus_binding
 
 
@@ -212,6 +213,45 @@ def test_publishes_exact_spool_slice_as_private_schema_v3(tmp_path: Path) -> Non
         "paul-vault-001.f32le": 0o600,
         "preparation-receipt.json": 0o600,
     }
+
+
+def test_export_reaches_recorded_selector_as_exact_final_input(tmp_path: Path) -> None:
+    manifest, continuous_asr, receipt, exact = _diagnostic(tmp_path)
+    labels = _labels(
+        tmp_path / "labels.json",
+        manifest=manifest,
+        input_index=receipt.input_index,
+        input_sha256=receipt.sha256,
+    )
+    published = prepare_diagnostic_corpus(
+        diagnostic_manifest=manifest,
+        labels=labels,
+        output_dir=tmp_path / "private-corpus",
+    )
+
+    evaluator_load = recorded_stt_eval._load_corpus(published.path)
+    items, digest = evaluator_load
+
+    assert digest == published.digest
+    assert len(items) == 1
+    assert items[0].sample_rate == 16_000
+    assert items[0].speech_sec is None
+    assert items[0].tags == (
+        "private-diagnostic",
+        "selected_asr_segment",
+        "owner-voice",
+        "quiet-room",
+    )
+    assert items[0].samples.flags.owndata
+    assert items[0].samples.astype("<f4", copy=False).tobytes() == exact.astype(
+        "<f4",
+        copy=False,
+    ).tobytes()
+    assert continuous_asr.read_bytes() != items[0].samples.astype(
+        "<f4",
+        copy=False,
+    ).tobytes()
+    recorded_stt_eval._verify_loaded_corpus(evaluator_load)
 
 
 @pytest.mark.parametrize("mutation", ("manifest", "input", "index"))

@@ -49,6 +49,10 @@ _MAX_PREPARATION_RECEIPT_BYTES = 256 * 1024
 _MAX_CORPUS_MANIFEST_BYTES = 256 * 1024
 _MAX_CASES = 512
 _MAX_REFERENCE_CHARS = 4096
+_RECEIPT_DIGEST_FIELD = {
+    3: "source_set_sha256",
+    4: "metadata_sha256",
+}
 
 
 class CorpusError(RuntimeError):
@@ -344,6 +348,31 @@ def _load_case(
     )
 
 
+def _verify_preparation_receipt(
+    root: Path,
+    provenance: CorpusProvenance | None,
+    *,
+    schema_version: int,
+) -> None:
+    digest_field = _RECEIPT_DIGEST_FIELD.get(schema_version)
+    if digest_field is None:
+        return
+    try:
+        receipt = read_regular_bounded(
+            root / _PREPARATION_RECEIPT_FILENAME,
+            maximum_bytes=_MAX_PREPARATION_RECEIPT_BYTES,
+        )
+        if (
+            receipt.path.parent != root
+            or provenance is None
+            or hashlib.sha256(receipt.data).hexdigest()
+            != getattr(provenance, digest_field)
+        ):
+            raise CorpusError()
+    except (AttributeError, BoundedReadError):
+        raise CorpusError() from None
+
+
 def load_corpus(path: Path | str) -> LoadedCorpus:
     candidate = Path(path).expanduser()
     try:
@@ -383,21 +412,11 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     if not isinstance(raw_cases, list) or not raw_cases or len(raw_cases) > _MAX_CASES:
         raise CorpusError()
     root = resolved.parent.resolve(strict=True)
-    if schema_version == 4:
-        try:
-            receipt = read_regular_bounded(
-                root / _PREPARATION_RECEIPT_FILENAME,
-                maximum_bytes=_MAX_PREPARATION_RECEIPT_BYTES,
-            )
-            if (
-                receipt.path.parent != root
-                or provenance is None
-                or hashlib.sha256(receipt.data).hexdigest()
-                != provenance.metadata_sha256
-            ):
-                raise CorpusError()
-        except BoundedReadError:
-            raise CorpusError() from None
+    _verify_preparation_receipt(
+        root,
+        provenance,
+        schema_version=schema_version,
+    )
     loaded_cases: list[CorpusCase] = []
     total = 0
     for item in raw_cases:
@@ -435,19 +454,11 @@ def verify_corpus_snapshot(corpus: LoadedCorpus) -> None:
         )
         if hashlib.sha256(manifest.data).hexdigest() != corpus.digest:
             raise CorpusError()
-        if corpus.schema_version == 4:
-            if corpus.provenance is None:
-                raise CorpusError()
-            receipt = read_regular_bounded(
-                corpus.path.parent / _PREPARATION_RECEIPT_FILENAME,
-                maximum_bytes=_MAX_PREPARATION_RECEIPT_BYTES,
-            )
-            if (
-                receipt.path.parent != corpus.path.parent
-                or hashlib.sha256(receipt.data).hexdigest()
-                != corpus.provenance.metadata_sha256
-            ):
-                raise CorpusError()
+        _verify_preparation_receipt(
+            corpus.path.parent,
+            corpus.provenance,
+            schema_version=corpus.schema_version,
+        )
         for case in corpus.cases:
             snapshot = read_regular_bounded(
                 case.source_path,

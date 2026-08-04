@@ -536,6 +536,8 @@ def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
         ],
     )
     tmp_path.chmod(0o700)
+    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
+    receipt_digest = hashlib.sha256(receipt).hexdigest()
     published = publish_private_corpus(
         cases=(
             CorpusWriteCase(
@@ -550,10 +552,11 @@ def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
             suite="final-model-input",
             manifest_sha256="1" * 64,
             metadata_sha256="2" * 64,
-            source_set_sha256="3" * 64,
+            source_set_sha256=receipt_digest,
         ),
         output_dir=tmp_path / "private-v3",
         purpose="exact private final model input benchmark",
+        sidecars={"preparation-receipt.json": receipt},
     )
     assert published.schema_version == 3
 
@@ -572,7 +575,7 @@ def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
         "suite": "final-model-input",
         "manifest_sha256": "1" * 64,
         "metadata_sha256": "2" * 64,
-        "source_set_sha256": "3" * 64,
+        "source_set_sha256": receipt_digest,
     }
     assert report["metrics"]["evaluations"] == 1
     assert report["metrics"]["coverage_complete"] is True

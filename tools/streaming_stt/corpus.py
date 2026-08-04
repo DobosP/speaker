@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from core.wer import normalize
 
 from .bounded_io import BoundedReadError, read_regular_bounded
+from .private_diagnostic_receipt import (
+    PrivateDiagnosticCaseSurface,
+    PrivateDiagnosticReceiptError,
+    verify_private_diagnostic_receipt,
+)
 from .protocol import MAX_CORPUS_BYTES, MAX_PCM_BYTES
 
 
@@ -353,10 +358,10 @@ def _verify_preparation_receipt(
     provenance: CorpusProvenance | None,
     *,
     schema_version: int,
-) -> None:
+) -> bytes | None:
     digest_field = _RECEIPT_DIGEST_FIELD.get(schema_version)
     if digest_field is None:
-        return
+        return None
     try:
         receipt = read_regular_bounded(
             root / _PREPARATION_RECEIPT_FILENAME,
@@ -369,7 +374,44 @@ def _verify_preparation_receipt(
             != getattr(provenance, digest_field)
         ):
             raise CorpusError()
+        return receipt.data
     except (AttributeError, BoundedReadError):
+        raise CorpusError() from None
+
+
+def _private_diagnostic_surfaces(
+    cases: tuple[CorpusCase, ...],
+) -> tuple[PrivateDiagnosticCaseSurface, ...]:
+    return tuple(
+        PrivateDiagnosticCaseSurface(
+            case_id=case.case_id,
+            filename=case.source_path.name,
+            sha256=case.sha256,
+            samples=case.samples,
+            expected_text=case.expected_text,
+            assertion=case.assertion,
+            commands=case.commands,
+            tags=case.tags,
+        )
+        for case in cases
+    )
+
+
+def _verify_private_diagnostic_receipt(
+    raw: bytes | None,
+    provenance: CorpusProvenance | None,
+    cases: tuple[CorpusCase, ...],
+) -> None:
+    try:
+        if raw is None or provenance is None:
+            raise PrivateDiagnosticReceiptError()
+        verify_private_diagnostic_receipt(
+            raw,
+            diagnostic_manifest_sha256=provenance.manifest_sha256,
+            labels_sha256=provenance.metadata_sha256,
+            cases=_private_diagnostic_surfaces(cases),
+        )
+    except PrivateDiagnosticReceiptError:
         raise CorpusError() from None
 
 
@@ -412,7 +454,7 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     if not isinstance(raw_cases, list) or not raw_cases or len(raw_cases) > _MAX_CASES:
         raise CorpusError()
     root = resolved.parent.resolve(strict=True)
-    _verify_preparation_receipt(
+    receipt_raw = _verify_preparation_receipt(
         root,
         provenance,
         schema_version=schema_version,
@@ -433,6 +475,8 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     filenames = [case.source_path.name.casefold() for case in cases]
     if len(set(case_ids)) != len(case_ids) or len(set(filenames)) != len(filenames):
         raise CorpusError()
+    if schema_version == 3:
+        _verify_private_diagnostic_receipt(receipt_raw, provenance, cases)
     return LoadedCorpus(
         path=resolved,
         digest=hashlib.sha256(raw).hexdigest(),
@@ -454,11 +498,17 @@ def verify_corpus_snapshot(corpus: LoadedCorpus) -> None:
         )
         if hashlib.sha256(manifest.data).hexdigest() != corpus.digest:
             raise CorpusError()
-        _verify_preparation_receipt(
+        receipt_raw = _verify_preparation_receipt(
             corpus.path.parent,
             corpus.provenance,
             schema_version=corpus.schema_version,
         )
+        if corpus.schema_version == 3:
+            _verify_private_diagnostic_receipt(
+                receipt_raw,
+                corpus.provenance,
+                corpus.cases,
+            )
         for case in corpus.cases:
             snapshot = read_regular_bounded(
                 case.source_path,

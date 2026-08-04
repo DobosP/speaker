@@ -9,6 +9,7 @@ import struct
 
 import pytest
 
+from core.diagnostic_bundle import FinalModelInputReceipt, FinalModelInputRole
 from tools.streaming_stt.corpus import (
     CorpusError,
     CorpusProvenance,
@@ -16,6 +17,10 @@ from tools.streaming_stt.corpus import (
     verify_corpus_snapshot,
 )
 from tools.streaming_stt import corpus_writer
+from tools.streaming_stt.private_diagnostic_receipt import (
+    PrivateDiagnosticCaseSurface,
+    create_private_diagnostic_receipt,
+)
 
 
 def _provenance() -> CorpusProvenance:
@@ -34,6 +39,42 @@ def _case(case_id: str = "speaker-01") -> corpus_writer.CorpusWriteCase:
         audio_bytes=struct.pack("<ffff", 0.0, 0.25, -0.25, 0.0),
         reference="a spontaneous answer",
         tags=("public-voice", "spontaneous-en"),
+    )
+
+
+def _private_receipt(case: corpus_writer.CorpusWriteCase) -> bytes:
+    digest = hashlib.sha256(case.audio_bytes).hexdigest()
+    samples = len(case.audio_bytes) // 4
+    receipt = FinalModelInputReceipt(
+        input_index=0,
+        monotonic_ns=1,
+        stream_id="sherpa-11111111111111111111111111111111",
+        utterance_id="u1",
+        capture_epoch=1,
+        capture_generation=1,
+        revision=1,
+        role=FinalModelInputRole.SELECTED_ASR_SEGMENT,
+        sample_rate_hz=16_000,
+        sample_start=0,
+        sample_end=samples,
+        sha256=digest,
+    )
+    return create_private_diagnostic_receipt(
+        diagnostic_manifest_sha256="a" * 64,
+        labels_sha256="b" * 64,
+        cases=(
+            PrivateDiagnosticCaseSurface(
+                case_id=case.case_id,
+                filename=f"{case.case_id}.f32le",
+                sha256=digest,
+                samples=samples,
+                expected_text=case.reference,
+                assertion=case.assertion,
+                commands=case.commands,
+                tags=case.tags,
+            ),
+        ),
+        selected_inputs=(receipt,),
     )
 
 
@@ -106,7 +147,8 @@ def test_publishes_private_schema_v2_corpus_and_sidecar(tmp_path: Path):
 
 def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
     destination = tmp_path / "private-diagnostic-corpus"
-    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
+    case = _case()
+    receipt = _private_receipt(case)
     provenance = replace(
         _provenance(),
         kind="private-diagnostic-v1",
@@ -115,7 +157,7 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
     )
 
     loaded = corpus_writer.publish_private_corpus(
-        cases=(_case(),),
+        cases=(case,),
         provenance=provenance,
         output_dir=destination,
         purpose="exact private diagnostic final input",
@@ -140,7 +182,8 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
 def test_private_diagnostic_binds_source_set_receipt_on_write_load_and_verify(
     tmp_path: Path,
 ):
-    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
+    case = _case()
+    receipt = _private_receipt(case)
     provenance = replace(
         _provenance(),
         kind="private-diagnostic-v1",
@@ -149,7 +192,7 @@ def test_private_diagnostic_binds_source_set_receipt_on_write_load_and_verify(
     )
     with pytest.raises(corpus_writer.CorpusWriterError):
         corpus_writer.publish_private_corpus(
-            cases=(_case(),),
+            cases=(case,),
             provenance=provenance,
             output_dir=tmp_path / "missing-receipt",
             purpose="exact private diagnostic final input",
@@ -157,7 +200,7 @@ def test_private_diagnostic_binds_source_set_receipt_on_write_load_and_verify(
     assert not (tmp_path / "missing-receipt").exists()
     with pytest.raises(corpus_writer.CorpusWriterError):
         corpus_writer.publish_private_corpus(
-            cases=(_case(),),
+            cases=(case,),
             provenance=replace(provenance, source_set_sha256="0" * 64),
             output_dir=tmp_path / "mismatched-receipt",
             purpose="exact private diagnostic final input",
@@ -166,7 +209,7 @@ def test_private_diagnostic_binds_source_set_receipt_on_write_load_and_verify(
     assert not (tmp_path / "mismatched-receipt").exists()
 
     loaded = corpus_writer.publish_private_corpus(
-        cases=(_case(),),
+        cases=(case,),
         provenance=provenance,
         output_dir=tmp_path / "bound-receipt",
         purpose="exact private diagnostic final input",

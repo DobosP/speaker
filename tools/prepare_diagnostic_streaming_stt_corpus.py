@@ -38,6 +38,11 @@ from tools.streaming_stt.corpus_writer import (
     CorpusWriterError,
     publish_private_corpus,
 )
+from tools.streaming_stt.private_diagnostic_receipt import (
+    PrivateDiagnosticCaseSurface,
+    PrivateDiagnosticReceiptError,
+    create_private_diagnostic_receipt,
+)
 from tools.streaming_stt.protocol import MAX_CORPUS_BYTES, MAX_PCM_BYTES
 
 
@@ -164,7 +169,10 @@ def _labels(raw: bytes) -> tuple[str, tuple[_LabelCase, ...]]:
         "cases",
     }:
         raise DiagnosticCorpusPreparationError()
-    if payload.get("schema_version") != _LABEL_SCHEMA_VERSION:
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != _LABEL_SCHEMA_VERSION
+    ):
         raise DiagnosticCorpusPreparationError()
     manifest_sha256 = _sha256(payload.get("diagnostic_manifest_sha256"))
     rows = payload.get("cases")
@@ -391,22 +399,6 @@ def _selected_audio(
             os.close(descriptor)
 
 
-def _canonical(value: object) -> bytes:
-    try:
-        return (
-            json.dumps(
-                value,
-                ensure_ascii=True,
-                allow_nan=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
-    except (TypeError, ValueError, UnicodeError, OverflowError):
-        raise DiagnosticCorpusPreparationError() from None
-
-
 def prepare_diagnostic_corpus(
     *,
     diagnostic_manifest: Path | str,
@@ -465,15 +457,47 @@ def prepare_diagnostic_corpus(
         labels=label_cases,
     )
 
-    selection_receipt = {
-        "schema_version": 1,
-        "kind": "private-diagnostic-selection-v1",
-        "diagnostic_manifest_sha256": manifest_digest,
-        "selected_inputs": [
-            receipts[label.input_index].to_payload() for label in label_cases
-        ],
-    }
-    receipt_payload = _canonical(selection_receipt)
+    selected_receipts = tuple(
+        receipts[label.input_index] for label in label_cases
+    )
+    published_cases = tuple(
+        CorpusWriteCase(
+            case_id=label.case_id,
+            audio_bytes=audio[label.input_index],
+            reference=label.expected_text,
+            tags=tuple(
+                dict.fromkeys(
+                    (
+                        "private-diagnostic",
+                        receipts[label.input_index].role.value,
+                        *label.tags,
+                    )
+                )
+            ),
+        )
+        for label in label_cases
+    )
+    try:
+        receipt_payload = create_private_diagnostic_receipt(
+            diagnostic_manifest_sha256=manifest_digest,
+            labels_sha256=labels_digest,
+            cases=tuple(
+                PrivateDiagnosticCaseSurface(
+                    case_id=case.case_id,
+                    filename=f"{case.case_id}.f32le",
+                    sha256=hashlib.sha256(case.audio_bytes).hexdigest(),
+                    samples=len(case.audio_bytes) // 4,
+                    expected_text=case.reference,
+                    assertion=case.assertion,
+                    commands=case.commands,
+                    tags=case.tags,
+                )
+                for case in published_cases
+            ),
+            selected_inputs=selected_receipts,
+        )
+    except PrivateDiagnosticReceiptError:
+        raise DiagnosticCorpusPreparationError() from None
     source_set_digest = hashlib.sha256(receipt_payload).hexdigest()
     provenance = CorpusProvenance(
         kind="private-diagnostic-v1",
@@ -484,29 +508,18 @@ def prepare_diagnostic_corpus(
     )
     try:
         loaded = publish_private_corpus(
-            cases=tuple(
-                CorpusWriteCase(
-                    case_id=label.case_id,
-                    audio_bytes=audio[label.input_index],
-                    reference=label.expected_text,
-                    tags=tuple(
-                        dict.fromkeys(
-                            (
-                                "private-diagnostic",
-                                receipts[label.input_index].role.value,
-                                *label.tags,
-                            )
-                        )
-                    ),
-                )
-                for label in label_cases
-            ),
+            cases=published_cases,
             provenance=provenance,
             output_dir=output_dir,
             purpose="exact private diagnostic final-selection input v1",
             sidecars={"preparation-receipt.json": receipt_payload},
         )
-    except (KeyError, ValueError, CorpusWriterError):
+    except (
+        KeyError,
+        ValueError,
+        CorpusWriterError,
+        PrivateDiagnosticReceiptError,
+    ):
         raise DiagnosticCorpusPreparationError() from None
 
     if (

@@ -15,6 +15,10 @@ import tools.recorded_stt_eval as stt_eval
 from core.diagnostic_bundle import FinalModelInputReceipt, FinalModelInputRole
 from tools.streaming_stt.corpus import CorpusProvenance
 from tools.streaming_stt.corpus_writer import CorpusWriteCase, publish_private_corpus
+from tools.streaming_stt.private_diagnostic_receipt import (
+    PrivateDiagnosticCaseSurface,
+    create_private_diagnostic_receipt,
+)
 
 
 def _totals(pairs, *, keywords=(), verifier_outcomes=None):
@@ -69,13 +73,29 @@ def _schema_v3_corpus(
         sample_end=len(samples),
         sha256=hashlib.sha256(audio).hexdigest(),
     )
-    selection = _canonical(
-        {
-            "schema_version": 1,
-            "kind": "private-diagnostic-selection-v1",
-            "diagnostic_manifest_sha256": "1" * 64,
-            "selected_inputs": [receipt.to_payload()],
-        }
+    case = CorpusWriteCase(
+        case_id="owner-command-001",
+        audio_bytes=audio,
+        reference="search in my vault",
+        tags=tuple(tags),
+        commands=tuple(commands),
+    )
+    selection = create_private_diagnostic_receipt(
+        diagnostic_manifest_sha256="1" * 64,
+        labels_sha256="2" * 64,
+        cases=(
+            PrivateDiagnosticCaseSurface(
+                case_id=case.case_id,
+                filename=f"{case.case_id}.f32le",
+                sha256=receipt.sha256,
+                samples=receipt.samples,
+                expected_text=case.reference,
+                assertion=case.assertion,
+                commands=case.commands,
+                tags=case.tags,
+            ),
+        ),
+        selected_inputs=(receipt,),
     )
     provenance = CorpusProvenance(
         kind="private-diagnostic-v1",
@@ -85,15 +105,7 @@ def _schema_v3_corpus(
         source_set_sha256=hashlib.sha256(selection).hexdigest(),
     )
     loaded = publish_private_corpus(
-        cases=(
-            CorpusWriteCase(
-                case_id="owner-command-001",
-                audio_bytes=audio,
-                reference="search in my vault",
-                tags=tuple(tags),
-                commands=tuple(commands),
-            ),
-        ),
+        cases=(case,),
         provenance=provenance,
         output_dir=tmp_path / "private-v3",
         purpose="exact private diagnostic final-selection input v1",
@@ -663,6 +675,8 @@ def test_schema_v3_requires_canonical_private_metadata(tmp_path, target):
         "wrapper-bool",
         "wrapper-kind",
         "manifest",
+        "labels",
+        "case-binding",
         "missing-row",
         "duplicate-row",
         "sha256",
@@ -679,13 +693,17 @@ def test_schema_v3_semantically_rechecks_coordinated_receipt_change(
     receipt_path = published.path.parent / "preparation-receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if mutation == "wrapper-version":
-        receipt["schema_version"] = 2
+        receipt["schema_version"] = 1
     elif mutation == "wrapper-bool":
         receipt["schema_version"] = True
     elif mutation == "wrapper-kind":
-        receipt["kind"] = "other-selection-v1"
+        receipt["kind"] = "other-selection-v2"
     elif mutation == "manifest":
         receipt["diagnostic_manifest_sha256"] = "0" * 64
+    elif mutation == "labels":
+        receipt["labels_sha256"] = "0" * 64
+    elif mutation == "case-binding":
+        receipt["case_binding_sha256"] = "0" * 64
     elif mutation == "missing-row":
         receipt["selected_inputs"] = []
     elif mutation == "duplicate-row":
@@ -732,6 +750,96 @@ def test_schema_v3_requires_strictly_increasing_receipt_indexes(tmp_path):
 
     with pytest.raises(stt_eval.EvaluationPrerequisiteError):
         stt_eval._load_corpus(published.path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["expected-text", "route-tag", "case-id-and-file", "tag-order", "commands"],
+)
+def test_schema_v3_rejects_published_case_surface_tampering(tmp_path, mutation):
+    published, _audio = _schema_v3_corpus(
+        tmp_path,
+        tags=(
+            "private-diagnostic",
+            "selected_asr_segment",
+            "owner-voice",
+            "expected-tool.vault.search",
+        ),
+    )
+    payload = json.loads(published.path.read_text(encoding="utf-8"))
+    row = payload["cases"][0]
+    if mutation == "expected-text":
+        row["expected_text"] = "find in my vault"
+    elif mutation == "route-tag":
+        row["tags"][-1] = "expected-tool.web.search"
+    elif mutation == "case-id-and-file":
+        source = published.path.parent / row["file"]
+        row.update(id="owner-command-renamed", file="owner-command-renamed.f32le")
+        source.rename(published.path.parent / row["file"])
+    elif mutation == "tag-order":
+        row["tags"][-2:] = reversed(row["tags"][-2:])
+    else:
+        row["commands"] = ["search in my vault"]
+    published.path.write_bytes(_canonical(payload))
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError):
+        stt_eval._load_corpus(published.path)
+
+
+def test_schema_v3_rejects_exact_legacy_v1_selection_receipt(tmp_path):
+    published, _audio = _schema_v3_corpus(tmp_path)
+    receipt_path = published.path.parent / "preparation-receipt.json"
+    current = json.loads(receipt_path.read_text(encoding="utf-8"))
+    legacy = _canonical(
+        {
+            "schema_version": 1,
+            "kind": "private-diagnostic-selection-v1",
+            "diagnostic_manifest_sha256": current[
+                "diagnostic_manifest_sha256"
+            ],
+            "selected_inputs": current["selected_inputs"],
+        }
+    )
+    receipt_path.write_bytes(legacy)
+    payload = json.loads(published.path.read_text(encoding="utf-8"))
+    payload["provenance"]["source_set_sha256"] = hashlib.sha256(legacy).hexdigest()
+    published.path.write_bytes(_canonical(payload))
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError):
+        stt_eval._load_corpus(published.path)
+
+
+def test_schema_v3_cross_binds_source_label_digest(tmp_path):
+    published, _audio = _schema_v3_corpus(tmp_path)
+    payload = json.loads(published.path.read_text(encoding="utf-8"))
+    payload["provenance"]["metadata_sha256"] = "0" * 64
+    published.path.write_bytes(_canonical(payload))
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError):
+        stt_eval._load_corpus(published.path)
+
+
+def test_cli_rejects_case_binding_tamper_before_model_or_report(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    published, _audio = _schema_v3_corpus(tmp_path)
+    payload = json.loads(published.path.read_text(encoding="utf-8"))
+    payload["cases"][0]["expected_text"] = "find in my vault"
+    published.path.write_bytes(_canonical(payload))
+    report = tmp_path / "report.json"
+
+    def forbidden_model_load():
+        raise AssertionError("model setup reached")
+
+    monkeypatch.setattr(stt_eval, "_load_config", forbidden_model_load)
+
+    assert stt_eval.main(
+        ["--manifest", str(published.path), "--output", str(report)]
+    ) == 2
+    assert not report.exists()
+    assert json.loads(capsys.readouterr().out) == stt_eval._SAFE_ERROR
 
 
 def test_schema_v3_calls_snapshot_verifier_after_owned_copy(tmp_path, monkeypatch):

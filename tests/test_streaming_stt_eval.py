@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.diagnostic_bundle import FinalModelInputReceipt, FinalModelInputRole
 from tests.streaming_stt_helpers import (
     WORKER_PATH,
     bound_file,
@@ -24,6 +25,10 @@ from tools.streaming_stt.metrics import (
     RunRecord,
     aggregate_metrics,
     normalize_stratum_tags,
+)
+from tools.streaming_stt.private_diagnostic_receipt import (
+    PrivateDiagnosticCaseSurface,
+    create_private_diagnostic_receipt,
 )
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
@@ -369,7 +374,9 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
     assert report["evaluator"]["real_candidate_model"] is False
     assert report["evaluator"]["model_executed"] is False
     assert {
+        "core/diagnostic_bundle.py",
         "tools/streaming_stt/runtime_receipt.py",
+        "tools/streaming_stt/private_diagnostic_receipt.py",
         "tools/streaming_stt/adapters/moonshine.py",
     } <= set(report["evaluator"]["files"])
     assert {
@@ -536,17 +543,52 @@ def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
         ],
     )
     tmp_path.chmod(0o700)
-    receipt = b'{"schema_version":1,"kind":"private-diagnostic-selection-v1"}\n'
-    receipt_digest = hashlib.sha256(receipt).hexdigest()
-    published = publish_private_corpus(
+    audio = (tmp_path / "audio-0.f32le").read_bytes()
+    case = CorpusWriteCase(
+        case_id=private_case_id,
+        audio_bytes=audio,
+        reference=private_reference,
+        tags=(
+            "private-diagnostic",
+            "selected_asr_segment",
+            "owner-voice",
+            "quiet-room",
+        ),
+    )
+    selected_input = FinalModelInputReceipt(
+        input_index=0,
+        monotonic_ns=1,
+        stream_id="sherpa-11111111111111111111111111111111",
+        utterance_id="u1",
+        capture_epoch=1,
+        capture_generation=1,
+        revision=1,
+        role=FinalModelInputRole.SELECTED_ASR_SEGMENT,
+        sample_rate_hz=16_000,
+        sample_start=0,
+        sample_end=len(audio) // 4,
+        sha256=hashlib.sha256(audio).hexdigest(),
+    )
+    receipt = create_private_diagnostic_receipt(
+        diagnostic_manifest_sha256="1" * 64,
+        labels_sha256="2" * 64,
         cases=(
-            CorpusWriteCase(
-                case_id=private_case_id,
-                audio_bytes=(tmp_path / "audio-0.f32le").read_bytes(),
-                reference=private_reference,
-                tags=("owner-voice", "quiet-room"),
+            PrivateDiagnosticCaseSurface(
+                case_id=case.case_id,
+                filename=f"{case.case_id}.f32le",
+                sha256=selected_input.sha256,
+                samples=selected_input.samples,
+                expected_text=case.reference,
+                assertion=case.assertion,
+                commands=case.commands,
+                tags=case.tags,
             ),
         ),
+        selected_inputs=(selected_input,),
+    )
+    receipt_digest = hashlib.sha256(receipt).hexdigest()
+    published = publish_private_corpus(
+        cases=(case,),
         provenance=CorpusProvenance(
             kind="private-diagnostic-v1",
             suite="final-model-input",

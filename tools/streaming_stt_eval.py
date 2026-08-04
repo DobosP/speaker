@@ -127,11 +127,13 @@ _PARAKEET_CPP_CGROUP_EVIDENCE = {
     "verified": True,
 }
 _EVALUATOR_FILES = (
+    "core/diagnostic_bundle.py",
     "tools/streaming_stt_eval.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/corpus.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/metrics.py",
+    "tools/streaming_stt/private_diagnostic_receipt.py",
     "tools/streaming_stt/protocol.py",
     "tools/streaming_stt/runtime_receipt.py",
     "tools/streaming_stt/source_bundle.py",

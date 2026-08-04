@@ -154,6 +154,7 @@ def _labels(
     input_index: int,
     input_sha256: str,
     expected_text: str = "search in my vault",
+    tags: tuple[str, ...] = ("owner-voice", "quiet-room"),
 ) -> Path:
     payload = {
         "schema_version": 1,
@@ -164,7 +165,7 @@ def _labels(
                 "input_index": input_index,
                 "input_sha256": input_sha256,
                 "expected_text": expected_text,
-                "tags": ["owner-voice", "quiet-room"],
+                "tags": list(tags),
             }
         ],
     }
@@ -203,7 +204,16 @@ def test_publishes_exact_spool_slice_as_private_schema_v3(tmp_path: Path) -> Non
     receipt_payload = (destination / "preparation-receipt.json").read_text(
         encoding="utf-8"
     )
+    receipt_value = json.loads(receipt_payload)
+    assert receipt_value["schema_version"] == 2
+    assert receipt_value["kind"] == "private-diagnostic-selection-v2"
+    assert receipt_value["labels_sha256"] == hashlib.sha256(
+        labels.read_bytes()
+    ).hexdigest()
+    assert len(receipt_value["case_binding_sha256"]) == 64
     assert "search in my vault" not in receipt_payload
+    assert "owner-voice" not in receipt_payload
+    assert "quiet-room" not in receipt_payload
     assert str(manifest) not in receipt_payload
     assert str(labels) not in receipt_payload
     assert {
@@ -222,6 +232,7 @@ def test_export_reaches_recorded_selector_as_exact_final_input(tmp_path: Path) -
         manifest=manifest,
         input_index=receipt.input_index,
         input_sha256=receipt.sha256,
+        tags=("owner-voice", "quiet-room", "expected-tool.vault.search"),
     )
     published = prepare_diagnostic_corpus(
         diagnostic_manifest=manifest,
@@ -241,7 +252,14 @@ def test_export_reaches_recorded_selector_as_exact_final_input(tmp_path: Path) -
         "selected_asr_segment",
         "owner-voice",
         "quiet-room",
+        "expected-tool.vault.search",
     )
+    from tools.tool_route_gate import expected_route
+
+    assert expected_route(items[0].tags) == "vault.search"
+    assert "expected-tool" not in (
+        published.path.parent / "preparation-receipt.json"
+    ).read_text(encoding="utf-8")
     assert items[0].samples.flags.owndata
     assert items[0].samples.astype("<f4", copy=False).tobytes() == exact.astype(
         "<f4",
@@ -254,7 +272,10 @@ def test_export_reaches_recorded_selector_as_exact_final_input(tmp_path: Path) -
     recorded_stt_eval._verify_loaded_corpus(evaluator_load)
 
 
-@pytest.mark.parametrize("mutation", ("manifest", "input", "index"))
+@pytest.mark.parametrize(
+    "mutation",
+    ("schema-bool", "manifest", "input", "index"),
+)
 def test_label_bindings_fail_closed_before_output(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -266,7 +287,9 @@ def test_label_bindings_fail_closed_before_output(
         input_sha256=receipt.sha256,
     )
     payload = json.loads(labels.read_text(encoding="utf-8"))
-    if mutation == "manifest":
+    if mutation == "schema-bool":
+        payload["schema_version"] = True
+    elif mutation == "manifest":
         payload["diagnostic_manifest_sha256"] = "0" * 64
     elif mutation == "input":
         payload["cases"][0]["input_sha256"] = "0" * 64

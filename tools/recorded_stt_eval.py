@@ -495,25 +495,6 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _strict_manifest_json(raw: bytes) -> object:
-    def pairs(values: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in values:
-            if key in result:
-                raise ValueError
-            result[key] = value
-        return result
-
-    try:
-        return json.loads(
-            raw,
-            object_pairs_hook=pairs,
-            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
-        )
-    except (UnicodeError, ValueError, OverflowError):
-        raise EvaluationPrerequisiteError() from None
-
-
 def _private_file_ok(path: Path) -> bool:
     try:
         metadata = path.lstat()
@@ -567,10 +548,14 @@ def _private_diagnostic_role(tags: Sequence[str]) -> str:
 
 
 def _verify_private_diagnostic_receipt(corpus) -> None:
-    """Bind the retained exact-input receipt to provenance and case PCM."""
+    """Bind the retained exact-input receipt to its private case semantics."""
 
-    from core.diagnostic_bundle import FinalModelInputReceipt
     from tools.streaming_stt.bounded_io import BoundedReadError, read_regular_bounded
+    from tools.streaming_stt.private_diagnostic_receipt import (
+        PrivateDiagnosticCaseSurface,
+        PrivateDiagnosticReceiptError,
+        verify_private_diagnostic_receipt,
+    )
 
     try:
         provenance = corpus.provenance
@@ -586,40 +571,32 @@ def _verify_private_diagnostic_receipt(corpus) -> None:
             != provenance.source_set_sha256
         ):
             raise EvaluationPrerequisiteError()
-        payload = _strict_manifest_json(snapshot.data)
-        if not isinstance(payload, dict) or set(payload) != {
-            "schema_version",
-            "kind",
-            "diagnostic_manifest_sha256",
-            "selected_inputs",
-        }:
-            raise EvaluationPrerequisiteError()
-        selected_inputs = payload.get("selected_inputs")
-        if (
-            type(payload.get("schema_version")) is not int
-            or payload.get("schema_version") != 1
-            or payload.get("kind") != "private-diagnostic-selection-v1"
-            or payload.get("diagnostic_manifest_sha256")
-            != provenance.manifest_sha256
-            or not isinstance(selected_inputs, list)
-            or len(selected_inputs) != len(corpus.cases)
-        ):
-            raise EvaluationPrerequisiteError()
-        receipts = tuple(
-            FinalModelInputReceipt.from_payload(value) for value in selected_inputs
+        receipts = verify_private_diagnostic_receipt(
+            snapshot.data,
+            diagnostic_manifest_sha256=provenance.manifest_sha256,
+            labels_sha256=provenance.metadata_sha256,
+            cases=tuple(
+                PrivateDiagnosticCaseSurface(
+                    case_id=case.case_id,
+                    filename=case.source_path.name,
+                    sha256=case.sha256,
+                    samples=case.samples,
+                    expected_text=case.expected_text,
+                    assertion=case.assertion,
+                    commands=case.commands,
+                    tags=case.tags,
+                )
+                for case in corpus.cases
+            ),
         )
-        receipt_indexes = tuple(receipt.input_index for receipt in receipts)
-        if receipt_indexes != tuple(sorted(set(receipt_indexes))):
-            raise EvaluationPrerequisiteError()
         for case, receipt in zip(corpus.cases, receipts):
-            if (
-                receipt.sha256 != case.sha256
-                or receipt.samples != case.samples
-                or receipt.sample_rate_hz != 16_000
-                or receipt.role.value != _private_diagnostic_role(case.tags)
-            ):
+            if receipt.role.value != _private_diagnostic_role(case.tags):
                 raise EvaluationPrerequisiteError()
-    except (BoundedReadError, EvaluationPrerequisiteError):
+    except (
+        BoundedReadError,
+        EvaluationPrerequisiteError,
+        PrivateDiagnosticReceiptError,
+    ):
         raise EvaluationPrerequisiteError() from None
     except Exception:
         raise EvaluationPrerequisiteError() from None

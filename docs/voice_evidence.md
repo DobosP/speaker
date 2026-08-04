@@ -58,7 +58,7 @@ and each chosen input digest; the label file itself uses label schema v1:
       "input_index": 0,
       "input_sha256": "<receipt sha256>",
       "expected_text": "search in my vault",
-      "tags": ["owner-voice", "quiet-room"]
+      "tags": ["owner-voice", "quiet-room", "expected-tool.vault.search"]
     }
   ]
 }
@@ -66,7 +66,9 @@ and each chosen input digest; the label file itself uses label schema v1:
 
 Case IDs and tags use lowercase letters, digits, `.`, `_`, or `-`. The selected
 inputs must total at most 32 MiB; each input is at most 8 MiB. Labels may select
-up to 512 distinct receipt indexes.
+up to 512 distinct receipt indexes. Put any `expected-tool.*` annotation in
+this source label file before export. Never add or change a reference or tag in
+the published `corpus.json`.
 
 ## Export a benchmark corpus
 
@@ -85,8 +87,11 @@ streaming-corpus schema v3 and provenance kind
 `private-diagnostic-v1`. Public voice corpora remain schema v2 with
 `public-voice-v1`; the loader rejects cross-kind version changes. Output audio
 is copied bit-for-bit from the exact f32le spool. The preparation receipt has
-identities and hashes but no paths or transcripts, and command output is
-aggregate-only.
+identities and hashes but no paths, transcripts, case IDs, or tags. Receipt v2
+cross-binds the raw label-file digest and a domain-separated digest of every
+ordered emitted case field. Receipt v1 corpora are rejected: re-export from the
+original diagnostic bundle and original mode-0600 label file rather than
+editing or upgrading a published corpus. Command output is aggregate-only.
 
 ## Replay the configured final selector
 
@@ -108,17 +113,20 @@ the closed selected-source counts, and whether those counts attest every
 terminal decision. It retains empty terminal boundaries and case tags only in
 private memory; neither transcript rows nor tags enter stdout or the report.
 
-Schema-v3 replay rechecks the source-set-bound selection receipt, private file
-metadata, manifest, and PCM after copying and again after evaluation before
-publication. The manifest must be a regular single-link file no larger than
-8 MiB. Choose a new report path: an output that names or aliases the manifest,
-receipt, PCM, or a legacy input is rejected without overwriting it. A changed
-or malformed input returns only the detail-free prerequisite error and does
-not publish the requested report. This is
+Schema-v3 replay rechecks the source-set-bound selection receipt, exact case
+binding, private file metadata, manifest, and PCM after copying and again after
+evaluation before publication. The manifest must be a regular single-link file
+no larger than 8 MiB. Choose a new report path: an output that names or aliases
+the manifest, receipt, PCM, or a legacy input is rejected without overwriting
+it. A changed or malformed input returns only the detail-free prerequisite
+error and does not publish the requested report. The local unkeyed receipt
+detects inconsistent edits; malicious coordinated re-authoring still requires
+an externally retained digest or signature to detect. This is
 after-endpoint model-input replay: it starts no chatbot, TTS, tool, recorder,
 or audio device and does not establish capture, VAD/endpoint, AEC, barge-in,
 latency, natural-conversation, or live behavior
-([ADR-0124](adr/0124-replay-private-diagnostic-inputs-through-final-selector.md)).
+([ADR-0124](adr/0124-replay-private-diagnostic-inputs-through-final-selector.md),
+[ADR-0126](adr/0126-bind-private-diagnostic-case-labels.md)).
 
 ## Dry-run recognized-text tool routing
 
@@ -128,9 +136,9 @@ Route-labelled cases may additionally carry exactly one of these private tags:
 `expected-tool.reminder.list`, `expected-tool.reminder.cancel`, or
 `expected-tool.app.open`. The `expected-tool.` prefix is reserved; the opt-in
 gate rejects missing, unknown, or multiple annotations before starting a
-model. Include at least one positive route and one `none` case. For example, a
-vault label can add `"expected-tool.vault.search"` to its existing `tags`
-array without adding command fields.
+model. Include at least one positive route and one `none` case. Add the
+annotation to the source `labels.json` as shown above, without adding command
+fields, and export a new corpus.
 
 Pass only the inert availability profile represented by the labelled cases:
 

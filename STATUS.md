@@ -2,16 +2,16 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-08-02 on Linux ROG.
+Last verified: 2026-08-04 on Linux ROG.
 
-- Current non-real logic gate: 7,806 passing checks as 7,805 low-priority host-side broad passes plus the bounded-read race isolated; 14 skipped, 24 model-only deselected, 11 warnings. The repository lock passed in broad mode 600. Conversation fixture focused gate: 213; candidate/shared 464 + 1 isolated; broad streaming 966; public command/noise 246; current APM/DTD 6.
+- Current non-real logic gate: 7,822 passing checks as 7,821 low-priority host-side broad passes plus the bounded-read race isolated; 14 skipped, 24 model-only deselected, 11 warnings. The repository lock passed in broad mode 600. Repeat/memory focused gate: 105; adjacent: 304 + 3 skipped; conversation fixture: 213; candidate/shared 464 + 1 isolated; broad streaming 966; public command/noise 246; current APM/DTD 6.
 - Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine Tiny/Small/Medium, Nemotron, and Parakeet NeMo stay rejected (ADR-0090/0091/0099/0115).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
-- `python -m core --session` is the one public core entry; `VoiceSession` owns one injected `VoiceRuntime`, and `build_runtime` remains the sole tool/authority plane.
+- `python -m core --session` is the one public core entry; `VoiceSession` owns one injected `VoiceRuntime`, and `build_runtime` remains the sole tool/authority plane. Repeat-previous admits built-in memory items only after a process-local ordinal fence; foreign backends require a finite, strictly newer wall time (ADR-0123).
 - Audio defaults to device-only. The exact-pair manual-RoomIO trusted-LAN wrapper passes fake-SDK isolation but stays unselectable until live A/B; legacy remote is rollback only (ADR-0096/0097/0104).
 - `./live.sh` is the single Linux physical entry. It owns the host lock, reversible echo-control route, conditional Ollama, doctor, and aligned private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
 - Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4 uses native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).

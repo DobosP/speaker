@@ -56,7 +56,8 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       generic invariant belongs in wire_sherpa_paths (never downgrade ANY
       existing valid on-disk backend selection unless that family was
       explicitly requested) — closes the whole downgrade-to-hybrid bug class.
-- [ ] **Repeat-guard clock race (found 2026-07-17, Windows).** The ADR-0068
+- [x] **Repeat-guard clock race (found 2026-07-17, Windows; shipped 2026-08-04,
+      ADR-0123).** The ADR-0051
       controller repeat handler treats a pre-session `assistant_output` as
       in-session when its `time.time()` stamp ties `session_started_at`
       (`core/capabilities.py:179` `timestamp >= since`; item stamped in
@@ -66,7 +67,10 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       (2026-07-12), not a recent regression. Fix: monotonic ordinal on
       MemoryItem (module `itertools.count`) compared strictly, with a
       timestamp fallback for foreign Memory backends; do NOT just flip `>=`
-      to `>` (identical stamps still tie). Bounded change + suite on both OSes.
+      to `>` (identical stamps still tie). Implemented with stable ordinals in
+      all three built-in `all()` windows and a finite strict-time fallback;
+      deterministic frozen-clock coverage is platform-independent. A physical
+      Windows console smoke remains optional rather than correctness authority.
 - [ ] **★★★ PERMANENT open-speaker barge + voice fix (2026-07-05) — the live-test
       thread. START HERE.** **Current next (2026-07-14, ADR-0071):** the v5
       enrollment-on run kept one voice but failed soft speech, pause, override,

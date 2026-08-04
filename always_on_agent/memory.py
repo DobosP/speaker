@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
+import os
 import time
 from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 
@@ -8,11 +10,70 @@ from .recall import Candidate, RecallBudget, build_block
 from .text import keywords, normalize_text
 
 
+_MEMORY_ITEM_PROCESS_ORDINALS = count(1)
+_MEMORY_ITEM_PROCESS_TOKEN = object()
+
+
+def _wall_time() -> float:
+    """Indirect ``time.time`` for deterministic clock-tie contract tests."""
+    return time.time()
+
+
+def reserve_memory_item_ordinal() -> int:
+    """Return a process-local fence from the MemoryItem ordering sequence."""
+    return next(_MEMORY_ITEM_PROCESS_ORDINALS)
+
+
 @dataclass(frozen=True)
 class MemoryItem:
     text: str
     tags: tuple[str, ...] = ()
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=_wall_time)
+
+    @property
+    def process_ordinal(self) -> int | None:
+        """Live-window ordering, absent on plain/reconstructed items."""
+        # Return malformed injected state unchanged so the consumer can
+        # distinguish it from absence and fail closed instead of downgrading
+        # to the foreign timestamp fallback.
+        return getattr(self, "_process_ordinal", None)
+
+
+def _new_live_memory_item(
+    text: str,
+    tags: tuple[str, ...],
+    timestamp: float | None = None,
+) -> MemoryItem:
+    """Mint one built-in current-process working-window item.
+
+    The stamp deliberately is not a dataclass field: ordinary construction,
+    ``asdict()``, durable row reconstruction, and foreign Memory backends do
+    not gain process-ordinal authority. The token makes a restored copy fail
+    authentication, and the PID witness rejects an inherited parent item after
+    ``fork()``.
+    """
+    item = (
+        MemoryItem(text, tags)
+        if timestamp is None
+        else MemoryItem(text, tags, timestamp)
+    )
+    object.__setattr__(item, "_process_ordinal", reserve_memory_item_ordinal())
+    object.__setattr__(item, "_process_token", _MEMORY_ITEM_PROCESS_TOKEN)
+    object.__setattr__(item, "_process_pid", os.getpid())
+    return item
+
+
+def is_current_process_memory_item(item: object) -> bool:
+    """Whether ``item`` carries a stamp minted by this loaded module."""
+    try:
+        return (
+            isinstance(item, MemoryItem)
+            and getattr(item, "_process_token", None) is _MEMORY_ITEM_PROCESS_TOKEN
+            and getattr(item, "_process_pid", None) == os.getpid()
+            and type(item.process_ordinal) is int
+        )
+    except Exception:  # noqa: BLE001 - malformed foreign metadata fails closed
+        return False
 
 
 def candidate_for_item(item: "MemoryItem", q_words: set[str], q_norm: str) -> "Candidate | None":
@@ -117,7 +178,7 @@ class SessionMemory:
             if len(self._procedural) > _MAX_PROCEDURAL_RULES:
                 self._procedural = self._procedural[-_MAX_PROCEDURAL_RULES:]
             return
-        self._items.append(MemoryItem(cleaned, tags or keywords(cleaned)))
+        self._items.append(_new_live_memory_item(cleaned, tags or keywords(cleaned)))
         # Working-window cap: drop the oldest once over the limit so a long
         # session can't grow RAM without bound.
         if len(self._items) > self._max_items:
@@ -257,7 +318,7 @@ class MemoryManagerAdapter:
             return
         # Keep the raw (text, tags) regardless of how it is routed/persisted so
         # all() stays tag-faithful.
-        self._ring.append(MemoryItem(cleaned, tags or keywords(cleaned)))
+        self._ring.append(_new_live_memory_item(cleaned, tags or keywords(cleaned)))
         if len(self._ring) > self._max_items:
             self._ring = self._ring[-self._max_items:]
         # Meeting notes are RAM-only (R7, §9.7 privacy): never hand them to the

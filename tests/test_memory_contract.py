@@ -22,6 +22,7 @@ real PostgreSQL -- mirroring ``tests/test_memory_pool.py``.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 from typing import Iterator, Optional
 
 import pytest
@@ -39,6 +40,7 @@ from always_on_agent.memory import (
     MemoryItem,
     MemoryManagerAdapter,
     SessionMemory,
+    is_current_process_memory_item,
 )
 from core.capabilities import DEFAULT_SYSTEM, RecallConfig, attach_llm_capabilities
 from core.conversation import RecentContextConfig
@@ -190,6 +192,39 @@ def test_all_preserves_tags(make_mem):
         )
     finally:
         mem.close()
+
+
+@pytest.mark.parametrize("make_mem", _backend_factories())
+def test_all_preserves_stable_unique_authenticated_process_ordinals(make_mem):
+    """The process-local ``all()`` window supplies repeat's ordering seam."""
+    mem: Memory = make_mem()
+    try:
+        mem.add("first answer", tags=("assistant_output",))
+        mem.add("second answer", tags=("assistant_output",))
+
+        first_read = mem.all()
+        second_read = mem.all()
+        first_ordinals = [item.process_ordinal for item in first_read]
+        second_ordinals = [item.process_ordinal for item in second_read]
+
+        assert first_ordinals == second_ordinals
+        assert all(type(value) is int for value in first_ordinals)
+        assert len(set(first_ordinals)) == len(first_ordinals) == 2
+        assert all(is_current_process_memory_item(item) for item in first_read)
+        assert set(asdict(first_read[0])) == {"text", "tags", "timestamp"}
+    finally:
+        mem.close()
+
+
+def test_live_memory_item_process_witness_rejects_inherited_pid(monkeypatch):
+    memory = SessionMemory()
+    memory.add("current answer", tags=("assistant_output",))
+    item = memory.all()[0]
+    assert is_current_process_memory_item(item) is True
+
+    original_pid = item._process_pid
+    monkeypatch.setattr("always_on_agent.memory.os.getpid", lambda: original_pid + 1)
+    assert is_current_process_memory_item(item) is False
 
 
 @pytest.mark.parametrize("make_mem", _backend_factories())

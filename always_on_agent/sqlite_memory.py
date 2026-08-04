@@ -27,7 +27,12 @@ import threading
 import time
 from typing import Callable, Optional, Sequence
 
-from .memory import DEFAULT_MAX_ITEMS, MemoryItem, candidate_for_item
+from .memory import (
+    DEFAULT_MAX_ITEMS,
+    MemoryItem,
+    _new_live_memory_item,
+    candidate_for_item,
+)
 from .recall import Candidate, RecallBudget, build_block
 from .text import keywords, normalize_text
 
@@ -137,7 +142,7 @@ class SqliteVecMemory:
         if "meeting" in stored_tags:
             with self._lock:
                 self._append_ring_locked(
-                    MemoryItem(cleaned, stored_tags, created_at)
+                    _new_live_memory_item(cleaned, stored_tags, created_at)
                 )
             return
         emb: Optional[bytes] = None
@@ -156,7 +161,7 @@ class SqliteVecMemory:
             # and never belong to episodic/recent conversation history.
             if "procedural" not in stored_tags:
                 self._append_ring_locked(
-                    MemoryItem(cleaned, stored_tags, created_at)
+                    _new_live_memory_item(cleaned, stored_tags, created_at)
                 )
 
     def _recent_rows(self) -> list[tuple[str, tuple[str, ...], float, Optional[bytes]]]:

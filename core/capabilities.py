@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import time
@@ -11,7 +12,11 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
-from always_on_agent.memory import Memory
+from always_on_agent.memory import (
+    Memory,
+    is_current_process_memory_item,
+    reserve_memory_item_ordinal,
+)
 from always_on_agent.procedural import extract_rule, render_rules
 from always_on_agent.recall import (
     VISION_LABEL,
@@ -161,7 +166,15 @@ def _memory_contains_session_fact(memory: object, fact: _SessionFact) -> bool:
     )
 
 
-def _previous_assistant_answer(memory: object, *, since: float) -> str:
+_MISSING_PROCESS_ORDINAL = object()
+
+
+def _previous_assistant_answer(
+    memory: object,
+    *,
+    since: float,
+    after_process_ordinal: int,
+) -> str:
     get_all = getattr(memory, "all", None)
     if not callable(get_all):
         return ""
@@ -170,13 +183,45 @@ def _previous_assistant_answer(memory: object, *, since: float) -> str:
     except Exception:  # noqa: BLE001 - controller lookup must fail closed
         return ""
     for item in reversed(items):
-        tags = set(getattr(item, "tags", ()) or ())
-        text = str(getattr(item, "text", "") or "").strip()
         try:
-            timestamp = float(getattr(item, "timestamp", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            timestamp = 0.0
-        if "assistant_output" in tags and text and timestamp >= since:
+            tags = set(getattr(item, "tags", ()) or ())
+            text = str(getattr(item, "text", "") or "").strip()
+        except Exception:  # noqa: BLE001 - malformed foreign rows fail closed
+            continue
+        if "assistant_output" not in tags or not text:
+            continue
+
+        try:
+            process_ordinal = getattr(
+                item,
+                "process_ordinal",
+                _MISSING_PROCESS_ORDINAL,
+            )
+        except Exception:  # noqa: BLE001 - malformed freshness metadata fails closed
+            continue
+
+        if (
+            process_ordinal is _MISSING_PROCESS_ORDINAL
+            or process_ordinal is None
+        ):
+            # Foreign Memory backends may not produce our MemoryItem. Preserve
+            # compatibility conservatively: only a finite, strictly newer wall
+            # time is eligible. Equal coarse-clock stamps remain out of session.
+            try:
+                timestamp = float(getattr(item, "timestamp", 0.0) or 0.0)
+            except Exception:  # noqa: BLE001 - malformed freshness metadata fails closed
+                continue
+            fresh = math.isfinite(timestamp) and timestamp > since
+        else:
+            # A present-but-invalid local-order marker must never fall back to
+            # the weaker timestamp check.
+            fresh = (
+                type(process_ordinal) is int
+                and is_current_process_memory_item(item)
+                and process_ordinal > after_process_ordinal
+            )
+
+        if fresh:
             return text
     return ""
 
@@ -409,6 +454,7 @@ def attach_llm_capabilities(
     recalled_self_facts: OrderedDict[str, _SessionFact] = OrderedDict()
     session_fact_lock = Lock()
     session_started_at = time.time()
+    session_started_ordinal = reserve_memory_item_ordinal()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
     # Headroom-aware routing (smart-routing-2): feed the recorder's rolling
     # local TTFT into the router as a live signal that NUDGES borderline turns
@@ -543,7 +589,11 @@ def attach_llm_capabilities(
         exact_word = _EXACT_ONE_WORD_RE.match(query)
         repeat_previous = _REPEAT_PREVIOUS_ANSWER_RE.match(query)
         previous_answer = (
-            _previous_assistant_answer(memory, since=session_started_at)
+            _previous_assistant_answer(
+                memory,
+                since=session_started_at,
+                after_process_ordinal=session_started_ordinal,
+            )
             if repeat_previous is not None
             else ""
         )

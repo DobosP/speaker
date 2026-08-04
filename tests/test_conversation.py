@@ -6,14 +6,21 @@ and the assistant() injection (with a recording LLM; no real model needed).
 """
 from __future__ import annotations
 
+import pickle
 from threading import Lock, Thread
+from types import SimpleNamespace
 
 import pytest
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
-from always_on_agent.memory import SessionMemory
+from always_on_agent.memory import MemoryItem, SessionMemory
 
-from core.capabilities import DEFAULT_SYSTEM, RecallConfig, attach_llm_capabilities
+from core.capabilities import (
+    DEFAULT_SYSTEM,
+    RecallConfig,
+    _previous_assistant_answer,
+    attach_llm_capabilities,
+)
 from core.conversation import (
     RecentContextConfig,
     build_recent_context,
@@ -673,7 +680,8 @@ def test_exact_one_word_and_repeat_are_controller_bounded():
     assert llm.systems == []
 
 
-def test_repeat_without_a_previous_answer_falls_through_to_model():
+def test_repeat_without_a_previous_answer_falls_through_on_clock_tie(monkeypatch):
+    monkeypatch.setattr("always_on_agent.memory.time.time", lambda: 100.0)
     llm = _RecordingLLM()
     memory = SessionMemory()
     memory.add("A stale answer from an earlier session.", tags=("assistant_output",))
@@ -687,6 +695,161 @@ def test_repeat_without_a_previous_answer_falls_through_to_model():
 
     assert result.text == "ok"
     assert llm.prompts == ["Repeat your previous answer exactly."]
+
+
+def test_repeat_accepts_current_session_answer_on_clock_tie(monkeypatch):
+    monkeypatch.setattr("always_on_agent.memory.time.time", lambda: 100.0)
+    llm = _RecordingLLM()
+    memory = SessionMemory()
+    reg = _assistant(llm, memory)
+    memory.add("A current-session answer.", tags=("assistant_output",))
+
+    result = reg.invoke(
+        "assistant.answer",
+        "Repeat your previous answer exactly.",
+        {},
+    )
+
+    assert result.text == "A current-session answer."
+    assert result.data["repeat_previous"] is True
+    assert llm.prompts == []
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        pytest.param(
+            SimpleNamespace(
+                text="Equal foreign timestamp.",
+                tags=("assistant_output",),
+                timestamp=100.0,
+            ),
+            "",
+            id="foreign-equal-timestamp-is-stale",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                text="New foreign timestamp.",
+                tags=("assistant_output",),
+                timestamp=100.001,
+            ),
+            "New foreign timestamp.",
+            id="foreign-strictly-newer-timestamp",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                text="Infinite foreign timestamp.",
+                tags=("assistant_output",),
+                timestamp=float("inf"),
+            ),
+            "",
+            id="foreign-infinite-timestamp-fails-closed",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                text="NaN foreign timestamp.",
+                tags=("assistant_output",),
+                timestamp=float("nan"),
+            ),
+            "",
+            id="foreign-nan-timestamp-fails-closed",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                text="Malformed local ordinal.",
+                tags=("assistant_output",),
+                timestamp=101.0,
+                process_ordinal="11",
+            ),
+            "",
+            id="present-malformed-ordinal-does-not-fall-back",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                text="Unauthenticated foreign ordinal.",
+                tags=("assistant_output",),
+                timestamp=101.0,
+                process_ordinal=11,
+            ),
+            "",
+            id="foreign-integer-ordinal-cannot-mint-authority",
+        ),
+        pytest.param(
+            MemoryItem(
+                "Reconstructed stale MemoryItem.",
+                ("assistant_output",),
+                99.0,
+            ),
+            "",
+            id="reconstructed-memory-item-uses-strict-time-fallback",
+        ),
+        pytest.param(
+            MemoryItem(
+                "Reconstructed new MemoryItem.",
+                ("assistant_output",),
+                100.001,
+            ),
+            "Reconstructed new MemoryItem.",
+            id="reconstructed-memory-item-strictly-newer-fallback",
+        ),
+    ],
+)
+def test_repeat_freshness_fallback_is_strict_and_fail_closed(item, expected):
+    memory = SimpleNamespace(all=lambda: [item])
+
+    assert _previous_assistant_answer(
+        memory,
+        since=100.0,
+        after_process_ordinal=10,
+    ) == expected
+
+
+def test_repeat_rejects_restored_live_item_even_when_ordinal_looks_fresh():
+    memory = SessionMemory()
+    memory.add("A serialized answer.", tags=("assistant_output",))
+    live_item = memory.all()[0]
+    restored_item = pickle.loads(pickle.dumps(live_item))
+    assert type(restored_item.process_ordinal) is int
+
+    restored_memory = SimpleNamespace(all=lambda: [restored_item])
+    assert _previous_assistant_answer(
+        restored_memory,
+        since=0.0,
+        after_process_ordinal=0,
+    ) == ""
+
+
+def test_repeat_does_not_downgrade_malformed_memory_item_ordinal_to_timestamp():
+    item = MemoryItem(
+        "A malformed reconstructed answer.",
+        ("assistant_output",),
+        101.0,
+    )
+    object.__setattr__(item, "_process_ordinal", "11")
+
+    memory = SimpleNamespace(all=lambda: [item])
+    assert _previous_assistant_answer(
+        memory,
+        since=100.0,
+        after_process_ordinal=10,
+    ) == ""
+
+
+def test_repeat_fails_closed_when_foreign_timestamp_accessor_raises():
+    class BrokenTimestamp:
+        text = "A broken foreign answer."
+        tags = ("assistant_output",)
+
+        @property
+        def timestamp(self):
+            raise RuntimeError("broken timestamp")
+
+    memory = SimpleNamespace(all=lambda: [BrokenTimestamp()])
+    assert _previous_assistant_answer(
+        memory,
+        since=100.0,
+        after_process_ordinal=10,
+    ) == ""
 
 
 def test_assistant_injects_recent_conversation_on_a_later_turn():

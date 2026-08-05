@@ -79,6 +79,7 @@ def _install_runtime_fakes(
     tts_completed: tuple[bool, ...],
     warm_completed: tuple[bool, ...] | None = None,
     private_log_canary: str | None = None,
+    final_counts: tuple[int, ...] | None = None,
 ):
     import core.app as core_app
     import core.engines.file_replay as file_replay
@@ -91,6 +92,7 @@ def _install_runtime_fakes(
     llm_arguments = []
     router_ids = []
     warm_results = warm_completed or tuple(True for _ in tts_completed)
+    emitted_final_counts = final_counts or tuple(1 for _ in tts_completed)
 
     class WarmReady:
         def __init__(self, runtime, index):
@@ -130,7 +132,10 @@ def _install_runtime_fakes(
             self.spoken.append(f"admitted-answer-{self.index}")
             if tts_completed[self.index]:
                 metrics.mark(TTS_FIRST_AUDIO)
-            self.finals.append(f"final-{self.index}")
+            self.finals.extend(
+                f"final-{self.index}-{ordinal}"
+                for ordinal in range(emitted_final_counts[self.index])
+            )
             if private_log_canary is not None:
                 logging.getLogger("speaker.runtime").info(private_log_canary)
 
@@ -229,7 +234,10 @@ def test_rows_get_fresh_runtime_wait_for_warmup_and_require_completed_tts(
     ]
     assert len(observed.router_ids) == 2
     assert after_build == [True]
-    assert [sample.transcript for sample in result.samples] == ["final-0", "final-1"]
+    assert [sample.transcript for sample in result.samples] == [
+        "final-0-0",
+        "final-1-0",
+    ]
     assert [sample.responded for sample in result.samples] == [True, False]
     for index in range(2):
         warm_position = observed.events.index(("warm_wait", index, 9.0))
@@ -251,6 +259,20 @@ def test_warmup_timeout_fails_before_timing_or_replay_and_stops_runtime(monkeypa
         _run((_case(0),), _config())
 
     assert not any(event[0] == "replay" for event in observed.events)
+    assert observed.runtimes[0].stopped is True
+
+
+def test_multiple_finals_fail_closed_and_stop_the_row_runtime(monkeypatch):
+    observed = _install_runtime_fakes(
+        monkeypatch,
+        tts_completed=(True,),
+        final_counts=(2,),
+    )
+
+    with pytest.raises(runner.ProductionBenchError):
+        _run((_case(0),), _config())
+
+    assert observed.engines[0].finals == ["final-0-0", "final-0-1"]
     assert observed.runtimes[0].stopped is True
 
 

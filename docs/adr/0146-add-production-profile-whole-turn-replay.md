@@ -64,6 +64,17 @@ made relative SenseVoice paths resolve against the wrong checkout; the runtime
 failed closed before decoding audio. Config-root path binding closes that
 evaluator-only mismatch.
 
+The exact retained replay from clean source `78aa3fc` then passed the complete
+runtime warm boundary and processed eight rows before row ordinal 9 emitted two
+selected finals and two runtime turn records. The strict one-row/one-turn gate
+failed closed and published no output. A separate aggregate-only exploratory
+ASR diagnostic (not a retained report) found that the current 0.8-second rule2
+hold emitted 36 finals across 24 rows, with eight multi-final rows and joined
+WER 0.5528. A 1.0-second hold improved joined WER to 0.5176 but still split five
+rows; only 2.4 seconds eliminated every split, at WER 0.5427. This exposes an
+endpoint-integrity/latency tradeoff rather than permission to join separate
+agent turns or silently remove rows.
+
 A direct Faster-Whisper final is not introduced here. Existing command/noise
 evidence shows excessive false activations, and its isolated EdAcc accuracy is
 not comparable to SenseVoice through production selection and authority gates.
@@ -94,4 +105,7 @@ contents instead.
 
 No report may promote a final-STT profile or change a default. Owner-labelled
 physical A/B through `./live.sh` remains required before any live selection,
-latency, barge-in, or natural-conversation conclusion.
+latency, barge-in, or natural-conversation conclusion. In particular, the
+exploratory threshold sweep does not authorize a 2.4-second live hold; semantic
+turn completion or a separately bound single-turn corpus must be evaluated
+without weakening the multi-final failure invariant.

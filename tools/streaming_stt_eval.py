@@ -61,6 +61,13 @@ from tools.streaming_stt.metrics import (
     normalize_stratum_tags,
     validate_stratum_tags,
 )
+from tools.streaming_stt.ami_endpoint_proxy import (
+    AMI_ENDPOINT_PROXY_KIND,
+    AMI_ENDPOINT_PROXY_SCHEMA_VERSION,
+    AmiEndpointProxyBinding,
+    aggregate_ami_endpoint_proxy,
+    validate_ami_endpoint_proxy_binding,
+)
 from tools.streaming_stt.protocol import (
     MAX_PCM_BYTES,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
@@ -135,6 +142,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/corpus.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/metrics.py",
+    "tools/streaming_stt/ami_endpoint_proxy.py",
     "tools/streaming_stt/private_diagnostic_receipt.py",
     "tools/streaming_stt/protocol.py",
     "tools/streaming_stt/runtime_receipt.py",
@@ -850,6 +858,7 @@ def _evidence_binding(
         | None
     ) = None,
     stratum_tags: Sequence[str] = (),
+    ami_endpoint_proxy: AmiEndpointProxyBinding | None = None,
 ) -> dict[str, object]:
     selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     if adapter not in {
@@ -1267,6 +1276,24 @@ def _evidence_binding(
             "tags": len(selected_stratum_tags),
             "selection_sha256": _canonical_digest(list(selected_stratum_tags)),
         }
+    if ami_endpoint_proxy is not None:
+        if type(ami_endpoint_proxy) is not AmiEndpointProxyBinding:
+            raise ValueError
+        binding["ami_endpoint_proxy"] = {
+            "schema_version": AMI_ENDPOINT_PROXY_SCHEMA_VERSION,
+            "kind": AMI_ENDPOINT_PROXY_KIND,
+            "sidecar_sha256": ami_endpoint_proxy.sidecar_sha256,
+            "label_set_sha256": ami_endpoint_proxy.label_set_sha256,
+            "scoreable_scope": "isolated_nonoverlap_only",
+            "ground_truth": False,
+            "aggregate_only": True,
+            "quality_thresholds": "none",
+            "capture_included": False,
+            "vad_included": False,
+            "device_included": False,
+            "live_latency": False,
+            "promotional": False,
+        }
     return binding
 
 
@@ -1301,7 +1328,11 @@ def _mark_endpoint_deadline_metrics_not_applicable(
         _mark_endpoint_deadline_metrics_not_applicable(nested)
 
 
-def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
+def _corpus_binding(
+    corpus: LoadedCorpus,
+    *,
+    ami_endpoint_proxy: AmiEndpointProxyBinding | None = None,
+) -> dict[str, object]:
     case_set = [
         (
             {
@@ -1342,6 +1373,16 @@ def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
             "provenance": corpus.provenance.as_dict(),
         }
     )
+    if ami_endpoint_proxy is not None:
+        validate_ami_endpoint_proxy_binding(corpus, ami_endpoint_proxy)
+        binding["ami_endpoint_proxy"] = {
+            "receipt_sha256": ami_endpoint_proxy.receipt_sha256,
+            "sidecar_sha256": ami_endpoint_proxy.sidecar_sha256,
+            "annotation_metadata_sha256": (
+                ami_endpoint_proxy.annotation_metadata_sha256
+            ),
+            "label_set_sha256": ami_endpoint_proxy.label_set_sha256,
+        }
     return binding
 
 
@@ -1675,6 +1716,7 @@ def run_benchmark(
     partial_interval_ms: int | None = None,
     tail_padding_samples: int | None = None,
     stratum_tags: Sequence[str] = (),
+    ami_endpoint_proxy: AmiEndpointProxyBinding | None = None,
 ) -> dict[str, object]:
     """Run one exact manifest-selected worker/corpus tuple without transcript rows."""
 
@@ -1715,6 +1757,7 @@ def run_benchmark(
             partial_interval_ms=partial_interval_ms,
             tail_padding_samples=tail_padding_samples,
             stratum_tags=selected_stratum_tags,
+            ami_endpoint_proxy=ami_endpoint_proxy,
         )
         run_lock.assert_bound()
         return result
@@ -1734,9 +1777,16 @@ def _run_benchmark_locked(
     partial_interval_ms: int | None,
     tail_padding_samples: int | None,
     stratum_tags: Sequence[str] = (),
+    ami_endpoint_proxy: AmiEndpointProxyBinding | None = None,
 ) -> dict[str, object]:
     selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     manifest = load_worker_manifest(worker_manifest_path)
+    if (
+        ami_endpoint_proxy is not None
+        and manifest.adapter
+        not in {PARAKEET_CPP_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}
+    ):
+        raise ValueError
     selected_stream = _selected_stream(
         manifest,
         stream,
@@ -1754,8 +1804,13 @@ def _run_benchmark_locked(
     model_receipt_sha256 = _verified_model_receipt_digest(manifest)
     corpus = load_corpus(corpus_path)
     selected_stratum_tags = validate_stratum_tags(corpus, selected_stratum_tags)
+    if ami_endpoint_proxy is not None:
+        validate_ami_endpoint_proxy_binding(corpus, ami_endpoint_proxy)
     evaluator_binding = _evaluator_binding(manifest.adapter)
-    corpus_binding = _corpus_binding(corpus)
+    corpus_binding = _corpus_binding(
+        corpus,
+        ami_endpoint_proxy=ami_endpoint_proxy,
+    )
     scratch = _prepare_scratch(scratch_parent)
     scratch_metadata = scratch.lstat()
     scratch_identity = (scratch_metadata.st_dev, scratch_metadata.st_ino)
@@ -1865,6 +1920,15 @@ def _run_benchmark_locked(
             repeats=repeats,
             stratum_tags=selected_stratum_tags,
         )
+        if ami_endpoint_proxy is not None:
+            validate_ami_endpoint_proxy_binding(corpus, ami_endpoint_proxy)
+            metrics["ami_endpoint_proxy"] = aggregate_ami_endpoint_proxy(
+                corpus,
+                ami_endpoint_proxy,
+                records,
+                ready,
+                repeats=repeats,
+            )
         if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
             _mark_endpoint_deadline_metrics_not_applicable(metrics)
         worker_report = _worker_report(
@@ -1875,6 +1939,23 @@ def _run_benchmark_locked(
             worker.resource_observations,
             expected_completed_cases=len(records),
         )
+        config_binding: dict[str, object] = {
+            **selected_stream.as_dict(),
+            "repeats": repeats,
+            **(
+                {"stratum_tags": list(selected_stratum_tags)}
+                if selected_stratum_tags
+                else {}
+            ),
+        }
+        if ami_endpoint_proxy is not None:
+            config_binding["ami_endpoint_proxy_label_set_sha256"] = (
+                ami_endpoint_proxy.label_set_sha256
+            )
+            config_binding["ami_endpoint_proxy_sidecar_sha256"] = (
+                ami_endpoint_proxy.sidecar_sha256
+            )
+        config_binding["contract_sha256"] = _canonical_digest(config_binding)
         result = {
             "ok": bool(metrics["coverage_complete"]),
             "evidence": _evidence_binding(
@@ -1896,29 +1977,11 @@ def _run_benchmark_locked(
                     else None
                 ),
                 stratum_tags=selected_stratum_tags,
+                ami_endpoint_proxy=ami_endpoint_proxy,
             ),
             "worker": worker_report,
             "corpus": corpus_binding,
-            "config": {
-                **selected_stream.as_dict(),
-                "repeats": repeats,
-                **(
-                    {"stratum_tags": list(selected_stratum_tags)}
-                    if selected_stratum_tags
-                    else {}
-                ),
-                "contract_sha256": _canonical_digest(
-                    {
-                        **selected_stream.as_dict(),
-                        "repeats": repeats,
-                        **(
-                            {"stratum_tags": list(selected_stratum_tags)}
-                            if selected_stratum_tags
-                            else {}
-                        ),
-                    }
-                ),
-            },
+            "config": config_binding,
             "metrics": metrics,
             "worker_stderr": dict(stderr_summary),
             "evaluator": evaluator_binding,

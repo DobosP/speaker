@@ -14,6 +14,13 @@ import pytest
 from tools import prepare_ami_capture_replay as ami_source
 from tools import prepare_ami_conversation_fixture as prepare
 from tools import public_conversation_fixture as fixture
+from tools.streaming_stt.ami_endpoint_proxy import (
+    AmiEndpointProxyBinding,
+    AmiEndpointProxyLabel,
+    canonical_label_set_sha256,
+    canonical_sidecar_sha256,
+    validate_ami_endpoint_proxy_binding,
+)
 from tools.streaming_stt.corpus import load_corpus
 
 
@@ -286,7 +293,45 @@ def test_publishes_exact_paired_schema_v2_pcm_and_redacted_receipt(tmp_path):
     assert receipt["artifacts"][2]["local_sha256"] == sources["close_sha256"]
     assert receipt["artifacts"][2]["upstream_digest"] == sources["close_sha256"]
 
+    labels_path = corpus.path.parent / prepare.ENDPOINT_PROXY_LABELS_FILENAME
+    labels_raw = labels_path.read_bytes()
+    labels = json.loads(labels_raw)
+    assert labels["schema_version"] == 1
+    assert labels["kind"] == prepare.ENDPOINT_PROXY_LABELS_KIND
+    assert labels["label_contract"] == prepare.ENDPOINT_PROXY_CONTRACT
+    assert labels["scoreable_scope"] == "isolated_nonoverlap_only"
+    assert labels["evidence_scope"]["acoustic_ground_truth"] is False
+    assert labels["evidence_scope"]["capture"] is False
+    assert labels["evidence_scope"]["vad"] is False
+    assert labels["label_set_sha256"] == prepare._endpoint_proxy_label_set_sha256(
+        labels["labels"]
+    )
+    typed_labels = tuple(AmiEndpointProxyLabel(**row) for row in labels["labels"])
+    assert canonical_label_set_sha256(typed_labels) == labels["label_set_sha256"]
+    assert result.endpoint_proxy_label_set_sha256 == labels["label_set_sha256"]
+    assert result.annotation_metadata_sha256 == labels["annotation_metadata_sha256"]
+    assert result.metadata_sha256 == hashlib.sha256(labels_raw).hexdigest()
+    assert receipt["metadata_sha256"] == result.metadata_sha256
+    assert corpus.provenance is not None
+    assert corpus.provenance.metadata_sha256 == result.metadata_sha256
+    endpoint_binding = AmiEndpointProxyBinding(
+        corpus_manifest_sha256=corpus.digest,
+        receipt_sha256=result.receipt_sha256,
+        sidecar_sha256=result.metadata_sha256,
+        annotation_metadata_sha256=result.annotation_metadata_sha256,
+        label_set_sha256=labels["label_set_sha256"],
+        labels=typed_labels,
+    )
+    assert validate_ami_endpoint_proxy_binding(corpus, endpoint_binding) == typed_labels
+    assert canonical_sidecar_sha256(
+        annotation_metadata_sha256=result.annotation_metadata_sha256,
+        label_set_sha256=labels["label_set_sha256"],
+        labels=typed_labels,
+    ) == result.metadata_sha256
+
     cases = receipt["cases"]
+    label_rows = labels["labels"]
+    assert len(label_rows) == len(cases) == 24
     for index in range(0, 24, 2):
         close_case = corpus.cases[index]
         far_case = corpus.cases[index + 1]
@@ -303,6 +348,24 @@ def test_publishes_exact_paired_schema_v2_pcm_and_redacted_receipt(tmp_path):
         ]["window_sha256"]
         for field in ("window_index", "window_kind", "start_sample", "end_sample"):
             assert close_receipt["attributes"][field] == far_receipt["attributes"][field]
+        assert "forced_aligned_last_word_end_sample" not in close_receipt["attributes"]
+        close_label = label_rows[index]
+        far_label = label_rows[index + 1]
+        assert close_label["channel"] == "close"
+        assert far_label["channel"] == "far"
+        assert close_label["forced_aligned_last_word_end_sample"] == far_label[
+            "forced_aligned_last_word_end_sample"
+        ]
+        assert close_label["window_kind"] == far_label["window_kind"]
+        assert close_label["pcm_sha256"] == close_case.sha256
+        assert far_label["pcm_sha256"] == far_case.sha256
+        assert close_label["samples"] == close_case.samples
+        assert far_label["samples"] == far_case.samples
+        assert 0 < close_label["forced_aligned_last_word_end_sample"] < close_case.samples
+        assert 1 <= (
+            close_case.samples
+            - close_label["forced_aligned_last_word_end_sample"]
+        ) <= prepare._CONTEXT_SAMPLES
         assert close_case.samples == (
             close_receipt["attributes"]["end_sample"]
             - close_receipt["attributes"]["start_sample"]
@@ -324,6 +387,8 @@ def test_publishes_exact_paired_schema_v2_pcm_and_redacted_receipt(tmp_path):
     receipt_raw = (corpus.path.parent / "preparation-receipt.json").read_bytes()
     assert b"isolated0a" not in receipt_raw
     assert b"transition0lefta" not in receipt_raw
+    assert b"isolated0a" not in labels_raw
+    assert b"transition0lefta" not in labels_raw
     assert str(sources["annotations_zip"]).encode() not in receipt_raw
     assert str(sources["close_wav"]).encode() not in receipt_raw
     assert stat.S_IMODE(corpus.path.parent.stat().st_mode) == 0o700
@@ -349,6 +414,15 @@ def test_materialization_is_byte_deterministic_and_test_evidence_fails_productio
 
     assert first.corpus.path.read_bytes() == second.corpus.path.read_bytes()
     assert first.receipt_sha256 == second.receipt_sha256
+    assert first.metadata_sha256 == second.metadata_sha256
+    assert first.endpoint_proxy_label_set_sha256 == (
+        second.endpoint_proxy_label_set_sha256
+    )
+    assert (
+        first.corpus.path.parent / prepare.ENDPOINT_PROXY_LABELS_FILENAME
+    ).read_bytes() == (
+        second.corpus.path.parent / prepare.ENDPOINT_PROXY_LABELS_FILENAME
+    ).read_bytes()
     assert first.selected_windows_sha256 == second.selected_windows_sha256
     assert [case.audio_bytes for case in first.corpus.cases] == [
         case.audio_bytes for case in second.corpus.cases

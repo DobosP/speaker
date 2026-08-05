@@ -2,7 +2,9 @@
 
 Architecture and evidence policy are recorded in
 [ADR-0098](adr/0098-separate-public-voice-evidence-and-bind-production-baseline.md)
-and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). The bounded
+and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). The AMI-only
+endpoint proxy is recorded in
+[ADR-0129](adr/0129-add-ami-forced-alignment-endpoint-proxy.md). The bounded
 short-command/noise fixture is recorded in
 [ADR-0117](adr/0117-add-public-short-command-noise-gate.md). Matrix v5 has eight
 metric-isolated tracks, 19 selectable sources, and 11 explicit exclusions.
@@ -16,7 +18,7 @@ does not download, extract, or run any corpus.
 | Far field/device | DR-VCTK Small, AMI array evidence, paired AMI ES2004a close/far | absolute and paired WER delta |
 | Noise/reverb | RIRS_NOISES plus pinned speech; English Consistent Confusion Corpus v1.2 | fixed-grid WER degradation; ECCC noisy literal WER and documented confusions |
 | AEC/double-talk | Microsoft AEC synthetic pairs | ERLE/AECMOS, near-end loss, barge errors/latency |
-| Overlap/turns | AMI manual timing | overlap WER, early cuts, delay, backchannels |
+| Overlap/turns | AMI manual transcript with forced-aligned word timing | overlap WER, early cuts, delay, backchannels |
 | Spoken intent | MInDS-14 | intent accuracy, separate from WER |
 | Text routing | MASSIVE 1.1 | intent/slot/tool routing on text only |
 
@@ -64,7 +66,9 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
   and its direct private extraction, key-matches raw and filtered official test
   STM, and records `official_filtered_stm` on every hard-WER receipt case.
 - `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
-  far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset.
+  far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset. Its
+  private `speech-end-labels.json` sibling and evaluation limits are specified
+  by [ADR-0129](adr/0129-add-ami-forced-alignment-endpoint-proxy.md).
 - `tools.prepare_common_voice_conversation_fixture` re-verifies the pinned SPS
   archive, recomputes its 32 parent rows and MP3 hashes, and binds the parent
   preparation receipt and corpus manifest before projecting 24 cases.
@@ -130,6 +134,36 @@ output filename. The retained raw suite checkpoint stays under scratch;
 `--output` is staged, file-synced, and atomically published without clobber only
 after all outer fixture, worker, controller-source, stratum, and privacy checks
 pass.
+
+### AMI forced-alignment endpoint proxy
+
+AMI's word timestamps are automatically forced-aligned, not human-labelled
+acoustic speech ends. The private sidecar records that limitation, binds its
+ordered label-set digest through the existing corpus provenance, and leaves the
+generic schema-v2 corpus and four-source lock unchanged. Preparations made
+before ADR-0129 require rematerialization from the pinned AMI inputs into a new
+private output directory; the materializer does not overwrite an existing one.
+
+The separate wrapper accepts only the Parakeet Realtime EOU and parakeet.cpp
+adapters. It reports aggregate proxy deltas for the 16 isolated cases and
+excludes all eight turn-transition cases. A run uses a fresh private scratch
+root and previously absent private output path:
+
+```bash
+SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.ami_endpoint_proxy_eval \
+  --worker-manifest /absolute/private/candidate/worker-manifest.json \
+  --corpus /absolute/private/rematerialized-ami/corpus.json \
+  --scratch-root /absolute/private/new-ami-endpoint-scratch \
+  --output /absolute/private/new-ami-endpoint-report.json \
+  --repeats 3 --pace burst
+```
+
+The result remains aggregate-only after-PCM development evidence. It defines no
+quality threshold and is not acoustic ground truth, capture/VAD/device timing,
+training-disjoint evidence, a model promotion, or live validation.
 
 ## Public short-command/noise fixture
 

@@ -57,6 +57,13 @@ REQUIRED_TERMS = frozenset({"CC-BY-4.0"})
 DECODER_CONTRACT = "ami-riff-pcm16-mono16k-window-to-f32le-v1"
 PREPARER_CONTRACT = "public-conversation-ami-v1"
 SELECTION_ALGORITHM = "paired_window_projection_v1"
+ENDPOINT_PROXY_CONTRACT = "ami-forced-aligned-last-word-end-v1"
+ENDPOINT_PROXY_LABELS_FILENAME = "speech-end-labels.json"
+ENDPOINT_PROXY_LABELS_KIND = "ami-speech-end-proxy-labels-v1"
+ENDPOINT_PROXY_LABEL_SET_KIND = "ami-forced-aligned-last-word-end-label-set-v1"
+# This tuple is frozen into the existing public fixture lock.  Its historical
+# ``manual_word_timings`` spelling describes transcript eligibility, not timing
+# authority: AMI publishes word times as automatic forced alignments (ADR-0129).
 SOURCE_RECIPE_ELIGIBILITY = (
     "manual_word_timings",
     "synchronized_channels",
@@ -85,6 +92,7 @@ TOTAL_CASES = TOTAL_WINDOWS * 2
 _ANNOTATION_MAX_BYTES = 32 * 1024 * 1024
 _WAV_MAX_BYTES = 64 * 1024 * 1024
 _RECEIPT_MAX_BYTES = 256 * 1024
+_ENDPOINT_PROXY_LABELS_MAX_BYTES = 64 * 1024
 _REPO_FILE_MAX_BYTES = 4 * 1024 * 1024
 _CONTEXT_SAMPLES = SAMPLE_RATE_HZ // 10
 _MAX_INTRA_TURN_GAP = 3 * SAMPLE_RATE_HZ // 4
@@ -171,12 +179,22 @@ class _Window:
     window_sha256: str
     speaker_sha256: str | None
 
+    @property
+    def forced_aligned_last_word_end_sample(self) -> int:
+        return max(int(word.end_sample) for word in self.words)
+
+    @property
+    def relative_forced_aligned_last_word_end_sample(self) -> int:
+        return self.forced_aligned_last_word_end_sample - self.start_sample
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedAmiConversationCorpus:
     corpus: LoadedCorpus
     receipt_sha256: str
     metadata_sha256: str
+    annotation_metadata_sha256: str
+    endpoint_proxy_label_set_sha256: str
     selected_windows_sha256: str
 
 
@@ -198,6 +216,16 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
+
+
+def _endpoint_proxy_label_set_sha256(
+    labels: Sequence[Mapping[str, object]],
+) -> str:
+    payload = {
+        "kind": ENDPOINT_PROXY_LABEL_SET_KIND,
+        "labels": list(labels),
+    }
+    return hashlib.sha256(_canonical_json_bytes(payload).rstrip(b"\n")).hexdigest()
 
 
 def _salted_digest(seed: str, kind: str, value: str) -> str:
@@ -503,6 +531,8 @@ def _candidate_window(
             "kind": kind,
             "start_sample": start,
             "end_sample": end,
+            "endpoint_proxy_contract": ENDPOINT_PROXY_CONTRACT,
+            "forced_aligned_last_word_end_sample": speech_end,
             "reference_sha256": hashlib.sha256(reference.encode("utf-8")).hexdigest(),
         }
     )
@@ -639,6 +669,10 @@ def _selection_row(window: _Window, *, channel: str | None = None) -> dict[str, 
         "window_kind": window.kind,
         "start_sample": window.start_sample,
         "end_sample": window.end_sample,
+        "endpoint_proxy_contract": ENDPOINT_PROXY_CONTRACT,
+        "forced_aligned_last_word_end_sample": (
+            window.forced_aligned_last_word_end_sample
+        ),
         "reference_sha256": hashlib.sha256(window.reference.encode("utf-8")).hexdigest(),
     }
     if channel is not None:
@@ -892,11 +926,12 @@ def prepare_ami_conversation_fixture(
         seed=seed,
     )
     selected = _select_windows(candidates, seed=seed)
-    metadata_sha256 = _metadata_sha256(annotation_members, seed=seed)
+    annotation_metadata_sha256 = _metadata_sha256(annotation_members, seed=seed)
 
     slots = lock.slots_for(SOURCE_ID)
     write_cases: list[CorpusWriteCase] = []
     receipt_cases: list[dict[str, object]] = []
+    endpoint_proxy_labels: list[dict[str, object]] = []
     total_samples = 0
     channels = {"close": close_pcm, "far": far_pcm}
     projected_windows = tuple(
@@ -914,11 +949,22 @@ def prepare_ami_conversation_fixture(
         pcm_source = channels[channel]
         raw_pcm = _decode_window(pcm_source, window)
         sample_count = len(raw_pcm) // 4
+        endpoint_proxy_sample = (
+            window.relative_forced_aligned_last_word_end_sample
+        )
+        post_proxy_context_samples = sample_count - endpoint_proxy_sample
+        if (
+            endpoint_proxy_sample <= 0
+            or endpoint_proxy_sample >= sample_count
+            or not 1 <= post_proxy_context_samples <= _CONTEXT_SAMPLES
+        ):
+            raise AmiConversationPreparationError()
         total_samples += sample_count
         if total_samples * 4 > MAX_CORPUS_BYTES:
             raise AmiConversationPreparationError()
         case_id = f"ami-es2004a-{slot.ordinal // 2:02d}-{channel}"
         tags = tuple(dict.fromkeys((*source.required_tags, window.kind, channel)))
+        pcm_sha256 = hashlib.sha256(raw_pcm).hexdigest()
         write_cases.append(
             CorpusWriteCase(
                 case_id=case_id,
@@ -938,6 +984,16 @@ def prepare_ami_conversation_fixture(
             "projected-case",
             f"{window.identity_sha256}\0{channel}",
         )
+        endpoint_proxy_labels.append(
+            {
+                "case_id": case_id,
+                "pcm_sha256": pcm_sha256,
+                "samples": sample_count,
+                "forced_aligned_last_word_end_sample": endpoint_proxy_sample,
+                "window_kind": window.kind,
+                "channel": channel,
+            }
+        )
         receipt_cases.append(
             {
                 "slot_id": slot.slot_id,
@@ -949,7 +1005,7 @@ def prepare_ami_conversation_fixture(
                 ).hexdigest(),
                 "source_audio_sha256": hashlib.sha256(source_window).hexdigest(),
                 "source_audio_bytes": len(source_window),
-                "pcm_sha256": hashlib.sha256(raw_pcm).hexdigest(),
+                "pcm_sha256": pcm_sha256,
                 "pcm_samples": sample_count,
                 "tags": list(tags),
                 "attributes": {
@@ -975,6 +1031,43 @@ def prepare_ami_conversation_fixture(
         for window in selected
         for channel in ("close", "far")
     ]
+    endpoint_proxy_label_set_sha256 = _endpoint_proxy_label_set_sha256(
+        endpoint_proxy_labels
+    )
+    endpoint_proxy_labels_raw = _canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "kind": ENDPOINT_PROXY_LABELS_KIND,
+            "fixture_id": fixture.FIXTURE_ID,
+            "source_id": SOURCE_ID,
+            "corpus_suite": source.corpus_suite,
+            "sample_rate_hz": SAMPLE_RATE_HZ,
+            "label_contract": ENDPOINT_PROXY_CONTRACT,
+            "scoreable_scope": "isolated_nonoverlap_only",
+            "annotation_metadata_sha256": annotation_metadata_sha256,
+            "label_set_sha256": endpoint_proxy_label_set_sha256,
+            "labels": endpoint_proxy_labels,
+            "privacy": {
+                "contains_audio": False,
+                "contains_transcripts": False,
+                "contains_local_paths": False,
+                "contains_raw_speaker_identifiers": False,
+            },
+            "evidence_scope": {
+                "after_pcm": True,
+                "forced_alignment_proxy": True,
+                "acoustic_ground_truth": False,
+                "capture": False,
+                "vad": False,
+                "device": False,
+                "live_latency": False,
+                "default_promotion": False,
+            },
+        }
+    )
+    if len(endpoint_proxy_labels_raw) > _ENDPOINT_PROXY_LABELS_MAX_BYTES:
+        raise AmiConversationPreparationError()
+    metadata_sha256 = hashlib.sha256(endpoint_proxy_labels_raw).hexdigest()
     preparer_files = preparer["files"]
     if not isinstance(preparer_files, dict):
         raise AmiConversationPreparationError()
@@ -1036,7 +1129,10 @@ def prepare_ami_conversation_fixture(
             provenance=provenance,
             output_dir=destination,
             purpose="AMI ES2004a synchronized close/far conversation fixture v1",
-            sidecars={"preparation-receipt.json": receipt_raw},
+            sidecars={
+                "preparation-receipt.json": receipt_raw,
+                ENDPOINT_PROXY_LABELS_FILENAME: endpoint_proxy_labels_raw,
+            },
         )
     except Exception:
         raise AmiConversationPreparationError() from None
@@ -1051,6 +1147,8 @@ def prepare_ami_conversation_fixture(
         corpus=corpus,
         receipt_sha256=receipt_sha256,
         metadata_sha256=metadata_sha256,
+        annotation_metadata_sha256=annotation_metadata_sha256,
+        endpoint_proxy_label_set_sha256=endpoint_proxy_label_set_sha256,
         selected_windows_sha256=_canonical_sha256(selected_rows),
     )
 
@@ -1068,6 +1166,10 @@ def _safe_result(value: PreparedAmiConversationCorpus) -> dict[str, object]:
         "corpus_sha256": value.corpus.digest,
         "receipt_sha256": value.receipt_sha256,
         "metadata_sha256": value.metadata_sha256,
+        "annotation_metadata_sha256": value.annotation_metadata_sha256,
+        "endpoint_proxy_label_set_sha256": (
+            value.endpoint_proxy_label_set_sha256
+        ),
         "selected_windows_sha256": value.selected_windows_sha256,
     }
 

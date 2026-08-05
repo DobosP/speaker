@@ -41,6 +41,7 @@
 | Bounded-read race isolation | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `1 passed`; keep this pre-existing timestamp-sensitive mutation check isolated from the broad streaming manifest gate and report both conditions |
 | Public conversation/STT fixture lock | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_public_conversation_fixture.py tests/test_prepare_harper_valley_conversation_fixture.py tests/test_prepare_edacc_conversation_fixture.py tests/test_prepare_ami_conversation_fixture.py tests/test_prepare_common_voice_conversation_fixture.py tests/test_public_voice_eval_matrix.py tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_suite.py -q` | `325 passed`: matrix-v5 pins/licenses, raw-source contracts, self-digested 24x4 lock, explicit slots, private receipt/corpus/reference/PCM cross-binding, and EdAcc production-owned raw-header scan with bounded base-256 only for ignored UID/GID, a required bounded root README, exact plain/single-digit-participant WAV grammar, segment-to-WAV equality, strict terminal-suffix conversation-family projection, recording/family split disjointness, exact fixed CSV-header aliases including `PARTICIPANT_ID` without case/whitespace normalization, retained accent/duplicate/row parsing, descriptor extraction, persisted-byte, malformed-archive, race, and retry rejection. Source balance/pairing, CV parent re-decode/private-input binding, integrated sequential-suite validation, and coordinated tamper rejection also pass. Materializer outputs in this gate are synthetic/non-production; production-shaped validator fixtures are consistency tests only. Separately, the retained exact-source run published a `production_evidence=true` 24-case EdAcc corpus (4,790,400 PCM bytes) with corpus SHA-256 `4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772` and receipt SHA-256 `3c516b6fbb8ce139498cd2e01d83a4faf825e58bf2b9abcaa52896bdab4c853f`; preserve it alongside every failed and non-production tree. The command itself downloads nothing and provides no model, WER, GPU, audio-device, live, or runtime-default evidence (ADR-0113/0117/0131/0132/0142) |
 | Public conversation canonical strata | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_public_conversation_qualification.py tests/test_public_conversation_fixture.py tests/test_streaming_stt_suite.py tests/test_streaming_stt_eval.py -q` | `214 passed`: exact lock/slot-derived marginal strata and fixed baseline/candidate 2x4 order; qualification-v2 reconstruction of the fixed aggregate-only safe suite; exact adapter/resolved-stream, source/safe digest-domain, denominator, endpoint-invariant, and retained-roundtrip validation; private bounded checkpoint reads, repeated close-time controller/fixture/worker/scratch checks, failure-clean no-clobber publication, exact file digest, and explicit coverage-only/non-promotional semantics pass with generated fixtures and fake workers. No corpus download, model, GPU, network, audio device, quality verdict, or live evidence (ADR-0127/0130) |
+| Fixed EdAcc-only 2x1 comparison | `env SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_edacc_stt_comparison.py -q` | `47 passed`: exact production corpus/receipt pins, 24-case 8/8/8 closure, schema-4 `production-gigaspeech-zipformer-fp32-benchmark-1t` then schema-6 English `faster-whisper-small-local`, fixed adapters and three-repeat/1,600-sample/burst/200 ms/zero-tail settings, strict sequential delegation, source/worker/code rechecks, private checkpoint/scratch separation, aggregate-only safe reconstruction, retained validation, and atomic no-clobber publication pass with generated fixtures and fake workers. No private corpus, model, GPU, network, audio device, quality decision, latency, or live evidence (ADR-0143) |
 | AMI forced-alignment endpoint proxy | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_ami_conversation_fixture.py tests/test_streaming_stt_metrics_ami_endpoint_proxy.py tests/test_ami_endpoint_proxy_eval.py tests/test_streaming_stt_eval_ami_endpoint_proxy.py tests/test_streaming_stt_eval.py -q` | exact private sidecar/provenance/receipt/label-set binding, isolated-only aggregate reducer, supported native/first-feed EOU sample semantics, AMI-only pre/post validation, no-clobber publication, legacy report compatibility, and privacy pass with generated fixtures and fake workers; this is a non-authoritative forced-alignment proxy with no corpus download, model, GPU, network, audio device, threshold, promotion, or live evidence (ADR-0129) |
 | Common Voice spontaneous P0 preparation | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_common_voice_spontaneous_v4.py tests/test_streaming_stt_corpus_writer.py tests/test_public_voice_eval_matrix.py -q` | exact release/API receipt, twice-hashed private archive, safe tar/TSV, speaker-first quota matching, bounded publication/provenance, and synthetic decode pass; the two real-PyAV checks run only when the pinned optional `requirements-evaluation.txt` environment is installed. No corpus download, model, network, GPU, or audio device (ADR-0101) |
 | VoxPopuli Romanian-accented English P0 preparation | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_voxpopuli_ro_accent.py tests/test_streaming_stt_corpus_writer.py -q` | exact two-shard/revision/license pins, explicit-local-only descriptor transport, exact float32-WAV/fact/empty-row contracts, finite identity conversion, deterministic 24-speaker four-band assignment, aggregate privacy, and hardened schema-v2 publication pass synthetically. The first real attempt failed closed; no real corpus was published and no model, network, GPU, or audio device runs here (ADR-0106) |
@@ -51,6 +52,44 @@
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Exact EdAcc two-model development comparison
+
+Run ADR-0143 only after provisioning a fresh Zipformer baseline manifest and a
+fresh English Faster-Whisper Small endpoint manifest with exact model ID
+`faster-whisper-small-local` from the same landed checkout that provides the
+wrapper. The retained production corpus path below
+is fixed; its sibling `preparation-receipt.json` is discovered and checked by
+the wrapper. Substitute only the two provision paths and choose new, absent
+scratch/report destinations for each attempt:
+
+```bash
+export EDACC_CORPUS=/var/tmp/speaker-edacc-private-20260805/corpus-retry-adr0142/edacc-test-v1/corpus.json
+export EDACC_ZIPFORMER_MANIFEST=/absolute/private/current-checkout-zipformer/worker-manifest.json
+export EDACC_FASTER_WHISPER_MANIFEST=/absolute/private/current-checkout-faster-whisper-small/worker-manifest.json
+export EDACC_RUN_ID=replace-with-one-unique-run-id
+export EDACC_2X1_SCRATCH=/var/tmp/speaker-edacc-private-20260805/new-edacc-2x1-scratch-${EDACC_RUN_ID}
+export EDACC_2X1_REPORT=/var/tmp/speaker-edacc-private-20260805/new-edacc-2x1-report-${EDACC_RUN_ID}.json
+
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.edacc_stt_comparison \
+  --corpus "$EDACC_CORPUS" \
+  --baseline-worker-manifest "$EDACC_ZIPFORMER_MANIFEST" \
+  --candidate-worker-manifest "$EDACC_FASTER_WHISPER_MANIFEST" \
+  --scratch-root "$EDACC_2X1_SCRATCH" \
+  --output "$EDACC_2X1_REPORT"
+```
+
+Do not add geometry or pacing flags: the wrapper fixes three repeats,
+1,600-sample chunks, burst pacing, a 200 ms partial interval, zero tail
+padding, and baseline-then-candidate execution. Both destination parents must
+be owner-private and outside Git, the corpus/receipt tree, and either worker's
+provision/runtime/model tree; scratch and output must not already exist. Keep
+the report and printed exact published-byte SHA-256. A successful command
+means the fixed accuracy slice completed; it is not latency, endpoint,
+resource-acceptance, training-disjointness, adoption, runtime, or live evidence.
 
 ## Exact causal LiveKit endpoint diagnostic
 

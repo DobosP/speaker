@@ -10,6 +10,9 @@ short-command/noise fixture is recorded in
 metric-isolated tracks, 19 selectable sources, and 11 explicit exclusions.
 `tools.public_voice_eval_matrix` is a typed catalog and acquisition planner; it
 does not download, extract, or run any corpus.
+The separate fixed EdAcc-only development comparison is recorded in
+[ADR-0143](adr/0143-add-fixed-edacc-stt-comparison.md); it does not change the
+matrix or the canonical four-source qualification.
 
 | Track | Public inputs | Report family |
 |---|---|---|
@@ -112,8 +115,38 @@ the receipt SHA-256 is
 `3c516b6fbb8ce139498cd2e01d83a4faf825e58bf2b9abcaa52896bdab4c853f`.
 Preserve all failed, preflight, source, and production evidence. This proves
 bounded corpus construction only; it supplies no model, WER, live, or
-runtime-default claim. The next evaluation step is a receipt-bound EdAcc-only
-fixed 2x1 wrapper, kept separate from the four-source qualification gate.
+runtime-default claim.
+
+### Fixed EdAcc-only 2x1 accuracy slice
+
+`tools.edacc_stt_comparison` is the receipt-bound wrapper for the next private
+model run. It accepts only the production corpus and sibling receipt whose
+SHA-256 values are
+`4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772` and
+`3c516b6fbb8ce139498cd2e01d83a4faf825e58bf2b9abcaa52896bdab4c853f`.
+It requires exactly 24 cases and reconstructs the locked EdAcc marginal as
+eight clean, eight disfluent, and eight overlap-adjacent cases before starting
+a worker.
+
+The two fixed cells are the schema-4
+`production-gigaspeech-zipformer-fp32-benchmark-1t` control through
+`sherpa-onnx-gigaspeech-zipformer-stream-v1`, followed by the schema-6 English
+Faster-Whisper Small comparator `faster-whisper-small-local` through the
+final-only adapter `faster-whisper-endpoint-v1`. Both use three repeats,
+1,600-sample chunks, burst pacing, a 200 ms partial interval, and zero
+tail-padding samples. The wrapper delegates them strictly sequentially and
+reconstructs a fixed aggregate-only report after checking the corpus, receipt,
+workers, code, scratch, and checkpoint before and after execution. Its retained
+result is always `quality_decision=not_evaluated`, development-only, and
+non-promotional.
+
+This is an accuracy slice, not a latency comparison: the harness begins after
+PCM is available, burst timing is not device timing, and Faster-Whisper is a
+complete-PCM final-only adapter. Worker receipts bind the local trees consumed
+by the run but do not independently establish upstream model origin or
+training-data disjointness. The fixed 2x1 wrapper is additive; it is not a
+single-source mode for the canonical 2x4 qualification below and cannot change
+an application model or runtime default.
 
 Receipts cross-bind one same-owner snapshot; they are not signatures. The
 validator catches drift and inconsistent layer changes, but an actor able to
@@ -135,7 +168,7 @@ MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
   --corpus /absolute/private/cvss4-projection/corpus.json
 ```
 
-For the exact two-model comparison recorded in
+For the exact four-source two-model comparison recorded in
 [ADR-0127](adr/0127-require-public-conversation-canonical-strata.md) and hardened
 by [ADR-0130](adr/0130-reconstruct-public-conversation-safe-reports.md), use the
 additive qualification entry point. It fixes baseline/candidate role order,

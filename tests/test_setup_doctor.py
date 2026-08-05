@@ -1751,11 +1751,56 @@ def test_check_speaker_id_unconfigured_is_ok_advisory():
     assert "optional" in c.detail
 
 
-def test_check_speaker_id_model_set_but_missing_is_fail():
+def test_check_speaker_id_model_set_but_inactive_and_missing_is_advisory():
     c = check_speaker_id(
         {"sherpa": {"speaker_embedding_model": "/m/spk.onnx"}}, exists=lambda p: False
     )
+    assert c.ok
+    assert "inactive" in c.detail
+    assert "unloaded" in c.detail
+
+
+def test_check_speaker_id_missing_enrollment_reference_stays_advisory():
+    c = check_speaker_id(
+        {
+            "sherpa": {
+                "speaker_embedding_model": "/m/spk.onnx",
+                "speaker_enroll_wav": "/m/missing-enroll.wav",
+            }
+        },
+        exists=lambda _path: False,
+    )
+
+    assert c.ok
+    assert "inactive" in c.detail
+    assert "unloaded" in c.detail
+
+
+def test_check_speaker_id_existing_enrollment_makes_missing_model_strict():
+    c = check_speaker_id(
+        {
+            "sherpa": {
+                "speaker_embedding_model": "/m/spk.onnx",
+                "speaker_enroll_embedding": "/m/enroll.json",
+            }
+        },
+        exists=lambda path: path == "/m/enroll.json",
+    )
+
     assert not c.ok
+    assert "model" in c.detail
+    assert "setup_models" in c.hint
+
+
+def test_check_speaker_id_existing_enrollment_requires_configured_model():
+    c = check_speaker_id(
+        {"sherpa": {"speaker_enroll_embedding": "/m/enroll.json"}},
+        exists=lambda path: path == "/m/enroll.json",
+    )
+
+    assert not c.ok
+    assert "existing enrollment" in c.detail
+    assert "speaker embedding model" in c.detail
     assert "setup_models" in c.hint
 
 

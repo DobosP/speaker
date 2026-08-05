@@ -20,6 +20,7 @@ from .minicpm_identity import (
     verify_minicpm_q8_identity,
 )
 from .engines._sherpa_models import validate_bpe_vocab_file
+from .engines.speaker_gate import resolve_speaker_identity_activation
 
 RUNTIME_IMPORTS = ("numpy", "scipy", "sounddevice", "sherpa_onnx")
 SHERPA_REQUIRED = (
@@ -392,19 +393,29 @@ def check_speaker_id(
 ) -> Check:
     """Check optional speaker ID, or an explicit word-cut identity filter."""
     sherpa = (config or {}).get("sherpa", {}) or {}
-    required_for_word_cut = bool(
-        sherpa.get("barge_in_enabled", True)
-        and sherpa.get("barge_word_cut_enabled", False)
-        and not sherpa.get("aec_enabled", False)
-        and sherpa.get("barge_word_cut_require_speaker", False)
+    activation = resolve_speaker_identity_activation(
+        speaker_enroll_embedding=sherpa.get("speaker_enroll_embedding", ""),
+        speaker_enroll_wav=sherpa.get("speaker_enroll_wav", ""),
+        barge_in_enabled=sherpa.get("barge_in_enabled", True),
+        barge_word_cut_enabled=sherpa.get("barge_word_cut_enabled", False),
+        aec_enabled=sherpa.get("aec_enabled", False),
+        barge_word_cut_require_speaker=sherpa.get(
+            "barge_word_cut_require_speaker", False
+        ),
+        exists=exists,
     )
     model = sherpa.get("speaker_embedding_model", "")
     if not model:
-        if required_for_word_cut:
+        if activation.active:
+            reason = (
+                "active word-cut"
+                if activation.word_cut_requires_speaker
+                else "the existing enrollment"
+            )
             return Check(
                 "speaker-ID",
                 False,
-                "active word-cut requires a speaker embedding model and enrollment",
+                f"{reason} requires a speaker embedding model",
                 "python -m tools.setup_models; python -m core --enroll",
             )
         return Check(
@@ -413,21 +424,19 @@ def check_speaker_id(
             "not configured (optional owner filtering off; lexical barge-in "
             "remains available) -- enable with `python -m tools.setup_models`",
         )
-    if not exists(model):
+    if activation.active and not exists(model):
         return Check(
             "speaker-ID", False, "model path set but missing on disk",
             "python -m tools.setup_models",
         )
-    enroll_emb = sherpa.get("speaker_enroll_embedding", "")
-    enroll_wav = sherpa.get("speaker_enroll_wav", "")
-    if (enroll_emb and exists(enroll_emb)) or (enroll_wav and exists(enroll_wav)):
+    if activation.enrollment_reference_available:
         return Check(
             "speaker-ID",
             True,
             "model + enrollment file present; capture-domain compatibility is "
             "checked after the microphone opens",
         )
-    if required_for_word_cut:
+    if activation.word_cut_requires_speaker:
         return Check(
             "speaker-ID",
             False,
@@ -437,7 +446,8 @@ def check_speaker_id(
         )
     return Check(
         "speaker-ID", True,
-        "model present but not enrolled -- gate is fail-open; "
+        "model configured but optional speaker identity is inactive and remains "
+        "unloaded -- "
         "run `python -m core --enroll` to enroll your voice",
     )
 

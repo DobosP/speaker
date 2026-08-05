@@ -1,11 +1,63 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
+from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 Embedding = Sequence[float]
 EmbedFn = Callable[[Sequence[float], int], Optional[Embedding]]
+
+
+@dataclass(frozen=True)
+class SpeakerIdentityActivation:
+    """Why the live runtime must allocate speaker-identity resources."""
+
+    enrollment_reference_available: bool
+    word_cut_requires_speaker: bool
+
+    @property
+    def active(self) -> bool:
+        return self.enrollment_reference_available or self.word_cut_requires_speaker
+
+
+def resolve_speaker_identity_activation(
+    *,
+    speaker_enroll_embedding: str = "",
+    speaker_enroll_wav: str = "",
+    barge_in_enabled: bool = True,
+    barge_word_cut_enabled: bool = False,
+    aec_enabled: bool = False,
+    barge_word_cut_require_speaker: bool = False,
+    exists: Callable[[str], bool] = os.path.exists,
+) -> SpeakerIdentityActivation:
+    """Resolve whether the live session needs its optional speaker-ID model.
+
+    A configured model is only an available capability.  It becomes active
+    when an enrollment reference is actually present, or when the no-AEC
+    playback word-cut path explicitly requests the multi-voice identity filter.
+    Keeping this pure and injectable gives runtime allocation and readiness one
+    exact rule without importing the native Sherpa engine into doctor checks.
+    """
+
+    enrollment_paths = (
+        str(speaker_enroll_embedding or ""),
+        str(speaker_enroll_wav or ""),
+    )
+    enrollment_reference_available = any(
+        path and exists(path) for path in enrollment_paths
+    )
+    word_cut_requires_speaker = bool(
+        barge_in_enabled
+        and barge_word_cut_enabled
+        and not aec_enabled
+        and barge_word_cut_require_speaker
+    )
+    return SpeakerIdentityActivation(
+        enrollment_reference_available=bool(enrollment_reference_available),
+        word_cut_requires_speaker=word_cut_requires_speaker,
+    )
 
 
 def cosine_similarity(a: Embedding, b: Embedding) -> float:

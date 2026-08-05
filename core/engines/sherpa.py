@@ -230,6 +230,7 @@ from .speaker_gate import (
     SpeakerGate,
     loudness_admits,
     passes_output_margin,
+    resolve_speaker_identity_activation,
     rms,
     sherpa_speaker_gate,
     trim_to_voiced_region,
@@ -2761,6 +2762,11 @@ class SherpaOnnxEngine(AudioEngine):
                     "cannot rebuild while the streaming decode owner is live"
                 )
             self._streaming_decode_session = None
+        # Re-evaluate optional identity from the current files/config on every
+        # build.  A removed enrollment reference must not retain a previously
+        # allocated gate (or its lazy native extractor) across engine restarts.
+        self._speaker_gate = None
+        self._speaker_gate_warmed = False
         self._recognizer = build_recognizer(c)
         # Optional offline second-pass recognizer for the final transcript.
         self._final_recognizer = build_final_recognizer(c)
@@ -2942,8 +2948,15 @@ class SherpaOnnxEngine(AudioEngine):
             log.info(
                 "ASR contextual biasing: %d hotword phrase(s)", len(self._hotwords)
             )
-        if c.speaker_embedding_model:
-            self._speaker_gate_warmed = False
+        speaker_identity = resolve_speaker_identity_activation(
+            speaker_enroll_embedding=c.speaker_enroll_embedding,
+            speaker_enroll_wav=c.speaker_enroll_wav,
+            barge_in_enabled=c.barge_in_enabled,
+            barge_word_cut_enabled=c.barge_word_cut_enabled,
+            aec_enabled=c.aec_enabled,
+            barge_word_cut_require_speaker=c.barge_word_cut_require_speaker,
+        )
+        if speaker_identity.active and c.speaker_embedding_model:
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,
@@ -4806,13 +4819,17 @@ class SherpaOnnxEngine(AudioEngine):
             actual_selector = getattr(self._stream_in, "actual_device", in_dev)
             self._resolve_capture_domain(sd, actual_selector, startup=True)
             self._rebind_speech_evidence_domain()
-            requires_word_cut_speaker = bool(
-                self.config.barge_in_enabled
-                and self.config.barge_word_cut_enabled
-                and not self.config.aec_enabled
-                and self.config.barge_word_cut_require_speaker
+            speaker_identity = resolve_speaker_identity_activation(
+                speaker_enroll_embedding=self.config.speaker_enroll_embedding,
+                speaker_enroll_wav=self.config.speaker_enroll_wav,
+                barge_in_enabled=self.config.barge_in_enabled,
+                barge_word_cut_enabled=self.config.barge_word_cut_enabled,
+                aec_enabled=self.config.aec_enabled,
+                barge_word_cut_require_speaker=(
+                    self.config.barge_word_cut_require_speaker
+                ),
             )
-            if requires_word_cut_speaker:
+            if speaker_identity.word_cut_requires_speaker:
                 if self._speaker_gate is None or not self._speaker_gate.is_enrolled:
                     raise RuntimeError(
                         "active word-cut requires a compatible speaker enrollment"

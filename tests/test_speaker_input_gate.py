@@ -37,6 +37,168 @@ def _engine(*, gate_input=True, gate=None):
     return eng
 
 
+def _build_with_observed_speaker_allocation(monkeypatch, config):
+    import core.engines.sherpa as sherpa_module
+
+    for name in (
+        "build_recognizer",
+        "build_final_recognizer",
+        "build_final_verifier",
+        "build_vad",
+        "build_tts",
+        "build_denoiser",
+        "build_keyword_spotter",
+        "build_punctuation",
+    ):
+        monkeypatch.setattr(sherpa_module, name, lambda _config: None)
+    monkeypatch.setattr(
+        sherpa_module,
+        "build_aec",
+        lambda _config, **_kwargs: None,
+    )
+
+    calls = []
+    allocated_gate = object()
+
+    def build_gate(model, **kwargs):
+        calls.append((model, kwargs))
+        return allocated_gate
+
+    monkeypatch.setattr(sherpa_module, "sherpa_speaker_gate", build_gate)
+    engine = SherpaOnnxEngine(config)
+    engine._build()
+    return engine, allocated_gate, calls
+
+
+def test_inactive_configured_speaker_model_does_not_allocate_gate(monkeypatch):
+    engine, _allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model="/missing/spk.onnx",
+            speaker_enroll_embedding="/missing/enroll.json",
+            barge_in_enabled=True,
+            barge_word_cut_enabled=True,
+            barge_word_cut_require_speaker=False,
+            aec_enabled=False,
+            coherence_barge_in_enabled=False,
+        ),
+    )
+
+    assert calls == []
+    assert engine._speaker_gate is None
+
+
+def test_existing_enrollment_allocates_speaker_gate(monkeypatch, tmp_path):
+    from core.enroll import Enrollment, save_enrollment
+
+    model = tmp_path / "spk.onnx"
+    model.touch()
+    enrollment = tmp_path / "enroll.json"
+    save_enrollment(
+        str(enrollment),
+        Enrollment(model=str(model), embedding=USER),
+    )
+    engine, allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model=str(model),
+            speaker_enroll_embedding=str(enrollment),
+            coherence_barge_in_enabled=False,
+        ),
+    )
+
+    assert [model_path for model_path, _kwargs in calls] == [str(model)]
+    assert engine._speaker_gate is allocated_gate
+
+
+def test_existing_wav_enrollment_allocates_speaker_gate(monkeypatch, tmp_path):
+    model = tmp_path / "spk.onnx"
+    model.touch()
+    enrollment = tmp_path / "enroll.wav"
+    enrollment.touch()
+    engine, allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model=str(model),
+            speaker_enroll_wav=str(enrollment),
+            coherence_barge_in_enabled=False,
+        ),
+    )
+
+    assert [model_path for model_path, _kwargs in calls] == [str(model)]
+    assert engine._speaker_gate is allocated_gate
+
+
+def test_active_os_word_cut_speaker_filter_allocates_gate_without_enrollment(
+    monkeypatch, tmp_path
+):
+    model = tmp_path / "spk.onnx"
+    model.touch()
+    engine, allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model=str(model),
+            barge_in_enabled=True,
+            barge_word_cut_enabled=True,
+            barge_word_cut_require_speaker=True,
+            aec_enabled=False,
+            coherence_barge_in_enabled=False,
+        ),
+    )
+
+    assert [model_path for model_path, _kwargs in calls] == [str(model)]
+    assert engine._speaker_gate is allocated_gate
+
+
+def test_in_app_aec_keeps_unenrolled_speaker_model_inactive(monkeypatch, tmp_path):
+    model = tmp_path / "spk.onnx"
+    model.touch()
+    engine, _allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model=str(model),
+            barge_in_enabled=True,
+            barge_word_cut_enabled=True,
+            barge_word_cut_require_speaker=True,
+            aec_enabled=True,
+            coherence_barge_in_enabled=False,
+        ),
+    )
+
+    assert calls == []
+    assert engine._speaker_gate is None
+
+
+def test_rebuild_clears_gate_after_enrollment_reference_disappears(
+    monkeypatch, tmp_path
+):
+    from core.enroll import Enrollment, save_enrollment
+
+    model = tmp_path / "spk.onnx"
+    model.touch()
+    enrollment = tmp_path / "enroll.json"
+    save_enrollment(
+        str(enrollment),
+        Enrollment(model=str(model), embedding=USER),
+    )
+    engine, allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(
+            speaker_embedding_model=str(model),
+            speaker_enroll_embedding=str(enrollment),
+            coherence_barge_in_enabled=False,
+        ),
+    )
+    assert engine._speaker_gate is allocated_gate
+
+    enrollment.unlink()
+    engine._build()
+
+    assert len(calls) == 1
+    assert engine._speaker_gate is None
+    assert engine._speaker_gate_warmed is False
+
+
 def test_input_gating_disabled_acts_even_with_rejecting_gate():
     eng = _engine(gate_input=False, gate=_gate(OTHER))  # gate would reject
     assert eng._should_act_on_final([0.0]) is True

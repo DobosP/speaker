@@ -44,6 +44,79 @@ jq -c 'select(.kind == "final_model_input")' \
 v1. Those legacy bundles lack the exact f32le slices and cannot be exported by
 the tool below. A newly recorded export source must be diagnostic schema v2.
 
+## Bind a planned live script automatically
+
+Prepare the reference plan before recording and keep it in an owner-private
+directory. The plan deliberately contains no receipt indexes or hashes:
+
+```json
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "owner-vault-search-001",
+      "expected_text": "search in my vault for the speaker roadmap",
+      "tags": ["owner-voice", "expected-tool.vault.search"]
+    },
+    {
+      "id": "owner-vault-find-002",
+      "expected_text": "find the speaker roadmap in my vault",
+      "tags": ["owner-voice", "expected-tool.vault.search"]
+    },
+    {
+      "id": "owner-reminder-003",
+      "expected_text": "remind me tomorrow to run the voice test",
+      "tags": ["owner-voice", "expected-tool.reminder.create"]
+    }
+  ]
+}
+```
+
+Save it mode `0600` under a mode-`0700` parent. Then make one lightweight live
+recording, speaking each case exactly once in file order and waiting for each
+turn to finish before starting the next:
+
+```bash
+./live.sh --run-label owner-stt-commands --llm echo
+```
+
+After one Ctrl-C and completed cleanup, use the `.diagnostic.json` path printed
+by the launcher. Both destinations below must be absent and their parents must
+already be private:
+
+```bash
+python -m tools.prepare_live_stt_corpus \
+  --diagnostic-manifest logs/live/<run>/run-<id>.diagnostic.json \
+  --reference-plan /private/path/reference-plan.json \
+  --labels-output /private/path/generated-labels.json \
+  --output-dir /private/path/exact-final-input-corpus
+```
+
+The binder pairs every plan case with every exact final-input receipt in order
+and fails on any count mismatch. It never reads recognized text as truth. The
+generated label file is the ordinary label schema v1 described below, and the
+corpus is the same schema-v3 output consumed by `tools.recorded_stt_eval`.
+Output stays aggregate-only.
+
+If downstream corpus publication fails after the complete generated label is
+published, that mode-`0600` label remains reusable. Keep any failed corpus
+directory for diagnosis and choose a new destination when retrying the existing
+exporter:
+
+```bash
+python -m tools.prepare_diagnostic_streaming_stt_corpus \
+  --diagnostic-manifest logs/live/<run>/run-<id>.diagnostic.json \
+  --labels /private/path/generated-labels.json \
+  --output-dir /private/path/new-exact-final-input-corpus
+```
+
+An equal count establishes only ordered binding. It cannot prove that each
+phrase was spoken correctly or that one missed turn and one accidental extra
+turn did not cancel out. This remains owner-reviewed, after-endpoint evidence
+([ADR-0138](adr/0138-bind-ordered-live-stt-references.md)).
+
+## Label selected receipts manually
+
 Receipts contain no transcript. The separate label file is private and must be
 mode `0600` inside an owner-private directory. Bind both the diagnostic manifest
 and each chosen input digest; the label file itself uses label schema v1:

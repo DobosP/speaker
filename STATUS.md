@@ -52,9 +52,9 @@ Last verified: 2026-08-05 on Linux ROG.
 - Same-ID reuse cannot consume stale terminal/TTS/playback cleanup. Tools do not
   retry; failed web gets one local fallback (ADR-0021/0030/0051/0086/0094).
 - Terminal receipts govern spoken history with fail-closed identity and exact
-  ownership. Diagnostic schema v2 binds four continuous private PCM16 tracks,
-  a separate lossless f32le final-input spool, endpoint replay, and causal
-  playback; private labels export corpus schema v3 with mandatory receipt v2, which cross-binds the raw-label digest and a domain-separated exact ordered case-surface digest before aggregate final-selector/tool-route replay and close-time rechecks, while public corpora stay v2 (ADR-0028/0029/0038/0086/0100/0108/0124/0126).
+  ownership. Diagnostic schema v2 binds four continuous private PCM16 tracks, a lossless f32le final-input spool, endpoint replay, and causal playback.
+  An ordered private owner plan can bind one-to-one to every validated final-input receipt without inferred transcript truth; private labels export corpus schema v3 with mandatory receipt v2, which cross-binds the raw-label digest and a domain-separated exact ordered case-surface digest before aggregate final-selector/tool-route replay and close-time rechecks, while public corpora stay v2
+  (ADR-0028/0029/0038/0086/0100/0108/0124/0126/0138).
 
 ## Live evidence and limits
 

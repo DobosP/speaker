@@ -85,6 +85,17 @@ class _LabelCase:
     tags: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticInputInventory:
+    """Bound transcript-free final-input inventory for one complete bundle."""
+
+    manifest_path: Path = field(repr=False)
+    manifest_sha256: str = field(repr=False)
+    spool_path: Path = field(repr=False)
+    spool_bytes: int
+    receipts: tuple[FinalModelInputReceipt, ...] = field(repr=False)
+
+
 def _bad() -> object:
     raise DiagnosticCorpusPreparationError()
 
@@ -231,6 +242,30 @@ def _labels(raw: bytes) -> tuple[str, tuple[_LabelCase, ...]]:
     return manifest_sha256, tuple(sorted(result, key=lambda item: item.input_index))
 
 
+def _verify_expected_labels(
+    path: Path,
+    raw: bytes,
+    *,
+    expected_sha256: str | None,
+    expected_inode: tuple[int, int] | None,
+) -> None:
+    try:
+        metadata = path.stat()
+        if expected_sha256 is not None and (
+            _sha256(expected_sha256) != hashlib.sha256(raw).hexdigest()
+        ):
+            raise DiagnosticCorpusPreparationError()
+        if expected_inode is not None and (
+            not isinstance(expected_inode, tuple)
+            or len(expected_inode) != 2
+            or any(type(value) is not int for value in expected_inode)
+            or (metadata.st_dev, metadata.st_ino) != expected_inode
+        ):
+            raise DiagnosticCorpusPreparationError()
+    except (OSError, DiagnosticCorpusPreparationError):
+        raise DiagnosticCorpusPreparationError() from None
+
+
 def _artifact_path(parent: Path, entry: object) -> tuple[Path, str, int]:
     if not isinstance(entry, dict):
         raise DiagnosticCorpusPreparationError()
@@ -323,6 +358,59 @@ def _timeline_receipts(
             os.close(descriptor)
 
 
+def load_diagnostic_input_inventory(
+    diagnostic_manifest: Path | str,
+) -> DiagnosticInputInventory:
+    """Validate and bind the ordered exact-input receipts without reading text."""
+
+    manifest_path = Path(diagnostic_manifest).expanduser()
+    if not validate_manifest(manifest_path):
+        raise DiagnosticCorpusPreparationError()
+    manifest_path, manifest_raw = _private_snapshot(
+        manifest_path,
+        maximum_bytes=_MAX_MANIFEST_BYTES,
+    )
+    manifest = _strict_json(manifest_raw)
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 2:
+        raise DiagnosticCorpusPreparationError()
+
+    timeline_path, timeline_digest, timeline_bytes = _artifact_path(
+        manifest_path.parent,
+        manifest.get("timeline"),
+    )
+    spool_entry = manifest.get("final_model_input")
+    spool_path, _spool_digest, spool_bytes = _artifact_path(
+        manifest_path.parent,
+        spool_entry,
+    )
+    if (
+        not isinstance(spool_entry, dict)
+        or spool_entry.get("encoding") != "f32le"
+        or type(spool_entry.get("input_count")) is not int
+    ):
+        raise DiagnosticCorpusPreparationError()
+    receipts = _timeline_receipts(
+        timeline_path,
+        expected_sha256=timeline_digest,
+        expected_bytes=timeline_bytes,
+    )
+    if (
+        len(receipts) != spool_entry.get("input_count")
+        or any(
+            receipt.input_index != expected_index
+            for expected_index, receipt in enumerate(receipts)
+        )
+    ):
+        raise DiagnosticCorpusPreparationError()
+    return DiagnosticInputInventory(
+        manifest_path=manifest_path,
+        manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(),
+        spool_path=spool_path,
+        spool_bytes=spool_bytes,
+        receipts=receipts,
+    )
+
+
 def _selected_audio(
     spool_path: Path,
     *,
@@ -404,55 +492,34 @@ def prepare_diagnostic_corpus(
     diagnostic_manifest: Path | str,
     labels: Path | str,
     output_dir: Path | str,
+    expected_labels_sha256: str | None = None,
+    expected_labels_inode: tuple[int, int] | None = None,
 ) -> LoadedCorpus:
     """Validate one exact-input bundle and publish selected labeled slices."""
 
-    manifest_path = Path(diagnostic_manifest).expanduser()
-    if not validate_manifest(manifest_path):
-        raise DiagnosticCorpusPreparationError()
-    manifest_path, manifest_raw = _private_snapshot(
-        manifest_path,
-        maximum_bytes=_MAX_MANIFEST_BYTES,
-    )
-    manifest_digest = hashlib.sha256(manifest_raw).hexdigest()
-    manifest = _strict_json(manifest_raw)
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 2:
-        raise DiagnosticCorpusPreparationError()
+    inventory = load_diagnostic_input_inventory(diagnostic_manifest)
+    manifest_path = inventory.manifest_path
+    manifest_digest = inventory.manifest_sha256
 
     labels_path, labels_raw = _private_snapshot(labels, maximum_bytes=_MAX_LABEL_BYTES)
+    _verify_expected_labels(
+        labels_path,
+        labels_raw,
+        expected_sha256=expected_labels_sha256,
+        expected_inode=expected_labels_inode,
+    )
     bound_manifest_digest, label_cases = _labels(labels_raw)
     if bound_manifest_digest != manifest_digest:
         raise DiagnosticCorpusPreparationError()
     labels_digest = hashlib.sha256(labels_raw).hexdigest()
 
-    timeline_path, timeline_digest, timeline_bytes = _artifact_path(
-        manifest_path.parent,
-        manifest.get("timeline"),
-    )
-    spool_entry = manifest.get("final_model_input")
-    spool_path, _spool_digest, spool_bytes = _artifact_path(
-        manifest_path.parent,
-        spool_entry,
-    )
-    if (
-        not isinstance(spool_entry, dict)
-        or spool_entry.get("encoding") != "f32le"
-        or type(spool_entry.get("input_count")) is not int
-    ):
-        raise DiagnosticCorpusPreparationError()
-    all_receipts = _timeline_receipts(
-        timeline_path,
-        expected_sha256=timeline_digest,
-        expected_bytes=timeline_bytes,
-    )
-    if len(all_receipts) != spool_entry.get("input_count"):
-        raise DiagnosticCorpusPreparationError()
+    all_receipts = inventory.receipts
     receipts = {receipt.input_index: receipt for receipt in all_receipts}
     if len(receipts) != len(all_receipts):
         raise DiagnosticCorpusPreparationError()
     audio = _selected_audio(
-        spool_path,
-        expected_bytes=spool_bytes,
+        inventory.spool_path,
+        expected_bytes=inventory.spool_bytes,
         receipts=receipts,
         labels=label_cases,
     )
@@ -506,6 +573,19 @@ def prepare_diagnostic_corpus(
         metadata_sha256=labels_digest,
         source_set_sha256=source_set_digest,
     )
+    if expected_labels_sha256 is not None or expected_labels_inode is not None:
+        guard_path, guard_raw = _private_snapshot(
+            labels_path,
+            maximum_bytes=_MAX_LABEL_BYTES,
+        )
+        if guard_path != labels_path or guard_raw != labels_raw:
+            raise DiagnosticCorpusPreparationError()
+        _verify_expected_labels(
+            guard_path,
+            guard_raw,
+            expected_sha256=expected_labels_sha256,
+            expected_inode=expected_labels_inode,
+        )
     try:
         loaded = publish_private_corpus(
             cases=published_cases,
@@ -535,6 +615,12 @@ def prepare_diagnostic_corpus(
     labels_after_path, labels_after = _private_snapshot(
         labels_path,
         maximum_bytes=_MAX_LABEL_BYTES,
+    )
+    _verify_expected_labels(
+        labels_after_path,
+        labels_after,
+        expected_sha256=expected_labels_sha256,
+        expected_inode=expected_labels_inode,
     )
     if (
         manifest_after_path != manifest_path

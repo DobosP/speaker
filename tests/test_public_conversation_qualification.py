@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,10 @@ from tools import public_conversation_qualification as qualification
 from tools import streaming_stt_eval
 from tools import streaming_stt_suite
 from tools.streaming_stt.corpus import load_corpus
+from tools.streaming_stt.manifest import (
+    FasterWhisperEndpointConfig,
+    ParakeetCppConfig,
+)
 
 _FAKE_STRATA = (
     (tuple(f"task_{index:02d}" for index in range(8)), (3,) * 8),
@@ -25,6 +30,10 @@ _FAKE_STRATA = (
         (6, 6, 6, 6),
     ),
 )
+_ENDPOINT_ADAPTERS = {
+    "native": qualification.PARAKEET_REALTIME_EOU_ADAPTER,
+    "cpp": qualification.PARAKEET_CPP_ADAPTER,
+}
 
 
 def _worker_digest(path: Path | str) -> str:
@@ -37,8 +46,519 @@ def _fake_worker_manifest_loader(monkeypatch):
     monkeypatch.setattr(
         qualification,
         "load_worker_manifest",
-        lambda path: SimpleNamespace(digest=_worker_digest(path)),
+        lambda path: SimpleNamespace(
+            adapter="fake-json-v1",
+            digest=_worker_digest(path),
+        ),
     )
+
+
+def _metric_snapshot(
+    *,
+    cases: int,
+    repeats: int,
+) -> dict[str, object]:
+    evaluations = cases * repeats
+    transcript = {
+        "clips": evaluations,
+        "nonempty": evaluations,
+        "exact": evaluations,
+        "wer": 0.0,
+        "cer": 0.0,
+        "word_errors": 0,
+        "substitutions": 0,
+        "insertions": 0,
+        "deletions": 0,
+        "ref_words": evaluations,
+        "hyp_words": evaluations,
+        "char_edits": 0,
+        "ref_chars": evaluations,
+        "hyp_chars": evaluations,
+        "keyword_attempts": 0,
+        "keyword_hits": 0,
+    }
+    return {
+        "evaluations": evaluations,
+        "coverage_complete": True,
+        "accuracy": {
+            "transcript": transcript,
+            "command_attempts": 0,
+            "command_hits": 0,
+            "command_recall": None,
+            "silence_nonempty_partials": 0,
+            "silence_nonempty_finals": 0,
+        },
+        "latency": {
+            "model_load_ms": 1.0,
+            "first_nonempty_partial_p50_ms": 1.0,
+            "first_nonempty_partial_p95_ms": 1.0,
+            "stable_partial_p50_ms": 1.0,
+            "stable_partial_p95_ms": 1.0,
+            "stable_partial_missing": 0,
+            "finalization_p50_ms": 1.0,
+            "finalization_p95_ms": 1.0,
+            "finalization_max_ms": 1.0,
+        },
+        "streaming": {
+            "partial_events": evaluations,
+            "churn_token_edits": 0,
+            "retracted_words": 0,
+            "deadline_misses": 0,
+            "max_backlog_p95_ms": 0.0,
+            "max_backlog_ms": 0.0,
+            "model_padding_total_samples": 0,
+            "model_padding_max_samples": 0,
+        },
+        "throughput": {
+            "audio_total_sec": float(cases),
+            "compute_total_ms": 0.0,
+            "aggregate_rtf": 0.0,
+        },
+        "determinism": {
+            "repeats": repeats,
+            "cases_with_final_disagreement": 0,
+        },
+        "resources": {
+            "max_reported_rss_mb": 1.0,
+            "peak_threads": 1,
+            "peak_vram_mb": None,
+            "source": "worker_ready_and_final_resource_reports",
+            "rss_scope": "maximum_of_ready_and_final_samples_not_process_peak",
+        },
+    }
+
+
+def _native_endpointing(evaluations: int) -> dict[str, object]:
+    source_samples = evaluations * 16_000
+    return {
+        "evaluations": evaluations,
+        "native_endpoints": 0,
+        "native_eou_events": 0,
+        "native_eob_backchannels": 0,
+        "authoritative_endpoints": 0,
+        "early_source_endpoints": 0,
+        "source_early_native_events": 0,
+        "source_early_eou_events": 0,
+        "source_early_eob_backchannels": 0,
+        "tail_exhaustions": evaluations,
+        "reasons": {"eou": 0, "eob": 0, "tail_exhausted": evaluations},
+        "source_samples": {
+            "offered_total": source_samples,
+            "consumed_total": source_samples,
+            "dropped_total": 0,
+        },
+        "declared_tail_samples": {
+            "offered_total": 0,
+            "consumed_total": 0,
+            "unconsumed_total": 0,
+        },
+        "terminal_model_padding_samples_total": 0,
+        "model_input_samples_consumed_total": source_samples,
+        "endpoint_sample_p50": None,
+        "endpoint_sample_p95": None,
+        "authoritative_endpoint_latency_p50_ms": None,
+        "authoritative_endpoint_latency_p95_ms": None,
+        "authoritative_endpoint_latency_max_ms": None,
+        "endpoint_probability_p50": None,
+        "endpoint_probability_p95": None,
+    }
+
+
+def _cpp_endpointing(evaluations: int) -> dict[str, object]:
+    source_samples = evaluations * 16_000
+    return {
+        "evaluations": evaluations,
+        "accepted_endpoints": 0,
+        "tail_exhaustions": evaluations,
+        "terminal_reasons": {"eou": 0, "tail_exhausted": evaluations},
+        "terminal_origins": {"feed": 0, "none": evaluations},
+        "observations": {
+            "total": 0,
+            "eou": 0,
+            "eob": 0,
+            "origins": {"feed": 0, "finalize": 0},
+            "source_early": {"total": 0, "eou": 0, "eob": 0},
+            "post_source_feed": {"total": 0, "eou": 0, "eob": 0},
+        },
+        "source_samples": {
+            "offered_total": source_samples,
+            "consumed_total": source_samples,
+            "dropped_total": 0,
+        },
+        "tail_samples": {
+            "offered_total": 0,
+            "consumed_total": 0,
+            "unconsumed_total": 0,
+        },
+        "terminal_model_padding_samples_total": 0,
+        "model_input_samples_consumed_total": source_samples,
+        "accepted_endpoint_sample_p50": None,
+        "accepted_endpoint_sample_p95": None,
+        "observed_encoder_frame_p50": None,
+        "observed_encoder_frame_p95": None,
+        "observed_encoder_time_p50_seconds": None,
+        "observed_encoder_time_p95_seconds": None,
+        "accepted_endpoint_latency_p50_ms": None,
+        "accepted_endpoint_latency_p95_ms": None,
+        "accepted_endpoint_latency_max_ms": None,
+    }
+
+
+def _endpoint_metric_snapshot(
+    kind: str,
+    *,
+    cases: int,
+    repeats: int,
+) -> dict[str, object]:
+    metrics = _metric_snapshot(cases=cases, repeats=repeats)
+    evaluations = cases * repeats
+    metrics["throughput"].update(
+        {
+            "aggregate_rtf_scope": "declared_source_audio",
+            "model_input_total_sec": float(evaluations),
+            "model_input_aggregate_rtf": 0.0,
+        }
+    )
+    metrics["endpointing"] = (
+        _native_endpointing(evaluations)
+        if kind == "native"
+        else _cpp_endpointing(evaluations)
+    )
+    return metrics
+
+
+def _complete_metrics(
+    strata: tuple[tuple[str, ...], tuple[int, ...]],
+    *,
+    adapter: str = "fake-json-v1",
+    repeats: int,
+) -> dict[str, object]:
+    tags, counts = strata
+    kind = next(
+        (kind for kind, selected in _ENDPOINT_ADAPTERS.items() if selected == adapter),
+        None,
+    )
+    factory = (
+        (lambda cases: _endpoint_metric_snapshot(kind, cases=cases, repeats=repeats))
+        if kind is not None
+        else (lambda cases: _metric_snapshot(cases=cases, repeats=repeats))
+    )
+    result = factory(24)
+    result["strata"] = [
+        {
+            "tag": tag,
+            "cases": count,
+            "metrics": factory(count),
+        }
+        for tag, count in zip(tags, counts, strict=True)
+    ]
+    return result
+
+
+@pytest.mark.parametrize("kind", ("native", "cpp"))
+def test_metrics_snapshot_accepts_production_endpoint_shapes(kind):
+    metrics = _endpoint_metric_snapshot(kind, cases=24, repeats=3)
+    metrics["strata"] = [
+        {
+            "tag": "clean",
+            "cases": 8,
+            "metrics": _endpoint_metric_snapshot(kind, cases=8, repeats=3),
+        }
+    ]
+
+    assert qualification._metrics_snapshot(
+        metrics,
+        adapter=_ENDPOINT_ADAPTERS[kind],
+        cases=24,
+        repeats=3,
+        expected_strata=(("clean", 8),),
+    ) == metrics
+
+
+def _nonzero_endpoint_metric_snapshot(
+    kind: str,
+) -> tuple[dict[str, object], int, int]:
+    cases, repeats = ((2, 2) if kind == "native" else (1, 2))
+    metrics = _metric_snapshot(cases=cases, repeats=repeats)
+    if kind == "native":
+        metrics["throughput"] = {
+            "audio_total_sec": 0.03,
+            "compute_total_ms": 16.0,
+            "aggregate_rtf": 0.5333,
+            "aggregate_rtf_scope": "declared_source_audio",
+            "model_input_total_sec": 0.028,
+            "model_input_aggregate_rtf": 0.5818,
+        }
+        endpointing = _native_endpointing(4)
+        endpointing.update(
+            {
+                "native_endpoints": 4,
+                "native_eou_events": 2,
+                "native_eob_backchannels": 2,
+                "authoritative_endpoints": 1,
+                "early_source_endpoints": 2,
+                "source_early_native_events": 2,
+                "source_early_eou_events": 1,
+                "source_early_eob_backchannels": 1,
+                "tail_exhaustions": 0,
+                "reasons": {"eou": 2, "eob": 2, "tail_exhausted": 0},
+                "source_samples": {
+                    "offered_total": 480,
+                    "consumed_total": 360,
+                    "dropped_total": 120,
+                },
+                "declared_tail_samples": {
+                    "offered_total": 640,
+                    "consumed_total": 80,
+                    "unconsumed_total": 560,
+                },
+                "model_input_samples_consumed_total": 440,
+                "endpoint_sample_p50": 80.0,
+                "endpoint_sample_p95": 240.0,
+                "authoritative_endpoint_latency_p50_ms": 5.0,
+                "authoritative_endpoint_latency_p95_ms": 5.0,
+                "authoritative_endpoint_latency_max_ms": 5.0,
+                "endpoint_probability_p50": 0.7,
+                "endpoint_probability_p95": 0.9,
+            }
+        )
+    else:
+        metrics["throughput"] = {
+            "audio_total_sec": 2.0,
+            "compute_total_ms": 8.0,
+            "aggregate_rtf": 0.004,
+            "aggregate_rtf_scope": "declared_source_audio",
+            "model_input_total_sec": 2.12,
+            "model_input_aggregate_rtf": 0.0038,
+        }
+        endpointing = _cpp_endpointing(2)
+        endpointing.update(
+            {
+                "accepted_endpoints": 1,
+                "tail_exhaustions": 1,
+                "terminal_reasons": {"eou": 1, "tail_exhausted": 1},
+                "terminal_origins": {"feed": 1, "none": 1},
+                "observations": {
+                    "total": 10,
+                    "eou": 4,
+                    "eob": 6,
+                    "origins": {"feed": 8, "finalize": 2},
+                    "source_early": {"total": 4, "eou": 1, "eob": 3},
+                    "post_source_feed": {"total": 4, "eou": 2, "eob": 2},
+                },
+                "source_samples": {
+                    "offered_total": 32_000,
+                    "consumed_total": 32_000,
+                    "dropped_total": 0,
+                },
+                "tail_samples": {
+                    "offered_total": 2_560,
+                    "consumed_total": 1_920,
+                    "unconsumed_total": 640,
+                },
+                "model_input_samples_consumed_total": 33_920,
+                "accepted_endpoint_sample_p50": 16_640.0,
+                "accepted_endpoint_sample_p95": 16_640.0,
+                "observed_encoder_frame_p50": 10.0,
+                "observed_encoder_frame_p95": 14.0,
+                "observed_encoder_time_p50_seconds": 0.8,
+                "observed_encoder_time_p95_seconds": 1.12,
+                "accepted_endpoint_latency_p50_ms": 40.0,
+                "accepted_endpoint_latency_p95_ms": 40.0,
+                "accepted_endpoint_latency_max_ms": 40.0,
+            }
+        )
+    metrics["endpointing"] = endpointing
+    return metrics, cases, repeats
+
+
+@pytest.mark.parametrize("kind", ("native", "cpp"))
+def test_metrics_snapshot_accepts_nonzero_production_endpoint_shapes(kind):
+    metrics, cases, repeats = _nonzero_endpoint_metric_snapshot(kind)
+
+    assert qualification._metrics_snapshot(
+        metrics,
+        adapter=_ENDPOINT_ADAPTERS[kind],
+        cases=cases,
+        repeats=repeats,
+        expected_strata=None,
+    ) == metrics
+
+
+@pytest.mark.parametrize("kind", ("native", "cpp"))
+def test_metrics_snapshot_rejects_inconsistent_endpoint_counters(kind):
+    metrics = _endpoint_metric_snapshot(kind, cases=24, repeats=3)
+    field = "native_endpoints" if kind == "native" else "accepted_endpoints"
+    metrics["endpointing"][field] = 1
+
+    with pytest.raises(qualification.QualificationError):
+        qualification._metrics_snapshot(
+            metrics,
+            adapter=_ENDPOINT_ADAPTERS[kind],
+            cases=24,
+            repeats=3,
+            expected_strata=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("adapter", "metrics"),
+    (
+        (
+            qualification.PARAKEET_REALTIME_EOU_ADAPTER,
+            _endpoint_metric_snapshot("cpp", cases=24, repeats=3),
+        ),
+        (
+            qualification.PARAKEET_CPP_ADAPTER,
+            _endpoint_metric_snapshot("native", cases=24, repeats=3),
+        ),
+        (
+            qualification.PARAKEET_CPP_ADAPTER,
+            _metric_snapshot(cases=24, repeats=3),
+        ),
+        (
+            "fake-json-v1",
+            _endpoint_metric_snapshot("native", cases=24, repeats=3),
+        ),
+    ),
+)
+def test_metrics_snapshot_rejects_adapter_endpoint_shape_mismatch(adapter, metrics):
+    with pytest.raises(qualification.QualificationError):
+        qualification._metrics_snapshot(
+            metrics,
+            adapter=adapter,
+            cases=24,
+            repeats=3,
+            expected_strata=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "native_early_eou",
+        "native_model_input",
+        "native_probability_range",
+        "native_partial_summary",
+        "cpp_source_drop",
+        "cpp_padding",
+        "cpp_model_input",
+        "cpp_observation_partition",
+        "cpp_subtype_partition",
+        "cpp_partial_summary",
+    ),
+)
+def test_metrics_snapshot_rejects_reducer_impossible_endpoint_aggregates(mutation):
+    kind = "native" if mutation.startswith("native") else "cpp"
+    metrics, cases, repeats = _nonzero_endpoint_metric_snapshot(kind)
+    endpointing = metrics["endpointing"]
+    assert isinstance(endpointing, dict)
+    if mutation == "native_early_eou":
+        endpointing["source_early_native_events"] = 3
+        endpointing["early_source_endpoints"] = 3
+        endpointing["source_early_eou_events"] = 2
+    elif mutation == "native_model_input":
+        endpointing["model_input_samples_consumed_total"] = 441
+    elif mutation == "native_probability_range":
+        endpointing["endpoint_probability_p50"] = 2.0
+        endpointing["endpoint_probability_p95"] = 2.0
+    elif mutation == "native_partial_summary":
+        endpointing["endpoint_sample_p50"] = None
+    elif mutation == "cpp_source_drop":
+        endpointing["source_samples"]["offered_total"] = 32_001
+        endpointing["source_samples"]["dropped_total"] = 1
+    elif mutation == "cpp_padding":
+        endpointing["terminal_model_padding_samples_total"] = 1
+        endpointing["model_input_samples_consumed_total"] = 33_921
+    elif mutation == "cpp_model_input":
+        endpointing["model_input_samples_consumed_total"] = 33_921
+    elif mutation == "cpp_observation_partition":
+        endpointing["observations"]["source_early"] = {
+            "total": 5,
+            "eou": 2,
+            "eob": 3,
+        }
+    elif mutation == "cpp_subtype_partition":
+        endpointing["observations"]["source_early"] = {
+            "total": 4,
+            "eou": 4,
+            "eob": 0,
+        }
+        endpointing["observations"]["post_source_feed"] = {
+            "total": 4,
+            "eou": 4,
+            "eob": 0,
+        }
+    else:
+        endpointing["accepted_endpoint_sample_p50"] = None
+
+    with pytest.raises(qualification.QualificationError):
+        qualification._metrics_snapshot(
+            metrics,
+            adapter=_ENDPOINT_ADAPTERS[kind],
+            cases=cases,
+            repeats=repeats,
+            expected_strata=None,
+        )
+
+
+def test_metrics_snapshot_accepts_source_complete_native_eob():
+    metrics = _endpoint_metric_snapshot("native", cases=1, repeats=1)
+    endpointing = metrics["endpointing"]
+    endpointing.update(
+        {
+            "native_endpoints": 1,
+            "native_eob_backchannels": 1,
+            "tail_exhaustions": 0,
+            "reasons": {"eou": 0, "eob": 1, "tail_exhausted": 0},
+            "endpoint_sample_p50": 16_000.0,
+            "endpoint_sample_p95": 16_000.0,
+            "endpoint_probability_p50": 0.5,
+            "endpoint_probability_p95": 0.5,
+        }
+    )
+
+    assert qualification._metrics_snapshot(
+        metrics,
+        adapter=qualification.PARAKEET_REALTIME_EOU_ADAPTER,
+        cases=1,
+        repeats=1,
+        expected_strata=None,
+    ) == metrics
+
+
+def test_metrics_snapshot_accepts_cpp_observations_without_accepted_endpoint():
+    metrics, cases, repeats = _nonzero_endpoint_metric_snapshot("cpp")
+    endpointing = metrics["endpointing"]
+    endpointing.update(
+        {
+            "accepted_endpoints": 0,
+            "tail_exhaustions": 2,
+            "terminal_reasons": {"eou": 0, "tail_exhausted": 2},
+            "terminal_origins": {"feed": 0, "none": 2},
+            "accepted_endpoint_sample_p50": None,
+            "accepted_endpoint_sample_p95": None,
+            "accepted_endpoint_latency_p50_ms": None,
+            "accepted_endpoint_latency_p95_ms": None,
+            "accepted_endpoint_latency_max_ms": None,
+        }
+    )
+
+    assert qualification._metrics_snapshot(
+        metrics,
+        adapter=qualification.PARAKEET_CPP_ADAPTER,
+        cases=cases,
+        repeats=repeats,
+        expected_strata=None,
+    ) == metrics
+
+
+def _write_checkpoint(kwargs: dict[str, object], result: dict[str, object]) -> None:
+    checkpoint = Path(kwargs["checkpoint_path"])
+    checkpoint.write_bytes(
+        qualification._canonical_json_bytes(result["suite"]) + b"\n"
+    )
+    checkpoint.chmod(0o600)
 
 
 def _fake_result(
@@ -47,7 +567,8 @@ def _fake_result(
 ) -> dict[str, object]:
     fixture_set = fixture.validate_fixture_set(corpora)
     digests = [load_corpus(path).digest for path in corpora]
-    worker_digests = [_worker_digest(path) for path in workers]
+    manifests = [qualification.load_worker_manifest(path) for path in workers]
+    worker_digests = [manifest.digest for manifest in manifests]
     config_rows = [
         {
             "corpus_index": index,
@@ -75,23 +596,46 @@ def _fake_result(
     evaluator_digest: str | None = None
     runs: list[dict[str, object]] = []
     for worker_index in range(2):
+        manifest = manifests[worker_index]
+        adapter = manifest.adapter
+        selected_stream = streaming_stt_eval._selected_stream(
+            manifest,
+            None,
+            chunk_samples=None,
+            pace=None,
+            partial_interval_ms=None,
+            tail_padding_samples=None,
+        )
         for corpus_index, digest in enumerate(digests):
+            tags = _FAKE_STRATA[corpus_index][0]
             report = _aggregate_report(
                 workers[worker_index],
                 corpora[corpus_index],
                 worker_digest=worker_digests[worker_index],
                 corpus_digest=digest,
-                stratum_tags=_FAKE_STRATA[corpus_index][0],
+                stratum_tags=tags,
             )
-            metrics = report["metrics"]
-            for row, count in zip(
-                metrics["strata"],
-                _FAKE_STRATA[corpus_index][1],
-                strict=True,
-            ):
-                row["cases"] = count
-                row["metrics"]["evaluations"] = count
-            metrics["evaluations"] = 24
+            report["metrics"] = _complete_metrics(
+                _FAKE_STRATA[corpus_index],
+                adapter=adapter,
+                repeats=3,
+            )
+            report["evidence"] = streaming_stt_eval._evidence_binding(
+                adapter,
+                pace=selected_stream.pace,
+                adapter_config=getattr(manifest, "adapter_config", None),
+                stratum_tags=tags,
+            )
+            report_config: dict[str, object] = {
+                **selected_stream.as_dict(),
+                "repeats": 3,
+                "stratum_tags": list(tags),
+            }
+            report_config["contract_sha256"] = qualification._canonical_sha256(
+                report_config
+            )
+            report["config"] = report_config
+            report["evaluator"] = streaming_stt_eval._evaluator_binding(adapter)
             current_evaluator = streaming_stt_suite._evaluator_implementation_sha256(
                 report["evaluator"]
             )
@@ -155,7 +699,10 @@ def _rebind_fake_run(result: dict[str, object], run_index: int = 0) -> None:
     suite["controller"]["completed_matrix_sha256"] = matrix
 
 
-def test_run_supplies_exact_canonical_strata_and_nonpromotional_result(tmp_path):
+def test_run_supplies_exact_canonical_strata_and_nonpromotional_result(
+    tmp_path,
+    monkeypatch,
+):
     _lock, paths = _publish_set(tmp_path)
     observed: dict[str, object] = {}
 
@@ -166,7 +713,11 @@ def test_run_supplies_exact_canonical_strata_and_nonpromotional_result(tmp_path)
         observed["corpus_stratum_tags"] = kwargs["corpus_stratum_tags"]
         observed["scratch"] = kwargs["scratch_parent"]
         observed["checkpoint"] = kwargs["checkpoint_path"]
-        return _fake_result(observed["workers"], observed["corpora"])
+        result = _fake_result(observed["workers"], observed["corpora"])
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", run_suite)
 
     result = qualification.run_qualification(
         baseline_worker_manifest=tmp_path / "baseline.json",
@@ -174,7 +725,6 @@ def test_run_supplies_exact_canonical_strata_and_nonpromotional_result(tmp_path)
         corpus_paths=reversed(paths),
         scratch_parent=tmp_path / "scratch",
         output_path=tmp_path / "report.json",
-        run_validated_suite_fn=run_suite,
     )
 
     assert tuple(path.parent.name for path in observed["corpora"]) == fixture.SOURCE_IDS
@@ -212,17 +762,283 @@ def test_run_supplies_exact_canonical_strata_and_nonpromotional_result(tmp_path)
     assert "expected_text" not in encoded
 
 
-def test_complete_internally_consistent_red_result_stays_red(tmp_path):
+def test_production_entry_has_no_public_runner_injection() -> None:
+    assert "run_validated_suite_fn" not in inspect.signature(
+        qualification.run_qualification
+    ).parameters
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("evaluations", 999),
+        ("verbatim_transcript", "PRIVATE_TRANSCRIPT_CANARY"),
+        ("relative_path", "private/source.f32le"),
+        ("speaker_identity", "PRIVATE_SPEAKER_CANARY"),
+    ),
+)
+def test_coordinated_forged_metrics_fail_closed(
+    field,
+    value,
+    tmp_path,
+    monkeypatch,
+):
     _lock, paths = _publish_set(tmp_path)
 
-    def run_suite(workers, corpora, **_kwargs):
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        result["suite"]["runs"][0]["report"]["metrics"][field] = value
+        _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    with pytest.raises(qualification.QualificationError):
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("adoption_authority", "capture_to_text_latency", "live_hardware"),
+)
+def test_source_safety_evidence_cannot_be_rewritten_as_safe(field, tmp_path, monkeypatch):
+    _lock, paths = _publish_set(tmp_path)
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        result["suite"]["runs"][0]["report"]["evidence"][field] = True
+        _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    with pytest.raises(qualification.QualificationError):
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+
+def test_source_run_config_requires_exact_resolved_production_fields(
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        config = result["suite"]["runs"][0]["report"]["config"]
+        config.pop("chunk_samples")
+        config.pop("contract_sha256")
+        config["contract_sha256"] = qualification._canonical_sha256(config)
+        _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    with pytest.raises(qualification.QualificationError):
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+
+def test_result_reconstructs_safe_aggregate_without_nested_extras(
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+    canaries = (
+        "PRIVATE_TRANSCRIPT_CANARY",
+        "private/source.f32le",
+        "PRIVATE_SPEAKER_CANARY",
+    )
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        report = result["suite"]["runs"][0]["report"]
+        report["worker"]["verbatim_transcript"] = canaries[0]
+        report["evidence"]["relative_source"] = canaries[1]
+        report["worker_stderr"]["speaker_identity"] = canaries[2]
+        _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    result = qualification.run_qualification(
+        baseline_worker_manifest=tmp_path / "baseline.json",
+        candidate_worker_manifest=tmp_path / "candidate.json",
+        corpus_paths=paths,
+        scratch_parent=tmp_path / "scratch",
+        output_path=tmp_path / "report.json",
+    )
+
+    encoded = json.dumps(result, sort_keys=True)
+    assert all(canary not in encoded for canary in canaries)
+    assert qualification.validate_qualification_report(
+        json.loads(qualification._canonical_json_bytes(result))
+    ) == result
+    assert result["schema_version"] == 2
+    assert result["suite"]["controller"]["kind"] == (
+        "public-conversation-safe-aggregate-suite-v1"
+    )
+    assert "source_controller_sha256" in result["suite"]["controller"]
+    assert "controller_sha256" not in result["suite"]["controller"]
+    safe_report = result["suite"]["runs"][0]["report"]
+    assert set(safe_report) == {
+        "ok",
+        "evidence",
+        "worker",
+        "corpus",
+        "config",
+        "metrics",
+        "evaluator",
+        "source_report_sha256",
+    }
+    assert set(result["suite"]["runs"][0]["binding"]) == {
+        "worker_index",
+        "corpus_index",
+        "worker_manifest_sha256",
+        "corpus_manifest_sha256",
+            "stratum_selection_sha256",
+            "evaluator_implementation_sha256",
+            "worker_adapter",
+            "stream_config_sha256",
+            "source_report_sha256",
+            "source_binding_sha256",
+            "report_sha256",
+        "binding_sha256",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("raw_suite_kind", "source_binding", "metric_denominator"),
+)
+def test_retained_validator_rejects_coordinated_safe_view_tamper(
+    mutation,
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    result = qualification.run_qualification(
+        baseline_worker_manifest=tmp_path / "baseline.json",
+        candidate_worker_manifest=tmp_path / "candidate.json",
+        corpus_paths=paths,
+        scratch_parent=tmp_path / "scratch",
+        output_path=tmp_path / "report.json",
+    )
+    controller = result["suite"]["controller"]
+    if mutation == "raw_suite_kind":
+        controller["kind"] = "bounded_sequential_streaming_stt_suite"
+    else:
+        run = result["suite"]["runs"][0]
+        binding = run["binding"]
+        if mutation == "source_binding":
+            binding["source_binding_sha256"] = "0" * 64
+        else:
+            run["report"]["metrics"]["evaluations"] = 999
+            binding["report_sha256"] = qualification._canonical_sha256(
+                run["report"]
+            )
+        binding.pop("binding_sha256")
+        binding["binding_sha256"] = qualification._canonical_sha256(binding)
+        matrix = qualification._canonical_sha256(
+            [item["binding"] for item in result["suite"]["runs"]]
+        )
+        controller["matrix_sha256"] = matrix
+        controller["completed_matrix_sha256"] = matrix
+
+    with pytest.raises(qualification.QualificationError):
+        qualification.validate_qualification_report(result)
+
+
+@pytest.mark.parametrize("mutation", ("adapter", "resolved_config"))
+def test_retained_worker_contract_rejects_coordinated_drift(
+    mutation,
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    result = qualification.run_qualification(
+        baseline_worker_manifest=tmp_path / "baseline.json",
+        candidate_worker_manifest=tmp_path / "candidate.json",
+        corpus_paths=paths,
+        scratch_parent=tmp_path / "scratch",
+        output_path=tmp_path / "report.json",
+    )
+    changed = result["suite"]["runs"][:4] if mutation == "adapter" else [
+        result["suite"]["runs"][0]
+    ]
+    for run in changed:
+        report = run["report"]
+        binding = run["binding"]
+        if mutation == "adapter":
+            report["worker"]["adapter"] = streaming_stt_eval.MOONSHINE_ADAPTER
+            binding["worker_adapter"] = streaming_stt_eval.MOONSHINE_ADAPTER
+        else:
+            report["config"]["chunk_samples"] = 1601
+            report["config"].pop("contract_sha256")
+            report["config"]["contract_sha256"] = (
+                qualification._canonical_sha256(report["config"])
+            )
+        binding["report_sha256"] = qualification._canonical_sha256(report)
+        binding.pop("binding_sha256")
+        binding["binding_sha256"] = qualification._canonical_sha256(binding)
+    matrix = qualification._canonical_sha256(
+        [item["binding"] for item in result["suite"]["runs"]]
+    )
+    result["suite"]["controller"]["matrix_sha256"] = matrix
+    result["suite"]["controller"]["completed_matrix_sha256"] = matrix
+
+    with pytest.raises(qualification.QualificationError):
+        qualification.validate_qualification_report(result)
+
+
+def test_complete_internally_consistent_red_result_stays_red(
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def run_suite(workers, corpora, **kwargs):
         result = _fake_result(tuple(workers), tuple(corpora))
         result["ok"] = False
         suite = result["suite"]
         suite["ok"] = False
         suite["runs"][0]["report"]["ok"] = False
+        suite["runs"][0]["report"]["metrics"]["coverage_complete"] = False
         _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
         return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", run_suite)
 
     result = qualification.run_qualification(
         baseline_worker_manifest=tmp_path / "baseline.json",
@@ -230,7 +1046,6 @@ def test_complete_internally_consistent_red_result_stays_red(tmp_path):
         corpus_paths=paths,
         scratch_parent=tmp_path / "scratch",
         output_path=tmp_path / "report.json",
-        run_validated_suite_fn=run_suite,
     )
 
     assert result["ok"] is False
@@ -250,21 +1065,36 @@ def test_default_fixture_and_suite_controllers_run_exact_two_by_four(
         corpus_index = path_index[Path(corpus).resolve()]
         worker_index = 0 if Path(worker).name == "baseline.json" else 1
         calls.append((worker_index, corpus_index))
+        tags = tuple(kwargs["stratum_tags"])
         report = _aggregate_report(
             Path(worker),
             Path(corpus),
             worker_digest=_worker_digest(worker),
             corpus_digest=load_corpus(corpus).digest,
-            stratum_tags=tuple(kwargs["stratum_tags"]),
+            stratum_tags=tags,
         )
-        metrics = report["metrics"]
-        assert isinstance(metrics, dict)
-        rows = metrics["strata"]
-        assert isinstance(rows, list)
-        for row, count in zip(rows, _FAKE_STRATA[corpus_index][1], strict=True):
-            row["cases"] = count
-            row["metrics"]["evaluations"] = count
-        metrics["evaluations"] = 24
+        report["metrics"] = _complete_metrics(
+            _FAKE_STRATA[corpus_index],
+            repeats=1,
+        )
+        report["evaluator"] = streaming_stt_eval._evaluator_binding(
+            "fake-json-v1"
+        )
+        report["evidence"] = streaming_stt_eval._evidence_binding(
+            "fake-json-v1",
+            pace="burst",
+            stratum_tags=tags,
+        )
+        config: dict[str, object] = {
+            "chunk_samples": 1600,
+            "pace": "burst",
+            "partial_interval_ms": 200,
+            "tail_padding_samples": 0,
+            "repeats": 1,
+            "stratum_tags": list(tags),
+        }
+        config["contract_sha256"] = qualification._canonical_sha256(config)
+        report["config"] = config
         return report
 
     monkeypatch.setattr(streaming_stt_eval, "run_benchmark", benchmark)
@@ -284,6 +1114,60 @@ def test_default_fixture_and_suite_controllers_run_exact_two_by_four(
     ]
     assert result["ok"] is True
     assert result["suite"]["controller"]["runs"] == 8
+
+
+def test_mixed_faster_whisper_and_cpp_two_by_four_binds_endpoint_shape(
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def manifest(path):
+        selected = Path(path)
+        candidate = selected.name == "candidate.json"
+        return SimpleNamespace(
+            adapter=(
+                qualification.PARAKEET_CPP_ADAPTER
+                if candidate
+                else streaming_stt_eval.FASTER_WHISPER_ENDPOINT_ADAPTER
+            ),
+            adapter_config=(
+                ParakeetCppConfig()
+                if candidate
+                else FasterWhisperEndpointConfig()
+            ),
+            digest=_worker_digest(selected),
+        )
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        _write_checkpoint(kwargs, result)
+        return result
+
+    monkeypatch.setattr(qualification, "load_worker_manifest", manifest)
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    result = qualification.run_qualification(
+        baseline_worker_manifest=tmp_path / "baseline.json",
+        candidate_worker_manifest=tmp_path / "candidate.json",
+        corpus_paths=paths,
+        scratch_parent=tmp_path / "scratch",
+        output_path=tmp_path / "report.json",
+    )
+
+    assert result["suite"]["controller"]["kind"] == qualification._SAFE_SUITE_KIND
+    for run in result["suite"]["runs"]:
+        report = run["report"]
+        candidate = run["binding"]["worker_index"] == 1
+        assert report["worker"]["adapter"] == (
+            qualification.PARAKEET_CPP_ADAPTER
+            if candidate
+            else streaming_stt_eval.FASTER_WHISPER_ENDPOINT_ADAPTER
+        )
+        assert ("endpointing" in report["metrics"]) is candidate
+        assert (
+            "aggregate_rtf_scope" in report["metrics"]["throughput"]
+        ) is candidate
+    assert qualification.validate_qualification_report(result) == result
 
 
 @pytest.mark.parametrize(
@@ -364,6 +1248,7 @@ def test_missing_case_stratum_fails_before_runner(tmp_path, monkeypatch):
         raise AssertionError
 
     monkeypatch.setattr(qualification, "load_corpus", load_without_first_task)
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -371,7 +1256,6 @@ def test_missing_case_stratum_fails_before_runner(tmp_path, monkeypatch):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
@@ -395,6 +1279,7 @@ def test_extra_sibling_stratum_fails_before_runner(tmp_path, monkeypatch):
         raise AssertionError
 
     monkeypatch.setattr(qualification, "load_corpus", load_with_sibling_task)
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -402,12 +1287,11 @@ def test_extra_sibling_stratum_fails_before_runner(tmp_path, monkeypatch):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
 
-def test_same_worker_role_path_fails_before_runner(tmp_path):
+def test_same_worker_role_path_fails_before_runner(tmp_path, monkeypatch):
     _lock, paths = _publish_set(tmp_path)
     called = False
 
@@ -417,6 +1301,7 @@ def test_same_worker_role_path_fails_before_runner(tmp_path):
         raise AssertionError
 
     worker = tmp_path / "same.json"
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=worker,
@@ -424,12 +1309,11 @@ def test_same_worker_role_path_fails_before_runner(tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
 
-def test_worker_role_symlink_alias_fails_before_runner(tmp_path):
+def test_worker_role_symlink_alias_fails_before_runner(tmp_path, monkeypatch):
     _lock, paths = _publish_set(tmp_path)
     worker = tmp_path / "worker.json"
     worker.write_text("{}", encoding="utf-8")
@@ -442,6 +1326,7 @@ def test_worker_role_symlink_alias_fails_before_runner(tmp_path):
         called = True
         raise AssertionError
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=worker,
@@ -449,7 +1334,6 @@ def test_worker_role_symlink_alias_fails_before_runner(tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
@@ -459,7 +1343,10 @@ def test_same_worker_manifest_digest_fails_before_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(
         qualification,
         "load_worker_manifest",
-        lambda _path: SimpleNamespace(digest="3" * 64),
+        lambda _path: SimpleNamespace(
+            adapter="fake-json-v1",
+            digest="3" * 64,
+        ),
     )
     called = False
 
@@ -468,6 +1355,7 @@ def test_same_worker_manifest_digest_fails_before_runner(tmp_path, monkeypatch):
         called = True
         raise AssertionError
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -475,7 +1363,6 @@ def test_same_worker_manifest_digest_fails_before_runner(tmp_path, monkeypatch):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
@@ -497,6 +1384,7 @@ def test_implementation_change_during_run_fails_closed(tmp_path, monkeypatch):
         inner.chmod(0o600)
         return _fake_result(tuple(workers), tuple(corpora))
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -504,14 +1392,143 @@ def test_implementation_change_during_run_fails_closed(tmp_path, monkeypatch):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=output,
-            run_validated_suite_fn=runner,
         )
     assert output.exists() is False
     inner = tmp_path / "scratch" / ".canonical-strata-inner-suite-checkpoint.json"
     assert json.loads(inner.read_text(encoding="utf-8"))["ok"] is True
 
 
-def test_existing_output_fails_before_runner(tmp_path):
+def test_checkpoint_snapshot_accepts_bounded_short_reads(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    scratch.chmod(0o700)
+    checkpoint = scratch / qualification._INNER_CHECKPOINT_NAME
+    payload = {"ok": True, "rows": list(range(256))}
+    checkpoint.write_bytes(qualification._canonical_json_bytes(payload) + b"\n")
+    checkpoint.chmod(0o600)
+    identity = qualification._entry_identity(scratch.lstat())
+    real_read = qualification.os.read
+
+    def short_read(descriptor, maximum):
+        return real_read(descriptor, min(maximum, 7))
+
+    monkeypatch.setattr(qualification.os, "read", short_read)
+    assert qualification._checkpoint_snapshot(
+        scratch=scratch,
+        checkpoint=checkpoint,
+        scratch_identity=identity,
+        required=True,
+    ) == payload
+
+
+@pytest.mark.parametrize("target", ("scratch", "checkpoint"))
+def test_private_evidence_is_rechecked_after_report_reconstruction(
+    target,
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+    real_validate = qualification.validate_qualification_report
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        _write_checkpoint(kwargs, result)
+        return result
+
+    def validate_then_mutate(value):
+        result = real_validate(value)
+        selected = (
+            tmp_path / "scratch"
+            if target == "scratch"
+            else tmp_path / "scratch" / qualification._INNER_CHECKPOINT_NAME
+        )
+        selected.chmod(0o750 if target == "scratch" else 0o640)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    monkeypatch.setattr(
+        qualification,
+        "validate_qualification_report",
+        validate_then_mutate,
+    )
+    with pytest.raises(qualification.QualificationError):
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+
+@pytest.mark.parametrize("target", ("scratch", "checkpoint"))
+def test_private_scratch_and_checkpoint_are_rechecked_after_runner(
+    target,
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+
+    def runner(workers, corpora, **kwargs):
+        result = _fake_result(tuple(workers), tuple(corpora))
+        _write_checkpoint(kwargs, result)
+        selected = (
+            Path(kwargs["scratch_parent"])
+            if target == "scratch"
+            else Path(kwargs["checkpoint_path"])
+        )
+        selected.chmod(0o750 if target == "scratch" else 0o640)
+        return result
+
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    with pytest.raises(qualification.QualificationError):
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+
+@pytest.mark.parametrize("failure", (SystemExit(7), KeyboardInterrupt()))
+def test_runner_baseexception_still_revalidates_private_scratch(
+    failure,
+    tmp_path,
+    monkeypatch,
+):
+    _lock, paths = _publish_set(tmp_path)
+    real_snapshot = qualification._checkpoint_snapshot
+    observed = 0
+
+    def snapshot(**kwargs):
+        nonlocal observed
+        observed += 1
+        return real_snapshot(**kwargs)
+
+    def runner(_workers, _corpora, **kwargs):
+        checkpoint = Path(kwargs["checkpoint_path"])
+        checkpoint.write_text('{"ok":false}\n', encoding="ascii")
+        checkpoint.chmod(0o600)
+        Path(kwargs["scratch_parent"]).chmod(0o750)
+        raise failure
+
+    monkeypatch.setattr(qualification, "_checkpoint_snapshot", snapshot)
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
+    with pytest.raises(qualification.QualificationError) as error:
+        qualification.run_qualification(
+            baseline_worker_manifest=tmp_path / "baseline.json",
+            candidate_worker_manifest=tmp_path / "candidate.json",
+            corpus_paths=paths,
+            scratch_parent=tmp_path / "scratch",
+            output_path=tmp_path / "report.json",
+        )
+
+    assert observed == 1
+    assert str(error.value) == ""
+
+
+def test_existing_output_fails_before_runner(tmp_path, monkeypatch):
     _lock, paths = _publish_set(tmp_path)
     output = tmp_path / "report.json"
     output.write_text('{"ok":true}\n', encoding="utf-8")
@@ -523,6 +1540,7 @@ def test_existing_output_fails_before_runner(tmp_path):
         called = True
         raise AssertionError
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -530,7 +1548,6 @@ def test_existing_output_fails_before_runner(tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=output,
-            run_validated_suite_fn=runner,
         )
     assert called is False
 
@@ -544,9 +1561,6 @@ def test_bound_corpus_cannot_be_output(tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=paths[0],
-            run_validated_suite_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError
-            ),
         )
 
 
@@ -560,9 +1574,6 @@ def test_scratch_inside_corpus_evidence_fails_without_creation(tmp_path):
             corpus_paths=paths,
             scratch_parent=scratch,
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError
-            ),
         )
     assert scratch.exists() is False
 
@@ -579,14 +1590,11 @@ def test_scratch_cannot_replace_or_descend_from_future_output(tmp_path, nested):
             corpus_paths=paths,
             scratch_parent=scratch,
             output_path=output,
-            run_validated_suite_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError
-            ),
         )
     assert output.exists() is False
 
 
-def test_paths_under_any_git_worktree_fail_before_runner(tmp_path):
+def test_paths_under_any_git_worktree_fail_before_runner(tmp_path, monkeypatch):
     _lock, paths = _publish_set(tmp_path)
     other_checkout = tmp_path / "other-checkout"
     other_checkout.mkdir(mode=0o700)
@@ -600,6 +1608,7 @@ def test_paths_under_any_git_worktree_fail_before_runner(tmp_path):
         called = True
         raise AssertionError
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -607,7 +1616,6 @@ def test_paths_under_any_git_worktree_fail_before_runner(tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=private / "report.json",
-            run_validated_suite_fn=runner,
         )
     assert called is False
     assert (tmp_path / "scratch").exists() is False
@@ -635,6 +1643,7 @@ def test_worker_evidence_trees_cannot_receive_outputs(
     def manifest(path):
         selected = Path(path)
         return SimpleNamespace(
+            adapter="fake-json-v1",
             digest=_worker_digest(selected),
             path=provision / f"{selected.stem}-manifest.json",
             worker=SimpleNamespace(path=provision / "worker.py"),
@@ -668,9 +1677,6 @@ def test_worker_evidence_trees_cannot_receive_outputs(
             corpus_paths=paths,
             scratch_parent=scratch,
             output_path=output,
-            run_validated_suite_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError
-            ),
         )
     assert tuple(runtime.iterdir()) == ()
     assert scratch.exists() is False
@@ -680,12 +1686,51 @@ def test_worker_evidence_trees_cannot_receive_outputs(
 def test_final_report_is_private_and_no_clobber(tmp_path):
     output = tmp_path / "report.json"
     payload = {"ok": True, "development_only": True, "promotional": False}
-    qualification.write_new_report(output, payload)
+    digest = qualification.write_new_report(output, payload)
 
     assert output.stat().st_mode & 0o777 == 0o600
     assert json.loads(output.read_text(encoding="ascii")) == payload
+    assert digest == hashlib.sha256(output.read_bytes()).hexdigest()
     with pytest.raises(qualification.QualificationError):
         qualification.write_new_report(output, payload)
+
+
+def test_final_report_readback_accepts_bounded_short_reads(tmp_path, monkeypatch):
+    output = tmp_path / "report.json"
+    payload = {"ok": True, "rows": list(range(256))}
+    real_read = qualification.os.read
+
+    def short_read(descriptor, maximum):
+        return real_read(descriptor, min(maximum, 7))
+
+    monkeypatch.setattr(qualification.os, "read", short_read)
+    digest = qualification.write_new_report(output, payload)
+
+    assert digest == hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("failure", (SystemExit(7), KeyboardInterrupt()))
+def test_final_report_baseexception_after_link_leaves_no_artifact(
+    failure,
+    tmp_path,
+    monkeypatch,
+):
+    output = tmp_path / "report.json"
+    real_link = qualification.os.link
+
+    def link_then_raise(*args, **kwargs):
+        real_link(*args, **kwargs)
+        raise failure
+
+    monkeypatch.setattr(qualification.os, "link", link_then_raise)
+    with pytest.raises(qualification.QualificationError):
+        qualification.write_new_report(output, {"ok": True})
+
+    assert output.exists() is False
+    assert not any(
+        entry.name.startswith(qualification._REPORT_TEMP_PREFIX)
+        for entry in tmp_path.iterdir()
+    )
 
 
 @pytest.mark.parametrize("failure", ("partial_write", "file_fsync"))
@@ -771,6 +1816,8 @@ def test_first_temporary_fstat_failure_is_cleanup_safe(tmp_path, monkeypatch):
         "corpus_digest",
         "stratum_config",
         "stratum_count",
+        "stratum_evaluations",
+        "stratum_coverage",
         "fixture",
         "top_ok",
         "suite_ok",
@@ -778,10 +1825,14 @@ def test_first_temporary_fstat_failure_is_cleanup_safe(tmp_path, monkeypatch):
         "path_leak",
     ),
 )
-def test_returned_matrix_and_privacy_are_revalidated(failure, tmp_path):
+def test_returned_matrix_and_privacy_are_revalidated(
+    failure,
+    tmp_path,
+    monkeypatch,
+):
     _lock, paths = _publish_set(tmp_path)
 
-    def runner(workers, corpora, **_kwargs):
+    def runner(workers, corpora, **kwargs):
         result = _fake_result(tuple(workers), tuple(corpora))
         suite = result["suite"]
         assert isinstance(suite, dict)
@@ -800,6 +1851,16 @@ def test_returned_matrix_and_privacy_are_revalidated(failure, tmp_path):
         elif failure == "stratum_count":
             suite["runs"][0]["report"]["metrics"]["strata"][0]["cases"] = 4
             _rebind_fake_run(result)
+        elif failure == "stratum_evaluations":
+            suite["runs"][0]["report"]["metrics"]["strata"][0]["metrics"][
+                "evaluations"
+            ] = 999
+            _rebind_fake_run(result)
+        elif failure == "stratum_coverage":
+            suite["runs"][0]["report"]["metrics"]["strata"][0]["metrics"][
+                "coverage_complete"
+            ] = False
+            _rebind_fake_run(result)
         elif failure == "fixture":
             result["fixture"]["cases"] = 95
         elif failure == "top_ok":
@@ -814,8 +1875,10 @@ def test_returned_matrix_and_privacy_are_revalidated(failure, tmp_path):
                 tmp_path / "canary"
             )
             _rebind_fake_run(result)
+        _write_checkpoint(kwargs, result)
         return result
 
+    monkeypatch.setattr(qualification, "_PRODUCTION_RUNNER", runner)
     with pytest.raises(qualification.QualificationError):
         qualification.run_qualification(
             baseline_worker_manifest=tmp_path / "baseline.json",
@@ -823,8 +1886,52 @@ def test_returned_matrix_and_privacy_are_revalidated(failure, tmp_path):
             corpus_paths=paths,
             scratch_parent=tmp_path / "scratch",
             output_path=tmp_path / "report.json",
-            run_validated_suite_fn=runner,
         )
+
+
+def test_cli_success_prints_exact_private_report_digest(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    output = tmp_path / "report.json"
+    report = {
+        "ok": True,
+        "execution_complete": True,
+        "quality_decision": "not_evaluated",
+        "development_only": True,
+        "promotional": False,
+    }
+    monkeypatch.setattr(
+        qualification,
+        "run_qualification",
+        lambda **_kwargs: report,
+    )
+
+    code = qualification.main(
+        [
+            "--baseline-worker-manifest",
+            str(tmp_path / "baseline.json"),
+            "--candidate-worker-manifest",
+            str(tmp_path / "candidate.json"),
+            "--corpus",
+            str(tmp_path / "corpus.json"),
+            "--scratch-root",
+            str(tmp_path / "scratch"),
+            "--output",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert code == 0
+    assert captured.err == ""
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert summary["report_sha256"] == hashlib.sha256(
+        output.read_bytes()
+    ).hexdigest()
+    assert summary["report_written"] is True
 
 
 def test_cli_requires_exact_two_roles_and_hides_paths(tmp_path, capsys):

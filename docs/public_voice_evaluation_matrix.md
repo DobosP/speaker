@@ -98,13 +98,15 @@ MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
 ```
 
 For the exact two-model comparison recorded in
-[ADR-0127](adr/0127-require-public-conversation-canonical-strata.md), use the
+[ADR-0127](adr/0127-require-public-conversation-canonical-strata.md) and hardened
+by [ADR-0130](adr/0130-reconstruct-public-conversation-safe-reports.md), use the
 additive qualification entry point. It fixes baseline/candidate role order,
 derives the canonical source-specific marginal plan from the lock, checks exact
 case membership before model work, delegates to the existing sequential suite,
-and revalidates the aggregate 2x4 result. AMI is reported as separate
-window-kind and close/far
-marginals rather than four joint recipe labels:
+then reconstructs and validates a qualification-v2 fixed aggregate-only 2x4
+result. The retained contract binds each worker's adapter and resolved stream
+configuration. AMI is reported as separate window-kind and close/far marginals
+rather than four joint recipe labels:
 
 ```bash
 SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
@@ -122,7 +124,10 @@ MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
   --repeats 1 --pace burst
 ```
 
-Preserve private aggregate reports. A green result means complete execution and
+Preserve private aggregate reports and the `report_sha256` printed by the CLI;
+the digest covers the exact canonical report bytes including the trailing
+newline. Serialized reports can be checked with
+`validate_qualification_report`. A green result means complete execution and
 stratum coverage only; the wrapper emits `quality_decision=not_evaluated` and
 `promotional=false`. This remains after-PCM development evidence, not native
 capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or live evidence.
@@ -130,10 +135,12 @@ capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or live evidence
 Both the scratch root and output parent must be owner-private mode-0700 paths.
 They must be outside every Git worktree and bound corpus or worker
 provision/runtime/model tree. Use a fresh scratch root and a previously absent
-output filename. The retained raw suite checkpoint stays under scratch;
-`--output` is staged, file-synced, and atomically published without clobber only
-after all outer fixture, worker, controller-source, stratum, and privacy checks
-pass.
+output filename. The generic raw suite checkpoint stays under scratch. The
+public report is reconstructed from exact aggregate fields, with raw worker text,
+stderr, paths, transcripts, and extra evidence omitted. `--output` is staged,
+file-synced, read back, and atomically published without clobber only after the
+outer fixture, worker adapter/configuration, controller-source, denominator,
+stratum, endpoint, privacy, and repeated close-time checks pass.
 
 ### AMI forced-alignment endpoint proxy
 

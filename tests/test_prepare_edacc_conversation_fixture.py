@@ -22,6 +22,20 @@ from tools.streaming_stt.corpus import load_corpus
 _ACCENT_FIELD = (
     "How would you describe your accent in English? (e.g. Italian, Glaswegian)"
 )
+_OBSERVED_EDACC_UID_FIELD = b"\x80\x00\x00\x00\x00\x22\x89\x10"
+_OBSERVED_EDACC_UID = 0x228910
+_OWNER_BASE256_MIN = 8**7
+_OWNER_MAX = (1 << 31) - 1
+_TAR_NUMERIC_FIELDS = {
+    "mode": slice(100, 108),
+    "uid": slice(108, 116),
+    "gid": slice(116, 124),
+    "size": slice(124, 136),
+    "mtime": slice(136, 148),
+    "checksum": slice(148, 156),
+    "devmajor": slice(329, 337),
+    "devminor": slice(337, 345),
+}
 
 
 def _write_wav(path: Path, index: int) -> None:
@@ -348,6 +362,26 @@ def _rewrite_raw_tar_header(
     payload[offset : offset + 512] = header
 
 
+def _positive_base256(value: int, *, length: int = 8) -> bytes:
+    assert 0 <= value < 256 ** (length - 1)
+    return b"\x80" + value.to_bytes(length - 1, "big")
+
+
+def _rewrite_raw_tar_numeric_field(
+    payload: bytearray,
+    offset: int,
+    *,
+    field: str,
+    encoded: bytes,
+    checksum: bool = True,
+) -> None:
+    location = _TAR_NUMERIC_FIELDS[field]
+    assert len(encoded) == location.stop - location.start
+    payload[offset + location.start : offset + location.stop] = encoded
+    if checksum:
+        _rewrite_raw_tar_header(payload, offset)
+
+
 def _append_raw_tar_member(
     payload: bytearray,
     *,
@@ -434,6 +468,169 @@ def test_absent_source_root_is_extracted_with_exact_private_layout(tmp_path):
     assert len(result.corpus.cases) == prepare.CASE_COUNT
     assert output.stat().st_mode & 0o777 == 0o700
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
+
+
+def test_archive_scanner_accepts_exact_observed_edacc_base256_uid(
+    valid_edacc_archive_bytes,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(payload, f"{prepare.ARCHIVE_ROOT}/")
+    _rewrite_raw_tar_numeric_field(
+        payload,
+        offset,
+        field="uid",
+        encoded=_OBSERVED_EDACC_UID_FIELD,
+    )
+
+    member = prepare._parse_tar_header(bytes(payload[offset : offset + 512]))
+
+    assert _OBSERVED_EDACC_UID == 2_263_312
+    assert member.name == prepare.ARCHIVE_ROOT
+    assert member.is_directory is True
+
+
+@pytest.mark.parametrize("field", ("uid", "gid"))
+@pytest.mark.parametrize("value", (_OWNER_BASE256_MIN, _OWNER_MAX))
+def test_archive_scanner_accepts_canonical_positive_base256_owner_boundaries(
+    valid_edacc_archive_bytes,
+    field,
+    value,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(payload, f"{prepare.ARCHIVE_ROOT}/")
+    _rewrite_raw_tar_numeric_field(
+        payload,
+        offset,
+        field=field,
+        encoded=_positive_base256(value),
+    )
+
+    member = prepare._parse_tar_header(bytes(payload[offset : offset + 512]))
+
+    assert member.name == prepare.ARCHIVE_ROOT
+
+
+@pytest.mark.parametrize("field", ("uid", "gid"))
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        _positive_base256(0),
+        _positive_base256(_OWNER_BASE256_MIN - 1),
+        b"\xff" * 8,
+        b"\x81" + b"\0" * 7,
+        _positive_base256(_OWNER_MAX + 1),
+    ),
+    ids=(
+        "zero-base256",
+        "octal-max-base256",
+        "negative",
+        "noncanonical-marker",
+        "overflow",
+    ),
+)
+def test_archive_scanner_rejects_invalid_base256_owner_fields(
+    valid_edacc_archive_bytes,
+    field,
+    encoded,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(payload, f"{prepare.ARCHIVE_ROOT}/")
+    _rewrite_raw_tar_numeric_field(
+        payload,
+        offset,
+        field=field,
+        encoded=encoded,
+    )
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare._parse_tar_header(bytes(payload[offset : offset + 512]))
+
+
+def test_owner_base256_decoder_requires_the_eight_byte_uid_gid_width():
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare._tar_number(
+            _positive_base256(8**6, length=7),
+            maximum=_OWNER_MAX,
+            allow_base256=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("mode", "size", "mtime", "checksum", "devmajor", "devminor"),
+)
+def test_archive_scanner_still_rejects_base256_outside_owner_fields(
+    valid_edacc_archive_bytes,
+    field,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+    )
+    location = _TAR_NUMERIC_FIELDS[field]
+    header = bytearray(payload[offset : offset + 512])
+    if field == "checksum":
+        header[location] = b" " * 8
+        value = sum(header)
+        _rewrite_raw_tar_numeric_field(
+            payload,
+            offset,
+            field=field,
+            encoded=_positive_base256(value),
+            checksum=False,
+        )
+    else:
+        original = bytes(header[location]).strip(b"\0 ") or b"0"
+        value = int(original, 8)
+        _rewrite_raw_tar_numeric_field(
+            payload,
+            offset,
+            field=field,
+            encoded=_positive_base256(
+                value,
+                length=location.stop - location.start,
+            ),
+        )
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare._parse_tar_header(bytes(payload[offset : offset + 512]))
+
+
+def test_absent_source_archive_path_accepts_base256_uid_and_gid(tmp_path):
+    archive_source = _source_tree(tmp_path / "archive-input")
+    expected_directories, expected_files = _tree_snapshot(archive_source)
+    original = _archive(tmp_path, archive_source)
+    payload = bytearray(gzip.decompress(original.read_bytes()))
+    offset, _end = _raw_tar_member(payload, f"{prepare.ARCHIVE_ROOT}/")
+    _rewrite_raw_tar_numeric_field(
+        payload,
+        offset,
+        field="uid",
+        encoded=_OBSERVED_EDACC_UID_FIELD,
+    )
+    _rewrite_raw_tar_numeric_field(
+        payload,
+        offset,
+        field="gid",
+        encoded=_positive_base256(_OWNER_BASE256_MIN),
+    )
+    archive = _write_raw_tar_archive(tmp_path, payload, name="owner-base256.tar.gz")
+    extraction_parent = tmp_path / "private-extraction"
+    extraction_parent.mkdir(mode=0o700)
+    source_root = extraction_parent / prepare.ARCHIVE_ROOT
+
+    result = prepare.prepare_edacc_conversation_fixture(
+        source_root=source_root,
+        archive_path=archive,
+        output_dir=tmp_path / "prepared-from-owner-base256",
+        accepted_terms=prepare.REQUIRED_TERMS,
+        test_source_injection=_injection(archive),
+    )
+
+    assert _tree_snapshot(source_root) == (expected_directories, expected_files)
+    assert len(result.corpus.cases) == prepare.CASE_COUNT
+    assert result.production_evidence is False
 
 
 @pytest.mark.parametrize(

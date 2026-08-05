@@ -62,13 +62,14 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
 
 - `tools.prepare_harper_valley_conversation_fixture` verifies the exact clean
   Git commit/tree and tracked metadata/audio blobs.
-- `tools.prepare_edacc_conversation_fixture` verifies both the 5.9 GB archive
-  and its caller-provided direct private extraction, repeatedly rebinds the
-  exact owner-private source/archive/publication objects, key-matches raw and
-  filtered official test STM, and records `official_filtered_stm` on every
-  hard-WER receipt case. It does not extract the archive; real acquisition
-  remains gated on the full-layout safe extractor in
-  [ADR-0131](adr/0131-close-edacc-private-snapshot-boundaries.md).
+- `tools.prepare_edacc_conversation_fixture` owns strict raw-header extraction
+  of the 5.9 GB production archive into a new private tree, repeatedly rebinds
+  the exact source/archive/publication objects, key-matches raw and filtered
+  official test STM, and records `official_filtered_stm` on every hard-WER
+  receipt case. It admits bounded base-256 only for ignored UID/GID metadata;
+  caller-provided trees remain synthetic-only
+  ([ADR-0132](adr/0132-own-bounded-edacc-archive-extraction.md),
+  [ADR-0139](adr/0139-accept-edacc-base256-owner-fields.md)).
 - `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
   far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset. Its
   private `speech-end-labels.json` sibling and evaluation limits are specified

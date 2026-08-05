@@ -973,17 +973,26 @@ def _read_archive_exact(stream: _CompressedArchiveStream, size: int) -> bytes:
     return bytes(result)
 
 
-def _tar_octal(
+def _tar_number(
     field_value: bytes,
     *,
     maximum: int,
     allow_empty: bool = False,
+    allow_base256: bool = False,
 ) -> int:
-    if (
-        not field_value
-        or field_value[0] & 0x80
-        or re.fullmatch(rb" *[0-7]+[\x00 ]*", field_value) is None
-    ):
+    if not field_value:
+        raise EdaccPreparationError()
+    if field_value[0] == 0x80:
+        result = int.from_bytes(field_value[1:], byteorder="big", signed=False)
+        if (
+            not allow_base256
+            or len(field_value) != 8
+            or result < 8 ** (len(field_value) - 1)
+            or result > maximum
+        ):
+            raise EdaccPreparationError()
+        return result
+    if re.fullmatch(rb" *[0-7]+[\x00 ]*", field_value) is None:
         if allow_empty and not field_value.strip(b"\x00 "):
             return 0
         raise EdaccPreparationError()
@@ -1046,12 +1055,20 @@ def _parse_tar_header(header: bytes) -> _RawTarMember:
         raise EdaccPreparationError()
     if any(header[345:512]):
         raise EdaccPreparationError()
-    mode = _tar_octal(header[100:108], maximum=0o7777)
-    _tar_octal(header[108:116], maximum=(1 << 31) - 1)
-    _tar_octal(header[116:124], maximum=(1 << 31) - 1)
-    size = _tar_octal(header[124:136], maximum=_MAX_DECLARED_ARCHIVE_BYTES)
-    _tar_octal(header[136:148], maximum=(1 << 63) - 1)
-    checksum = _tar_octal(header[148:156], maximum=512 * 255)
+    mode = _tar_number(header[100:108], maximum=0o7777)
+    uid = _tar_number(
+        header[108:116],
+        maximum=(1 << 31) - 1,
+        allow_base256=True,
+    )
+    gid = _tar_number(
+        header[116:124],
+        maximum=(1 << 31) - 1,
+        allow_base256=True,
+    )
+    size = _tar_number(header[124:136], maximum=_MAX_DECLARED_ARCHIVE_BYTES)
+    _tar_number(header[136:148], maximum=(1 << 63) - 1)
+    checksum = _tar_number(header[148:156], maximum=512 * 255)
     if mode & ~0o777 or checksum != (
         sum(header[:148]) + 8 * ord(" ") + sum(header[156:])
     ):
@@ -1063,9 +1080,9 @@ def _parse_tar_header(header: bytes) -> _RawTarMember:
         (b"ustar ", b" \0"),
     }:
         raise EdaccPreparationError()
-    if _tar_octal(header[329:337], maximum=(1 << 31) - 1, allow_empty=True):
+    if _tar_number(header[329:337], maximum=(1 << 31) - 1, allow_empty=True):
         raise EdaccPreparationError()
-    if _tar_octal(header[337:345], maximum=(1 << 31) - 1, allow_empty=True):
+    if _tar_number(header[337:345], maximum=(1 << 31) - 1, allow_empty=True):
         raise EdaccPreparationError()
     raw_name = _tar_text(header[:100], allow_empty=False)
     link_name = _tar_text(header[157:257], allow_empty=True)
@@ -1093,6 +1110,8 @@ def _parse_tar_header(header: bytes) -> _RawTarMember:
         parsed.name.rstrip("/") != name
         or parsed.size != size
         or parsed.type != member_type
+        or parsed.uid != uid
+        or parsed.gid != gid
     ):
         raise EdaccPreparationError()
     return _RawTarMember(

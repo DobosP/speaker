@@ -1,7 +1,7 @@
 # ADR-0132: Own bounded EdAcc archive extraction
 
 Date: 2026-08-05
-Status: accepted
+Status: superseded-by ADR-0139
 
 Refines: ADR-0113, ADR-0131
 

@@ -406,6 +406,141 @@ def test_config_snapshot_rejects_mutation_and_symlink(
         evaluate._load_config_inputs(inputs.config_path, link)
 
 
+def test_fixed_profile_pair_resolves_one_device_base_and_prebinds_both_closures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _config_inputs(tmp_path)
+    calls: list[tuple[str, int, int]] = []
+    events: list[str] = []
+
+    def apply_profile(config: dict, name: str):
+        calls.append((name, id(config), config["sherpa"]["asr_num_threads"]))
+        candidate = name == "parakeet-faster-whisper"
+        final = {
+            "asr_final_backend": "nemo_transducer" if candidate else "sense_voice",
+            "asr_final_model": f"{name}.onnx",
+            "asr_final_tokens": f"{name}.txt",
+            "asr_final_verifier_backend": "faster_whisper" if candidate else "",
+            "asr_final_verifier_model": "faster-whisper" if candidate else "",
+        }
+        return (
+            evaluate.deep_merge(config, {"sherpa": final}),
+            SimpleNamespace(
+                name=name,
+                sha256=("b" if candidate else "a") * 64,
+                schema_version=1,
+            ),
+        )
+
+    def config_digest(config: SherpaConfig) -> str:
+        profile = str(config.asr_final_backend)
+        events.append(f"config:{profile}")
+        return ("d" if profile == "nemo_transducer" else "c") * 64
+
+    def model_digest(config: SherpaConfig, root: Path) -> str:
+        assert root == tmp_path
+        profile = str(config.asr_final_backend)
+        events.append(f"model:{profile}")
+        return ("f" if profile == "nemo_transducer" else "e") * 64
+
+    monkeypatch.setattr(evaluate, "apply_final_stt_profile", apply_profile)
+    monkeypatch.setattr(evaluate, "_config_digest", config_digest)
+    monkeypatch.setattr(evaluate, "_configured_model_digest", model_digest)
+    monkeypatch.setattr(evaluate, "_source_digest", lambda: "7" * 64)
+    monkeypatch.setattr(
+        evaluate,
+        "_runtime_identities",
+        lambda: {"safe_runtime": "bound"},
+    )
+
+    pair = evaluate._bind_final_stt_profile_pair(
+        inputs,
+        None,
+        "sense-voice",
+        "parakeet-faster-whisper",
+    )
+
+    assert calls == [
+        ("sense-voice", calls[0][1], 1),
+        ("parakeet-faster-whisper", calls[0][1], 1),
+    ]
+    assert events == [
+        "config:sense_voice",
+        "model:sense_voice",
+        "config:nemo_transducer",
+        "model:nemo_transducer",
+    ]
+    assert pair.baseline.config.asr_final_verifier_backend == ""
+    assert pair.candidate.config.asr_final_verifier_backend == "faster_whisper"
+    assert pair.device_profile == "desktop"
+    assert pair.evaluator_source_sha256 == "7" * 64
+
+    failure_events: list[str] = []
+
+    def fail_candidate_model(config: SherpaConfig, _root: Path) -> str:
+        profile = str(config.asr_final_backend)
+        failure_events.append(profile)
+        if profile == "nemo_transducer":
+            raise evaluate.ProductionFinalEvaluationError()
+        return "e" * 64
+
+    monkeypatch.setattr(evaluate, "_configured_model_digest", fail_candidate_model)
+    with pytest.raises(evaluate.ProductionFinalEvaluationError):
+        evaluate._bind_final_stt_profile_pair(
+            inputs,
+            None,
+            "sense-voice",
+            "parakeet-faster-whisper",
+        )
+    assert failure_events == ["sense_voice", "nemo_transducer"]
+
+
+@pytest.mark.parametrize(
+    "profile_args",
+    [
+        ["--baseline-final-stt-profile", "sense-voice"],
+        ["--candidate-final-stt-profile", "parakeet-faster-whisper"],
+        [
+            "--baseline-final-stt-profile",
+            "sense-voice",
+            "--candidate-final-stt-profile",
+            "sense-voice",
+        ],
+        [
+            "--baseline-final-stt-profile",
+            "parakeet-faster-whisper",
+            "--candidate-final-stt-profile",
+            "sense-voice",
+        ],
+    ],
+)
+def test_cli_rejects_non_atomic_profile_pair_before_input_work(
+    profile_args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        evaluate,
+        "load_corpus",
+        lambda _path: pytest.fail("invalid pair reached corpus loading"),
+    )
+    argv = [
+        "--corpus",
+        "/private/corpus.json",
+        "--config",
+        "/private/config.json",
+        "--local-config",
+        "/private/config.local.json",
+        "--report",
+        "/private/report.json",
+        *profile_args,
+    ]
+
+    assert evaluate.main(argv) == 2
+    assert json.loads(capsys.readouterr().out) == evaluate._SAFE_ERROR
+
+
 def test_optional_real_prepared_corpus_passes_exact_validation() -> None:
     supplied = os.environ.get(_REAL_CORPUS_ENV, "").strip()
     if not supplied:
@@ -495,6 +630,18 @@ def test_attest_execution_accepts_completed_offline_and_verifier_attempts() -> N
             decisions=2,
             offline={"decoded": 1, "empty": 1},
             verifier={"consensus": 1, "empty": 1},
+            selected={"offline": 1, "streaming": 1},
+        ),
+    )
+    evaluate._attest_execution(
+        SherpaConfig(
+            asr_final_backend="sense_voice",
+            asr_final_verifier_backend="",
+        ),
+        _execution(
+            decisions=2,
+            offline={"decoded": 1, "empty": 1},
+            verifier={"unavailable": 2},
             selected={"offline": 1, "streaming": 1},
         ),
     )
@@ -750,6 +897,14 @@ def test_preflight_requires_no_tts_both_final_models_and_warms_verifier() -> Non
     )
 
     assert warm_calls == [True]
+    evaluate._preflight_engine(
+        SimpleNamespace(
+            _tts=None,
+            _final_recognizer=object(),
+            _final_verifier=None,
+        ),
+        verifier_required=False,
+    )
     invalid = (
         SimpleNamespace(
             _tts=object(),
@@ -941,7 +1096,10 @@ def test_execute_replay_is_asr_only_callback_free_f32_and_stops(
 
     monkeypatch.setattr(evaluate, "FileReplayEngine", FakeReplayEngine)
     monkeypatch.setattr(evaluate, "_quiet_model_output", nullcontext)
-    config = SherpaConfig(asr_encoder="private-model")
+    config = SherpaConfig(
+        asr_encoder="private-model",
+        asr_final_verifier_backend="faster_whisper",
+    )
 
     result = evaluate._execute_replay(
         corpus,
@@ -1054,7 +1212,10 @@ def test_real_quiet_model_output_suppresses_engine_output_and_restores_process_s
         with pytest.raises(evaluate.ProductionFinalEvaluationError) as caught:
             evaluate._execute_replay(
                 corpus,
-                SherpaConfig(asr_encoder="private-model"),
+                SherpaConfig(
+                    asr_encoder="private-model",
+                    asr_final_verifier_backend="faster_whisper",
+                ),
                 root=tmp_path,
                 repeats=1,
                 stratum_tags=(),
@@ -1064,7 +1225,10 @@ def test_real_quiet_model_output_suppresses_engine_output_and_restores_process_s
     else:
         result = evaluate._execute_replay(
             corpus,
-            SherpaConfig(asr_encoder="private-model"),
+            SherpaConfig(
+                asr_encoder="private-model",
+                asr_final_verifier_backend="faster_whisper",
+            ),
             root=tmp_path,
             repeats=1,
             stratum_tags=(),
@@ -1451,14 +1615,91 @@ def test_provider_attestation_is_exact_and_rejects_non_cpu(
         ),
     )
 
-    assert evaluate._provider_attestation(SherpaConfig(provider="cpu")) == {
+    assert evaluate._provider_attestation(
+        SherpaConfig(
+            provider="cpu",
+            asr_final_verifier_backend="faster_whisper",
+        )
+    ) == {
         "streaming_offline_requested": "cpu",
         "streaming_offline_attestation": "explicit_cpu_provider_available",
         "verifier_requested": "cuda:0-fp16",
         "verifier_attestation": "cuda_only_adapter_completed_decode",
     }
+    assert evaluate._provider_attestation(SherpaConfig(provider="cpu")) == {
+        "streaming_offline_requested": "cpu",
+        "streaming_offline_attestation": "explicit_cpu_provider_available",
+        "verifier_requested": "disabled",
+        "verifier_attestation": "not_configured",
+    }
     with pytest.raises(evaluate.ProductionFinalEvaluationError):
         evaluate._provider_attestation(SherpaConfig(provider="cuda"))
+
+
+def test_sense_voice_report_attests_verifier_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus = _evaluation_corpus(
+        tmp_path,
+        _case(
+            "private-sense-case",
+            assertion="transcript",
+            expected_text="private reference",
+            commands=("private reference",),
+            tags=("private",),
+        ),
+    )
+    aggregate = aggregate_final_metrics(
+        corpus,
+        (FinalDecisionRecord(0, 0, ("private hypothesis",)),),
+        repeats=1,
+    )
+    execution = evaluate._Execution(
+        streaming=aggregate,
+        selected=aggregate,
+        decisions=1,
+        offline_outcomes={"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
+        selected_sources={"offline": 1},
+    )
+    _install_evaluation_dependencies(monkeypatch, execution)
+    disabled = {
+        "streaming_offline_requested": "cpu",
+        "streaming_offline_attestation": "explicit_cpu_provider_available",
+        "verifier_requested": "disabled",
+        "verifier_attestation": "not_configured",
+    }
+    monkeypatch.setattr(evaluate, "_provider_attestation", lambda _config: disabled)
+    config = SherpaConfig(
+        asr_encoder="private-streaming-model",
+        provider="cpu",
+        asr_final_backend="sense_voice",
+        asr_final_verifier_backend="",
+    )
+    inputs = evaluate._ConfigInputs(
+        root=tmp_path,
+        config_path=tmp_path / "private-config.json",
+        local_path=tmp_path / "private-local.json",
+        config_bytes=b"private config",
+        local_bytes=b"private local",
+        digest="private digest",
+    )
+
+    report = evaluate.evaluate_production_final(
+        corpus,
+        inputs,
+        config,
+        repeats=1,
+        stratum_tags=(),
+        device_profile="desktop",
+    )
+
+    assert report["engine"]["provider_attestation"] == disabled
+    assert report["engine"]["verifier_execution"] == {
+        "requested": False,
+        "outcomes": {"unavailable": 1},
+    }
 
 
 def test_report_is_aggregate_only_and_excludes_text_and_paths(
@@ -1527,6 +1768,7 @@ def test_report_is_aggregate_only_and_excludes_text_and_paths(
     encoded = json.dumps(report, sort_keys=True)
 
     assert report["execution_complete"] is True
+    assert report["schema_version"] == 2
     assert report["quality_verdict"] == "diagnostic_only"
     assert report["engine"]["offline_execution"] == {
         "requested": True,
@@ -1575,6 +1817,335 @@ def test_report_is_aggregate_only_and_excludes_text_and_paths(
         "DO_NOT_EXPORT",
     ):
         assert private not in encoded
+
+
+def test_profile_pair_report_is_schema3_sequential_and_aggregate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus = object()
+    inputs = object()
+    runtime = {"safe_runtime": "bound"}
+    pair = evaluate._BoundProfilePair(
+        baseline=evaluate._BoundProfile(
+            name="sense-voice",
+            profile_sha256="a" * 64,
+            profile_schema_version=1,
+            config=SimpleNamespace(
+                asr_final_backend="sense_voice",
+                private="SENTINEL_PRIVATE_BASELINE_PATH",
+            ),
+            config_sha256="c" * 64,
+            model_sha256="e" * 64,
+        ),
+        candidate=evaluate._BoundProfile(
+            name="parakeet-faster-whisper",
+            profile_sha256="b" * 64,
+            profile_schema_version=1,
+            config=SimpleNamespace(
+                asr_final_backend="nemo_transducer",
+                private="SENTINEL_PRIVATE_CANDIDATE_PATH",
+            ),
+            config_sha256="d" * 64,
+            model_sha256="f" * 64,
+        ),
+        device_profile="desktop",
+        evaluator_source_sha256="7" * 64,
+        runtime_identities=runtime,
+    )
+    events: list[str] = []
+
+    def run_cell(observed_corpus, observed_inputs, config, **kwargs):
+        assert observed_corpus is corpus
+        assert observed_inputs is inputs
+        profile = str(config.asr_final_backend)
+        events.append(profile)
+        suffixes = ("c", "e") if profile == "sense_voice" else ("d", "f")
+        assert kwargs["expected_config_sha256"] == suffixes[0] * 64
+        assert kwargs["expected_model_sha256"] == suffixes[1] * 64
+        assert kwargs["expected_evaluator_source_sha256"] == "7" * 64
+        assert kwargs["expected_runtime_identities"] is runtime
+        return {
+            "corpus": {"manifest_sha256": "8" * 64},
+            "engine": {
+                "evaluator_source_sha256": "7" * 64,
+                "runtime": runtime,
+            },
+            "evaluations": 57,
+            "repeats": 1,
+            "stratum_tags": ["noisy"],
+            "views": {
+                "file_replay_streaming_raw": {"coverage_complete": True},
+                "file_replay_selected_without_owned_timing_recovery": {
+                    "coverage_complete": True,
+                    "profile": profile,
+                },
+            },
+            "limits": {},
+        }
+
+    monkeypatch.setattr(evaluate, "evaluate_production_final", run_cell)
+
+    report = evaluate.evaluate_production_final_pair(
+        corpus,
+        inputs,
+        pair,
+        repeats=1,
+        stratum_tags=("noisy",),
+    )
+    encoded = json.dumps(report, sort_keys=True)
+
+    assert events == ["sense_voice", "nemo_transducer"]
+    assert report["schema_version"] == 3
+    assert report["streaming_control_match"] is True
+    assert report["comparison"] == {
+        "same_input": True,
+        "streaming_control_match": True,
+        "valid": True,
+        "verdict": "comparable",
+        "latency_comparison": False,
+        "runtime_default_promotion": False,
+    }
+    assert report["total_evaluations"] == 114
+    assert report["execution_order"] == ["baseline", "candidate"]
+    assert report["baseline_final_stt_profile"] == "sense-voice"
+    assert report["candidate_final_stt_profile"] == "parakeet-faster-whisper"
+    assert "promotable" not in encoded
+    assert "winner" not in encoded
+    assert "SENTINEL" not in encoded
+
+
+def test_profile_pair_streaming_mismatch_is_explicitly_inconclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair = evaluate._BoundProfilePair(
+        baseline=evaluate._BoundProfile(
+            name="sense-voice",
+            profile_sha256="a" * 64,
+            profile_schema_version=1,
+            config=SimpleNamespace(asr_final_backend="sense_voice"),
+            config_sha256="c" * 64,
+            model_sha256="e" * 64,
+        ),
+        candidate=evaluate._BoundProfile(
+            name="parakeet-faster-whisper",
+            profile_sha256="b" * 64,
+            profile_schema_version=1,
+            config=SimpleNamespace(asr_final_backend="nemo_transducer"),
+            config_sha256="d" * 64,
+            model_sha256="f" * 64,
+        ),
+        device_profile="desktop",
+        evaluator_source_sha256="7" * 64,
+        runtime_identities={"safe_runtime": "bound"},
+    )
+
+    def run_cell(_corpus, _inputs, config, **_kwargs):
+        baseline = config.asr_final_backend == "sense_voice"
+        return {
+            "evaluations": 57,
+            "repeats": 1,
+            "stratum_tags": ["noisy"],
+            "views": {
+                "file_replay_streaming_raw": {
+                    "coverage_complete": True,
+                    "command_hits": 1 if baseline else 2,
+                },
+                "file_replay_selected_without_owned_timing_recovery": {
+                    "coverage_complete": True,
+                },
+            },
+        }
+
+    monkeypatch.setattr(evaluate, "evaluate_production_final", run_cell)
+
+    report = evaluate.evaluate_production_final_pair(
+        object(),
+        object(),
+        pair,
+        repeats=1,
+        stratum_tags=("noisy",),
+    )
+
+    assert report["quality_verdict"] == "diagnostic_only"
+    assert report["streaming_control_match"] is False
+    assert report["comparison"] == {
+        "same_input": True,
+        "streaming_control_match": False,
+        "valid": False,
+        "verdict": "inconclusive_streaming_control_mismatch",
+        "latency_comparison": False,
+        "runtime_default_promotion": False,
+    }
+    assert report["limits"]["runtime_default_promotion"] is False
+
+
+def test_cli_pair_receipt_exposes_inconclusive_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    complete_views = {
+        "file_replay_streaming_raw": {"coverage_complete": True},
+        "file_replay_selected_without_owned_timing_recovery": {
+            "coverage_complete": True,
+        },
+    }
+    fake_report = {
+        "schema_version": 3,
+        "baseline": {"views": complete_views},
+        "candidate": {"views": complete_views},
+        "total_evaluations": 114,
+        "comparison": {
+            "valid": False,
+            "verdict": "inconclusive_streaming_control_mismatch",
+        },
+    }
+    published: list[bytes] = []
+    monkeypatch.setattr(evaluate, "load_corpus", lambda _path: object())
+    monkeypatch.setattr(evaluate, "_load_config_inputs", lambda *_args: object())
+    monkeypatch.setattr(evaluate, "_bind_final_stt_profile_pair", lambda *_args: object())
+    monkeypatch.setattr(
+        evaluate,
+        "evaluate_production_final_pair",
+        lambda *_args, **_kwargs: fake_report,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_write_new_private",
+        lambda _path, payload: published.append(payload),
+    )
+
+    code = evaluate.main(
+        [
+            "--corpus",
+            "/private/corpus.json",
+            "--config",
+            "/private/config.json",
+            "--local-config",
+            "/private/config.local.json",
+            "--report",
+            "/private/report.json",
+            "--baseline-final-stt-profile",
+            "sense-voice",
+            "--candidate-final-stt-profile",
+            "parakeet-faster-whisper",
+        ]
+    )
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert len(published) == 1
+    assert receipt["ok"] is True
+    assert receipt["comparison_valid"] is False
+    assert (
+        receipt["comparison_verdict"]
+        == "inconclusive_streaming_control_mismatch"
+    )
+    assert receipt["quality_verdict"] == "diagnostic_only"
+
+
+def test_cli_pair_candidate_failure_publishes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(evaluate, "load_corpus", lambda _path: object())
+    monkeypatch.setattr(evaluate, "_load_config_inputs", lambda *_args: object())
+    monkeypatch.setattr(evaluate, "_bind_final_stt_profile_pair", lambda *_args: object())
+    monkeypatch.setattr(
+        evaluate,
+        "evaluate_production_final_pair",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            evaluate.ProductionFinalEvaluationError()
+        ),
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_write_new_private",
+        lambda *_args: pytest.fail("failed pair reached publication"),
+    )
+
+    code = evaluate.main(
+        [
+            "--corpus",
+            "/private/SENTINEL-corpus.json",
+            "--config",
+            "/private/SENTINEL-config.json",
+            "--local-config",
+            "/private/SENTINEL-local.json",
+            "--report",
+            "/private/SENTINEL-report.json",
+            "--baseline-final-stt-profile",
+            "sense-voice",
+            "--candidate-final-stt-profile",
+            "parakeet-faster-whisper",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert json.loads(captured.out) == evaluate._SAFE_ERROR
+    assert captured.err == ""
+    assert "SENTINEL" not in captured.out
+
+
+def test_cli_legacy_receipt_and_schema2_payload_shape_are_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_report = {
+        "schema_version": 2,
+        "evaluations": 57,
+        "views": {
+            "file_replay_streaming_raw": {"coverage_complete": True},
+            "file_replay_selected_without_owned_timing_recovery": {
+                "coverage_complete": True,
+            },
+        },
+    }
+    published: list[bytes] = []
+    monkeypatch.setattr(evaluate, "load_corpus", lambda _path: object())
+    monkeypatch.setattr(evaluate, "_load_config_inputs", lambda *_args: object())
+    monkeypatch.setattr(
+        evaluate,
+        "_effective_config_with_profile",
+        lambda *_args: (object(), "desktop"),
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "evaluate_production_final",
+        lambda *_args, **_kwargs: fake_report,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_write_new_private",
+        lambda _path, payload: published.append(payload),
+    )
+
+    code = evaluate.main(
+        [
+            "--corpus",
+            "/private/corpus.json",
+            "--config",
+            "/private/config.json",
+            "--local-config",
+            "/private/config.local.json",
+            "--report",
+            "/private/report.json",
+        ]
+    )
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert set(receipt) == {
+        "coverage_complete",
+        "evaluations",
+        "execution_complete",
+        "ok",
+        "quality_verdict",
+        "report_sha256",
+    }
+    assert receipt["coverage_complete"] is True
+    assert receipt["evaluations"] == 57
+    assert json.loads(published[0]) == fake_report
 
 
 def test_cli_refuses_to_overwrite_existing_report(

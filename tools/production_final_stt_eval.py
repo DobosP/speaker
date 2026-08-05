@@ -30,11 +30,16 @@ import stat
 import sys
 from collections import Counter
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from core.config import apply_device_profile, deep_merge, resolve_device
+from core.config import (
+    apply_device_profile,
+    apply_final_stt_profile,
+    deep_merge,
+    resolve_device,
+)
 from core.engine import EngineCallbacks
 from core.engines.file_replay import FileReplayEngine
 from core.engines.sherpa import SherpaConfig
@@ -126,6 +131,8 @@ _EXPECTED_COUNT_SHAPE = {
 _SAFE_PROVIDERS = frozenset({"cpu"})
 _SAFE_FINAL_BACKENDS = frozenset({"sense_voice", "whisper", "nemo_transducer"})
 _SAFE_VERIFIER_BACKENDS = frozenset({"faster_whisper"})
+_BASELINE_FINAL_STT_PROFILE = "sense-voice"
+_CANDIDATE_FINAL_STT_PROFILE = "parakeet-faster-whisper"
 _SAFE_OFFLINE_OUTCOMES = frozenset(
     {"unavailable", "skipped", "error", "decoded", "empty"}
 )
@@ -209,6 +216,25 @@ class _Execution:
     offline_outcomes: Mapping[str, int]
     verifier_outcomes: Mapping[str, int]
     selected_sources: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class _BoundProfile:
+    name: str
+    profile_sha256: str
+    profile_schema_version: int
+    config: SherpaConfig = field(repr=False)
+    config_sha256: str
+    model_sha256: str
+
+
+@dataclass(frozen=True)
+class _BoundProfilePair:
+    baseline: _BoundProfile
+    candidate: _BoundProfile
+    device_profile: str
+    evaluator_source_sha256: str
+    runtime_identities: Mapping[str, object] = field(repr=False)
 
 
 class _DiscardText(io.TextIOBase):
@@ -329,10 +355,10 @@ def _verify_config_inputs(snapshot: _ConfigInputs) -> None:
         raise ProductionFinalEvaluationError()
 
 
-def _effective_config_with_profile(
+def _effective_config_mapping(
     inputs: _ConfigInputs,
     device: str | None,
-) -> tuple[SherpaConfig, str]:
+) -> tuple[dict[str, object], str]:
     base = _strict_json(inputs.config_bytes)
     local = _strict_json(inputs.local_bytes)
     if not isinstance(base, dict) or not isinstance(local, dict):
@@ -346,27 +372,77 @@ def _effective_config_with_profile(
     ):
         raise ProductionFinalEvaluationError()
     effective = apply_device_profile(merged, resolved_device, strict=True)
+    if not isinstance(effective, dict):
+        raise ProductionFinalEvaluationError()
+    return effective, resolved_device
+
+
+def _sherpa_config_from_effective(
+    effective: Mapping[str, object],
+    *,
+    allow_disabled_verifier: bool,
+) -> SherpaConfig:
     sherpa = effective.get("sherpa")
     if not isinstance(sherpa, dict):
         raise ProductionFinalEvaluationError()
     result = SherpaConfig.from_dict(sherpa)
+    verifier_backend = str(result.asr_final_verifier_backend or "").strip().lower()
     if (
         result.sample_rate != _SAMPLE_RATE_HZ
         or not str(result.asr_encoder or "").strip()
         or str(result.provider or "").strip().lower() not in _SAFE_PROVIDERS
         or str(result.asr_final_backend or "").strip().lower()
         not in _SAFE_FINAL_BACKENDS
-        or str(result.asr_final_verifier_backend or "").strip().lower()
-        not in _SAFE_VERIFIER_BACKENDS
+        or (
+            verifier_backend not in _SAFE_VERIFIER_BACKENDS
+            and not (allow_disabled_verifier and verifier_backend == "")
+        )
     ):
         raise ProductionFinalEvaluationError()
-    return result, resolved_device
+    return result
+
+
+def _effective_config_with_profile(
+    inputs: _ConfigInputs,
+    device: str | None,
+) -> tuple[SherpaConfig, str]:
+    effective, resolved_device = _effective_config_mapping(inputs, device)
+    return (
+        _sherpa_config_from_effective(
+            effective,
+            allow_disabled_verifier=False,
+        ),
+        resolved_device,
+    )
 
 
 def _effective_config(inputs: _ConfigInputs, device: str | None) -> SherpaConfig:
     """Compatibility wrapper used by focused configuration tests."""
 
     return _effective_config_with_profile(inputs, device)[0]
+
+
+def _profile_binding(metadata: object, expected_name: str) -> tuple[str, str, int]:
+    try:
+        name = getattr(metadata, "name")
+        digest = getattr(metadata, "sha256")
+        schema_version = getattr(metadata, "schema_version")
+        if (
+            type(expected_name) is not str
+            or expected_name
+            not in {_BASELINE_FINAL_STT_PROFILE, _CANDIDATE_FINAL_STT_PROFILE}
+            or type(name) is not str
+            or name != expected_name
+            or not _is_sha256(digest)
+            or type(schema_version) is not int
+            or schema_version != 1
+        ):
+            raise ProductionFinalEvaluationError()
+        return name, digest, schema_version
+    except ProductionFinalEvaluationError:
+        raise
+    except Exception:
+        raise ProductionFinalEvaluationError() from None
 
 
 @contextmanager
@@ -383,6 +459,92 @@ def _configured_model_digest(config: SherpaConfig, root: Path) -> str:
     try:
         with _working_directory(root):
             return _model_digest(config)
+    except Exception:
+        raise ProductionFinalEvaluationError() from None
+
+
+def _bind_final_stt_profile_pair(
+    inputs: _ConfigInputs,
+    device: str | None,
+    baseline_name: str,
+    candidate_name: str,
+) -> _BoundProfilePair:
+    """Resolve and hash the fixed pair before either replay cell can start."""
+
+    if (
+        type(baseline_name) is not str
+        or type(candidate_name) is not str
+        or baseline_name != _BASELINE_FINAL_STT_PROFILE
+        or candidate_name != _CANDIDATE_FINAL_STT_PROFILE
+        or baseline_name == candidate_name
+    ):
+        raise ProductionFinalEvaluationError()
+    try:
+        effective, resolved_device = _effective_config_mapping(inputs, device)
+        baseline_raw, baseline_metadata = apply_final_stt_profile(
+            effective,
+            baseline_name,
+        )
+        candidate_raw, candidate_metadata = apply_final_stt_profile(
+            effective,
+            candidate_name,
+        )
+        baseline_binding = _profile_binding(baseline_metadata, baseline_name)
+        candidate_binding = _profile_binding(candidate_metadata, candidate_name)
+        baseline_config = _sherpa_config_from_effective(
+            baseline_raw,
+            allow_disabled_verifier=True,
+        )
+        candidate_config = _sherpa_config_from_effective(
+            candidate_raw,
+            allow_disabled_verifier=True,
+        )
+        for config_field in fields(SherpaConfig):
+            if config_field.name.startswith("asr_final_"):
+                continue
+            if getattr(baseline_config, config_field.name) != getattr(
+                candidate_config,
+                config_field.name,
+            ):
+                raise ProductionFinalEvaluationError()
+
+        # Keep this ordering explicit: candidate artifacts must be valid and
+        # bound before the first baseline sample reaches FileReplay.
+        baseline_config_sha256 = _config_digest(baseline_config)
+        baseline_model_sha256 = _configured_model_digest(
+            baseline_config,
+            inputs.root,
+        )
+        candidate_config_sha256 = _config_digest(candidate_config)
+        candidate_model_sha256 = _configured_model_digest(
+            candidate_config,
+            inputs.root,
+        )
+        evaluator_source_sha256 = _source_digest()
+        runtime_identities = _runtime_identities()
+        return _BoundProfilePair(
+            baseline=_BoundProfile(
+                name=baseline_binding[0],
+                profile_sha256=baseline_binding[1],
+                profile_schema_version=baseline_binding[2],
+                config=baseline_config,
+                config_sha256=baseline_config_sha256,
+                model_sha256=baseline_model_sha256,
+            ),
+            candidate=_BoundProfile(
+                name=candidate_binding[0],
+                profile_sha256=candidate_binding[1],
+                profile_schema_version=candidate_binding[2],
+                config=candidate_config,
+                config_sha256=candidate_config_sha256,
+                model_sha256=candidate_model_sha256,
+            ),
+            device_profile=resolved_device,
+            evaluator_source_sha256=evaluator_source_sha256,
+            runtime_identities=runtime_identities,
+        )
+    except ProductionFinalEvaluationError:
+        raise
     except Exception:
         raise ProductionFinalEvaluationError() from None
 
@@ -448,9 +610,12 @@ def _runtime_identities() -> dict[str, object]:
 
 
 def _provider_attestation(config: SherpaConfig) -> dict[str, str]:
-    """Fail closed on provider ambiguity for this exact CPU+CUDA chain."""
+    """Fail closed on provider ambiguity for the selected final-STT chain."""
 
     if str(config.provider or "").strip().lower() != "cpu":
+        raise ProductionFinalEvaluationError()
+    verifier_backend = str(config.asr_final_verifier_backend or "").strip().lower()
+    if verifier_backend not in {"", "faster_whisper"}:
         raise ProductionFinalEvaluationError()
     try:
         import onnxruntime
@@ -462,6 +627,13 @@ def _provider_attestation(config: SherpaConfig) -> dict[str, str]:
         raise
     except Exception:
         raise ProductionFinalEvaluationError() from None
+    if not verifier_backend:
+        return {
+            "streaming_offline_requested": "cpu",
+            "streaming_offline_attestation": "explicit_cpu_provider_available",
+            "verifier_requested": "disabled",
+            "verifier_attestation": "not_configured",
+        }
     return {
         "streaming_offline_requested": "cpu",
         "streaming_offline_attestation": "explicit_cpu_provider_available",
@@ -631,16 +803,26 @@ def _safe_selected_source(value: object) -> str:
     return raw
 
 
-def _preflight_engine(engine: FileReplayEngine) -> None:
-    """Prove both configured finals exist and warm the CUDA-only verifier."""
+def _preflight_engine(
+    engine: FileReplayEngine,
+    *,
+    verifier_required: bool = True,
+) -> None:
+    """Prove the configured final chain exists without inventing a verifier."""
 
     if (
         getattr(engine, "_tts", None) is not None
         or getattr(engine, "_final_recognizer", None) is None
-        or getattr(engine, "_final_verifier", None) is None
     ):
         raise ProductionFinalEvaluationError()
-    warm = getattr(engine._final_verifier, "warm", None)
+    verifier = getattr(engine, "_final_verifier", None)
+    if not verifier_required:
+        if verifier is not None:
+            raise ProductionFinalEvaluationError()
+        return
+    if verifier is None:
+        raise ProductionFinalEvaluationError()
+    warm = getattr(verifier, "warm", None)
     if not callable(warm):
         raise ProductionFinalEvaluationError()
     try:
@@ -676,11 +858,15 @@ def _execute_replay(
     verifier_outcomes: Counter[str] = Counter()
     selected_sources: Counter[str] = Counter()
     decisions_total = 0
+    verifier_required = bool(str(config.asr_final_verifier_backend or "").strip())
     try:
         with _working_directory(root), _quiet_model_output():
             try:
                 engine.start(EngineCallbacks())
-                _preflight_engine(engine)
+                _preflight_engine(
+                    engine,
+                    verifier_required=verifier_required,
+                )
                 for case_index, case in enumerate(corpus.cases):
                     streaming_records: list[FinalDecisionRecord] = []
                     selected_records: list[FinalDecisionRecord] = []
@@ -736,7 +922,8 @@ def _execute_replay(
 def _attest_execution(config: SherpaConfig, execution: _Execution) -> None:
     offline = execution.offline_outcomes
     verifier = execution.verifier_outcomes
-    if (
+    verifier_backend = str(config.asr_final_verifier_backend or "").strip().lower()
+    invalid = (
         execution.decisions <= 0
         or sum(offline.values()) != execution.decisions
         or sum(verifier.values()) != execution.decisions
@@ -744,13 +931,17 @@ def _attest_execution(config: SherpaConfig, execution: _Execution) -> None:
         or int(offline.get("error", 0)) > 0
         or not any(int(offline.get(outcome, 0)) > 0 for outcome in ("decoded", "empty"))
         or int(verifier.get("error", 0)) > 0
-        or not any(
+        or not str(config.asr_final_backend or "").strip()
+        or verifier_backend not in {"", "faster_whisper"}
+    )
+    if verifier_backend:
+        invalid = invalid or not any(
             int(verifier.get(outcome, 0)) > 0
             for outcome in _VERIFIER_COMPLETED_OUTCOMES
         )
-        or not str(config.asr_final_backend or "").strip()
-        or not str(config.asr_final_verifier_backend or "").strip()
-    ):
+    else:
+        invalid = invalid or verifier != {"unavailable": execution.decisions}
+    if invalid:
         raise ProductionFinalEvaluationError()
 
 
@@ -762,6 +953,10 @@ def evaluate_production_final(
     repeats: int,
     stratum_tags: Sequence[str],
     device_profile: str = "test-explicit",
+    expected_config_sha256: str | None = None,
+    expected_model_sha256: str | None = None,
+    expected_evaluator_source_sha256: str | None = None,
+    expected_runtime_identities: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     lock_digest = _validate_exact_corpus(corpus)
     _verify_private_corpus_snapshot(corpus)
@@ -770,6 +965,22 @@ def evaluate_production_final(
     runtime_identities = _runtime_identities()
     provider_attestation = _provider_attestation(config)
     model_digest = _configured_model_digest(config, config_inputs.root)
+    if (
+        (
+            expected_config_sha256 is not None
+            and configured_digest != expected_config_sha256
+        )
+        or (expected_model_sha256 is not None and model_digest != expected_model_sha256)
+        or (
+            expected_evaluator_source_sha256 is not None
+            and source_digest != expected_evaluator_source_sha256
+        )
+        or (
+            expected_runtime_identities is not None
+            and runtime_identities != expected_runtime_identities
+        )
+    ):
+        raise ProductionFinalEvaluationError()
     execution = _execute_replay(
         corpus,
         config,
@@ -842,7 +1053,7 @@ def evaluate_production_final(
                 "outcomes": dict(sorted(execution.offline_outcomes.items())),
             },
             "verifier_execution": {
-                "requested": True,
+                "requested": bool(str(config.asr_final_verifier_backend or "").strip()),
                 "outcomes": dict(sorted(execution.verifier_outcomes.items())),
             },
             "selected_sources": dict(sorted(execution.selected_sources.items())),
@@ -873,6 +1084,91 @@ def evaluate_production_final(
             "selection_has_vad_owned_speech_duration": False,
             "selection_has_offline_recovery_authorization": False,
             "native_execution_watchdog": False,
+        },
+    }
+    json.dumps(result, ensure_ascii=True, allow_nan=False, sort_keys=True)
+    return result
+
+
+def evaluate_production_final_pair(
+    corpus: LoadedCorpus,
+    config_inputs: _ConfigInputs,
+    pair: _BoundProfilePair,
+    *,
+    repeats: int,
+    stratum_tags: Sequence[str],
+) -> dict[str, object]:
+    """Run the fixed control then candidate over one already-loaded corpus."""
+
+    if (
+        pair.baseline.name != _BASELINE_FINAL_STT_PROFILE
+        or pair.candidate.name != _CANDIDATE_FINAL_STT_PROFILE
+    ):
+        raise ProductionFinalEvaluationError()
+    shared = {
+        "expected_evaluator_source_sha256": pair.evaluator_source_sha256,
+        "expected_runtime_identities": pair.runtime_identities,
+        "repeats": repeats,
+        "stratum_tags": stratum_tags,
+        "device_profile": pair.device_profile,
+    }
+    baseline = evaluate_production_final(
+        corpus,
+        config_inputs,
+        pair.baseline.config,
+        expected_config_sha256=pair.baseline.config_sha256,
+        expected_model_sha256=pair.baseline.model_sha256,
+        **shared,
+    )
+    candidate = evaluate_production_final(
+        corpus,
+        config_inputs,
+        pair.candidate.config,
+        expected_config_sha256=pair.candidate.config_sha256,
+        expected_model_sha256=pair.candidate.model_sha256,
+        **shared,
+    )
+    streaming_control_match = (
+        baseline["views"]["file_replay_streaming_raw"]
+        == candidate["views"]["file_replay_streaming_raw"]
+    )
+    comparison_verdict = (
+        "comparable"
+        if streaming_control_match
+        else "inconclusive_streaming_control_mismatch"
+    )
+    result: dict[str, object] = {
+        "execution_complete": True,
+        "quality_verdict": "diagnostic_only",
+        "schema_version": 3,
+        "comparison_kind": "fixed-final-stt-profile-pair",
+        "execution_order": ["baseline", "candidate"],
+        "same_loaded_corpus": True,
+        "evaluations_per_cell": baseline["evaluations"],
+        "total_evaluations": int(baseline["evaluations"])
+        + int(candidate["evaluations"]),
+        "repeats": baseline["repeats"],
+        "stratum_tags": baseline["stratum_tags"],
+        "baseline_final_stt_profile": pair.baseline.name,
+        "baseline_final_stt_profile_digest": pair.baseline.profile_sha256,
+        "candidate_final_stt_profile": pair.candidate.name,
+        "candidate_final_stt_profile_digest": pair.candidate.profile_sha256,
+        "streaming_control_match": streaming_control_match,
+        "comparison": {
+            "same_input": True,
+            "streaming_control_match": streaming_control_match,
+            "valid": streaming_control_match,
+            "verdict": comparison_verdict,
+            "latency_comparison": False,
+            "runtime_default_promotion": False,
+        },
+        "baseline": baseline,
+        "candidate": candidate,
+        "limits": {
+            "aggregate_only": True,
+            "same_loaded_corpus": True,
+            "sequential_execution": True,
+            "runtime_default_promotion": False,
         },
     }
     json.dumps(result, ensure_ascii=True, allow_nan=False, sort_keys=True)
@@ -1072,6 +1368,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--local-config", type=Path, required=True)
     parser.add_argument("--device")
+    parser.add_argument(
+        "--baseline-final-stt-profile",
+        choices=(_BASELINE_FINAL_STT_PROFILE, _CANDIDATE_FINAL_STT_PROFILE),
+    )
+    parser.add_argument(
+        "--candidate-final-stt-profile",
+        choices=(_BASELINE_FINAL_STT_PROFILE, _CANDIDATE_FINAL_STT_PROFILE),
+    )
     parser.add_argument("--repeats", type=_repeats, default=1)
     parser.add_argument("--stratum-tag", action="append", default=[])
     parser.add_argument("--report", type=Path, required=True)
@@ -1081,20 +1385,44 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
+        baseline_profile = args.baseline_final_stt_profile
+        candidate_profile = args.candidate_final_stt_profile
+        pair_requested = baseline_profile is not None or candidate_profile is not None
+        if pair_requested and (
+            baseline_profile != _BASELINE_FINAL_STT_PROFILE
+            or candidate_profile != _CANDIDATE_FINAL_STT_PROFILE
+            or baseline_profile == candidate_profile
+        ):
+            raise ProductionFinalEvaluationError()
         corpus = load_corpus(args.corpus)
         config_inputs = _load_config_inputs(args.config, args.local_config)
-        config, device_profile = _effective_config_with_profile(
-            config_inputs,
-            args.device,
-        )
-        report = evaluate_production_final(
-            corpus,
-            config_inputs,
-            config,
-            repeats=args.repeats,
-            stratum_tags=tuple(args.stratum_tag),
-            device_profile=device_profile,
-        )
+        if pair_requested:
+            pair = _bind_final_stt_profile_pair(
+                config_inputs,
+                args.device,
+                baseline_profile,
+                candidate_profile,
+            )
+            report = evaluate_production_final_pair(
+                corpus,
+                config_inputs,
+                pair,
+                repeats=args.repeats,
+                stratum_tags=tuple(args.stratum_tag),
+            )
+        else:
+            config, device_profile = _effective_config_with_profile(
+                config_inputs,
+                args.device,
+            )
+            report = evaluate_production_final(
+                corpus,
+                config_inputs,
+                config,
+                repeats=args.repeats,
+                stratum_tags=tuple(args.stratum_tag),
+                device_profile=device_profile,
+            )
         payload = (
             json.dumps(
                 report,
@@ -1105,23 +1433,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             ).encode("utf-8")
             + b"\n"
         )
-        _write_new_private(args.report, payload)
-        result: Mapping[str, object] = {
-            "coverage_complete": (
-                report["views"]["file_replay_streaming_raw"][
+        if pair_requested:
+            cell_reports = (report["baseline"], report["candidate"])
+            coverage_complete = all(
+                cell["views"]["file_replay_streaming_raw"]["coverage_complete"] is True
+                and cell["views"]["file_replay_selected_without_owned_timing_recovery"][
                     "coverage_complete"
                 ]
+                is True
+                for cell in cell_reports
+            )
+            evaluations = report["total_evaluations"]
+            comparison = report["comparison"]
+            if (
+                not isinstance(comparison, dict)
+                or type(comparison.get("valid")) is not bool
+                or comparison.get("verdict")
+                not in {
+                    "comparable",
+                    "inconclusive_streaming_control_mismatch",
+                }
+            ):
+                raise ProductionFinalEvaluationError()
+            comparison_result: Mapping[str, object] = {
+                "comparison_valid": comparison["valid"],
+                "comparison_verdict": comparison["verdict"],
+            }
+        else:
+            coverage_complete = (
+                report["views"]["file_replay_streaming_raw"]["coverage_complete"]
                 is True
                 and report["views"][
                     "file_replay_selected_without_owned_timing_recovery"
                 ]["coverage_complete"]
                 is True
-            ),
-            "evaluations": report["evaluations"],
+            )
+            evaluations = report["evaluations"]
+            comparison_result = {}
+        _write_new_private(args.report, payload)
+        result: Mapping[str, object] = {
+            "coverage_complete": coverage_complete,
+            "evaluations": evaluations,
             "execution_complete": True,
             "ok": True,
             "quality_verdict": "diagnostic_only",
             "report_sha256": hashlib.sha256(payload).hexdigest(),
+            **comparison_result,
         }
         code = 0
     except Exception:  # noqa: BLE001 - no private detail may reach the terminal

@@ -242,6 +242,33 @@ the two physical bundles separately expose capture, room, interruption, and
 latency behavior. Neither result alone authorizes a default change
 ([ADR-0144](adr/0144-add-atomic-live-final-stt-profiles.md)).
 
+The locked public command/noise corpus has a separate production-selector pair
+route. It fixes the same ordered profiles and requires both model closures
+before the first cell starts:
+
+```bash
+python -m tools.production_final_stt_eval \
+  --corpus /private/path/command-noise/corpus.json \
+  --config /home/dobo/work/speaker/config.json \
+  --local-config /home/dobo/work/speaker/config.local.json \
+  --device desktop_gpu_4090 \
+  --baseline-final-stt-profile sense-voice \
+  --candidate-final-stt-profile parakeet-faster-whisper \
+  --repeats 1 \
+  --stratum-tag command-negative --stratum-tag command-positive \
+  --stratum-tag eccc --stratum-tag gsc --stratum-tag noisy \
+  --stratum-tag silence --stratum-tag speech-negative \
+  --report /private/path/new-command-profile-pair-report.json
+```
+
+The schema-v3 report contains both aggregate cells and a separate comparison
+verdict. A raw-streaming mismatch is retained as
+`inconclusive_streaming_control_mismatch`; operational exit 0 means both cells
+and publication completed, not that a profile won. The retained exact run and
+its non-promotional command-safety result are recorded in
+[ADR-0145](adr/0145-add-paired-final-stt-command-noise-diagnostic.md). Sequential
+execution supplies no latency comparison, and this route opens no microphone.
+
 ## Dry-run recognized-text tool routing
 
 Route-labelled cases may additionally carry exactly one of these private tags:

@@ -1,0 +1,253 @@
+{
+  "binding": {
+    "device_profile": "desktop_gpu_4090",
+    "evaluator_source_files": 27,
+    "evaluator_source_sha256": "2a10f059984b8108a3ddf48465ba1c3dd7d459df73d830c56f280ab0c91ba2a7",
+    "execution_order": [
+      "sense-voice",
+      "parakeet-faster-whisper"
+    ],
+    "runtime": {
+      "distributions": {
+        "ctranslate2": {
+          "record_sha256": "f2e61741285d8720d1a5dbce10ad8d04d52275b8bf4f113448a2e3dd858e0825",
+          "version": "4.8.1"
+        },
+        "faster_whisper": {
+          "record_sha256": "29ed5a95b02eb8cec2a5167ffe2e0de885cc4012df9af523cefd4eeb20e2febe",
+          "version": "1.2.1"
+        },
+        "numpy": {
+          "record_sha256": "0b86772b7b8a2b7b2536d40d9d5f6f1b41047d471150f603d59413017a954e70",
+          "version": "2.4.6"
+        },
+        "onnxruntime": {
+          "record_sha256": "aa92a56f68d3a3d22db43a06b96240ac0b880c262d4aecafc0ff34d985f2345c",
+          "version": "1.27.0"
+        },
+        "sherpa_onnx": {
+          "record_sha256": "1576878220470dc414695ea9ce5e48f39d4079db5ff0f59f047f1af09a3d7b42",
+          "version": "1.13.3"
+        }
+      },
+      "python": {
+        "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+        "version": "3.12.3"
+      }
+    }
+  },
+  "comparison": {
+    "evaluations_per_cell": 57,
+    "latency_comparison": false,
+    "repeats": 1,
+    "runtime_default_promotion": false,
+    "same_input": true,
+    "same_loaded_corpus": true,
+    "streaming_control_match": true,
+    "valid": true,
+    "verdict": "comparable"
+  },
+  "corpus": {
+    "audio_bytes": 3714904,
+    "audio_seconds": 58.045375,
+    "cases": 57,
+    "manifest_sha256": "50ec2c1ec7ad7ef2ca58d56d3330ca1a496db3784b78d41be9c8804413c552b9",
+    "pcm_set_sha256": "b0eeb32c314b5d9b4078fa640331378f8d9e31372436aca178dfdef4c7fbadd4",
+    "preparation_receipt_sha256": "bf6cf442e4fb02e489dc7ceef763df3b39c1a4ef2178a5f8f2d2dab664517ac2",
+    "recipe_lock_sha256": "1ae5a5845a70b69aa7e1d32e6f799566e2c715f8202b2d86760a6cef73d51564",
+    "schema_version": 4,
+    "source_set_sha256": "3f74cabd5b827ef2c4ef7afc628b3ce0eb5e237fe672d1555b1357940566d246"
+  },
+  "date": "2026-08-06",
+  "delta_candidate_minus_baseline": {
+    "eccc_noisy": {
+      "command_hits": 0,
+      "command_recall": 0.0,
+      "negative_case_false_positive_rate": 0.1905,
+      "negative_case_false_positives": 4,
+      "target_precision": -0.1904,
+      "wer": 0.0
+    },
+    "gsc_clean": {
+      "command_hits": 2,
+      "command_recall": 0.1,
+      "negative_case_false_positive_rate": 0.0,
+      "negative_case_false_positives": 0,
+      "target_precision": 0.0585,
+      "wer": -0.2
+    },
+    "overall": {
+      "command_hits": 2,
+      "command_recall": 0.077,
+      "negative_case_false_positive_rate": 0.129,
+      "negative_case_false_positives": 4,
+      "target_precision": -0.0787,
+      "wer": -0.0851
+    }
+  },
+  "kind": "fixed-final-stt-profile-command-noise-pair",
+  "profiles": {
+    "baseline": {
+      "backend": "sense_voice",
+      "decisions": 58,
+      "effective_config_sha256": "8b0e11d510c429bfb0736c596101501ae2d4129b740e5b1a2d37614d8728d4bc",
+      "model_artifacts_sha256": "9d7996e70b82d09ce3da64514019c6f7f3b8e0377d01bf1b638ae45001a338ee",
+      "name": "sense-voice",
+      "offline_outcomes": {
+        "decoded": 57,
+        "skipped": 1
+      },
+      "profile_sha256": "306e50393921b34be2dc72a1aab87532de75b1600ef883fd6e182e94d650a283",
+      "provider_attestation": {
+        "streaming_offline": "explicit_cpu_provider_available",
+        "verifier": "not_configured"
+      },
+      "selected_sources": {
+        "none": 16,
+        "offline": 18,
+        "streaming": 24
+      },
+      "selected_view": {
+        "eccc_noisy": {
+          "command_attempts": 6,
+          "command_hits": 1,
+          "command_recall": 0.1667,
+          "negative_case_false_positive_rate": 0.0476,
+          "negative_case_false_positives": 1,
+          "negative_evaluations": 21,
+          "target_precision": 0.3333,
+          "wer": 1.3333
+        },
+        "gsc_clean": {
+          "command_attempts": 20,
+          "command_hits": 16,
+          "command_recall": 0.8,
+          "negative_case_false_positive_rate": 0.0,
+          "negative_case_false_positives": 0,
+          "negative_evaluations": 10,
+          "target_precision": 0.8889,
+          "wer": 0.3
+        },
+        "overall": {
+          "command_attempts": 26,
+          "command_hits": 17,
+          "command_recall": 0.6538,
+          "negative_case_false_positive_rate": 0.0323,
+          "negative_case_false_positives": 1,
+          "negative_evaluations": 31,
+          "target_precision": 0.8095,
+          "wer": 0.8936
+        }
+      },
+      "verifier_backend": "",
+      "verifier_outcomes": {
+        "unavailable": 58
+      }
+    },
+    "candidate": {
+      "backend": "nemo_transducer",
+      "decisions": 58,
+      "effective_config_sha256": "eb36db9e7df49c732133563e98f5894218094384751736d9b44358da10636f88",
+      "model_artifacts_sha256": "14cf95445bf1b459dba750be2653e3c6cd0e2fbb0a113308beaf09972647d44e",
+      "name": "parakeet-faster-whisper",
+      "offline_outcomes": {
+        "decoded": 51,
+        "empty": 6,
+        "skipped": 1
+      },
+      "profile_sha256": "3daa8546fece7c7539049a79a0941bd3202d36d5274a5ee28d03c20967b1de6f",
+      "provider_attestation": {
+        "streaming_offline": "explicit_cpu_provider_available",
+        "verifier": "cuda_only_adapter_completed_decode"
+      },
+      "selected_sources": {
+        "none": 16,
+        "streaming": 32,
+        "verifier_consensus": 10
+      },
+      "selected_view": {
+        "eccc_noisy": {
+          "command_attempts": 6,
+          "command_hits": 1,
+          "command_recall": 0.1667,
+          "negative_case_false_positive_rate": 0.2381,
+          "negative_case_false_positives": 5,
+          "negative_evaluations": 21,
+          "target_precision": 0.1429,
+          "wer": 1.3333
+        },
+        "gsc_clean": {
+          "command_attempts": 20,
+          "command_hits": 18,
+          "command_recall": 0.9,
+          "negative_case_false_positive_rate": 0.0,
+          "negative_case_false_positives": 0,
+          "negative_evaluations": 10,
+          "target_precision": 0.9474,
+          "wer": 0.1
+        },
+        "overall": {
+          "command_attempts": 26,
+          "command_hits": 19,
+          "command_recall": 0.7308,
+          "negative_case_false_positive_rate": 0.1613,
+          "negative_case_false_positives": 5,
+          "negative_evaluations": 31,
+          "target_precision": 0.7308,
+          "wer": 0.8085
+        }
+      },
+      "verifier_backend": "faster_whisper",
+      "verifier_outcomes": {
+        "consensus": 28,
+        "empty": 5,
+        "empty_streaming_guard": 4,
+        "no_quorum": 1,
+        "skipped": 1,
+        "tie": 19
+      }
+    }
+  },
+  "report": {
+    "links": 1,
+    "mode": "0600",
+    "schema_version": 3,
+    "sha256": "63b72344f2ac87579fb855d5883e02ee3a9537fc7ad193ca6e736f87320397ae",
+    "size_bytes": 48704
+  },
+  "schema_version": 1,
+  "scope": {
+    "aec_validated": false,
+    "after_pcm": true,
+    "aggregate_only": true,
+    "audio_device_opened": false,
+    "barge_in_validated": false,
+    "capture_validated": false,
+    "default_changed": false,
+    "gpu_model_executed": true,
+    "latency_compared": false,
+    "live_hardware": false,
+    "model_executed": true,
+    "natural_conversation_validated": false,
+    "reference_or_hypothesis_rows_present": false,
+    "runtime_default_promotion": false,
+    "speaker_identity_or_enrollment_validated": false,
+    "tool_or_tts_validated": false,
+    "vad_endpoint_accuracy_validated": false,
+    "vad_owned_speech_duration_supplied": false
+  },
+  "verdict": {
+    "decision": "retain_sense_voice_control_reject_parakeet_faster_whisper_command_promotion",
+    "next_gate": [
+      "fresh_owner_target_and_negative_recordings",
+      "ordered_bare_speaker_live_profile_ab",
+      "owner_review_before_any_default_change"
+    ],
+    "reasons": [
+      "candidate_added_two_clean_command_hits",
+      "candidate_added_four_noisy_false_activations",
+      "candidate_added_no_noisy_command_hits",
+      "after_pcm_diagnostic_is_not_live_authority"
+    ]
+  }
+}

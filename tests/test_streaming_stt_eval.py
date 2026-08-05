@@ -1176,6 +1176,61 @@ def _parakeet_cpp_cgroup_evidence() -> dict[str, object]:
     }
 
 
+def _cgroup_resource_observations(
+    *,
+    completed_cases: int = 3,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "source": "supervisor_cgroup_v2",
+        "scope": "systemd_user_scope_all_descendants",
+        "os_cache_control": "uncontrolled",
+        "cache_state_claim": "none",
+        "cache_eviction_performed": False,
+        "wall_clock_origin": "supervisor_immediately_before_popen",
+        "memory_current_scope": "point_sample_including_cgroup_charged_cache",
+        "memory_peak_scope": "cumulative_since_scope_creation_not_phase_local",
+        "cpu_stat_scope": "cumulative_since_scope_creation",
+        "snapshot_atomicity": "sequential_cgroup_file_reads_not_atomic",
+        "resident_scope": "pre_shutdown_after_requested_cases_no_idle_settle",
+        "boundaries": [
+            {
+                "phase": "startup",
+                "boundary": "validated_ready",
+                "completed_cases": 0,
+                "wall_elapsed_ms": 100.0,
+                "memory_current_bytes": 90,
+                "memory_peak_bytes": 100,
+                "cpu_usage_usec": 30,
+                "cpu_user_usec": 20,
+                "cpu_system_usec": 10,
+            },
+            {
+                "phase": "first_use",
+                "boundary": "first_validated_terminal",
+                "completed_cases": 1,
+                "wall_elapsed_ms": 200.0,
+                "memory_current_bytes": 95,
+                "memory_peak_bytes": 105,
+                "cpu_usage_usec": 40,
+                "cpu_user_usec": 25,
+                "cpu_system_usec": 15,
+            },
+            {
+                "phase": "resident",
+                "boundary": "pre_shutdown_after_suite",
+                "completed_cases": completed_cases,
+                "wall_elapsed_ms": 300.0,
+                "memory_current_bytes": 85,
+                "memory_peak_bytes": 110,
+                "cpu_usage_usec": 50,
+                "cpu_user_usec": 32,
+                "cpu_system_usec": 18,
+            },
+        ],
+    }
+
+
 def test_parakeet_cpp_worker_report_binds_exact_cpu_only_cgroup_receipt():
     manifest = SimpleNamespace(adapter=PARAKEET_CPP_ADAPTER, schema_version=8)
     binding = {"adapter": PARAKEET_CPP_ADAPTER}
@@ -1186,12 +1241,15 @@ def test_parakeet_cpp_worker_report_binds_exact_cpu_only_cgroup_receipt():
         binding,
         runtime,
         _parakeet_cpp_cgroup_evidence(),
+        _cgroup_resource_observations(),
+        expected_completed_cases=3,
     )
 
     assert report == {
         "adapter": PARAKEET_CPP_ADAPTER,
         "runtime": runtime,
         "cgroup_evidence": _parakeet_cpp_cgroup_evidence(),
+        "resource_observations": _cgroup_resource_observations(),
     }
     mutated = _parakeet_cpp_cgroup_evidence()
     mutated["cpu_quota_percent"] = 200
@@ -1214,13 +1272,77 @@ def test_parakeet_worker_report_binds_exact_verified_cgroup_receipt():
         binding,
         runtime,
         _parakeet_cgroup_evidence(),
+        _cgroup_resource_observations(),
+        expected_completed_cases=3,
     )
 
     assert report == {
         "adapter": PARAKEET_REALTIME_EOU_ADAPTER,
         "runtime": runtime,
         "cgroup_evidence": _parakeet_cgroup_evidence(),
+        "resource_observations": _cgroup_resource_observations(),
     }
+
+
+def test_scoped_worker_report_rejects_incomplete_or_semantically_false_observations():
+    manifest = SimpleNamespace(adapter=PARAKEET_CPP_ADAPTER, schema_version=8)
+    evidence = _parakeet_cpp_cgroup_evidence()
+    mutations: list[dict[str, object]] = []
+
+    missing_phase = _cgroup_resource_observations()
+    missing_phase["boundaries"].pop()  # type: ignore[union-attr]
+    mutations.append(missing_phase)
+
+    reordered = _cgroup_resource_observations()
+    reordered["boundaries"][0], reordered["boundaries"][1] = (  # type: ignore[index]
+        reordered["boundaries"][1],  # type: ignore[index]
+        reordered["boundaries"][0],  # type: ignore[index]
+    )
+    mutations.append(reordered)
+
+    wrong_count = _cgroup_resource_observations(completed_cases=2)
+    mutations.append(wrong_count)
+
+    negative_wall = _cgroup_resource_observations()
+    negative_wall["boundaries"][0]["wall_elapsed_ms"] = -0.5  # type: ignore[index]
+    mutations.append(negative_wall)
+
+    regressed_peak = _cgroup_resource_observations()
+    regressed_peak["boundaries"][2]["memory_peak_bytes"] = 104  # type: ignore[index]
+    mutations.append(regressed_peak)
+
+    regressed_cpu = _cgroup_resource_observations()
+    regressed_cpu["boundaries"][2]["cpu_user_usec"] = 24  # type: ignore[index]
+    mutations.append(regressed_cpu)
+
+    false_cache = _cgroup_resource_observations()
+    false_cache["os_cache_control"] = "controlled"
+    mutations.append(false_cache)
+
+    extra = _cgroup_resource_observations()
+    extra["unexpected"] = True
+    mutations.append(extra)
+
+    for value in mutations:
+        with pytest.raises(ValueError):
+            streaming_stt_eval._worker_report(
+                manifest,
+                {},
+                {},
+                evidence,
+                value,
+                expected_completed_cases=3,
+            )
+
+    with pytest.raises(ValueError):
+        streaming_stt_eval._worker_report(
+            manifest,
+            {},
+            {},
+            evidence,
+            None,
+            expected_completed_cases=3,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1274,6 +1396,8 @@ def test_legacy_worker_report_shape_ignores_cgroup_only_provenance():
         binding,
         runtime,
         _parakeet_cgroup_evidence(),
+        _cgroup_resource_observations(),
+        expected_completed_cases=3,
     )
 
     assert report == {
@@ -1281,6 +1405,7 @@ def test_legacy_worker_report_shape_ignores_cgroup_only_provenance():
         "runtime": runtime,
     }
     assert "cgroup_evidence" not in report
+    assert "resource_observations" not in report
 
 
 def test_adapter_specific_default_streams_preserve_fake_and_moonshine():

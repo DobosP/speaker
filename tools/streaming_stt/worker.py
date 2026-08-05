@@ -36,6 +36,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
+    "tools/streaming_stt/cgroup_observation.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
     "tools/streaming_stt/runtime_receipt.py",

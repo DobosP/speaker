@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import math
 import os
@@ -19,6 +20,11 @@ from .bounded_io import (
     BoundedReadError,
     hash_regular_bounded,
     opened_directory_nofollow,
+)
+from .cgroup_observation import (
+    CgroupObservationError,
+    CgroupResourceSnapshot,
+    CgroupScopeObserver,
 )
 from .manifest import (
     FASTER_WHISPER_ENDPOINT_ADAPTER,
@@ -94,6 +100,11 @@ _USER_RUNTIME_ROOT = Path("/run/user")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_ROOT = Path("/proc")
 _CGROUP_SETUP_TIMEOUT_SEC = 5.0
+_RESOURCE_PHASES = (
+    ("startup", "validated_ready"),
+    ("first_use", "first_validated_terminal"),
+    ("resident", "pre_shutdown_after_suite"),
+)
 _PARAKEET_MEMORY_HIGH_BYTES = 6 * 1024**3
 _PARAKEET_MEMORY_MAX_BYTES = 8 * 1024**3
 _PARAKEET_CPU_QUOTA_PERCENT = 200
@@ -149,6 +160,24 @@ class WorkerError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class _ResourceBoundary:
+    phase: str
+    boundary: str
+    completed_cases: int
+    wall_elapsed_ms: float
+    snapshot: CgroupResourceSnapshot
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "phase": self.phase,
+            "boundary": self.boundary,
+            "completed_cases": self.completed_cases,
+            "wall_elapsed_ms": round(self.wall_elapsed_ms, 3),
+            **self.snapshot.as_dict(),
+        }
 
 
 def _external_moonshine_config(
@@ -675,9 +704,20 @@ def _read_small_pseudo_file(path: Path, *, maximum_bytes: int = 4096) -> bytes:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise WorkerError("worker_prerequisite")
-        payload = os.read(descriptor, maximum_bytes + 1)
-        if len(payload) > maximum_bytes:
-            raise WorkerError("worker_prerequisite")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(1024, maximum_bytes + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum_bytes:
+                raise WorkerError("worker_prerequisite")
+        payload = b"".join(chunks)
         current = path.lstat()
         if _stable_path_metadata(opened) != _stable_path_metadata(
             before
@@ -873,6 +913,47 @@ def _read_parakeet_cpp_cgroup_evidence(
         _read_small_pseudo_file(selected_proc / str(pid) / "cgroup"),
         cgroup_root=cgroup_root,
     )
+
+
+def _bind_cgroup_observer(
+    pid: int,
+    *,
+    cpp: bool,
+    proc_root: Path | None = None,
+    cgroup_root: Path | None = None,
+) -> tuple[dict[str, object], CgroupScopeObserver]:
+    """Pin the same exact scope whose effective limits were verified."""
+
+    if type(pid) is not int or pid <= 0:
+        raise WorkerError("worker_prerequisite")
+    selected_proc = _PROC_ROOT if proc_root is None else proc_root
+    selected_cgroup = _CGROUP_ROOT if cgroup_root is None else cgroup_root
+    proc_path = selected_proc / str(pid) / "cgroup"
+    payload = _read_small_pseudo_file(proc_path)
+    verifier = (
+        _verify_parakeet_cpp_cgroup_evidence
+        if cpp
+        else _verify_parakeet_cgroup_evidence
+    )
+    evidence = verifier(payload, cgroup_root=selected_cgroup)
+    try:
+        root = selected_cgroup.resolve(strict=True)
+        relative = _parse_unified_cgroup_path(payload).relative_to("/")
+        scope = root / relative
+        resolved = scope.resolve(strict=True)
+        resolved.relative_to(root)
+        if resolved != scope.absolute():
+            raise WorkerError("worker_prerequisite")
+        observer = CgroupScopeObserver.bind(
+            scope_path=scope,
+            proc_cgroup_path=proc_path,
+            expected_proc_cgroup=payload,
+        )
+    except CgroupObservationError:
+        raise WorkerError("worker_prerequisite") from None
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    return evidence, observer
 
 
 def _await_parakeet_cgroup(
@@ -1711,6 +1792,10 @@ class StreamingWorker:
         self._bwrap_descriptor = -1
         self._systemd_run_descriptor = -1
         self._cgroup_evidence: dict[str, object] | None = None
+        self._cgroup_observer: CgroupScopeObserver | None = None
+        self._launch_started_monotonic: float | None = None
+        self._resource_boundaries: list[_ResourceBoundary] = []
+        self._completed_cases = 0
         self._stdout_queue: queue.Queue[bytes | None] = queue.Queue(
             maxsize=_QUEUE_CAPACITY
         )
@@ -1736,6 +1821,36 @@ class StreamingWorker:
     @property
     def cgroup_evidence(self) -> Mapping[str, object] | None:
         return None if self._cgroup_evidence is None else dict(self._cgroup_evidence)
+
+    @property
+    def resource_observations(self) -> Mapping[str, object] | None:
+        if self._cgroup_evidence is None:
+            return None
+        if tuple(
+            (item.phase, item.boundary) for item in self._resource_boundaries
+        ) != _RESOURCE_PHASES:
+            return None
+        return {
+            "schema_version": 1,
+            "source": "supervisor_cgroup_v2",
+            "scope": "systemd_user_scope_all_descendants",
+            "os_cache_control": "uncontrolled",
+            "cache_state_claim": "none",
+            "cache_eviction_performed": False,
+            "wall_clock_origin": "supervisor_immediately_before_popen",
+            "memory_current_scope": (
+                "point_sample_including_cgroup_charged_cache"
+            ),
+            "memory_peak_scope": (
+                "cumulative_since_scope_creation_not_phase_local"
+            ),
+            "cpu_stat_scope": "cumulative_since_scope_creation",
+            "snapshot_atomicity": "sequential_cgroup_file_reads_not_atomic",
+            "resident_scope": (
+                "pre_shutdown_after_requested_cases_no_idle_settle"
+            ),
+            "boundaries": [item.as_dict() for item in self._resource_boundaries],
+        }
 
     @property
     def pid(self) -> int | None:
@@ -1969,6 +2084,15 @@ class StreamingWorker:
             # executes only receipt-bound Python/source artifacts.
             environment["PATH"] = "/usr/bin"
         try:
+            launch_started = self._monotonic()
+        except Exception:
+            self._close_bundle_descriptors()
+            raise WorkerError("worker_start") from None
+        if not math.isfinite(launch_started):
+            self._close_bundle_descriptors()
+            raise WorkerError("worker_start")
+        self._launch_started_monotonic = launch_started
+        try:
             process = self._popen_factory(
                 command,
                 cwd=str(scratch),
@@ -2002,15 +2126,33 @@ class StreamingWorker:
             except Exception:
                 raise WorkerError("worker_start") from None
             if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
-                self._cgroup_evidence = _await_parakeet_cgroup(
+                awaited = _await_parakeet_cgroup(
                     process,
                     monotonic=self._monotonic,
                 )
+                evidence, observer = _bind_cgroup_observer(
+                    process.pid,
+                    cpp=False,
+                )
+                if evidence != awaited:
+                    observer.close()
+                    raise WorkerError("worker_prerequisite")
+                self._cgroup_evidence = evidence
+                self._cgroup_observer = observer
             if self.manifest.adapter == PARAKEET_CPP_ADAPTER:
-                self._cgroup_evidence = _await_parakeet_cpp_cgroup(
+                awaited = _await_parakeet_cpp_cgroup(
                     process,
                     monotonic=self._monotonic,
                 )
+                evidence, observer = _bind_cgroup_observer(
+                    process.pid,
+                    cpp=True,
+                )
+                if evidence != awaited:
+                    observer.close()
+                    raise WorkerError("worker_prerequisite")
+                self._cgroup_evidence = evidence
+                self._cgroup_observer = observer
             event = self._next_event(self.manifest.limits.startup_timeout_sec)
             if (
                 type(event) is not ReadyEvent
@@ -2022,14 +2164,102 @@ class StreamingWorker:
             ):
                 raise WorkerError("worker_protocol")
             self.ready = event
+            if self._cgroup_observer is not None:
+                self._record_resource_boundary(
+                    "startup",
+                    "validated_ready",
+                    completed_cases=0,
+                )
             return event
         except Exception:
             try:
                 self._terminate()
             finally:
+                self._close_cgroup_observer()
                 self._close_process_pipes()
                 self._close_bundle_descriptors()
             raise
+
+    def _record_resource_boundary(
+        self,
+        phase: str,
+        boundary: str,
+        *,
+        completed_cases: int,
+    ) -> None:
+        observer = self._cgroup_observer
+        process = self._process
+        launch_started = self._launch_started_monotonic
+        index = len(self._resource_boundaries)
+        if (
+            observer is None
+            or process is None
+            or process.poll() is not None
+            or launch_started is None
+            or index >= len(_RESOURCE_PHASES)
+            or (phase, boundary) != _RESOURCE_PHASES[index]
+            or type(completed_cases) is not int
+            or completed_cases < 0
+            or (phase == "startup" and completed_cases != 0)
+            or (phase == "first_use" and completed_cases != 1)
+            or (phase == "resident" and completed_cases != self._completed_cases)
+        ):
+            raise WorkerError("worker_prerequisite")
+        try:
+            current_evidence = (
+                _read_parakeet_cpp_cgroup_evidence(process.pid)
+                if self.manifest.adapter == PARAKEET_CPP_ADAPTER
+                else _read_parakeet_cgroup_evidence(process.pid)
+            )
+            observed_at = self._monotonic()
+            if (
+                current_evidence != self._cgroup_evidence
+                or not math.isfinite(observed_at)
+                or observed_at < launch_started
+            ):
+                raise WorkerError("worker_prerequisite")
+            elapsed_ms = (observed_at - launch_started) * 1000.0
+            if (
+                self._resource_boundaries
+                and elapsed_ms < self._resource_boundaries[-1].wall_elapsed_ms
+            ):
+                raise WorkerError("worker_prerequisite")
+            snapshot = observer.sample()
+        except CgroupObservationError:
+            raise WorkerError("worker_prerequisite") from None
+        except WorkerError:
+            raise
+        except (OSError, RuntimeError, ValueError, OverflowError):
+            raise WorkerError("worker_prerequisite") from None
+        self._resource_boundaries.append(
+            _ResourceBoundary(
+                phase=phase,
+                boundary=boundary,
+                completed_cases=completed_cases,
+                wall_elapsed_ms=elapsed_ms,
+                snapshot=snapshot,
+            )
+        )
+
+    def _complete_trace(self, trace: CaseTrace) -> CaseTrace:
+        completed_cases = self._completed_cases + 1
+        if self._cgroup_observer is not None and completed_cases == 1:
+            self._record_resource_boundary(
+                "first_use",
+                "first_validated_terminal",
+                completed_cases=completed_cases,
+            )
+        self._completed_cases = completed_cases
+        return trace
+
+    def _close_cgroup_observer(self) -> None:
+        observer = self._cgroup_observer
+        self._cgroup_observer = None
+        if observer is not None:
+            try:
+                observer.close()
+            except OSError:
+                pass
 
     def transcribe(self, request: TranscribeRequest) -> CaseTrace:
         with self._state_lock:
@@ -2101,7 +2331,9 @@ class StreamingWorker:
                         last_samples=last_samples,
                         last_elapsed=last_elapsed,
                     )
-                    return CaseTrace(partials=tuple(partials), final=event)
+                    return self._complete_trace(
+                        CaseTrace(partials=tuple(partials), final=event)
+                    )
                 if self.manifest.adapter == PARAKEET_CPP_ADAPTER:
                     if type(event) is not ParakeetCppFinalEvent:
                         raise WorkerError("worker_protocol")
@@ -2113,7 +2345,9 @@ class StreamingWorker:
                         last_samples=last_samples,
                         last_elapsed=last_elapsed,
                     )
-                    return CaseTrace(partials=tuple(partials), final=event)
+                    return self._complete_trace(
+                        CaseTrace(partials=tuple(partials), final=event)
+                    )
                 if type(event) is not FinalEvent:
                     raise WorkerError("worker_protocol")
                 expected_chunks, expected_model_padding = _expected_final_evidence(
@@ -2141,7 +2375,9 @@ class StreamingWorker:
                     > 1e-6
                 ):
                     raise WorkerError("worker_protocol")
-                return CaseTrace(partials=tuple(partials), final=event)
+                return self._complete_trace(
+                    CaseTrace(partials=tuple(partials), final=event)
+                )
         except WorkerError:
             if self._process is not None and self._process.poll() is None:
                 # A protocol/time failure makes the stream untrustworthy.
@@ -2159,6 +2395,7 @@ class StreamingWorker:
             active = self._active
         process = self._process
         if process is None:
+            self._close_cgroup_observer()
             self._close_bundle_descriptors()
             return
         try:
@@ -2168,6 +2405,15 @@ class StreamingWorker:
                 return
             if process.poll() is None and self.ready is not None:
                 try:
+                    if (
+                        self._cgroup_observer is not None
+                        and self._completed_cases > 0
+                    ):
+                        self._record_resource_boundary(
+                            "resident",
+                            "pre_shutdown_after_suite",
+                            completed_cases=self._completed_cases,
+                        )
                     expected_protocol = _wire_protocol_version(self.manifest)
                     request = ShutdownRequest(
                         "shutdown",
@@ -2195,6 +2441,7 @@ class StreamingWorker:
                 self._join_drainers(require_stopped=True)
             self._verify_bound_files()
         finally:
+            self._close_cgroup_observer()
             self._close_process_pipes()
             self._close_bundle_descriptors()
 

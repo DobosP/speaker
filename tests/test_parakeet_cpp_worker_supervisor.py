@@ -18,12 +18,15 @@ from tools.streaming_stt.manifest import (
     WorkerManifest,
 )
 from tools.streaming_stt.protocol import (
+    ByeEvent,
     PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     ParakeetCppFinalEvent,
     ParakeetCppObservedEvent,
     PcmInput,
     ProtocolError,
+    ReadyEvent,
     ResourceUsage,
+    ShutdownEvent,
     StreamConfig,
     TranscribeRequest,
     encode_message,
@@ -33,10 +36,15 @@ from tools.streaming_stt.source_bundle import (
     WORKER_SOURCE_FILES,
     stage_worker_source_bundle,
 )
+from tools.streaming_stt.cgroup_observation import (
+    CgroupObservationError,
+    CgroupResourceSnapshot,
+)
 from tools.streaming_stt.supervisor import (
     StreamingWorker,
     WorkerError,
     _NEMOTRON_CORE_RO_PATHS,
+    _bind_cgroup_observer,
     _parakeet_cpp_bwrap_command,
     _parakeet_cpp_systemd_scope_command,
     _validate_parakeet_cpp_final,
@@ -770,6 +778,12 @@ def _write_cpp_cgroup_tree(
     values.update(overrides or {})
     for name, value in values.items():
         (scope / name).write_text(value + "\n", encoding="ascii")
+    (scope / "memory.current").write_text("90\n", encoding="ascii")
+    (scope / "memory.peak").write_text("100\n", encoding="ascii")
+    (scope / "cpu.stat").write_text(
+        "usage_usec 30\nuser_usec 20\nsystem_usec 10\n",
+        encoding="ascii",
+    )
     return f"0::/{relative}\n".encode("ascii")
 
 
@@ -793,6 +807,37 @@ def test_cpu_cgroup_verifier_returns_only_stable_exact_evidence(tmp_path: Path):
         "verified": True,
     }
     assert "run-r5678.scope" not in repr(evidence)
+
+
+def test_cpu_cgroup_binding_pins_the_verified_scope_and_reads_resources(tmp_path):
+    root = tmp_path / "cgroup"
+    proc_payload = _write_cpp_cgroup_tree(root)
+    proc_root = tmp_path / "proc"
+    proc_path = proc_root / "424242" / "cgroup"
+    proc_path.parent.mkdir(parents=True)
+    proc_path.write_bytes(proc_payload)
+
+    evidence, observer = _bind_cgroup_observer(
+        424242,
+        cpp=True,
+        proc_root=proc_root,
+        cgroup_root=root,
+    )
+    try:
+        snapshot = observer.sample()
+    finally:
+        observer.close()
+
+    assert evidence["verified"] is True
+    assert snapshot.as_dict() == {
+        "memory_current_bytes": 90,
+        "memory_peak_bytes": 100,
+        "cpu_usage_usec": 30,
+        "cpu_user_usec": 20,
+        "cpu_system_usec": 10,
+    }
+    assert "424242" not in repr(observer)
+    assert "run-r5678.scope" not in repr(observer)
 
 
 @pytest.mark.parametrize(
@@ -831,28 +876,15 @@ def test_source_bundle_contains_the_exact_parakeet_cpp_adapter(tmp_path: Path):
     assert staged.read_bytes() == (REPO_ROOT / ADAPTER_SOURCE).read_bytes()
 
 
-def test_schema_v8_launch_environment_is_cpu_only_offline_and_single_threaded(
-    tmp_path: Path,
+def _patch_cpp_launch_prerequisites(
+    worker: StreamingWorker,
+    runtime_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
-):
-    manifest, source_bundle, scratch = _launch_fixture(tmp_path)
-    runtime_directory = tmp_path / "user-runtime"
-    runtime_directory.mkdir(mode=0o700)
-    captured: dict[str, object] = {}
-    worker = StreamingWorker(manifest, scratch, source_bundle)  # type: ignore[arg-type]
-
+) -> None:
     monkeypatch.setattr(worker, "_verify_bound_files", lambda: None)
     monkeypatch.setattr(
         "tools.streaming_stt.supervisor._core_system_ro_paths",
         lambda: (Path("/usr"),),
-    )
-    monkeypatch.setattr(
-        "tools.streaming_stt.supervisor._nemotron_device_nodes",
-        lambda: (_ for _ in ()).throw(AssertionError("GPU probe")),
-    )
-    monkeypatch.setattr(
-        "tools.streaming_stt.supervisor._nemotron_system_ro_paths",
-        lambda: (_ for _ in ()).throw(AssertionError("GPU mount")),
     )
     monkeypatch.setattr(
         "tools.streaming_stt.supervisor._verified_user_runtime_directory",
@@ -875,6 +907,27 @@ def test_schema_v8_launch_environment_is_cpu_only_offline_and_single_threaded(
         worker,
         "_open_bound_python_descriptor",
         lambda: os.open("/dev/null", os.O_RDONLY),
+    )
+
+
+def test_schema_v8_launch_environment_is_cpu_only_offline_and_single_threaded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manifest, source_bundle, scratch = _launch_fixture(tmp_path)
+    runtime_directory = tmp_path / "user-runtime"
+    runtime_directory.mkdir(mode=0o700)
+    captured: dict[str, object] = {}
+    worker = StreamingWorker(manifest, scratch, source_bundle)  # type: ignore[arg-type]
+
+    _patch_cpp_launch_prerequisites(worker, runtime_directory, monkeypatch)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_device_nodes",
+        lambda: (_ for _ in ()).throw(AssertionError("GPU probe")),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_system_ro_paths",
+        lambda: (_ for _ in ()).throw(AssertionError("GPU mount")),
     )
 
     def rejecting_popen(command, **kwargs):
@@ -912,3 +965,207 @@ def test_schema_v8_launch_environment_is_cpu_only_offline_and_single_threaded(
     assert worker._python_descriptor == -1  # noqa: SLF001 - cleanup proof
     assert worker._bwrap_descriptor == -1  # noqa: SLF001 - cleanup proof
     assert worker._systemd_run_descriptor == -1  # noqa: SLF001
+
+
+def test_scoped_start_and_close_hooks_record_exact_boundaries_before_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manifest, source_bundle, scratch = _launch_fixture(tmp_path)
+    runtime_directory = tmp_path / "user-runtime"
+    runtime_directory.mkdir(mode=0o700)
+    events: list[str] = []
+    evidence = {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "memory_high_bytes": 2_147_483_648,
+        "memory_max_bytes": 3_221_225_472,
+        "memory_swap_max_bytes": 0,
+        "cpu_quota_percent": 100,
+        "tasks_max": 64,
+        "oom_policy": "kill",
+        "verified": True,
+    }
+    snapshots = iter(
+        (
+            CgroupResourceSnapshot(90, 100, 30, 20, 10),
+            CgroupResourceSnapshot(95, 105, 40, 25, 15),
+            CgroupResourceSnapshot(85, 110, 50, 32, 18),
+        )
+    )
+
+    class Observer:
+        closed = False
+
+        def sample(self):
+            events.append("sample")
+            return next(snapshots)
+
+        def close(self):
+            self.closed = True
+            events.append("observer_close")
+
+    class Process:
+        pid = 424242
+        returncode = None
+        stdin = SimpleNamespace(close=lambda: None)
+        stdout = SimpleNamespace(close=lambda: None)
+        stderr = SimpleNamespace(close=lambda: None)
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, *, timeout):
+            assert timeout > 0
+            events.append("wait")
+            self.returncode = 0
+            return 0
+
+    observer = Observer()
+    process = Process()
+    ticks = iter((10.0, 10.1, 10.2, 10.3))
+    worker = StreamingWorker(
+        manifest,
+        scratch,
+        source_bundle,  # type: ignore[arg-type]
+        popen_factory=lambda *_args, **_kwargs: process,  # type: ignore[arg-type]
+        monotonic=lambda: next(ticks),
+    )
+    _patch_cpp_launch_prerequisites(worker, runtime_directory, monkeypatch)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.threading.Thread.start",
+        lambda _thread: None,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._await_parakeet_cpp_cgroup",
+        lambda _process, *, monotonic: events.append("await") or evidence,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._bind_cgroup_observer",
+        lambda _pid, *, cpp: events.append("bind") or (evidence, observer),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._read_parakeet_cpp_cgroup_evidence",
+        lambda _pid: evidence,
+    )
+    ready = ReadyEvent(
+        model_id=manifest.model_id,
+        manifest_sha256=manifest.digest,
+        source_bundle_sha256=source_bundle.tree_sha256,
+        adapter=manifest.adapter,
+        model_load_ms=5.0,
+        resources=ResourceUsage(rss_mb=50.0, threads=1, vram_mb=None),
+        runtime={"python": "3.12.3", "platform": "linux"},
+        protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+    )
+    responses = iter(
+        (
+            ready,
+            ShutdownEvent(
+                request_id="shutdown",
+                protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+            ),
+            ByeEvent(protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION),
+        )
+    )
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: next(responses))
+    monkeypatch.setattr(worker, "_send", lambda _payload: events.append("send"))
+    monkeypatch.setattr(worker, "_group_exists", lambda: False)
+    monkeypatch.setattr(
+        worker,
+        "_join_drainers",
+        lambda *, require_stopped: None,
+    )
+    monkeypatch.setattr(worker, "_close_process_pipes", lambda: None)
+
+    assert worker.start() is ready
+    assert events == ["await", "bind", "sample"]
+    trace = object()
+    assert worker._complete_trace(trace) is trace  # type: ignore[arg-type]  # noqa: SLF001
+    worker.close()
+
+    assert events == [
+        "await",
+        "bind",
+        "sample",
+        "sample",
+        "sample",
+        "send",
+        "wait",
+        "observer_close",
+    ]
+    assert observer.closed is True
+    assert worker.fully_stopped is True
+    observations = worker.resource_observations
+    assert observations is not None
+    assert [item["phase"] for item in observations["boundaries"]] == [
+        "startup",
+        "first_use",
+        "resident",
+    ]
+
+
+def test_scoped_start_observation_failure_closes_observer_and_terminates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manifest, source_bundle, scratch = _launch_fixture(tmp_path)
+    runtime_directory = tmp_path / "user-runtime"
+    runtime_directory.mkdir(mode=0o700)
+    evidence = {"verified": True}
+    events: list[str] = []
+
+    class Observer:
+        def sample(self):
+            raise CgroupObservationError("cgroup_observation_invalid")
+
+        def close(self):
+            events.append("observer_close")
+
+    process = SimpleNamespace(pid=424242, poll=lambda: None)
+    ticks = iter((10.0, 10.1))
+    worker = StreamingWorker(
+        manifest,
+        scratch,
+        source_bundle,  # type: ignore[arg-type]
+        popen_factory=lambda *_args, **_kwargs: process,  # type: ignore[arg-type]
+        monotonic=lambda: next(ticks),
+    )
+    _patch_cpp_launch_prerequisites(worker, runtime_directory, monkeypatch)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.threading.Thread.start",
+        lambda _thread: None,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._await_parakeet_cpp_cgroup",
+        lambda _process, *, monotonic: evidence,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._bind_cgroup_observer",
+        lambda _pid, *, cpp: (evidence, Observer()),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._read_parakeet_cpp_cgroup_evidence",
+        lambda _pid: evidence,
+    )
+    monkeypatch.setattr(
+        worker,
+        "_next_event",
+        lambda _timeout: ReadyEvent(
+            model_id=manifest.model_id,
+            manifest_sha256=manifest.digest,
+            source_bundle_sha256=source_bundle.tree_sha256,
+            adapter=manifest.adapter,
+            model_load_ms=5.0,
+            resources=ResourceUsage(rss_mb=50.0, threads=1, vram_mb=None),
+            runtime={"python": "3.12.3", "platform": "linux"},
+            protocol_version=PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+        ),
+    )
+    monkeypatch.setattr(worker, "_terminate", lambda: events.append("terminate"))
+    monkeypatch.setattr(worker, "_close_process_pipes", lambda: None)
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        worker.start()
+
+    assert events == ["terminate", "observer_close"]
+    assert worker.resource_observations is None

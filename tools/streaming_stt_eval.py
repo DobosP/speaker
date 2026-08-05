@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -130,6 +131,7 @@ _EVALUATOR_FILES = (
     "core/diagnostic_bundle.py",
     "tools/streaming_stt_eval.py",
     "tools/streaming_stt/bounded_io.py",
+    "tools/streaming_stt/cgroup_observation.py",
     "tools/streaming_stt/corpus.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/metrics.py",
@@ -686,11 +688,136 @@ def _validated_parakeet_cgroup_evidence(
     return result
 
 
+def _validated_cgroup_resource_observations(
+    manifest: WorkerManifest,
+    value: Mapping[str, object] | None,
+    *,
+    expected_completed_cases: int | None,
+) -> dict[str, object] | None:
+    """Bind exact complete observations only for verified scoped candidates."""
+
+    applicable = (manifest.adapter, manifest.schema_version) in {
+        (PARAKEET_REALTIME_EOU_ADAPTER, 5),
+        (PARAKEET_CPP_ADAPTER, 8),
+    }
+    if not applicable:
+        return None
+    expected_root = {
+        "schema_version": 1,
+        "source": "supervisor_cgroup_v2",
+        "scope": "systemd_user_scope_all_descendants",
+        "os_cache_control": "uncontrolled",
+        "cache_state_claim": "none",
+        "cache_eviction_performed": False,
+        "wall_clock_origin": "supervisor_immediately_before_popen",
+        "memory_current_scope": (
+            "point_sample_including_cgroup_charged_cache"
+        ),
+        "memory_peak_scope": (
+            "cumulative_since_scope_creation_not_phase_local"
+        ),
+        "cpu_stat_scope": "cumulative_since_scope_creation",
+        "snapshot_atomicity": "sequential_cgroup_file_reads_not_atomic",
+        "resident_scope": "pre_shutdown_after_requested_cases_no_idle_settle",
+    }
+    expected_phases = (
+        ("startup", "validated_ready", 0),
+        ("first_use", "first_validated_terminal", 1),
+        (
+            "resident",
+            "pre_shutdown_after_suite",
+            expected_completed_cases,
+        ),
+    )
+    boundary_fields = {
+        "phase",
+        "boundary",
+        "completed_cases",
+        "wall_elapsed_ms",
+        "memory_current_bytes",
+        "memory_peak_bytes",
+        "cpu_usage_usec",
+        "cpu_user_usec",
+        "cpu_system_usec",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or type(expected_completed_cases) is not int
+        or expected_completed_cases <= 0
+        or set(value) != {*expected_root, "boundaries"}
+        or any(
+            type(value[name]) is not type(expected)
+            or value[name] != expected
+            for name, expected in expected_root.items()
+        )
+    ):
+        raise ValueError
+    raw_boundaries = value.get("boundaries")
+    if type(raw_boundaries) is not list or len(raw_boundaries) != len(expected_phases):
+        raise ValueError
+    checked_boundaries: list[dict[str, object]] = []
+    previous_wall = -1.0
+    previous_peak = -1
+    previous_cpu = (-1, -1, -1)
+    counter_names = (
+        "memory_current_bytes",
+        "memory_peak_bytes",
+        "cpu_usage_usec",
+        "cpu_user_usec",
+        "cpu_system_usec",
+    )
+    for raw, (phase, boundary, completed_cases) in zip(
+        raw_boundaries,
+        expected_phases,
+    ):
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != boundary_fields
+            or raw.get("phase") != phase
+            or type(raw.get("phase")) is not str
+            or raw.get("boundary") != boundary
+            or type(raw.get("boundary")) is not str
+            or type(raw.get("completed_cases")) is not int
+            or raw.get("completed_cases") != completed_cases
+            or type(raw.get("wall_elapsed_ms")) is not float
+            or not math.isfinite(raw["wall_elapsed_ms"])
+            or raw["wall_elapsed_ms"] < 0.0
+            or raw["wall_elapsed_ms"] < previous_wall
+            or any(
+                type(raw.get(name)) is not int
+                or raw[name] < 0
+                or raw[name] > (1 << 63) - 1
+                for name in counter_names
+            )
+            or raw["memory_peak_bytes"] < raw["memory_current_bytes"]
+            or raw["memory_peak_bytes"] < previous_peak
+        ):
+            raise ValueError
+        cpu = (
+            raw["cpu_usage_usec"],
+            raw["cpu_user_usec"],
+            raw["cpu_system_usec"],
+        )
+        if any(current < previous for current, previous in zip(cpu, previous_cpu)):
+            raise ValueError
+        checked = {name: raw[name] for name in boundary_fields}
+        checked_boundaries.append(checked)
+        previous_wall = raw["wall_elapsed_ms"]
+        previous_peak = raw["memory_peak_bytes"]
+        previous_cpu = cpu
+    result = {**expected_root, "boundaries": checked_boundaries}
+    _strict_json(result)
+    return result
+
+
 def _worker_report(
     manifest: WorkerManifest,
     worker_binding: Mapping[str, object],
     runtime: Mapping[str, str],
     cgroup_evidence: Mapping[str, object] | None,
+    resource_observations: Mapping[str, object] | None = None,
+    *,
+    expected_completed_cases: int | None = None,
 ) -> dict[str, object]:
     """Add runtime provenance without changing any legacy report shape."""
 
@@ -699,6 +826,13 @@ def _worker_report(
     cgroup = _validated_parakeet_cgroup_evidence(manifest, cgroup_evidence)
     if cgroup is not None:
         report["cgroup_evidence"] = cgroup
+    observations = _validated_cgroup_resource_observations(
+        manifest,
+        resource_observations,
+        expected_completed_cases=expected_completed_cases,
+    )
+    if observations is not None:
+        report["resource_observations"] = observations
     return report
 
 
@@ -1738,6 +1872,8 @@ def _run_benchmark_locked(
             worker_binding,
             ready.runtime,
             worker.cgroup_evidence,
+            worker.resource_observations,
+            expected_completed_cases=len(records),
         )
         result = {
             "ok": bool(metrics["coverage_complete"]),

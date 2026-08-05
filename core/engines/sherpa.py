@@ -25,6 +25,15 @@ from always_on_agent.speech_analyzer import exact_control_class
 
 log = logging.getLogger("speaker.sherpa")
 
+
+def _log_turn_detector_error(_error: Exception) -> None:
+    """Preserve the live detector fallback traceback without per-block closures."""
+
+    log.debug(
+        "turn-completion detector failed; using acoustic endpoint",
+        exc_info=True,
+    )
+
 # How long a just-played block may keep the barge watch armed while the next
 # queued sentence is still waiting for its own first audio. Past this, a stale
 # playback-level EWMA is not evidence of an audible tail.
@@ -6225,51 +6234,21 @@ class SherpaOnnxEngine(AudioEngine):
         :meth:`_decide_endpoint` implementation.  Transcript text and PCM are
         consumed locally by the detector but never enter the returned value.
         """
-        from ..endpointing import CompletionScoreState, TurnObservation
+        from ..endpointing import observe_turn_completion
 
-        if acoustic_endpoint and vad_active:
-            state = CompletionScoreState.HARD_BOUNDARY
-            score = None
-        elif self._endpoint_policy is None or self._turn_detector is None:
-            state = CompletionScoreState.UNAVAILABLE
-            score = None
-        else:
-            text = (partial or "").strip()
-            if not text:
-                state = CompletionScoreState.NO_PARTIAL
-                score = None
-            elif not acoustic_endpoint and not allow_early:
-                state = CompletionScoreState.EARLY_GUARDED
-                score = None
-            elif (
-                self._endpoint_wants_audio
-                and silence_sec < self._endpoint_prosody_min_silence
-            ):
-                state = CompletionScoreState.AUDIO_WINDOW_PENDING
-                score = None
-            else:
-                try:
-                    score = self._turn_detector.completion_score(
-                        text,
-                        samples=samples,
-                        sample_rate=self.config.sample_rate,
-                    )
-                    state = CompletionScoreState.SCORED
-                except Exception:  # noqa: BLE001 - preserve acoustic fallback
-                    log.debug(
-                        "turn-completion detector failed; using acoustic endpoint",
-                        exc_info=True,
-                    )
-                    state = CompletionScoreState.DETECTOR_ERROR
-                    score = None
-
-        return TurnObservation(
-            acoustic_endpoint=bool(acoustic_endpoint),
-            vad_active=bool(vad_active),
-            early_endpoint_allowed=bool(allow_early),
-            trailing_silence_sec=float(silence_sec),
-            completion_state=state,
-            completion_score=(None if score is None else float(score)),
+        return observe_turn_completion(
+            detector=self._turn_detector,
+            policy=self._endpoint_policy,
+            acoustic_endpoint=acoustic_endpoint,
+            partial=partial,
+            silence_sec=silence_sec,
+            samples=samples,
+            sample_rate=self.config.sample_rate,
+            allow_early=allow_early,
+            vad_active=vad_active,
+            audio_min_silence_sec=self._endpoint_prosody_min_silence,
+            detector_needs_audio=self._endpoint_wants_audio,
+            on_detector_error=_log_turn_detector_error,
         )
 
     def _turn_evaluation(

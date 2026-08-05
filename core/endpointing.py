@@ -32,7 +32,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 import math
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 
 from always_on_agent.acoustic import EndpointReason
 from always_on_agent.text import normalize_text
@@ -545,6 +545,80 @@ class TurnDecision:
     basis: TurnDecisionBasis
 
 
+def observe_turn_completion(
+    *,
+    detector: Optional[TurnCompletionDetector],
+    policy: Optional["AdaptiveEndpointPolicy"],
+    acoustic_endpoint: bool,
+    partial: str,
+    silence_sec: float,
+    samples: Optional[Sequence[float]] = None,
+    sample_rate: int = 16000,
+    allow_early: bool = True,
+    vad_active: bool = False,
+    audio_min_silence_sec: float = 0.0,
+    detector_needs_audio: Optional[bool] = None,
+    on_detector_error: Optional[Callable[[Exception], None]] = None,
+) -> TurnObservation:
+    """Build the production aggregate-safe endpoint observation.
+
+    This is the shared detector-admission seam used by the live Sherpa engine
+    and causal diagnostics.  In particular, a detector is never consulted
+    without a non-empty streaming partial, and an audio detector is not called
+    before its configured silence window.  Detector failures remain an
+    explicit state so the runtime can fall back acoustically while evaluators
+    can refuse to mislabel that fallback as model evidence.
+    """
+
+    score: Optional[float]
+    if acoustic_endpoint and vad_active:
+        state = CompletionScoreState.HARD_BOUNDARY
+        score = None
+    elif policy is None or detector is None:
+        state = CompletionScoreState.UNAVAILABLE
+        score = None
+    else:
+        text = (partial or "").strip()
+        if not text:
+            state = CompletionScoreState.NO_PARTIAL
+            score = None
+        elif not acoustic_endpoint and not allow_early:
+            state = CompletionScoreState.EARLY_GUARDED
+            score = None
+        elif (
+            bool(
+                getattr(detector, "needs_audio", False)
+                if detector_needs_audio is None
+                else detector_needs_audio
+            )
+            and silence_sec < audio_min_silence_sec
+        ):
+            state = CompletionScoreState.AUDIO_WINDOW_PENDING
+            score = None
+        else:
+            try:
+                score = detector.completion_score(
+                    text,
+                    samples=samples,
+                    sample_rate=sample_rate,
+                )
+                state = CompletionScoreState.SCORED
+            except Exception as exc:  # noqa: BLE001 - preserve acoustic fallback
+                if on_detector_error is not None:
+                    on_detector_error(exc)
+                state = CompletionScoreState.DETECTOR_ERROR
+                score = None
+
+    return TurnObservation(
+        acoustic_endpoint=bool(acoustic_endpoint),
+        vad_active=bool(vad_active),
+        early_endpoint_allowed=bool(allow_early),
+        trailing_silence_sec=float(silence_sec),
+        completion_state=state,
+        completion_score=(None if score is None else float(score)),
+    )
+
+
 class AdaptiveEndpointPolicy:
     """Combines the acoustic endpoint, a completion score, and trailing silence
     into one endpoint decision. Pure + deterministic."""
@@ -718,3 +792,37 @@ def decide_turn(
         endpoint_reason=EndpointReason.UNKNOWN,
         basis=TurnDecisionBasis.SEMANTIC_WAIT,
     )
+
+
+def evaluate_turn_completion(
+    *,
+    detector: Optional[TurnCompletionDetector],
+    policy: Optional[AdaptiveEndpointPolicy],
+    acoustic_endpoint: bool,
+    partial: str,
+    silence_sec: float,
+    samples: Optional[Sequence[float]] = None,
+    sample_rate: int = 16000,
+    allow_early: bool = True,
+    vad_active: bool = False,
+    audio_min_silence_sec: float = 0.0,
+    detector_needs_audio: Optional[bool] = None,
+    on_detector_error: Optional[Callable[[Exception], None]] = None,
+) -> tuple[TurnObservation, TurnDecision]:
+    """Run the shared production observation and policy decision seams."""
+
+    observation = observe_turn_completion(
+        detector=detector,
+        policy=policy,
+        acoustic_endpoint=acoustic_endpoint,
+        partial=partial,
+        silence_sec=silence_sec,
+        samples=samples,
+        sample_rate=sample_rate,
+        allow_early=allow_early,
+        vad_active=vad_active,
+        audio_min_silence_sec=audio_min_silence_sec,
+        detector_needs_audio=detector_needs_audio,
+        on_detector_error=on_detector_error,
+    )
+    return observation, decide_turn(observation, policy=policy)

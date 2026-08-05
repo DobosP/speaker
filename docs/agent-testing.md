@@ -34,6 +34,7 @@
 | Faster-Whisper final-only comparator | `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_faster_whisper_endpoint_candidate.py tests/test_streaming_stt_faster_whisper_endpoint.py -q` | separate runtime/model receipts, no-download provision, final-only adapter, evaluator provenance, PCM/tree tamper rejection, and schema-v6 worker serialization pass without importing/loading a candidate, GPU, network, or audio device (ADR-0102) |
 | Public matrix + production-model STT control | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_zipformer.py -m "not real_model" -q` | no-download license/receipt/selection/privacy contracts and exact fp32 Zipformer Bubblewrap control pass without a corpus, model load, network, or audio device (ADR-0098) |
 | LiveKit endpoint-source admission | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_public_endpoint_eval_catalog.py tests/test_livekit_eot_parquet_worker.py tests/test_inventory_livekit_eot_english.py -q` | exact endpoint-only catalog and immutable legacy-closure hashes; explicit private source/license/output contracts; isolated PyArrow schema, embedded-WAV, HOLD/EOT, aggregate/privacy, no-clobber, exact four-file execution closure with pre/post-publication rebinding, and recognized-Git-worktree boundary behavior, including inert empty sentinels plus same-inode/disagreement/growth/replacement races, pass with synthetic fixtures. The separately run exact private shard inventory is aggregate-only; no WER, model, GPU, network, audio device, runtime, or default claim follows (ADR-0134) |
+| Causal LiveKit endpoint diagnostic | `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_endpointing.py tests/test_livekit_causal_endpoint_eval.py -m "not real_model and not slow and not backend" -q` | `141 passed, 5 deselected`: shared production-observation parity, causal HOLD/EOT grid and censoring math, immutable prefix/no-partial behavior, strict protocols including conservative cross-summary and percentile-order tamper rejection, retained-descriptor scratch cleanup, bounded worker failure, aggregate privacy, descriptor-bound execution closure/no-clobber publication, current >512 KiB Sherpa closure admission, unchanged public 512 KiB rejection, unallowlisted-path rejection, and lexical venv-symlink preservation pass with fakes. The deselected exact-source/model tests stay separate so ambient private-path variables cannot change this headless claim; no exact source/model, Sherpa/VAD/STT, audio device, threshold, default, or live claim follows (ADR-0136) |
 | Licensed stratified STT evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_demand_noise_streaming_stt_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_streaming_stt_faster_whisper_endpoint.py tests/test_streaming_stt_suite.py -q` | exact DEMAND/license/runtime receipts, outside-Git publication, Rochester label fail-closed behavior, bounded strata, N/A zero-attempt command recall, evaluator binding, sequential cells, failure checkpoints, and aggregate privacy pass without a model, network, GPU, or audio device (ADR-0109) |
 | Public short-command/noise gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_command_noise_corpus.py tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `246 passed, 1 deselected`: exact official-archive/catalog/license/lock binding, bounded direct archive reads, deterministic 57-case selection, schema-v4 assertion and receipt integrity, final/partial positive and forbidden-target metrics, aggregate privacy, and no-clobber outside-Git publication pass without downloading, loading a model, using a GPU, network, or audio device (ADR-0117/0119) |
 | Configured final-command FileReplay gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_production_final_stt_eval.py tests/test_streaming_stt_final_metrics.py tests/test_recorded_stt_eval.py tests/test_file_replay_engine.py -q` | decision-boundary-preserving aggregate metrics, exact private corpus/config/model/source/runtime/provider binding, ASR-only FileReplay ownership, verifier warm/decode attestation, close-time privacy/mutation checks, model-output suppression, and failure-clean atomic no-clobber publication pass with fakes; selected output explicitly lacks live VAD-owned duration/recovery, and no model, GPU, device, capture, AEC, barge-in, tool, or live claim follows (ADR-0118) |
@@ -50,6 +51,63 @@
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Exact causal LiveKit endpoint diagnostic
+
+ADR-0136 limits this command to a private aggregate diagnostic. Use the exact
+ADR-0134 inventory report and source, the isolated PyArrow 25 environment, the
+ADR-0135 model, canonical `config.json`, and new absent scratch/report paths:
+
+```bash
+export LIVEKIT_EOT_PARQUET=/absolute/private/validation-00000-of-00001.parquet
+export LIVEKIT_EOT_INVENTORY=/absolute/private/livekit-eot-inventory.json
+export PYARROW25_PYTHON=/absolute/private/pyarrow25-venv/bin/python
+export SMART_TURN_MODEL=/home/dobo/work/speaker/pretrained_models/sherpa/turn/smart-turn-v3.2-cpu.onnx
+export CAUSAL_SCRATCH=/absolute/private/new-livekit-causal-scratch
+export CAUSAL_REPORT=/absolute/private/new-livekit-causal-report.json
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.livekit_causal_endpoint_eval \
+  --source-parquet "$LIVEKIT_EOT_PARQUET" \
+  --inventory-report "$LIVEKIT_EOT_INVENTORY" \
+  --parquet-python "$PYARROW25_PYTHON" \
+  --model "$SMART_TURN_MODEL" \
+  --config /home/dobo/work/speaker/config.json \
+  --scratch-root "$CAUSAL_SCRATCH" \
+  --output "$CAUSAL_REPORT" \
+  --accept-license CC-BY-4.0 \
+  --accept-partial-assumption
+```
+
+Both destination paths must be absolute, private, outside recognized Git
+worktrees, and absent before the run. The partial flag acknowledges the fixed
+opaque nonempty same-epoch-partial assumption; it does not use publisher text.
+The report is aggregate-only counterfactual evidence. Keep its printed SHA-256,
+and do not interpret it as production runtime, inference latency, capture/VAD,
+STT, device, or live-conversation evidence.
+
+The hardened 2026-08-05 exact run passed the separate pinned-source and
+proc-fd CPU-model gates at one test each, then published a mode-0600,
+single-link, 13,966-byte aggregate report with SHA-256
+`ee07bfbe0f1b16a4fafee44c4f4901a3799adcdf7bffa46ad8df775ce833e9e2`;
+its scratch path was absent after cleanup. The current execution closure and
+source bundle match the report. The pre-landing config SHA-256
+`435a7dbda7aaad151e4b7d77ae0fba7f3ea544b75c9d2df543ef415740c1c811`
+was byte-identical to `main`; after landing, keep the canonical main config
+path shown above.
+
+On the full 850-HOLD/400-EOT counterfactual, the opaque-partial candidate cut
+57 HOLD labels across 32 rows, versus no-partial acoustic fallback 93 across
+49. Candidate EOT committed 350, right-censored 50, and had conservative
+p50/p95 700/1,600 ms; its observed commits had p50/p95 700/900 ms. Fallback
+committed all 400 at 800 ms. On publisher labels wholly before rule 3, the
+candidate cut 46/646 HOLD labels and committed 300/332 EOT labels, with 32
+censored and conservative p50/p95 700/1,600 ms. Runtime versions were ONNX
+Runtime 1.27.0, NumPy 2.4.6, and PyArrow 25.0.0 on CPUExecutionProvider.
+These are diagnostic-only tradeoff results: do not change a threshold, model,
+or default, and do not infer STT, device, latency, or live quality from them.
 
 ## Exact Moonshine Medium reference setup
 

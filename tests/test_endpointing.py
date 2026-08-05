@@ -17,6 +17,7 @@ import pytest
 
 from core.endpointing import (
     AdaptiveEndpointPolicy,
+    CompletionScoreState,
     EndpointConfig,
     LexicalTurnCompletionDetector,
     ProsodyTurnCompletionDetector,
@@ -24,6 +25,8 @@ from core.endpointing import (
     SessionPauseModel,
     TurnCompletionDetector,
     _slaney_mel_filters,
+    evaluate_turn_completion,
+    observe_turn_completion,
 )
 
 _SMART_TURN_MODEL = Path(
@@ -623,6 +626,303 @@ def test_engine_detector_error_falls_back_to_acoustic():
 
     e = _engine(detector=_BoomDetector(), endpoint_enabled=True)
     assert e._decide_endpoint(acoustic_endpoint=True, partial="hello there", silence_sec=0.3) is True
+
+
+def test_shared_observation_helper_pins_every_engine_branch_state():
+    class Detector:
+        needs_audio = True
+
+        def __init__(self, *, fail: bool = False) -> None:
+            self.fail = fail
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            if self.fail:
+                raise RuntimeError("synthetic")
+            return 0.8
+
+    policy = AdaptiveEndpointPolicy(EndpointConfig(enabled=True))
+    scored = observe_turn_completion(
+        detector=Detector(),
+        policy=policy,
+        acoustic_endpoint=False,
+        partial="available",
+        silence_sec=0.2,
+        samples=[0.0],
+        audio_min_silence_sec=0.15,
+        detector_needs_audio=True,
+    )
+    assert scored.completion_state is CompletionScoreState.SCORED
+    assert scored.completion_score == 0.8
+
+    cases = (
+        ({"acoustic_endpoint": True, "vad_active": True}, CompletionScoreState.HARD_BOUNDARY),
+        ({"policy": None}, CompletionScoreState.UNAVAILABLE),
+        ({"partial": "  "}, CompletionScoreState.NO_PARTIAL),
+        ({"allow_early": False}, CompletionScoreState.EARLY_GUARDED),
+        ({"silence_sec": 0.1}, CompletionScoreState.AUDIO_WINDOW_PENDING),
+        ({"detector": Detector(fail=True)}, CompletionScoreState.DETECTOR_ERROR),
+    )
+    defaults = {
+        "detector": Detector(),
+        "policy": policy,
+        "acoustic_endpoint": False,
+        "partial": "available",
+        "silence_sec": 0.2,
+        "samples": [0.0],
+        "allow_early": True,
+        "vad_active": False,
+        "audio_min_silence_sec": 0.15,
+        "detector_needs_audio": True,
+    }
+    for overrides, expected in cases:
+        observation = observe_turn_completion(**(defaults | overrides))
+        assert observation.completion_state is expected
+
+
+def test_shared_observation_helper_preserves_exact_detector_arguments_and_guards():
+    samples = [0.125, -0.25]
+    calls = []
+
+    class Detector:
+        needs_audio = True
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            calls.append((text, samples, sample_rate))
+            return 0.8125
+
+    detector = Detector()
+    policy = AdaptiveEndpointPolicy(EndpointConfig(enabled=True))
+    observation = observe_turn_completion(
+        detector=detector,
+        policy=policy,
+        acoustic_endpoint=False,
+        partial="  available now  ",
+        silence_sec=0.2,
+        samples=samples,
+        sample_rate=22_050,
+        audio_min_silence_sec=0.15,
+        detector_needs_audio=True,
+    )
+
+    assert calls == [("available now", samples, 22_050)]
+    assert calls[0][1] is samples
+    assert observation.completion_state is CompletionScoreState.SCORED
+    assert observation.completion_score == 0.8125
+
+    guarded = (
+        {"acoustic_endpoint": True, "vad_active": True},
+        {"policy": None},
+        {"detector": None},
+        {"partial": "  "},
+        {"allow_early": False},
+        {"silence_sec": 0.1},
+    )
+    defaults = {
+        "detector": detector,
+        "policy": policy,
+        "acoustic_endpoint": False,
+        "partial": "available now",
+        "silence_sec": 0.2,
+        "samples": samples,
+        "sample_rate": 22_050,
+        "allow_early": True,
+        "vad_active": False,
+        "audio_min_silence_sec": 0.15,
+        "detector_needs_audio": True,
+    }
+    for overrides in guarded:
+        calls.clear()
+        observe_turn_completion(**(defaults | overrides))
+        assert calls == []
+
+
+def test_shared_observation_helper_invokes_error_callback_inside_exception():
+    import sys
+
+    seen = []
+
+    class Detector:
+        needs_audio = False
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            raise RuntimeError("synthetic")
+
+    def on_error(error: Exception) -> None:
+        seen.append((error, sys.exc_info()[1]))
+
+    policy = AdaptiveEndpointPolicy(EndpointConfig(enabled=True))
+    observation, decision = evaluate_turn_completion(
+        detector=Detector(),
+        policy=policy,
+        acoustic_endpoint=True,
+        partial="available",
+        silence_sec=0.8,
+        on_detector_error=on_error,
+    )
+
+    assert observation.completion_state is CompletionScoreState.DETECTOR_ERROR
+    assert decision.commit is True
+    assert len(seen) == 1
+    assert seen[0][0] is seen[0][1]
+
+
+def test_engine_uses_cached_audio_need_when_detector_attribute_mutates():
+    class Detector:
+        needs_audio = True
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            return 0.9
+
+    detector = Detector()
+    engine = _engine(detector=detector, endpoint_enabled=True)
+    detector.needs_audio = False
+
+    observation = engine._observe_turn(
+        acoustic_endpoint=False,
+        partial="available",
+        silence_sec=0.1,
+        samples=[0.0],
+    )
+
+    assert observation.completion_state is CompletionScoreState.AUDIO_WINDOW_PENDING
+
+
+def test_engine_cached_audio_need_false_overrides_mutated_detector_attribute():
+    calls = []
+
+    class Detector:
+        needs_audio = False
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            calls.append((text, samples, sample_rate))
+            return 0.9
+
+    detector = Detector()
+    engine = _engine(detector=detector, endpoint_enabled=True)
+    detector.needs_audio = True
+    samples = [0.0]
+
+    observation = engine._observe_turn(
+        acoustic_endpoint=False,
+        partial="available",
+        silence_sec=0.1,
+        samples=samples,
+    )
+
+    assert observation.completion_state is CompletionScoreState.SCORED
+    assert calls == [("available", samples, engine.config.sample_rate)]
+    assert calls[0][1] is samples
+
+
+def test_shared_evaluation_is_differentially_identical_to_engine_turn_evaluation():
+    class Detector:
+        def __init__(self, *, needs_audio=False, score=0.8, error=None):
+            self.needs_audio = needs_audio
+            self.score = score
+            self.error = error
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            if self.error is not None:
+                raise self.error
+            return self.score
+
+    cases = (
+        {
+            "detector": Detector(),
+            "endpoint_enabled": False,
+            "call": {"acoustic_endpoint": True, "partial": "available", "silence_sec": 0.8},
+        },
+        {
+            "detector": Detector(),
+            "endpoint_enabled": True,
+            "call": {"acoustic_endpoint": True, "partial": " ", "silence_sec": 0.8},
+        },
+        {
+            "detector": Detector(),
+            "endpoint_enabled": True,
+            "call": {
+                "acoustic_endpoint": False,
+                "partial": "available",
+                "silence_sec": 0.8,
+                "allow_early": False,
+            },
+        },
+        {
+            "detector": Detector(needs_audio=True),
+            "endpoint_enabled": True,
+            "call": {"acoustic_endpoint": False, "partial": "available", "silence_sec": 0.1},
+        },
+        {
+            "detector": Detector(score=0.9),
+            "endpoint_enabled": True,
+            "call": {"acoustic_endpoint": False, "partial": "available", "silence_sec": 0.8},
+        },
+        {
+            "detector": Detector(error=RuntimeError("synthetic differential")),
+            "endpoint_enabled": True,
+            "call": {"acoustic_endpoint": True, "partial": "available", "silence_sec": 0.8},
+        },
+        {
+            "detector": Detector(error=AssertionError("must not score")),
+            "endpoint_enabled": True,
+            "call": {
+                "acoustic_endpoint": True,
+                "partial": "available",
+                "silence_sec": 0.0,
+                "vad_active": True,
+            },
+        },
+    )
+
+    for case in cases:
+        detector = case["detector"]
+        engine = _engine(
+            detector=detector,
+            endpoint_enabled=case["endpoint_enabled"],
+        )
+        call = case["call"]
+        actual = engine._turn_evaluation(**call)
+        expected = evaluate_turn_completion(
+            detector=engine._turn_detector,
+            policy=engine._endpoint_policy,
+            samples=call.get("samples"),
+            sample_rate=engine.config.sample_rate,
+            audio_min_silence_sec=engine._endpoint_prosody_min_silence,
+            detector_needs_audio=engine._endpoint_wants_audio,
+            **{key: value for key, value in call.items() if key != "samples"},
+        )
+        assert actual == expected
+
+
+def test_engine_detector_error_debug_log_retains_exact_exception(caplog):
+    import logging
+
+    error = RuntimeError("exact detector traceback")
+
+    class Detector:
+        needs_audio = False
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            raise error
+
+    engine = _engine(detector=Detector(), endpoint_enabled=True)
+    with caplog.at_level(logging.DEBUG, logger="speaker.sherpa"):
+        observation = engine._observe_turn(
+            acoustic_endpoint=True,
+            partial="available",
+            silence_sec=0.8,
+        )
+
+    assert observation.completion_state is CompletionScoreState.DETECTOR_ERROR
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage()
+        == "turn-completion detector failed; using acoustic endpoint"
+    ]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[1] is error
 
 
 def test_sherpa_config_parses_endpoint_fields_and_ignores_comment():

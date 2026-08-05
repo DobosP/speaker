@@ -40,6 +40,15 @@ sherpa-onnx
             fetched by tools/setup_models.py are published from the sherpa-onnx
             GitHub releases and carry their own upstream model licenses.
 
+Smart Turn v3.2
+  Project:  https://github.com/pipecat-ai/smart-turn
+  Author:   Daily / the Pipecat contributors
+  License:  BSD 2-Clause License
+  Use:      Optional audio-native turn-completion through the exact pinned CPU
+            ONNX model and its Whisper-compatible preprocessing
+            (core/endpointing.py and tools/setup_models.py). Model weights are
+            fetched by the user and are not bundled with this repository.
+
 Silero VAD
   Project:  https://github.com/snakers4/silero-vad
   Author:   Silero Team

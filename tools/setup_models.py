@@ -155,13 +155,19 @@ DTLN_AEC_BASE = os.environ.get(
     "DTLN_AEC_BASE_URL", "https://github.com/breizhn/DTLN-aec/raw/main/pretrained_models"
 )
 
-# Optional PROSODY turn-completion model for the semantic endpoint (Smart Turn v3,
-# pipecat-ai/smart-turn-v3, BSD-2). A single ~8.7 MB .onnx HF repo file -- read the
-# audio waveform, predict P(turn complete), so the endpoint floor can drop without
-# splitting. Override with --turn-model-url or the SMART_TURN_MODEL_URL env var.
+# Optional PROSODY turn-completion model for the semantic endpoint. Keep the
+# exact immutable Smart Turn v3.2 CPU artifact together: setup accepts mirrors
+# only when their regular-file bytes match this BSD-2-Clause release exactly.
+SMART_TURN_MODEL_REVISION = "f766f81d3cfdf7737ac64aad813d91bbfd56bf93"
+SMART_TURN_MODEL_FILENAME = "smart-turn-v3.2-cpu.onnx"
+SMART_TURN_MODEL_BYTES = 8_679_182
+SMART_TURN_MODEL_SHA256 = (
+    "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
+)
+SMART_TURN_MODEL_LICENSE = "BSD-2-Clause"
 SMART_TURN_MODEL_URL = (
-    "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/"
-    "smart-turn-v3.2-cpu.onnx"
+    "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/"
+    f"{SMART_TURN_MODEL_REVISION}/{SMART_TURN_MODEL_FILENAME}"
 )
 
 # Optional OFFLINE second-pass ASR for the FINAL transcript (SenseVoice). A
@@ -747,6 +753,124 @@ def fetch_speaker_model(dest_dir: str, url: str, *, force: bool = False) -> str:
         shutil.copyfileobj(resp, fh)
     os.replace(tmp, path)
     return path
+
+
+def _smart_turn_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_mode),
+        int(metadata.st_nlink),
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+    )
+
+
+def validate_smart_turn_model(path: str) -> str:
+    """Bind one regular file to the exact published Smart Turn v3.2 bytes.
+
+    The artifact must have exactly one link. Its descriptor is opened without
+    following symlinks where the platform supports it, and its identity is
+    checked before/after hashing and again at the pathname. This keeps an
+    idempotent setup from trusting a substituted, truncated, or concurrently
+    changed same-named artifact.
+    """
+    initial = os.lstat(path)
+    if not stat.S_ISREG(initial.st_mode):
+        raise ValueError("Smart Turn model must be a regular file, not a symlink")
+    if initial.st_nlink != 1:
+        raise ValueError("Smart Turn model must not be hardlinked")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("Smart Turn model must be a regular file")
+        if before.st_nlink != 1:
+            raise ValueError("Smart Turn model must not be hardlinked")
+        if _smart_turn_file_identity(initial) != _smart_turn_file_identity(before):
+            raise RuntimeError("Smart Turn model changed before verification")
+        if before.st_size != SMART_TURN_MODEL_BYTES:
+            raise ValueError(
+                "Smart Turn model size mismatch: expected "
+                f"{SMART_TURN_MODEL_BYTES}, got {before.st_size}"
+            )
+
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        if _smart_turn_file_identity(before) != _smart_turn_file_identity(after):
+            raise RuntimeError("Smart Turn model changed while it was verified")
+    finally:
+        os.close(descriptor)
+
+    published = os.lstat(path)
+    if _smart_turn_file_identity(after) != _smart_turn_file_identity(published):
+        raise RuntimeError("Smart Turn model changed after verification")
+    if digest.hexdigest() != SMART_TURN_MODEL_SHA256:
+        raise ValueError("Smart Turn model SHA-256 mismatch")
+    return path
+
+
+def fetch_smart_turn_model(
+    dest_dir: str,
+    url: str = SMART_TURN_MODEL_URL,
+    *,
+    force: bool = False,
+    opener: Callable[[str], object] | None = None,
+) -> str:
+    """Atomically fetch and verify the exact Smart Turn v3.2 CPU model.
+
+    A forced refresh is staged and verified before replacing a working model.
+    Ordinary idempotent setup re-verifies the existing artifact instead of
+    trusting its filename. ``opener`` is injectable for headless acquisition
+    tests; production uses ``urllib.request.urlopen``.
+    """
+    import urllib.request
+
+    open_url = opener or urllib.request.urlopen
+    os.makedirs(dest_dir, exist_ok=True)
+    destination = os.path.join(dest_dir, SMART_TURN_MODEL_FILENAME)
+    if os.path.lexists(destination) and not force:
+        return validate_smart_turn_model(destination)
+
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{SMART_TURN_MODEL_FILENAME}.", suffix=".part", dir=dest_dir
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as target:
+            with open_url(url) as response:  # type: ignore[attr-defined]
+                total = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    if not isinstance(chunk, bytes):
+                        raise TypeError("Smart Turn download returned non-byte data")
+                    total += len(chunk)
+                    if total > SMART_TURN_MODEL_BYTES:
+                        raise ValueError("Smart Turn model download exceeds pinned size")
+                    target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        validate_smart_turn_model(temporary)
+        os.replace(temporary, destination)
+        temporary = ""
+        _fsync_directory(dest_dir)
+        return validate_smart_turn_model(destination)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def extract_member(archive: str, suffix: str, dest_dir: str) -> str:
@@ -1528,15 +1652,15 @@ def main(argv: list[str] | None = None) -> int:
         "--turn-model-url",
         dest="turn_model_url",
         default=os.environ.get("SMART_TURN_MODEL_URL", SMART_TURN_MODEL_URL),
-        help="URL of the optional Smart Turn prosody endpoint model .onnx (override "
-        "or set SMART_TURN_MODEL_URL)",
+        help="URL or mirror of the exact checksum-pinned Smart Turn v3.2 CPU "
+        "model (override or set SMART_TURN_MODEL_URL; bytes must match the pin)",
     )
     parser.add_argument(
         "--turn-model",
         dest="turn_model",
         action="store_true",
         help="also download the optional prosody turn-completion model (Smart Turn "
-        "v3, ~8.7 MB) and wire endpoint_prosody_model in config; off by default. "
+        "v3.2, ~8.7 MB) and wire endpoint_prosody_model in config; off by default. "
         "After fetching, set sherpa.endpoint_detector=prosody to activate it.",
     )
     parser.add_argument(
@@ -1867,7 +1991,7 @@ def main(argv: list[str] | None = None) -> int:
         turn_dest = os.path.join(args.dest, "turn")
         print(f"[models] fetching prosody turn model: {args.turn_model_url} -> {turn_dest}")
         try:
-            resolved["endpoint_prosody_model"] = fetch_speaker_model(
+            resolved["endpoint_prosody_model"] = fetch_smart_turn_model(
                 turn_dest, args.turn_model_url, force=args.force
             )
         except Exception as exc:  # noqa: BLE001 - optional enhancement
@@ -2177,8 +2301,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "\nProsody turn model ready. To ACTIVATE the prosodic end-of-turn detector, set "
             "sherpa.endpoint_detector=prosody (it is OFF by default; needs onnxruntime). "
-            "VALIDATE on device first:  "
-            "python -m tools.live_session --all --inject --smart-endpoint"
+            "Regenerate the corrected owner-voice report with "
+            "python -m tools.turn_detect_check, then run the physical A/B through ./live.sh."
         )
     if sherpa.get("kws_encoder"):
         print(

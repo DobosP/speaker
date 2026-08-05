@@ -3,12 +3,15 @@
 The shipped v1 is a lexical turn-completion detector + an adaptive policy layered
 on the acoustic timer, integrated into the sherpa engine via a pure
 ``_decide_endpoint``. These pin the DECISION logic (no models / no audio); the
-real-model latency win is validated on device.
+optional real-model contract has a separate marker, and live impact remains a
+separate owner gate.
 """
 from __future__ import annotations
-import statistics
 
+import os
 from pathlib import Path
+import statistics
+import warnings
 
 import pytest
 
@@ -23,7 +26,12 @@ from core.endpointing import (
     _slaney_mel_filters,
 )
 
-_SMART_TURN_MODEL = Path("pretrained_models/sherpa/turn/smart-turn-v3.2-cpu.onnx")
+_SMART_TURN_MODEL = Path(
+    os.environ.get(
+        "SPEAKER_SMART_TURN_MODEL",
+        "pretrained_models/sherpa/turn/smart-turn-v3.2-cpu.onnx",
+    )
+)
 
 
 # --- prosody detector (Smart Turn) -- pure feature-extraction + edges ---------
@@ -32,12 +40,100 @@ _SMART_TURN_MODEL = Path("pretrained_models/sherpa/turn/smart-turn-v3.2-cpu.onnx
 def test_slaney_mel_filters_shape_and_nonneg():
     import numpy as np
 
-    mel = _slaney_mel_filters()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        mel = _slaney_mel_filters()
     assert mel.shape == (201, 80)
     assert float(np.min(mel)) >= 0.0
     assert float(np.max(mel)) > 0.0  # not all-zero
     # deterministic
     assert np.array_equal(mel, _slaney_mel_filters())
+
+
+def _upstream_smart_turn_logmel(samples):
+    """Independent Smart Turn/Transformers reference for deterministic parity.
+
+    The ordering is pinned by ``audio_utils.py`` + ``inference.py`` at
+    pipecat-ai/smart-turn@4786657e242dfe77dd138699ac564ee074a2a543 and the
+    vendored numpy implementation at
+    pipecat-ai/pipecat@0db3c9a0a8d4982c997afd073a3f6372e9d44515.
+    """
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    waveform = np.asarray(samples, dtype="float32").reshape(-1)[-128_000:]
+    if waveform.size < 128_000:
+        waveform = np.pad(waveform, (128_000 - waveform.size, 0))
+    waveform = (waveform - waveform.mean()) / np.sqrt(waveform.var() + 1e-7)
+
+    centered = np.pad(waveform.astype("float64"), (200, 200), mode="reflect")
+    window = np.hanning(401)[:-1]
+    frames = sliding_window_view(centered, 400)[::160]
+    magnitudes = (np.abs(np.fft.rfft(frames * window, axis=-1)) ** 2).T
+    mel = np.maximum(1e-10, _slaney_mel_filters().T @ magnitudes)
+    log_mel = np.log10(mel)[:, :-1]
+    log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
+    return ((log_mel + 4.0) / 4.0)[None].astype("float32")
+
+
+@pytest.mark.parametrize("duration_sec", [0.5, 2.0, 7.0, 8.0, 9.0])
+def test_prosody_logmel_matches_upstream_end_aligned_contract(duration_sec):
+    import numpy as np
+
+    sample_count = int(duration_sec * 16_000)
+    time = np.arange(sample_count, dtype="float32") / 16_000
+    envelope = np.linspace(0.35, 1.0, sample_count, dtype="float32")
+    samples = envelope * (
+        0.18 * np.sin(2 * np.pi * 197 * time)
+        + 0.04 * np.cos(2 * np.pi * 733 * time)
+    )
+
+    detector = ProsodyTurnCompletionDetector("/no/model.onnx")
+    detector._mel = _slaney_mel_filters()
+    actual = detector._logmel(samples, 16_000)
+    expected = _upstream_smart_turn_logmel(samples)
+
+    assert actual.shape == expected.shape == (1, 80, 800)
+    assert np.allclose(actual, expected, rtol=0.0, atol=1e-5)
+
+
+def test_prosody_logmel_matches_fixed_official_transformers_probe():
+    """Pin independent WhisperFeatureExtractor output without that dependency.
+
+    The constants were generated from the official extractor using the exact
+    Smart Turn invocation in upstream ``inference.py`` and this deterministic
+    two-second fixture. In particular, the last-frame sum catches a regression
+    that moves short-turn speech from the end to the beginning of the tensor.
+    """
+    import numpy as np
+
+    sample_count = 2 * 16_000
+    time = np.arange(sample_count, dtype="float32") / 16_000
+    envelope = np.linspace(0.35, 1.0, sample_count, dtype="float32")
+    samples = envelope * (
+        0.18 * np.sin(2 * np.pi * 197 * time)
+        + 0.04 * np.cos(2 * np.pi * 733 * time)
+    )
+    detector = ProsodyTurnCompletionDetector("/no/model.onnx")
+    detector._mel = _slaney_mel_filters()
+    features = detector._logmel(samples, 16_000)
+
+    actual = np.array(
+        [
+            features[0, 0, 0],
+            features[0, 17, 137],
+            features[0, 79, 799],
+            features[0, :, 0].sum(),
+            features[0, :, 400].sum(),
+            features[0, :, 799].sum(),
+        ],
+        dtype="float32",
+    )
+    expected = np.array(
+        [-0.1325642, -0.1325642, -0.1325642, -10.605135, -10.605135, 30.5976505],
+        dtype="float32",
+    )
+    assert np.allclose(actual, expected, rtol=0.0, atol=1e-4)
 
 
 def test_prosody_detector_needs_audio_and_neutral_on_thin_audio():
@@ -51,6 +147,14 @@ def test_prosody_detector_needs_audio_and_neutral_on_thin_audio():
     assert d.completion_score("hi", samples=np.zeros(1600, dtype="float32")) == 0.5  # 0.1s < 0.3
 
 
+@pytest.mark.parametrize("samples", [None, [0.0]])
+def test_prosody_rejects_non_16k_before_neutral_audio_return(samples):
+    detector = ProsodyTurnCompletionDetector("/no/model.onnx")
+
+    with pytest.raises(ValueError, match="caller-provided 16 kHz"):
+        detector.completion_score("", samples=samples, sample_rate=48_000)
+
+
 def test_prosody_logmel_shape_is_whisper_input():
     import numpy as np
 
@@ -59,6 +163,58 @@ def test_prosody_logmel_shape_is_whisper_input():
     feats = d._logmel(np.random.default_rng(0).standard_normal(2 * 16000).astype("float32"), 16000)
     assert feats.shape == (1, 80, 800)  # the model's input_features shape
     assert feats.dtype == np.dtype("float32")
+
+
+@pytest.mark.parametrize("probability", [0.0, 0.25, 1.0])
+def test_prosody_accepts_one_finite_probability(probability):
+    assert ProsodyTurnCompletionDetector._probability([[probability]]) == probability
+
+
+@pytest.mark.parametrize(
+    ("outputs", "message"),
+    [
+        ([], "exactly one output tensor"),
+        ([[0.25], [0.75]], "exactly one output tensor"),
+        ([[]], "exactly one probability"),
+        ([[0.25, 0.75]], "exactly one probability"),
+        ([[True]], "floating-point dtype"),
+        ([[1]], "floating-point dtype"),
+        ([["0.5"]], "floating-point dtype"),
+        ([[0.5 + 0j]], "floating-point dtype"),
+        ([[float("nan")]], "finite probability"),
+        ([[float("inf")]], "finite probability"),
+        ([[-0.01]], "finite probability"),
+        ([[1.01]], "finite probability"),
+    ],
+)
+def test_prosody_rejects_invalid_onnx_output(outputs, message):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=message):
+            ProsodyTurnCompletionDetector._probability(outputs)
+
+
+def test_prosody_load_exercises_input_and_output_contract():
+    import numpy as np
+
+    class Session:
+        def __init__(self):
+            self.inputs = []
+
+        def run(self, _outputs, inputs):
+            self.inputs.append(inputs)
+            return [[0.75]]
+
+    detector = ProsodyTurnCompletionDetector("/no/model.onnx")
+    detector._session = Session()
+    detector._mel = _slaney_mel_filters()
+    detector.load()
+
+    assert len(detector._session.inputs) == 1
+    features = detector._session.inputs[0]["input_features"]
+    assert features.shape == (1, 80, 800)
+    assert features.dtype == np.dtype("float32")
+    assert np.count_nonzero(features) == 0
 
 
 # --- prosody detector -- real model (skipped if the ONNX isn't downloaded) ----
@@ -71,6 +227,7 @@ def test_prosody_score_in_unit_range_on_real_model():
     import numpy as np
 
     d = ProsodyTurnCompletionDetector(str(_SMART_TURN_MODEL))
+    d.load()
     # noise is enough audio to run; the score must be a valid probability.
     s = d.completion_score("", samples=(np.random.default_rng(0).standard_normal(2 * 16000) * 0.1).astype("float32"))
     assert 0.0 <= s <= 1.0
@@ -79,7 +236,6 @@ def test_prosody_score_in_unit_range_on_real_model():
 @pytest.mark.real_model
 def test_prosody_separates_recorded_complete_vs_incomplete_if_present():
     import glob
-    import os
 
     if not _SMART_TURN_MODEL.exists():
         pytest.skip("Smart Turn ONNX not downloaded")
@@ -115,6 +271,95 @@ def test_engine_prosody_missing_model_falls_back_to_lexical():
     })
     d = SherpaOnnxEngine._build_turn_detector(cfg)
     assert isinstance(d, LexicalTurnCompletionDetector)  # graceful fallback, no crash
+
+
+@pytest.mark.parametrize(
+    "sample_rate",
+    [48_000, True, "16000", "bad", None, float("nan"), float("inf"), 16_000.9],
+)
+def test_engine_invalid_prosody_rate_falls_back_before_load(
+    tmp_path, monkeypatch, sample_rate
+):
+    from types import SimpleNamespace
+
+    from core.engines.sherpa import SherpaOnnxEngine
+
+    model = tmp_path / "smart-turn.onnx"
+    model.write_bytes(b"test placeholder")
+    loads = []
+    monkeypatch.setattr(
+        ProsodyTurnCompletionDetector,
+        "load",
+        lambda detector: loads.append(detector._model_path),
+    )
+    cfg = SimpleNamespace(
+        sample_rate=sample_rate,
+        endpoint_enabled=True,
+        endpoint_detector="prosody",
+        endpoint_prosody_model=str(model),
+        endpoint_prosody_threads=1,
+    )
+
+    detector = SherpaOnnxEngine._build_turn_detector(cfg)
+
+    assert isinstance(detector, LexicalTurnCompletionDetector)
+    assert loads == []
+
+
+@pytest.mark.parametrize("sample_rate", [16_000, 16_000.0])
+def test_engine_prosody_eagerly_loads_valid_model(
+    tmp_path, monkeypatch, sample_rate
+):
+    from types import SimpleNamespace
+
+    from core.engines.sherpa import SherpaOnnxEngine
+
+    model = tmp_path / "smart-turn.onnx"
+    model.write_bytes(b"test placeholder")
+    loads = []
+    monkeypatch.setattr(
+        ProsodyTurnCompletionDetector,
+        "load",
+        lambda detector: loads.append(detector._model_path),
+    )
+    cfg = SimpleNamespace(
+        sample_rate=sample_rate,
+        endpoint_enabled=True,
+        endpoint_detector="prosody",
+        endpoint_prosody_model=str(model),
+        endpoint_prosody_threads=1,
+    )
+
+    detector = SherpaOnnxEngine._build_turn_detector(cfg)
+
+    assert isinstance(detector, ProsodyTurnCompletionDetector)
+    assert loads == [str(model)]
+
+
+def test_engine_corrupt_prosody_falls_back_once_before_capture(tmp_path, monkeypatch):
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    model = tmp_path / "corrupt.onnx"
+    model.write_bytes(b"not an ONNX model")
+    attempts = []
+
+    def fail_load(detector):
+        attempts.append(detector._model_path)
+        raise ValueError("bad model")
+
+    monkeypatch.setattr(ProsodyTurnCompletionDetector, "load", fail_load)
+    cfg = SherpaConfig.from_dict(
+        {
+            "endpoint_enabled": True,
+            "endpoint_detector": "prosody",
+            "endpoint_prosody_model": str(model),
+        }
+    )
+
+    detector = SherpaOnnxEngine._build_turn_detector(cfg)
+
+    assert isinstance(detector, LexicalTurnCompletionDetector)
+    assert attempts == [str(model)]
 
 
 @pytest.mark.real_model

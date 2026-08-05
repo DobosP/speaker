@@ -131,7 +131,15 @@ def _slaney_mel_filters(n_freqs: int = 201, n_mels: int = 80,
 
     def h2m(f):
         f = np.asarray(f, float)
-        return np.where(f >= min_log_hz, min_log_mel + np.log(f / min_log_hz) / logstep, f / f_sp)
+        # ``np.where`` evaluates both branches, including log(0) for the 0 Hz
+        # filter-bank edge. Suppress that irrelevant branch warning without
+        # changing any selected values.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(
+                f >= min_log_hz,
+                min_log_mel + np.log(f / min_log_hz) / logstep,
+                f / f_sp,
+            )
 
     def m2h(m):
         m = np.asarray(m, float)
@@ -151,19 +159,18 @@ def _slaney_mel_filters(n_freqs: int = 201, n_mels: int = 80,
 
 class ProsodyTurnCompletionDetector:
     """Audio turn-completion from PROSODY via the Smart Turn v3 ONNX
-    (pipecat-ai/smart-turn-v3, BSD-2, ~8MB, ~9ms CPU). Returns P(turn complete)
-    from the recent audio waveform -- catching the rising/sustained intonation of
-    a mid-thought trailing-off that the lexical detector (text-only) cannot, so
-    the endpoint floor can drop further without splitting.
+    (pipecat-ai/smart-turn-v3, BSD-2-Clause). Returns the model's validated
+    P(turn complete) from the recent audio waveform.
 
-    The feature extraction is the Whisper log-mel (80 mels x 800 frames over the
-    last 8s @ 16 kHz), reimplemented in pure numpy and verified bit-exact against
-    transformers' WhisperFeatureExtractor -- no transformers/torch dependency. The
-    ONNX output is read directly as the completion probability (the upstream
-    contract). Validated on the user's REAL voice 2026-06-01: complete turns
-    0.74-0.98, incomplete 0.01-0.56 (margin 0.18). NB the model is human-audio
-    only -- it returns a flat ~0.97 on TTS, so it cannot be validated with the
-    synthetic-user harness; validate on real speech.
+    The feature extraction is the upstream Whisper log-mel contract (80 mels x
+    800 frames over the last 8s @ 16 kHz): short turns are LEFT-padded before
+    float32 normalization so their most recent audio is end-aligned. It is
+    reimplemented in pure numpy, with no transformers/torch dependency. Callers
+    must supply 16 kHz audio; other rates fail closed instead of using an
+    approximation to upstream HQ resampling. The ONNX output is already the
+    completion probability and is validated before use. Historical owner-voice
+    scores used superseded right-padded preprocessing; repeat the real-voice gate
+    before changing defaults or endpoint thresholds.
     """
 
     needs_audio = True  # the engine assembles the utterance audio for this detector
@@ -180,31 +187,73 @@ class ProsodyTurnCompletionDetector:
             import onnxruntime as ort
 
             opts = ort.SessionOptions()
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             opts.intra_op_num_threads = self._num_threads
             opts.inter_op_num_threads = 1
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             self._session = ort.InferenceSession(
                 self._model_path, sess_options=opts, providers=["CPUExecutionProvider"]
             )
             self._mel = _slaney_mel_filters()
 
-    def _logmel(self, samples, sample_rate: int):
-        """Whisper log-mel (1, 80, 800) for the last 8s of ``samples``. Pure numpy,
-        bit-exact to transformers WhisperFeatureExtractor(chunk_length=8,
-        do_normalize=True)."""
+    @staticmethod
+    def _probability(outputs) -> float:
+        """Validate the exact singleton sigmoid-probability ONNX contract."""
         import numpy as np
 
-        a = np.asarray(samples, dtype="float64").reshape(-1)
-        if sample_rate != 16000 and a.size:
-            idx = np.linspace(0, a.size - 1, int(round(a.size * 16000 / sample_rate)))
-            a = np.interp(idx, np.arange(a.size), a)
+        if not isinstance(outputs, (list, tuple)) or len(outputs) != 1:
+            raise ValueError("Smart Turn ONNX must return exactly one output tensor")
+        values = np.asarray(outputs[0])
+        if values.size != 1:
+            raise ValueError(
+                "Smart Turn ONNX output tensor must contain exactly one probability"
+            )
+        if not np.issubdtype(values.dtype, np.floating):
+            raise ValueError(
+                "Smart Turn ONNX probability must use a floating-point dtype"
+            )
+        probability = float(values.reshape(-1)[0])
+        if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise ValueError(
+                "Smart Turn ONNX output must be one finite probability in [0, 1]"
+            )
+        return probability
+
+    def load(self) -> None:
+        """Load and exercise the model contract before capture starts.
+
+        A zero-feature inference is content-free and makes corrupt or
+        incompatible ONNX files fail at construction time, so the engine can
+        select its lexical fallback once instead of retrying on every endpoint.
+        """
+        import numpy as np
+
+        self._ensure()
+        outputs = self._session.run(
+            None, {"input_features": np.zeros((1, 80, 800), dtype="float32")}
+        )
+        self._probability(outputs)
+
+    def _logmel(self, samples, sample_rate: int):
+        """Whisper log-mel (1, 80, 800) for the last 8s of ``samples``. Pure numpy,
+        within float32 tolerance of transformers
+        WhisperFeatureExtractor(chunk_length=8, do_normalize=True)."""
+        import numpy as np
+
+        if sample_rate != 16000:
+            raise ValueError("Smart Turn requires caller-provided 16 kHz audio")
+        a = np.asarray(samples, dtype="float32").reshape(-1)
         n = 8 * 16000
         a = a[-n:]
+        # Smart Turn v3.2 was trained with the most recent waveform end-aligned:
+        # short turns are zero-padded at the BEGINNING, before normalization.
+        # Right-padding moves ordinary short commands to the wrong time region.
+        if a.size < n:
+            a = np.pad(a, (n - a.size, 0), mode="constant")
         a = (a - a.mean()) / np.sqrt(a.var() + 1e-7)  # do_normalize (zero-mean unit-var)
-        a = np.pad(a, (0, n - a.size)) if a.size < n else a[:n]
-        a = np.pad(a, (200, 200), mode="reflect")     # center pad n_fft//2
+        a = np.pad(a.astype("float64"), (200, 200), mode="reflect")  # center n_fft//2
         win = np.hanning(401)[:-1]                     # periodic hann
-        # Vectorized framing (stride tricks) -- a Python per-frame loop here is
-        # ~40ms; this keeps the detector ONNX-bound (~10ms).
+        # Vectorized framing avoids a Python-level loop over analysis frames.
         from numpy.lib.stride_tricks import sliding_window_view
 
         frames = sliding_window_view(a, 400)[::160] * win  # (nfr, 400)
@@ -222,14 +271,18 @@ class ProsodyTurnCompletionDetector:
         judge; raises on a real error (the engine catches it and uses acoustic)."""
         import numpy as np
 
+        if sample_rate != 16000:
+            raise ValueError("Smart Turn requires caller-provided 16 kHz audio")
         if samples is None:
             return 0.5
         a = np.asarray(samples, dtype="float32").reshape(-1)
         if a.size < int(self._min_audio_sec * sample_rate):
             return 0.5
         self._ensure()
-        out = self._session.run(None, {"input_features": self._logmel(a, sample_rate)})[0]
-        return float(np.asarray(out).reshape(-1)[0])
+        outputs = self._session.run(
+            None, {"input_features": self._logmel(a, sample_rate)}
+        )
+        return self._probability(outputs)
 
 
 class ScriptedTurnCompletionDetector:

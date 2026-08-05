@@ -1,19 +1,16 @@
 """Real-voice turn-completion check for the Smart Turn v3 prosody model.
 
-Does the Smart Turn ONNX (pipecat-ai/smart-turn-v3, BSD-2) actually tell a
-FINISHED turn from a MID-THOUGHT one -- on YOUR real voice over the AT2020? The
-synthetic-TTS harness can't answer this (the model is trained on human audio; on
-TTS / read-enrollment / silence / noise it returns a flat ~0.97). So you record a
-handful of natural COMPLETE turns and a handful of trailing-off INCOMPLETE turns,
-and this scores them and reports whether they SEPARATE (complete high, incomplete
-low) with a usable threshold. That is the go/no-go for the endpoint phase-2 lever
-(a prosody detector that lets endpoint_min_silence drop to ~0.3-0.4s).
+Record a handful of natural COMPLETE turns and trailing-off INCOMPLETE turns,
+then score whether the pinned Smart Turn ONNX separates those groups on the
+owner's voice. Separation is one required input to later causal replay and a
+physical A/B; it does not authorize a threshold, floor, or default change.
 
 It does NOT touch core/config -- it only reads the mic + the ONNX and writes a
-report under logs/turn_detect/<session>/. The inference matches the upstream
-pipecat smart-turn inference.py EXACTLY (WhisperFeatureExtractor(chunk_length=8),
-do_normalize=True, last-8s window padded to max_length; the ONNX output is read
-as the completion probability directly, threshold 0.5).
+report under logs/turn_detect/<session>/. Reporting calls the production
+``ProsodyTurnCompletionDetector`` directly, so the diagnostic and live runtime
+share the same upstream-compatible left-padding, normalization, and validated
+completion-probability contract. Reports created before ADR-0135 used the old
+right-padded path and must be regenerated.
 
 Phases (run in order; speak each line when it says "listening"):
     python -m tools.turn_detect_check record --session s1 --role complete   --count 6
@@ -59,48 +56,28 @@ PROMPTS = {
 }
 
 
-# --- Smart Turn inference (matches pipecat smart-turn inference.py) -----------
+# --- Smart Turn inference (the production detector, not duplicate math) ------
 
 
-def _feature_extractor():
-    try:
-        from transformers import WhisperFeatureExtractor
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "the Smart Turn check needs `transformers` for the Whisper feature "
-            f"extractor (pip install transformers): {exc}"
-        ) from exc
-    return WhisperFeatureExtractor(chunk_length=8, feature_size=80)
+def _production_detector(model_path: str):
+    from core.endpointing import ProsodyTurnCompletionDetector
 
-
-def _session(model_path: str):
-    import onnxruntime as ort
-
-    if not Path(model_path).exists():
+    if not Path(model_path).is_file():
         raise RuntimeError(
             f"Smart Turn model not found: {model_path}\n"
-            "  download it (BSD-2, ~8MB):\n"
-            "  curl -L -o " + model_path + " \\\n"
-            "    https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/"
-            "smart-turn-v3.2-cpu.onnx"
+            "  fetch and verify the pinned BSD-2-Clause model with:\n"
+            "    python -m tools.setup_models --turn-model"
         )
-    return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    detector = ProsodyTurnCompletionDetector(model_path)
+    detector.load()
+    return detector
 
 
-def smart_turn_probability(session, fe, samples, sample_rate: int = GATE_SR) -> float:
-    """P(turn complete) for a mono float clip -- the upstream-exact path: keep the
-    last 8s, Whisper log-mel (do_normalize), run the ONNX, read output[0][0]."""
-    a = np.asarray(samples, dtype="float32").reshape(-1)
-    if sample_rate != GATE_SR and a.size:
-        idx = np.linspace(0, a.size - 1, int(round(a.size * GATE_SR / sample_rate)))
-        a = np.interp(idx, np.arange(a.size), a).astype("float32")
-    a = a[-8 * GATE_SR:]  # truncate_audio_to_last_n_seconds(n=8)
-    feats = fe(
-        a, sampling_rate=GATE_SR, return_tensors="np",
-        padding="max_length", max_length=8 * GATE_SR, truncation=True, do_normalize=True,
-    )["input_features"].astype("float32")  # (1, 80, 800)
-    out = session.run(None, {"input_features": feats})[0]
-    return float(np.asarray(out).reshape(-1)[0])
+def smart_turn_probability(detector, samples, sample_rate: int = GATE_SR) -> float:
+    """P(turn complete) through the exact detector used by the live engine."""
+    return detector.completion_score(
+        "", samples=np.asarray(samples, dtype="float32"), sample_rate=sample_rate
+    )
 
 
 # --- phases ------------------------------------------------------------------
@@ -182,15 +159,14 @@ def cmd_report(args) -> int:
         print(f"need BOTH complete_*.npy and incomplete_*.npy in {d}.\n"
               "  record both roles first (see --help).")
         return 1
-    fe = _feature_extractor()
-    sess = _session(args.model)
+    detector = _production_detector(args.model)
 
     def score_all(clips):
-        return [round(smart_turn_probability(sess, fe, c), 4) for c in clips]
+        return [round(smart_turn_probability(detector, c), 4) for c in clips]
 
     comp = score_all(complete)
     inc = score_all(incomplete)
-    print(f"\n=== Smart Turn v3 discrimination on YOUR real voice ===")
+    print("\n=== Smart Turn v3 discrimination on YOUR real voice ===")
     print(f"  model: {args.model}")
     print(f"  COMPLETE   (want HIGH): {comp}")
     print(f"  INCOMPLETE (want LOW):  {inc}")
@@ -203,8 +179,9 @@ def cmd_report(args) -> int:
     if v["verdict"] == "separable":
         print(f"  SEPARABLE: every complete ({v['complete_min']:.3f}+) scores above "
               f"every incomplete ({v['incomplete_max']:.3f}-), margin {v['margin']:.3f}.")
-        print(f"  -> the prosody model WORKS on your voice; threshold ~{v['threshold']}. "
-              f"Build the detector + drop endpoint_min_silence toward ~0.3-0.4s.")
+        print(f"  -> the corrected prosody model separates this sample; threshold "
+              f"~{v['threshold']}. Keep lexical/default endpoint thresholds until "
+              "causal replay and a live A/B also pass.")
     elif v["verdict"] == "partial":
         print(f"  PARTIAL: means separate (complete {v['complete_mean']:.3f} > "
               f"incomplete {v['incomplete_mean']:.3f}) but the groups overlap "

@@ -6158,18 +6158,43 @@ class SherpaOnnxEngine(AudioEngine):
             getattr(config, "endpoint_detector", "lexical") or "lexical"
         ).lower()
         if which == "prosody":
+            configured_rate = getattr(config, "sample_rate", None)
+            rate_is_16k = False
+            if type(configured_rate) in (int, float):
+                try:
+                    numeric_rate = float(configured_rate)
+                    rate_is_16k = (
+                        math.isfinite(numeric_rate)
+                        and numeric_rate.is_integer()
+                        and numeric_rate == 16000.0
+                    )
+                except (OverflowError, TypeError, ValueError):
+                    pass
+            if not rate_is_16k:
+                log.warning(
+                    "endpoint_detector=prosody requires model sample_rate=16000 "
+                    "as an ordinary int/float (got %r); using lexical",
+                    configured_rate,
+                )
+                return LexicalTurnCompletionDetector()
             model = getattr(config, "endpoint_prosody_model", "") or ""
-            if model and os.path.exists(model):
+            if model and os.path.isfile(model):
                 try:
                     from ..endpointing import ProsodyTurnCompletionDetector
 
-                    log.info("endpoint detector: prosody (Smart Turn) %s", model)
-                    return ProsodyTurnCompletionDetector(
+                    detector = ProsodyTurnCompletionDetector(
                         model,
                         num_threads=int(
                             getattr(config, "endpoint_prosody_threads", 1) or 1
                         ),
                     )
+                    # Validate the session, input name/shape, and singleton
+                    # probability contract before capture starts. A corrupt or
+                    # incompatible file therefore selects lexical once instead
+                    # of throwing and retrying on every endpoint decision.
+                    detector.load()
+                    log.info("endpoint detector: prosody (Smart Turn) %s", model)
+                    return detector
                 except Exception:  # noqa: BLE001
                     log.warning(
                         "prosody turn-detector failed to load (%s); using lexical",

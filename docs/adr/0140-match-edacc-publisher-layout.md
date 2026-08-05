@@ -1,7 +1,7 @@
 # ADR-0140: Match the bounded EdAcc publisher layout
 
 Date: 2026-08-05
-Status: accepted
+Status: superseded-by ADR-0141
 
 Supersedes: ADR-0139
 

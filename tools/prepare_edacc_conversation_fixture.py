@@ -184,8 +184,8 @@ _MAX_RECEIPT_BYTES = 256 * 1024
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
 _SAFE_FIXTURE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _SAFE_TAR_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
-_SAFE_ARCHIVE_AUDIO_RE = re.compile(
-    r"EDACC-C[0-9]{2,4}(?:_P[0-9])?\.wav\Z"
+_SAFE_EDACC_RECORDING_RE = re.compile(
+    r"(?P<family>EDACC-C[0-9]{2,4})(?:_P[0-9])?\Z"
 )
 _MD5_RE = re.compile(r"[0-9a-f]{32}\Z")
 _SPECIAL_TOKEN_RE = re.compile(r"<[^<>\r\n]{1,80}>")
@@ -742,6 +742,13 @@ def _safe_source_id(value: str) -> str:
     return value
 
 
+def _edacc_conversation_family(recording: str) -> str:
+    match = _SAFE_EDACC_RECORDING_RE.fullmatch(_safe_source_id(recording))
+    if match is None:
+        raise EdaccPreparationError()
+    return match.group("family")
+
+
 def _decimal(value: str) -> Decimal:
     try:
         result = Decimal(value)
@@ -1138,12 +1145,11 @@ def _regular_archive_target(name: str) -> tuple[str, str, int, bool]:
         maximum = _ARCHIVE_SPLIT_FILE_LIMITS.get(parts[2])
         if maximum is not None:
             return f"{ARCHIVE_ROOT}/{parts[1]}", parts[2], maximum, False
-    if (
-        len(parts) == 3
-        and parts[:2] == [ARCHIVE_ROOT, "data"]
-        and _SAFE_ARCHIVE_AUDIO_RE.fullmatch(parts[2]) is not None
-    ):
-        return f"{ARCHIVE_ROOT}/data", parts[2], _MAX_AUDIO_BYTES, True
+    if len(parts) == 3 and parts[:2] == [ARCHIVE_ROOT, "data"]:
+        filename = parts[2]
+        if filename.endswith(".wav"):
+            _edacc_conversation_family(filename[: -len(".wav")])
+            return f"{ARCHIVE_ROOT}/data", filename, _MAX_AUDIO_BYTES, True
     raise EdaccPreparationError()
 
 
@@ -1901,7 +1907,9 @@ def _parse_conversations(data: bytes) -> frozenset[str]:
         fields = line.split()
         if len(fields) != 1:
             raise EdaccPreparationError()
-        values.append(_safe_source_id(fields[0]))
+        value = _safe_source_id(fields[0])
+        _edacc_conversation_family(value)
+        values.append(value)
     if len(set(values)) != len(values):
         raise EdaccPreparationError()
     return frozenset(values)
@@ -2059,7 +2067,7 @@ def _validate_complete_archive_source_layout(
                     )
 
                 recordings: dict[str, frozenset[str]] = {}
-                conversations: dict[str, frozenset[str]] = {}
+                conversation_families: dict[str, frozenset[str]] = {}
                 for split in ("dev", "test"):
                     split_payloads = {
                         name: _read_archive_bound_layout_file(
@@ -2077,29 +2085,34 @@ def _validate_complete_archive_source_layout(
                     split_conversations = _parse_conversations(
                         split_payloads["conv.list"]
                     )
+                    split_recording_families = frozenset(
+                        _edacc_conversation_family(recording)
+                        for recording in split_recordings
+                    )
+                    split_conversation_families = frozenset(
+                        _edacc_conversation_family(conversation)
+                        for conversation in split_conversations
+                    )
                     if (
                         not split_recordings
                         or not split_conversations
-                        or not split_conversations <= split_recordings
+                        or split_conversation_families
+                        != split_recording_families
                     ):
                         raise EdaccPreparationError()
                     recordings[split] = split_recordings
-                    conversations[split] = split_conversations
+                    conversation_families[split] = split_conversation_families
 
                 if (
                     recordings["dev"] & recordings["test"]
-                    or conversations["dev"] & conversations["test"]
+                    or conversation_families["dev"]
+                    & conversation_families["test"]
                 ):
                     raise EdaccPreparationError()
                 expected_recordings = {
                     name[: -len(".wav")] for name in expected_audio
                 }
-                if (
-                    recordings["dev"] | recordings["test"]
-                    != expected_recordings
-                    or conversations["dev"] | conversations["test"]
-                    != expected_recordings
-                ):
+                if recordings["dev"] | recordings["test"] != expected_recordings:
                     raise EdaccPreparationError()
                 for filename in expected_audio:
                     member_name = f"{ARCHIVE_ROOT}/data/{filename}"
@@ -2352,12 +2365,20 @@ def _parse_source(bindings: Mapping[str, _FileBinding]) -> _ParsedSource:
     direct_accents, keyed_accents = _parse_accents(
         _metadata_bytes(bindings, "linguistic_background.csv")
     )
+    recording_families = {
+        _edacc_conversation_family(recording)
+        for recording, _start, _end in segments.values()
+    }
+    conversation_families = {
+        _edacc_conversation_family(conversation)
+        for conversation in conversations
+    }
     if (
         set(segments) != set(speakers)
         or set(segments) != set(text)
         or len(stm) != len(segments)
         or set(filtered_stm) != set(stm)
-        or {value[0] for value in segments.values()} != set(conversations)
+        or recording_families != conversation_families
     ):
         raise EdaccPreparationError()
 

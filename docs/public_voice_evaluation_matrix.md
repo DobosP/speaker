@@ -48,7 +48,7 @@ will fail closed at receipt validation.
 | Source | Exact acquisition binding | Fixture selection |
 |---|---|---|
 | HarperValleyBank | Git commit `0bd721e877c4a85d8c13ff837e68661ea6200a98`, CC-BY-4.0 | three lexical `human_transcript` caller turns for each of eight authoritative task types; 24 distinct callers; metadata names, recognizable dates/clocks, and known marker-only noise/paralinguistic references excluded; machine transcript/dialog-act/emotion output forbidden as labels |
-| EdAcc v1.0 test | current corrected DOI `10.7488/ds/7914`; `edacc_v1.0.tar.gz`; 5,916,732,170 bytes; publisher MD5 `146b4b8026b5d0ce9611667c708456b3`; CC-BY-SA-4.0 | eight clean, eight disfluent, eight overlap-adjacent official human segments; raw text/STM agreement binds and classifies the source, while the key-matched official filtered STM is the hard-WER reference; actual overlap plus empty/alternative filtered references excluded; accent strata diagnostic only |
+| EdAcc v1.0 test | current corrected DOI `10.7488/ds/7914`; `edacc_v1.0.tar.gz`; 5,916,732,170 bytes; publisher MD5 `146b4b8026b5d0ce9611667c708456b3`; verified local SHA-256 `428e5b5d678ee2dba9ec7362878324a2e5fac1f13ac7b7266cacbcade52bb61b`; verified layout SHA-256 `a4deda10b3246d8795304a4cb11365f3401e1acbb11fe6210ace61369b54e01b`; CC-BY-SA-4.0 | eight clean, eight disfluent, eight overlap-adjacent official human segments; raw text/STM agreement binds and classifies the source, while the key-matched official filtered STM is the hard-WER reference; actual overlap plus empty/alternative filtered references excluded; accent strata diagnostic only |
 | AMI ES2004a | annotations: 22,887,865 bytes/SHA-256 `b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d`; Array1-01: 33,579,394 bytes/SHA-256 `6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150`; local SHA-256 receipt required for unpinned Mix-Headset; CC-BY-4.0 | eight isolated and four non-overlapping transition intervals, each emitted once close and once far with the identical interval/reference; actual overlap diagnostic only |
 | Common Voice SPS 4 English | existing 522,005,930-byte MDC archive/SHA-256 `3b03ada7676a5f440a797d896035137fd073d0683133c3e9a83963480d88abfe`; CC0 plus MDC consumer terms | deterministic six-case projection from each of the unchanged 32-case preparer's four duration bands; 24 distinct speaker and prompt digests |
 
@@ -67,10 +67,12 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
   the exact source/archive/publication objects, key-matches raw and filtered
   official test STM, and records `official_filtered_stm` on every hard-WER
   receipt case. It admits bounded base-256 only for ignored UID/GID metadata;
-  the exact root includes a bounded README, and WAV stems may have one
-  metadata-matched single-digit participant suffix. Caller-provided trees
-  remain synthetic-only
-  ([ADR-0140](adr/0140-match-edacc-publisher-layout.md)).
+  the exact root includes a bounded README, segment metadata remains the exact
+  WAV-stem authority, and only a terminal single-digit participant suffix is
+  removed when comparing recording stems with strict `conv.list` conversation
+  families. Recording and conversation-family sets stay disjoint across
+  splits. Caller-provided trees remain synthetic-only
+  ([ADR-0141](adr/0141-separate-edacc-recordings-from-conversations.md)).
 - `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
   far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset. Its
   private `speech-end-labels.json` sibling and evaluation limits are specified
@@ -82,6 +84,16 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
 Use each module's `--help` for its explicit source and license arguments. Their
 unit-test source injections always emit `production_evidence=false` and cannot
 pass the production fixture validator.
+
+The unchanged EdAcc archive completed the hardened no-extraction scan over all
+5,916,732,170 bytes with the MD5 and SHA-256 values above: layout SHA-256
+`a4deda10b3246d8795304a4cb11365f3401e1acbb11fe6210ace61369b54e01b`,
+98 members, and 76 WAVs. A subsequent fresh extraction fully materialized a
+94-file, 8,220,494,044-byte private source tree, then failed closed before
+corpus publication when the old validator equated two development conversation
+families with participant recording stems. Preserve that failed tree. This
+establishes archive identity and layout, not an EdAcc corpus, model result, or
+live claim.
 
 Receipts cross-bind one same-owner snapshot; they are not signatures. The
 validator catches drift and inconsistent layer changes, but an actor able to

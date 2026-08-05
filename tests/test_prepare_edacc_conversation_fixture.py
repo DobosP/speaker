@@ -37,6 +37,15 @@ _TAR_NUMERIC_FIELDS = {
     "devminor": slice(337, 345),
 }
 
+_TEST_ALIASED_RECORDING = "EDACC-C23_P1"
+_TEST_ALIASED_CONVERSATION = "EDACC-C23_P7"
+_DEV_CONVERSATION_FAMILY = "EDACC-C24"
+_DEV_RECORDINGS = ("EDACC-C24_P1", "EDACC-C24_P2")
+
+
+def _test_recording(index: int) -> str:
+    return _TEST_ALIASED_RECORDING if index == 23 else f"EDACC-C{index:02d}"
+
 
 def _write_wav(path: Path, index: int) -> None:
     frames = prepare.SOURCE_SAMPLE_RATE_HZ * 3 // 2
@@ -91,9 +100,12 @@ def _source_tree(tmp_path: Path) -> Path:
         )
 
     for index in range(24):
-        recording = f"EDACC-C{index:02d}"
-        speaker = f"{recording}-A"
-        conversations.append(f"{recording}\n")
+        recording = _test_recording(index)
+        speaker = f"EDACC-C{index:02d}-A"
+        conversation = (
+            _TEST_ALIASED_CONVERSATION if index == 23 else recording
+        )
+        conversations.append(f"{conversation}\n")
         _write_wav(data / f"{recording}.wav", index)
         accent_rows.append(
             {
@@ -119,7 +131,7 @@ def _source_tree(tmp_path: Path) -> Path:
             ),
         )
         if index >= 16:
-            other = f"{recording}-B"
+            other = f"EDACC-C{index:02d}-B"
             accent_rows.append(
                 {
                     "Final-Participant_ID": f"EDAC-C{index:02d}P2",
@@ -191,35 +203,65 @@ def _source_tree(tmp_path: Path) -> Path:
     (test / "stm").write_text("".join(stm), encoding="utf-8")
     (test / "stm.filt").write_text("".join(filtered_stm), encoding="utf-8")
 
-    dev_recording = "EDACC-C24_P7"
-    dev_utterance = "dev-utt"
-    dev_speaker = f"{dev_recording}-A"
-    _write_wav(data / f"{dev_recording}.wav", 24)
+    dev_rows = tuple(
+        (
+            recording,
+            f"dev-utt-{index}",
+            f"{_DEV_CONVERSATION_FAMILY}-{'A' if index == 1 else 'B'}",
+        )
+        for index, recording in enumerate(_DEV_RECORDINGS, start=1)
+    )
+    for index, (recording, _utterance, _speaker) in enumerate(
+        dev_rows,
+        start=24,
+    ):
+        _write_wav(data / f"{recording}.wav", index)
     (dev / "company.ctm").write_text(
-        f"{dev_recording} 1 0.00 0.50 DEVELOPMENT\n",
+        "".join(
+            f"{recording} 1 0.00 0.50 DEVELOPMENT\n"
+            for recording, _utterance, _speaker in dev_rows
+        ),
         encoding="utf-8",
     )
-    (dev / "conv.list").write_text(f"{dev_recording}\n", encoding="utf-8")
+    (dev / "conv.list").write_text(
+        f"{_DEV_CONVERSATION_FAMILY}\n",
+        encoding="utf-8",
+    )
     (dev / "segments").write_text(
-        f"{dev_utterance} {dev_recording} 0.00 0.50\n",
+        "".join(
+            f"{utterance} {recording} 0.00 0.50\n"
+            for recording, utterance, _speaker in dev_rows
+        ),
         encoding="utf-8",
     )
     (dev / "stm").write_text(
-        f"{dev_recording} 1 {dev_speaker} 0.00 0.50 "
-        "<female,l1> DEVELOPMENT WORDS\n",
+        "".join(
+            f"{recording} 1 {speaker} 0.00 0.50 "
+            "<female,l1> DEVELOPMENT WORDS\n"
+            for recording, _utterance, speaker in dev_rows
+        ),
         encoding="utf-8",
     )
     (dev / "stm.filt").write_text(
-        f"{dev_recording} 1 {dev_speaker} 0.00 0.50 "
-        "<female,l1> DEVELOPMENT WORDS\n",
+        "".join(
+            f"{recording} 1 {speaker} 0.00 0.50 "
+            "<female,l1> DEVELOPMENT WORDS\n"
+            for recording, _utterance, speaker in dev_rows
+        ),
         encoding="utf-8",
     )
     (dev / "text").write_text(
-        f"{dev_utterance} DEVELOPMENT WORDS\n",
+        "".join(
+            f"{utterance} DEVELOPMENT WORDS\n"
+            for _recording, utterance, _speaker in dev_rows
+        ),
         encoding="utf-8",
     )
     (dev / "utt2spk").write_text(
-        f"{dev_utterance} {dev_speaker}\n",
+        "".join(
+            f"{utterance} {speaker}\n"
+            for _recording, utterance, speaker in dev_rows
+        ),
         encoding="utf-8",
     )
     (root / "evaluate.sh").write_text(
@@ -438,6 +480,23 @@ def _assert_archive_scanner_rejects(tmp_path: Path, archive: Path) -> Path:
     return source_root
 
 
+def _assert_complete_layout_rejects(tmp_path: Path, root: Path) -> None:
+    archive = _archive(tmp_path, root)
+    output = tmp_path / "must-not-exist"
+
+    with pytest.raises(prepare.EdaccPreparationError) as failure:
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=_injection(archive),
+        )
+
+    assert failure.value.args == ()
+    assert not output.exists()
+
+
 def test_absent_source_root_is_extracted_with_exact_private_layout(tmp_path):
     archive_source = _source_tree(tmp_path / "archive-input")
     expected_directories, expected_files = _tree_snapshot(archive_source)
@@ -468,8 +527,17 @@ def test_absent_source_root_is_extracted_with_exact_private_layout(tmp_path):
         "test",
     }
     assert actual_files[Path("README.txt")].endswith(b"\n")
-    assert Path("data/EDACC-C24_P7.wav") in actual_files
-    assert actual_files[Path("dev/conv.list")] == b"EDACC-C24_P7\n"
+    assert all(
+        Path(f"data/{recording}.wav") in actual_files
+        for recording in _DEV_RECORDINGS
+    )
+    assert Path(f"data/{_TEST_ALIASED_RECORDING}.wav") in actual_files
+    assert actual_files[Path("dev/conv.list")] == (
+        f"{_DEV_CONVERSATION_FAMILY}\n".encode()
+    )
+    assert actual_files[Path("test/conv.list")].endswith(
+        f"{_TEST_ALIASED_CONVERSATION}\n".encode()
+    )
     assert source_root.stat().st_mode & 0o777 == 0o700
     assert all(
         (source_root / relative).stat().st_mode & 0o777 == 0o700
@@ -797,7 +865,7 @@ def test_archive_scanner_rejects_nonpublisher_wav_suffixes(
     invalid_stem,
 ):
     payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
-    valid_member = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24_P7.wav"
+    valid_member = f"{prepare.ARCHIVE_ROOT}/data/{_DEV_RECORDINGS[0]}.wav"
     offset, _end = _raw_tar_member(payload, valid_member)
     _rewrite_raw_tar_header(
         payload,
@@ -831,7 +899,7 @@ def test_archive_scanner_rejects_audio_split_relationship_drift(
     relationship,
 ):
     payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
-    referenced = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24_P7.wav"
+    referenced = f"{prepare.ARCHIVE_ROOT}/data/{_DEV_RECORDINGS[0]}.wav"
     if relationship == "orphan":
         _append_raw_tar_member(
             payload,
@@ -846,50 +914,98 @@ def test_archive_scanner_rejects_audio_split_relationship_drift(
     _assert_archive_scanner_rejects(tmp_path, archive)
 
 
+def test_complete_layout_accepts_publisher_conversation_family_aliases(tmp_path):
+    result, root, _archive_path = _prepare(tmp_path)
+
+    assert len(result.corpus.cases) == prepare.CASE_COUNT
+    assert (root / "test" / "conv.list").read_text(encoding="utf-8").endswith(
+        f"{_TEST_ALIASED_CONVERSATION}\n"
+    )
+    assert (root / "dev" / "conv.list").read_text(
+        encoding="utf-8"
+    ) == f"{_DEV_CONVERSATION_FAMILY}\n"
+    dev_segments = (root / "dev" / "segments").read_text(encoding="utf-8")
+    assert all(
+        f" {recording} " in dev_segments for recording in _DEV_RECORDINGS
+    )
+
+
 @pytest.mark.parametrize(
-    "mismatch",
-    ("wav-without-conversation", "conversation-without-wav", "wrong-split"),
+    "conversation_id",
+    (
+        "EDACC-C999_P7",
+        "EDACC-C23_P10",
+        "EDACC-C23_PX",
+        "EDACC-C23_P7_P8",
+    ),
+    ids=(
+        "wrong-family",
+        "two-digit-participant",
+        "nondigit-participant",
+        "double-participant",
+    ),
 )
-def test_complete_layout_rejects_any_conv_list_wav_set_mismatch(
+def test_complete_layout_rejects_wrong_or_malformed_conversation_id(
     tmp_path,
-    mismatch,
+    conversation_id,
 ):
     root = _source_tree(tmp_path / "source")
-    dev_list = root / "dev" / "conv.list"
-    test_list = root / "test" / "conv.list"
-    if mismatch == "wav-without-conversation":
-        test_list.write_text(
-            test_list.read_text(encoding="utf-8").replace("EDACC-C23\n", ""),
-            encoding="utf-8",
-        )
-    elif mismatch == "conversation-without-wav":
-        test_list.write_text(
-            test_list.read_text(encoding="utf-8") + "EDACC-C999\n",
-            encoding="utf-8",
-        )
+    conversations = root / "test" / "conv.list"
+    original = conversations.read_text(encoding="utf-8")
+    assert f"{_TEST_ALIASED_CONVERSATION}\n" in original
+    conversations.write_text(
+        original.replace(
+            f"{_TEST_ALIASED_CONVERSATION}\n",
+            f"{conversation_id}\n",
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_complete_layout_rejects(tmp_path, root)
+
+
+def test_complete_layout_rejects_cross_split_conversation_family_overlap(
+    tmp_path,
+):
+    root = _source_tree(tmp_path / "source")
+    replacements = dict(
+        zip(_DEV_RECORDINGS, ("EDACC-C23_P3", "EDACC-C23_P4"), strict=True)
+    )
+    for old, new in replacements.items():
+        (root / "data" / f"{old}.wav").rename(root / "data" / f"{new}.wav")
+    for filename in ("company.ctm", "segments", "stm", "stm.filt", "utt2spk"):
+        path = root / "dev" / filename
+        payload = path.read_text(encoding="utf-8")
+        for old, new in replacements.items():
+            payload = payload.replace(old, new)
+        path.write_text(payload, encoding="utf-8")
+    (root / "dev" / "conv.list").write_text("EDACC-C23\n", encoding="utf-8")
+
+    _assert_complete_layout_rejects(tmp_path, root)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("missing-wav", "extra-wav", "missing-segment", "extra-segment"),
+)
+def test_complete_layout_rejects_segment_wav_exact_stem_drift(tmp_path, drift):
+    root = _source_tree(tmp_path / "source")
+    data = root / "data"
+    segments = root / "dev" / "segments"
+    if drift == "missing-wav":
+        (data / f"{_DEV_RECORDINGS[1]}.wav").unlink()
+    elif drift == "extra-wav":
+        _write_wav(data / "EDACC-C24_P3.wav", 26)
+    elif drift == "missing-segment":
+        payload = segments.read_text(encoding="utf-8")
+        matching = f"dev-utt-2 {_DEV_RECORDINGS[1]} 0.00 0.50\n"
+        assert matching in payload
+        segments.write_text(payload.replace(matching, ""), encoding="utf-8")
     else:
-        test_list.write_text(
-            test_list.read_text(encoding="utf-8").replace(
-                "EDACC-C00\n",
-                "EDACC-C24_P7\n",
-            ),
-            encoding="utf-8",
-        )
-        dev_list.write_text("EDACC-C00\n", encoding="utf-8")
-    archive = _archive(tmp_path, root)
-    output = tmp_path / "must-not-exist"
+        with segments.open("a", encoding="utf-8") as handle:
+            handle.write("dev-utt-3 EDACC-C24_P3 0.00 0.50\n")
 
-    with pytest.raises(prepare.EdaccPreparationError) as failure:
-        prepare.prepare_edacc_conversation_fixture(
-            source_root=root,
-            archive_path=archive,
-            output_dir=output,
-            accepted_terms=prepare.REQUIRED_TERMS,
-            test_source_injection=_injection(archive),
-        )
-
-    assert failure.value.args == ()
-    assert not output.exists()
+    _assert_complete_layout_rejects(tmp_path, root)
 
 
 @pytest.mark.parametrize("corruption", ("checksum", "padding", "tail"))
@@ -979,7 +1095,7 @@ def test_materializes_private_schema_v2_and_transcript_free_receipt(tmp_path):
         "closure_sha256": receipt["decoder"]["closure_sha256"],
         "files": 24,
         "bytes": sum(
-            (_root / "data" / f"EDACC-C{index:02d}.wav").stat().st_size
+            (_root / "data" / f"{_test_recording(index)}.wav").stat().st_size
             for index in range(24)
         ),
         "production_evidence": False,
@@ -2262,7 +2378,7 @@ def test_complete_extracted_layout_is_rebound_after_publication(
     selected = (
         source_root / "evaluate.sh"
         if target == "root-metadata"
-        else source_root / "data" / "EDACC-C24_P7.wav"
+        else source_root / "data" / f"{_DEV_RECORDINGS[0]}.wav"
     )
     original_publish = prepare._publish_private_corpus_bound
     mutated = False

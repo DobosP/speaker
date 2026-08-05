@@ -18,9 +18,15 @@ from always_on_agent.events import EventKind, Mode
 from always_on_agent.models import IntentKind
 from always_on_agent.origin import is_action_allowed
 from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
+from always_on_agent.text import normalize_text
 from core.engine import EngineCallbacks
 from core.engines._asr_segment import ASRSegment
-from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.sherpa import (
+    FinalTranscriptDecision,
+    FinalTranscriptSource,
+    SherpaConfig,
+    SherpaOnnxEngine,
+)
 from core.engines.speaker_gate import SpeakerGate
 from core.llm import EchoLLM
 from core.runtime import VoiceRuntime
@@ -142,6 +148,8 @@ def test_verifier_changed_consensus_is_never_action_trusted_live_audio():
     typed, legacy, published = _wire_typed_runtime(engine)
     engine._final_recognizer = _Offline()
     engine._final_verifier = _Verifier()
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
 
     _dispatch(
         engine,
@@ -157,10 +165,256 @@ def test_verifier_changed_consensus_is_never_action_trusted_live_audio():
     [event] = _final_events(published)
     assert event.payload["owner_verified"] is False
     assert event.payload["origin"] != "live_audio"
+    assert metrics.count("asr_verifier_changed_final_untrusted") == 1
+    assert "asr_final_selection_untrusted" not in metrics
     assert not is_action_allowed(
         typed[0].origin,
         owner_verified=typed[0].owner_verified,
     )
+
+
+def test_verifier_change_remains_untrusted_when_rendering_is_equivalent():
+    _FinalTranscript, OwnerVerification = _trust_types()
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_verifier = object()
+    engine._final_decision = lambda *_args, **_kwargs: FinalTranscriptDecision(
+        streaming_raw="owner command",
+        offline_raw=None,
+        selected="Owner command.",
+        offline_outcome="unavailable",
+        selected_source=FinalTranscriptSource.VERIFIER_CONSENSUS,
+        verifier_outcome="consensus",
+        verifier_support=2,
+        verifier_changed=True,
+    )
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="owner command",
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["Owner command."]
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert metrics.count("asr_verifier_changed_final_untrusted") == 1
+    assert "asr_final_selection_untrusted" not in metrics
+
+
+def test_offline_token_rewrite_without_verifier_loses_direct_live_authority():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text="are you there"))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="Ario der",
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["are you there"]
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is False
+    assert event.payload["origin"] == "unknown"
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert metrics.count("asr_final_selection_untrusted") == 1
+    assert "asr_verifier_changed_final_untrusted" not in metrics
+
+
+def test_offline_case_and_punctuation_rendering_preserves_direct_live_authority():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text="Owner command."))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="owner command",
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["Owner command."]
+    assert typed[0].owner_verification is OwnerVerification.VERIFIED
+    assert typed[0].origin == "live_audio"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is True
+    assert event.payload["origin"] == "live_audio"
+    assert event.payload["metadata"]["direct_user_instruction"] is True
+    assert "asr_final_selection_untrusted" not in metrics
+    assert "asr_verifier_changed_final_untrusted" not in metrics
+
+
+def test_custom_final_selector_token_rewrite_loses_direct_live_authority():
+    _FinalTranscript, OwnerVerification = _trust_types()
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_transcribe = lambda _samples, _text, **_kwargs: "confirm"
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="ordinary conversation",
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["confirm"]
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is False
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert metrics.count("asr_final_selection_untrusted") == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "selected"),
+    (
+        ("opén obsidian", "open obsidian"),
+        ("op'en obsidian", "open obsidian"),
+        ("ｏｐｅｎ obsidian", "open obsidian"),
+        (
+            "remínd me to call Ana in ten minutes",
+            "remind me to call Ana in ten minutes",
+        ),
+        (
+            "remind me to call Ana in twenty  one minutes",
+            "remind me to call Ana in twenty one minutes",
+        ),
+        ("open\nobsidian", "open obsidian"),
+    ),
+)
+def test_broad_text_normalization_cannot_manufacture_action_authority(
+    raw: str,
+    selected: str,
+):
+    _FinalTranscript, OwnerVerification = _trust_types()
+    assert normalize_text(raw) == normalize_text(selected)
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_transcribe = lambda _samples, _text, **_kwargs: selected
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text=raw,
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == [selected]
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert metrics.count("asr_final_selection_untrusted") == 1
+
+
+def test_authorized_offline_recovery_from_empty_streaming_is_dialogue_only():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text="ordinary request"))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="",
+        offline_recovery_authorized=True,
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["ordinary request"]
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is False
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert metrics.count("asr_final_selection_untrusted") == 1
+
+
+def test_unauthorized_offline_recovery_from_empty_streaming_stays_dropped():
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text="ordinary request"))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    metrics = []
+    engine._cb.on_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="",
+    )
+
+    assert typed == []
+    assert legacy == []
+    assert _final_events(published) == []
+    assert "asr_final_selection_untrusted" not in metrics
 
 
 def test_nemo_quorum_rewrite_that_legacy_guard_would_accept_loses_action_trust():

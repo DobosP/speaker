@@ -16,6 +16,7 @@ Last verified: 2026-08-05 on Linux ROG.
 - `./live.sh` is the single Linux physical entry. It owns the host lock, reversible echo-control route, conditional Ollama, doctor, and aligned private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
 - Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4 uses native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).
 - Setup may enable bounded PRIVATE vault search, reminders, and exact trusted apps. Mutations require unchanged direct speech plus confirmation and stay outside planners (ADR-0073/0074/0076).
+- Final-ASR selection may improve dialogue text, but every nontrivial offline, punctuation, recovery, custom, or verifier rewrite loses direct-live and owner action authority before typed publication; only case, surrounding ordinary spaces, and one trailing terminator remain trusted (ADR-0133).
 
 ## Voice reliability now implemented
 

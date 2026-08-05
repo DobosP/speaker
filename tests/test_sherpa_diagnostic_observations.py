@@ -232,7 +232,11 @@ def test_recording_mode_preserves_established_final_transcribe_override(tmp_path
     engine._final_transcribe = override
     engine._final_above_floor = lambda _samples: True
     finals: list[str] = []
-    engine._cb = EngineCallbacks(on_final=finals.append)
+    metrics: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_final=finals.append,
+        on_metric=lambda name, *_args, **_kwargs: metrics.append(name),
+    )
     exact_input = np.linspace(-1.25, 1.25, count, dtype="float32")
     engine._finalize_and_dispatch(
         exact_input,
@@ -245,6 +249,7 @@ def test_recording_mode_preserves_established_final_transcribe_override(tmp_path
 
     assert calls == ["private raw input"]
     assert finals == ["Override result"]
+    assert metrics.count("asr_final_selection_untrusted") == 1
     records = [
         json.loads(line)
         for line in (tmp_path / "override.timeline.jsonl")

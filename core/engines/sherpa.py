@@ -323,6 +323,31 @@ class FinalTranscriptDecision:
     verifier_changed: bool = False
 
 
+def _direct_live_rendering_key(text: str) -> str:
+    """Return only the rendering equivalence safe for exact action grammars.
+
+    The reminder/app parsers consume raw text with case-insensitive keywords,
+    surrounding ordinary spaces, and one optional trailing sentence
+    terminator. Broader
+    Unicode or punctuation folding can turn a non-command into an exact
+    command (for example ``op\N{LATIN SMALL LETTER E WITH ACUTE}n`` ->
+    ``open``), so it must not preserve direct-live authority.
+    """
+
+    rendered = str(text)
+    if any(char.isspace() and char != " " for char in rendered):
+        # Preserve unusual whitespace exactly. Some action-regex message spans
+        # reject newlines even though a generic whitespace fold accepts them.
+        return rendered.lower()
+    # Preserve internal spacing exactly: the reminder grammar accepts a single
+    # separator inside compound numbers, so collapsing ``twenty  one`` would
+    # manufacture a valid mutation from an invalid raw phrase.
+    rendered = rendered.strip(" ")
+    if rendered.endswith((".", "!", "?")):
+        rendered = rendered[:-1].rstrip(" ")
+    return rendered.lower()
+
+
 def _attested_repair_words(text: str) -> tuple[str, ...]:
     """Case-folded Unicode alphanumeric words; punctuation is insignificant."""
     words: list[str] = []
@@ -5819,11 +5844,20 @@ class SherpaOnnxEngine(AudioEngine):
                 )
                 return
             origin = "live_audio"
-            if final_decision is not None and final_decision.verifier_changed:
-                # A verifier-backed rewrite is useful acoustic evidence but is
-                # no longer an exact, owner-attested live-audio instruction.
-                # Keep it available for ordinary dialogue while structurally
-                # preventing it from gaining device-action authority.
+            verifier_changed = bool(
+                final_decision is not None and final_decision.verifier_changed
+            )
+            selection_changed = _direct_live_rendering_key(
+                final_text
+            ) != _direct_live_rendering_key(raw_final)
+            if verifier_changed or selection_changed:
+                # A token-changing final selector (offline recognizer,
+                # punctuation model, custom seam, or verifier) is useful for
+                # dialogue but is no longer the owner's unchanged direct
+                # live-audio instruction.  Keep the selected text while
+                # structurally preventing it from gaining action authority.
+                # Preserve the stricter historical verifier rule even when its
+                # rendering happens to normalize equivalently.
                 verification = OwnerVerification.UNKNOWN
                 origin = "unknown"
                 if not self._capture_callback_is_current(capture_epoch):
@@ -5833,7 +5867,11 @@ class SherpaOnnxEngine(AudioEngine):
                     return
                 self._emit_capture_callback(
                     self._cb.on_metric,
-                    "asr_verifier_changed_final_untrusted",
+                    (
+                        "asr_verifier_changed_final_untrusted"
+                        if verifier_changed
+                        else "asr_final_selection_untrusted"
+                    ),
                     capture_epoch=capture_epoch,
                 )
             if not self._capture_callback_is_current(capture_epoch):

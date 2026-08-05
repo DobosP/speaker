@@ -191,7 +191,7 @@ def _source_tree(tmp_path: Path) -> Path:
     (test / "stm").write_text("".join(stm), encoding="utf-8")
     (test / "stm.filt").write_text("".join(filtered_stm), encoding="utf-8")
 
-    dev_recording = "EDACC-C24"
+    dev_recording = "EDACC-C24_P7"
     dev_utterance = "dev-utt"
     dev_speaker = f"{dev_recording}-A"
     _write_wav(data / f"{dev_recording}.wav", 24)
@@ -227,6 +227,10 @@ def _source_tree(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (root / "glm").write_text(";; synthetic GLM\n", encoding="utf-8")
+    (root / "README.txt").write_text(
+        "Synthetic EdAcc publisher-layout fixture.\n",
+        encoding="utf-8",
+    )
     with (root / "linguistic_background.csv").open(
         "w", encoding="utf-8", newline=""
     ) as handle:
@@ -454,6 +458,18 @@ def test_absent_source_root_is_extracted_with_exact_private_layout(tmp_path):
     actual_directories, actual_files = _tree_snapshot(source_root)
     assert actual_directories == expected_directories
     assert actual_files == expected_files
+    assert set(path.name for path in source_root.iterdir()) == {
+        "README.txt",
+        "data",
+        "dev",
+        "evaluate.sh",
+        "glm",
+        "linguistic_background.csv",
+        "test",
+    }
+    assert actual_files[Path("README.txt")].endswith(b"\n")
+    assert Path("data/EDACC-C24_P7.wav") in actual_files
+    assert actual_files[Path("dev/conv.list")] == b"EDACC-C24_P7\n"
     assert source_root.stat().st_mode & 0o777 == 0o700
     assert all(
         (source_root / relative).stat().st_mode & 0o777 == 0o700
@@ -727,16 +743,82 @@ def test_archive_scanner_rejects_duplicate_and_casefold_collisions(
     _assert_archive_scanner_rejects(tmp_path, archive)
 
 
+@pytest.mark.parametrize("filename", ("README.txt", "evaluate.sh"))
 def test_archive_scanner_rejects_missing_fixed_member(
     tmp_path,
     valid_edacc_archive_bytes,
+    filename,
 ):
     payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
     start, end = _raw_tar_member(
         payload,
-        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+        f"{prepare.ARCHIVE_ROOT}/{filename}",
     )
     del payload[start:end]
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+def test_archive_scanner_rejects_oversize_readme_before_payload(tmp_path):
+    source = _source_tree(tmp_path / "archive-input")
+    original = _archive(tmp_path, source)
+    payload = bytearray(gzip.decompress(original.read_bytes()))
+    offset, _end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/README.txt",
+    )
+    _rewrite_raw_tar_header(
+        payload,
+        offset,
+        size=prepare._ARCHIVE_ROOT_FILE_LIMITS["README.txt"] + 1,
+    )
+
+    archive = _write_raw_tar_archive(
+        tmp_path,
+        payload,
+        name="oversize-readme.tar.gz",
+    )
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize(
+    "invalid_stem",
+    (
+        "EDACC-C24_P10",
+        "EDACC-C24_PX",
+        "EDACC-C24_P7_P8",
+    ),
+    ids=("two-digit-suffix", "nondigit-suffix", "double-suffix"),
+)
+def test_archive_scanner_rejects_nonpublisher_wav_suffixes(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    invalid_stem,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    valid_member = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24_P7.wav"
+    offset, _end = _raw_tar_member(payload, valid_member)
+    _rewrite_raw_tar_header(
+        payload,
+        offset,
+        name=f"{prepare.ARCHIVE_ROOT}/data/{invalid_stem}.wav",
+    )
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+def test_archive_scanner_rejects_unexpected_root_file(
+    tmp_path,
+    valid_edacc_archive_bytes,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    _append_raw_tar_member(
+        payload,
+        source_name=f"{prepare.ARCHIVE_ROOT}/README.txt",
+        target_name=f"{prepare.ARCHIVE_ROOT}/unexpected.txt",
+    )
 
     archive = _write_raw_tar_archive(tmp_path, payload)
     _assert_archive_scanner_rejects(tmp_path, archive)
@@ -749,7 +831,7 @@ def test_archive_scanner_rejects_audio_split_relationship_drift(
     relationship,
 ):
     payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
-    referenced = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24.wav"
+    referenced = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24_P7.wav"
     if relationship == "orphan":
         _append_raw_tar_member(
             payload,
@@ -762,6 +844,52 @@ def test_archive_scanner_rejects_audio_split_relationship_drift(
 
     archive = _write_raw_tar_archive(tmp_path, payload)
     _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ("wav-without-conversation", "conversation-without-wav", "wrong-split"),
+)
+def test_complete_layout_rejects_any_conv_list_wav_set_mismatch(
+    tmp_path,
+    mismatch,
+):
+    root = _source_tree(tmp_path / "source")
+    dev_list = root / "dev" / "conv.list"
+    test_list = root / "test" / "conv.list"
+    if mismatch == "wav-without-conversation":
+        test_list.write_text(
+            test_list.read_text(encoding="utf-8").replace("EDACC-C23\n", ""),
+            encoding="utf-8",
+        )
+    elif mismatch == "conversation-without-wav":
+        test_list.write_text(
+            test_list.read_text(encoding="utf-8") + "EDACC-C999\n",
+            encoding="utf-8",
+        )
+    else:
+        test_list.write_text(
+            test_list.read_text(encoding="utf-8").replace(
+                "EDACC-C00\n",
+                "EDACC-C24_P7\n",
+            ),
+            encoding="utf-8",
+        )
+        dev_list.write_text("EDACC-C00\n", encoding="utf-8")
+    archive = _archive(tmp_path, root)
+    output = tmp_path / "must-not-exist"
+
+    with pytest.raises(prepare.EdaccPreparationError) as failure:
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=_injection(archive),
+        )
+
+    assert failure.value.args == ()
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("corruption", ("checksum", "padding", "tail"))
@@ -2134,7 +2262,7 @@ def test_complete_extracted_layout_is_rebound_after_publication(
     selected = (
         source_root / "evaluate.sh"
         if target == "root-metadata"
-        else source_root / "data" / "EDACC-C24.wav"
+        else source_root / "data" / "EDACC-C24_P7.wav"
     )
     original_publish = prepare._publish_private_corpus_bound
     mutated = False

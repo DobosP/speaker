@@ -67,9 +67,10 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
   the exact source/archive/publication objects, key-matches raw and filtered
   official test STM, and records `official_filtered_stm` on every hard-WER
   receipt case. It admits bounded base-256 only for ignored UID/GID metadata;
-  caller-provided trees remain synthetic-only
-  ([ADR-0132](adr/0132-own-bounded-edacc-archive-extraction.md),
-  [ADR-0139](adr/0139-accept-edacc-base256-owner-fields.md)).
+  the exact root includes a bounded README, and WAV stems may have one
+  metadata-matched single-digit participant suffix. Caller-provided trees
+  remain synthetic-only
+  ([ADR-0140](adr/0140-match-edacc-publisher-layout.md)).
 - `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
   far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset. Its
   private `speech-end-labels.json` sibling and evaluation limits are specified

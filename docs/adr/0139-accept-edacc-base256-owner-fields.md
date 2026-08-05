@@ -1,7 +1,7 @@
 # ADR-0139: Accept bounded EdAcc base-256 owner fields
 
 Date: 2026-08-05
-Status: accepted
+Status: superseded-by ADR-0140
 
 Supersedes: ADR-0132
 

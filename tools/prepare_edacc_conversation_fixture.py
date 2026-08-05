@@ -134,6 +134,7 @@ _ARCHIVE_DIRECTORIES = frozenset(
     }
 )
 _ARCHIVE_ROOT_FILE_LIMITS = {
+    "README.txt": 64 * 1024,
     "evaluate.sh": 1024 * 1024,
     "glm": 2 * 1024 * 1024,
     "linguistic_background.csv": _METADATA_LIMITS[
@@ -183,7 +184,9 @@ _MAX_RECEIPT_BYTES = 256 * 1024
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
 _SAFE_FIXTURE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _SAFE_TAR_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
-_SAFE_ARCHIVE_AUDIO_RE = re.compile(r"EDACC-C[0-9]{2,4}\.wav\Z")
+_SAFE_ARCHIVE_AUDIO_RE = re.compile(
+    r"EDACC-C[0-9]{2,4}(?:_P[0-9])?\.wav\Z"
+)
 _MD5_RE = re.compile(r"[0-9a-f]{32}\Z")
 _SPECIAL_TOKEN_RE = re.compile(r"<[^<>\r\n]{1,80}>")
 _ALTERNATIVE_REFERENCE_RE = re.compile(r"[{}\[\]()]|(?:^|\s)/|/(?:\s|$)")
@@ -2056,6 +2059,7 @@ def _validate_complete_archive_source_layout(
                     )
 
                 recordings: dict[str, frozenset[str]] = {}
+                conversations: dict[str, frozenset[str]] = {}
                 for split in ("dev", "test"):
                     split_payloads = {
                         name: _read_archive_bound_layout_file(
@@ -2080,13 +2084,22 @@ def _validate_complete_archive_source_layout(
                     ):
                         raise EdaccPreparationError()
                     recordings[split] = split_recordings
+                    conversations[split] = split_conversations
 
-                if recordings["dev"] & recordings["test"]:
+                if (
+                    recordings["dev"] & recordings["test"]
+                    or conversations["dev"] & conversations["test"]
+                ):
                     raise EdaccPreparationError()
                 expected_recordings = {
                     name[: -len(".wav")] for name in expected_audio
                 }
-                if recordings["dev"] | recordings["test"] != expected_recordings:
+                if (
+                    recordings["dev"] | recordings["test"]
+                    != expected_recordings
+                    or conversations["dev"] | conversations["test"]
+                    != expected_recordings
+                ):
                     raise EdaccPreparationError()
                 for filename in expected_audio:
                     member_name = f"{ARCHIVE_ROOT}/data/{filename}"

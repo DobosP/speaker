@@ -448,6 +448,55 @@
     "publisher_identity": "user",
     "token_server_port": 8080
   },
+  "_final_stt_profiles_comment": "Inert, session-scoped final-STT A/B profiles. Nothing changes unless --final-stt-profile selects one. Each schema-v1 entry is complete and replaces every asr_final_* field atomically after the device profile; config.local.json may replace this whole opaque map but cannot partially merge it. Profile metadata in private run summaries exposes only the safe profile name and canonical profile SHA-256, never profile paths.",
+  "final_stt_profiles": {
+    "sense-voice": {
+      "schema_version": 1,
+      "sherpa": {
+        "asr_final_backend": "sense_voice",
+        "asr_final_model": "pretrained_models/sherpa/sense_voice/model.int8.onnx",
+        "asr_final_tokens": "pretrained_models/sherpa/sense_voice/tokens.txt",
+        "asr_final_decoder": "",
+        "asr_final_joiner": "",
+        "asr_final_use_itn": true,
+        "asr_final_language": "en",
+        "asr_final_verifier_backend": "",
+        "asr_final_verifier_model": "",
+        "asr_final_verifier_cpu_threads": 0,
+        "asr_final_hr_dict_dir": "",
+        "asr_final_hr_lexicon": "",
+        "asr_final_hr_rule_fsts": "",
+        "asr_final_rule_fsts": "",
+        "asr_final_min_sec": 0.5,
+        "asr_final_async": true,
+        "asr_final_required": true,
+        "asr_final_preroll_sec": 0.8
+      }
+    },
+    "parakeet-faster-whisper": {
+      "schema_version": 1,
+      "sherpa": {
+        "asr_final_backend": "nemo_transducer",
+        "asr_final_model": "pretrained_models/sherpa/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/encoder.int8.onnx",
+        "asr_final_tokens": "pretrained_models/sherpa/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/tokens.txt",
+        "asr_final_decoder": "pretrained_models/sherpa/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/decoder.int8.onnx",
+        "asr_final_joiner": "pretrained_models/sherpa/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/joiner.int8.onnx",
+        "asr_final_use_itn": true,
+        "asr_final_language": "en",
+        "asr_final_verifier_backend": "faster_whisper",
+        "asr_final_verifier_model": "pretrained_models/sherpa/faster_whisper_small-536b0662742c",
+        "asr_final_verifier_cpu_threads": 1,
+        "asr_final_hr_dict_dir": "",
+        "asr_final_hr_lexicon": "",
+        "asr_final_hr_rule_fsts": "",
+        "asr_final_rule_fsts": "",
+        "asr_final_min_sec": 0.5,
+        "asr_final_async": true,
+        "asr_final_required": true,
+        "asr_final_preroll_sec": 0.8
+      }
+    }
+  },
   "sherpa": {
     "sample_rate": 16000,
     "asr_tokens": "",

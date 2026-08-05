@@ -821,6 +821,9 @@ class SherpaConfig:
     # downloads are rejected by the adapter.
     asr_final_verifier_backend: str = ""  # "" | "faster_whisper"
     asr_final_verifier_model: str = ""
+    # Optional explicit bound for Faster-Whisper's CPU-side CTranslate2 work.
+    # Zero preserves the adapter's legacy/default constructor byte-for-byte.
+    asr_final_verifier_cpu_threads: int = 0
     # Contextual biasing for the SECOND-PASS final (the only biasing that reaches
     # the text the LLM sees -- ``asr_hotwords`` biases ONLY the streaming pass,
     # which the SenseVoice second pass overrides for normal-length turns). These
@@ -850,6 +853,10 @@ class SherpaConfig:
     # actually built; off = the legacy inline path (kept for A/B + queue-full
     # fallback). asr-tts-2.
     asr_final_async: bool = True
+    # Explicit named profiles fail closed when their final recognizer (and any
+    # configured verifier) cannot construct. Ordinary/unprofiled configuration
+    # keeps the historical best-effort streaming fallback.
+    asr_final_required: bool = False
     # Audio owned by the endpoint finalizer before the first VAD speech block.
     # This is a model-lookback bound (not a machine operating value): preserve
     # the leading phoneme without making a short request inherit minutes of idle

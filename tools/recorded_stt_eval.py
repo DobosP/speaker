@@ -13,11 +13,16 @@ Examples::
     python -m tools.recorded_stt_eval --set asr_max_active_paths=8
     python -m tools.recorded_stt_eval --manifest /private/labelled.json \
         --keyword vault --set asr_max_active_paths=8
+    python -m tools.recorded_stt_eval \
+        --baseline-final-stt-profile sense-voice \
+        --candidate-final-stt-profile parakeet-faster-whisper
 
 Supplying one or more ``--set`` values runs both the machine's current baseline
 and the candidate.  The candidate is promotable only when every labelled clip
 is covered, word and character errors do not regress, target-keyword recall
 does not regress, and accuracy or an enabled dry route gate improves safely.
+An explicit profile comparison requires both profile options, resolves both
+complete profiles before replay, and cannot be combined with ``--set``.
 """
 from __future__ import annotations
 
@@ -36,6 +41,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
+from core.config import FINAL_STT_PROFILE_NAMES
 from core.wer import normalize, word_error_rate
 
 
@@ -67,6 +73,7 @@ _VERIFIER_COMPLETED_OUTCOMES = frozenset(
         "empty_streaming_guard",
     }
 )
+_FINAL_STT_PROFILE_NAMES = frozenset(FINAL_STT_PROFILE_NAMES)
 _ARTIFACT_FIELDS = (
     "asr_tokens",
     "asr_encoder",
@@ -810,20 +817,91 @@ def _guard_output_path(loaded: _CorpusLoad, output: Path | None) -> None:
         raise EvaluationPrerequisiteError() from None
 
 
-def _load_config():
+def _load_effective_config() -> dict:
     try:
         import sherpa_onnx  # noqa: F401 - explicit native prerequisite
         from core.config import apply_device_profile, load_config
-        from core.engines.sherpa import SherpaConfig
 
         cfg = load_config()
-        cfg = apply_device_profile(cfg, cfg.get("device", "desktop"))
+        return apply_device_profile(cfg, cfg.get("device", "desktop"))
+    except Exception as exc:  # noqa: BLE001 - public error must stay detail-free
+        raise EvaluationPrerequisiteError() from exc
+
+
+def _sherpa_config(effective_config: Mapping[str, object]):
+    try:
+        from core.engines.sherpa import SherpaConfig
+
+        if not isinstance(effective_config, Mapping):
+            raise ValueError
+        cfg = dict(effective_config)
         sherpa = SherpaConfig.from_dict(cfg.get("sherpa", {}))
         if not sherpa.asr_encoder or not Path(sherpa.asr_encoder).is_file():
             raise ValueError
         return sherpa
     except Exception as exc:  # noqa: BLE001 - public error must stay detail-free
         raise EvaluationPrerequisiteError() from exc
+
+
+def _load_config():
+    return _sherpa_config(_load_effective_config())
+
+
+def _profile_binding(metadata: object, expected_name: str) -> tuple[str, str]:
+    """Validate the resolver's public-safe identity without copying profile data."""
+
+    try:
+        name = getattr(metadata, "name")
+        digest = getattr(metadata, "sha256")
+        schema_version = getattr(metadata, "schema_version")
+        if (
+            type(expected_name) is not str
+            or expected_name not in _FINAL_STT_PROFILE_NAMES
+            or type(name) is not str
+            or name != expected_name
+            or type(digest) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or type(schema_version) is not int
+            or schema_version <= 0
+        ):
+            raise EvaluationPrerequisiteError()
+        return name, digest
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
+
+
+def _load_profile_configs(
+    baseline_name: str,
+    candidate_name: str,
+):
+    """Resolve both closed profiles from one effective base before replay."""
+
+    try:
+        from core.config import apply_final_stt_profile
+
+        effective = _load_effective_config()
+        baseline_raw, baseline_metadata = apply_final_stt_profile(
+            effective, baseline_name
+        )
+        candidate_raw, candidate_metadata = apply_final_stt_profile(
+            effective, candidate_name
+        )
+        baseline_binding = _profile_binding(baseline_metadata, baseline_name)
+        candidate_binding = _profile_binding(candidate_metadata, candidate_name)
+        baseline_config = _sherpa_config(baseline_raw)
+        candidate_config = _sherpa_config(candidate_raw)
+        return (
+            baseline_config,
+            baseline_binding,
+            candidate_config,
+            candidate_binding,
+        )
+    except EvaluationPrerequisiteError:
+        raise
+    except Exception:
+        raise EvaluationPrerequisiteError() from None
 
 
 def _config_digest(config) -> str:
@@ -1054,6 +1132,16 @@ def _parser() -> argparse.ArgumentParser:
         help="candidate SherpaConfig override; JSON values are accepted",
     )
     parser.add_argument(
+        "--baseline-final-stt-profile",
+        metavar="{sense-voice,parakeet-faster-whisper}",
+        help="explicit closed final-STT profile for the baseline cell",
+    )
+    parser.add_argument(
+        "--candidate-final-stt-profile",
+        metavar="{sense-voice,parakeet-faster-whisper}",
+        help="explicit closed final-STT profile for the candidate cell",
+    )
+    parser.add_argument(
         "--keyword",
         action="append",
         default=[],
@@ -1092,6 +1180,21 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        baseline_profile_name = args.baseline_final_stt_profile
+        candidate_profile_name = args.candidate_final_stt_profile
+        profile_comparison = (
+            baseline_profile_name is not None or candidate_profile_name is not None
+        )
+        if profile_comparison:
+            if (
+                baseline_profile_name is None
+                or candidate_profile_name is None
+                or args.overrides
+                or baseline_profile_name not in _FINAL_STT_PROFILE_NAMES
+                or candidate_profile_name not in _FINAL_STT_PROFILE_NAMES
+                or baseline_profile_name == candidate_profile_name
+            ):
+                raise EvaluationPrerequisiteError()
         loaded_corpus = _load_corpus(args.manifest)
         if not isinstance(loaded_corpus, _CorpusLoad):
             raise EvaluationPrerequisiteError()
@@ -1134,7 +1237,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             if gate_profile is not None
             else None
         )
-        baseline_config = _load_config()
+        baseline_profile_binding = candidate_profile_binding = None
+        candidate_config = None
+        baseline_config_digest = baseline_model_digest = None
+        candidate_config_digest = candidate_model_digest = None
+        if profile_comparison:
+            (
+                baseline_config,
+                baseline_profile_binding,
+                candidate_config,
+                candidate_profile_binding,
+            ) = _load_profile_configs(
+                baseline_profile_name,
+                candidate_profile_name,
+            )
+            # Resolve and bind the complete pair before the first replay cell.
+            # A malformed/missing candidate can therefore never leave a
+            # baseline-only result that looks like an atomic profile A/B.
+            baseline_config_digest = _config_digest(baseline_config)
+            baseline_model_digest = _model_digest(baseline_config)
+            candidate_config_digest = _config_digest(candidate_config)
+            candidate_model_digest = _model_digest(candidate_config)
+        else:
+            baseline_config = _load_config()
         if baseline_gate_accumulator is None:
             baseline, baseline_selected_errors = _evaluate(
                 baseline_config, corpus, tuple(args.keyword)
@@ -1153,6 +1278,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _verify_loaded_corpus(loaded_corpus)
         baseline_payload = baseline.as_dict()
+        if baseline_config_digest is None or baseline_model_digest is None:
+            baseline_config_digest = _config_digest(baseline_config)
+            baseline_model_digest = _model_digest(baseline_config)
         if baseline_gate is not None:
             baseline_payload["tool_route_gate"] = baseline_gate.as_dict()
         payload: dict[str, object] = {
@@ -1161,18 +1289,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and (baseline_gate is None or baseline_gate.complete)
             ),
             "corpus_digest": corpus_digest,
-            "baseline_config_digest": _config_digest(baseline_config),
-            "baseline_model_digest": _model_digest(baseline_config),
+            "baseline_config_digest": baseline_config_digest,
+            "baseline_model_digest": baseline_model_digest,
             "baseline": baseline_payload,
         }
+        if baseline_profile_binding is not None:
+            payload.update(
+                baseline_final_stt_profile=baseline_profile_binding[0],
+                baseline_final_stt_profile_digest=baseline_profile_binding[1],
+            )
         if gate_profile_digest is not None:
             payload["tool_route_profile_digest"] = gate_profile_digest
         exit_code = 0 if payload["ok"] else 2
 
-        if args.overrides:
-            known = {field.name for field in fields(baseline_config)}
-            overrides = dict(_parse_override(raw, known) for raw in args.overrides)
-            candidate_config = replace(baseline_config, **overrides)
+        if args.overrides or profile_comparison:
+            if not profile_comparison:
+                known = {field.name for field in fields(baseline_config)}
+                overrides = dict(_parse_override(raw, known) for raw in args.overrides)
+                candidate_config = replace(baseline_config, **overrides)
+            if candidate_config is None:
+                raise EvaluationPrerequisiteError()
             candidate_gate_accumulator = (
                 ToolRouteGateAccumulator(ToolRouteClassifier(gate_profile))
                 if gate_profile is not None
@@ -1226,13 +1362,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate_payload = candidate.as_dict()
             if candidate_gate is not None:
                 candidate_payload["tool_route_gate"] = candidate_gate.as_dict()
+            if candidate_config_digest is None or candidate_model_digest is None:
+                candidate_config_digest = _config_digest(candidate_config)
+                candidate_model_digest = _model_digest(candidate_config)
             payload.update(
-                candidate_config_digest=_config_digest(candidate_config),
-                candidate_model_digest=_model_digest(candidate_config),
+                candidate_config_digest=candidate_config_digest,
+                candidate_model_digest=candidate_model_digest,
                 candidate=candidate_payload,
                 comparison=comparison.as_dict(),
                 ok=comparison.promotable,
             )
+            if candidate_profile_binding is not None:
+                payload.update(
+                    candidate_final_stt_profile=candidate_profile_binding[0],
+                    candidate_final_stt_profile_digest=(candidate_profile_binding[1]),
+                )
             exit_code = 0 if comparison.promotable else 3
 
         _guard_output_path(loaded_corpus, args.output)

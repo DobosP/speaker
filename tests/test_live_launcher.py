@@ -486,6 +486,90 @@ def test_echo_llm_skips_ollama_and_uses_deferred_doctor(tmp_path):
     assert doctor[-1] == "--defer-ollama"
 
 
+def test_final_stt_profile_is_forwarded_identically_to_doctor_and_core(tmp_path):
+    committed = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "device": "safe",
+                "device_profiles": {
+                    "safe": {"sherpa": {"aec_enabled": False}},
+                },
+                "sherpa": {"aec_enabled": False},
+                "llm": {"backend": "llamacpp"},
+                "final_stt_profiles": committed["final_stt_profiles"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    assert _run_session(
+        [
+            "--llm",
+            "echo",
+            "--final-stt-profile",
+            "parakeet-faster-whisper",
+        ],
+        ops=ops,
+        root=tmp_path,
+    ) == 0
+
+    doctor = next(
+        command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor")
+    )
+    voice = _voice_command(ops)
+    expected = ("--final-stt-profile", "parakeet-faster-whisper")
+    doctor_index = doctor.index(expected[0])
+    voice_index = voice.index(expected[0])
+    assert doctor[doctor_index:doctor_index + 2] == expected
+    assert voice[voice_index:voice_index + 2] == expected
+    assert doctor.count("--final-stt-profile") == 1
+    assert voice.count("--final-stt-profile") == 1
+    assert "--asr-final" not in doctor
+    assert "--asr-final" not in voice
+
+
+def test_invalid_final_stt_profile_map_fails_before_host_setup(tmp_path):
+    committed = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    profiles = committed["final_stt_profiles"]
+    profiles["parakeet-faster-whisper"]["sherpa"][
+        "asr_final_verifier_cpu_threads"
+    ] = 2
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "device": "safe",
+                "device_profiles": {
+                    "safe": {"sherpa": {"aec_enabled": False}},
+                },
+                "sherpa": {"aec_enabled": False},
+                "llm": {"backend": "llamacpp"},
+                "final_stt_profiles": profiles,
+            }
+        ),
+        encoding="utf-8",
+    )
+    ops = _FakeOps()
+
+    assert _run_session(
+        ["--final-stt-profile", "parakeet-faster-whisper"],
+        ops=ops,
+        root=tmp_path,
+    ) == 2
+
+    assert ops.calls == []
+    assert ops.popen_calls == []
+
+
 @pytest.mark.parametrize("requested_device", [None, "unsafe"])
 def test_selected_default_or_requested_profile_with_in_app_aec_is_rejected(
     tmp_path, requested_device
@@ -1311,6 +1395,21 @@ def test_concurrent_launcher_is_rejected_without_touching_audio(tmp_path):
 def test_launcher_rejects_options_that_break_its_evidence_contract(arguments):
     with pytest.raises(SystemExit) as exc:
         run_live_session(arguments, ops=_FakeOps(), root=Path("/unused"))
+    assert exc.value.code == 2
+
+
+def test_launcher_rejects_mixed_atomic_and_legacy_final_stt_options():
+    with pytest.raises(SystemExit) as exc:
+        run_live_session(
+            [
+                "--asr-final",
+                "sense_voice",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=_FakeOps(),
+            root=Path("/unused"),
+        )
     assert exc.value.code == 2
 
 

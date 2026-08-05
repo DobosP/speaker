@@ -312,13 +312,15 @@ def check_asr_final_verifier_runtime(
         model_path = str(
             sherpa.get("asr_final_verifier_model", "") or ""
         ).strip()
+        cpu_threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
         if not model_path:
             raise RuntimeError("selected verifier model is unavailable")
         if model_probe_fn is None:
             from .engines._faster_whisper import FasterWhisperEndpointRecognizer
 
             def model_probe_fn(path: str) -> None:
-                FasterWhisperEndpointRecognizer(path).warm()
+                options = {"cpu_threads": cpu_threads} if cpu_threads else {}
+                FasterWhisperEndpointRecognizer(path, **options).warm()
 
         # Required files alone cannot prove that CTranslate2 can load this exact
         # snapshot. Pay the selected model-load cost before microphone startup;
@@ -345,15 +347,27 @@ def check_asr_final_runtime(
     import_fn: Callable[[str], object] = importlib.import_module,
     model_probe_fn: Callable[[Mapping[str, object]], None] | None = None,
 ) -> Check:
-    """Load and decode with an explicitly selected NeMo final recognizer."""
+    """Prove a mandatory final recognizer can construct and decode.
+
+    NeMo keeps its existing always-strict pinned-runtime check. SenseVoice and
+    Whisper are checked here only when an explicit named profile set
+    ``asr_final_required``; ordinary configuration retains its historical
+    best-effort streaming fallback.
+    """
     sherpa = (config or {}).get("sherpa", {}) or {}
     backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
-    if backend != "nemo_transducer":
+    required = bool(sherpa.get("asr_final_required", False))
+    if backend != "nemo_transducer" and not required:
         return Check("ASR final runtime", True, "NeMo transducer disabled")
     try:
+        if backend not in {"sense_voice", "whisper", "nemo_transducer"}:
+            raise RuntimeError(f"required final backend {backend!r} is unsupported")
         module = import_fn("sherpa_onnx")
         version = str(getattr(module, "__version__", "") or "")
-        if version != _NEMO_TRANSDUCER_SHERPA_ONNX_VERSION:
+        if (
+            backend == "nemo_transducer"
+            and version != _NEMO_TRANSDUCER_SHERPA_ONNX_VERSION
+        ):
             raise RuntimeError(
                 "selected NeMo final requires sherpa-onnx "
                 f"{_NEMO_TRANSDUCER_SHERPA_ONNX_VERSION}"
@@ -364,14 +378,18 @@ def check_asr_final_runtime(
             from .engines._sherpa_models import build_final_recognizer
             from .engines.sherpa import SherpaConfig
 
-            recognizer = build_final_recognizer(SherpaConfig.from_dict(dict(sherpa)))
+            recognizer = build_final_recognizer(
+                SherpaConfig.from_dict(dict(sherpa))
+            )
             if recognizer is None:
-                raise RuntimeError("selected NeMo final recognizer did not load")
+                raise RuntimeError(f"selected {backend} final recognizer did not load")
             stream = recognizer.create_stream()
             stream.accept_waveform(16_000, np.zeros(1600, dtype=np.float32))
             recognizer.decode_stream(stream)
             if not isinstance(getattr(stream.result, "text", None), str):
-                raise RuntimeError("selected NeMo final decode returned no result")
+                raise RuntimeError(
+                    f"selected {backend} final decode returned no result"
+                )
         else:
             model_probe_fn(sherpa)
     except Exception as exc:  # noqa: BLE001 - selected runtime fails closed
@@ -379,12 +397,17 @@ def check_asr_final_runtime(
             "ASR final runtime",
             False,
             f"{type(exc).__name__}: {exc}",
-            "install the pinned sherpa-onnx runtime and rerun tools.doctor",
+            (
+                "install sherpa-onnx and the selected local final-ASR artifacts, "
+                "then rerun tools.doctor"
+                if backend != "nemo_transducer"
+                else "install the pinned sherpa-onnx runtime and rerun tools.doctor"
+            ),
         )
     return Check(
         "ASR final runtime",
         True,
-        f"local NeMo transducer decode ready (sherpa-onnx {version})",
+        f"local {backend} final decode ready (sherpa-onnx {version or 'unknown'})",
     )
 
 
@@ -1114,7 +1137,10 @@ def run_runtime_checks(
     final_backend = str(
         ((merged.get("sherpa", {}) or {}).get("asr_final_backend", "")) or ""
     ).strip().lower()
-    if final_backend == "nemo_transducer":
+    final_required = bool(
+        (merged.get("sherpa", {}) or {}).get("asr_final_required", False)
+    )
+    if final_backend == "nemo_transducer" or final_required:
         checks.append(check_asr_final_runtime(merged, import_fn=import_fn))
     if verifier_check is not None:
         checks.append(verifier_check)

@@ -1194,6 +1194,10 @@ def test_cli_never_prints_private_rows_or_config(capsys, monkeypatch):
     assert private_hypothesis not in output
     payload = json.loads(output)
     assert payload["baseline"]["selected"]["word_errors"] > 0
+    assert "baseline_final_stt_profile" not in payload
+    assert "baseline_final_stt_profile_digest" not in payload
+    assert "candidate_final_stt_profile" not in payload
+    assert "candidate_final_stt_profile_digest" not in payload
 
 
 def test_cli_rejects_unattested_baseline_source_accounting(capsys, monkeypatch):
@@ -1524,3 +1528,238 @@ def test_cli_unexpected_failure_is_also_detail_free(capsys, monkeypatch):
     output = capsys.readouterr().out
     assert "SENTINEL_PRIVATE_TRANSCRIPT" not in output
     assert json.loads(output) == stt_eval._SAFE_ERROR
+
+
+def test_profile_pair_uses_shared_resolver_from_one_effective_base(monkeypatch):
+    effective = {"sherpa": {"streaming": "unchanged"}}
+    calls = []
+
+    def apply_profile(config, name):
+        calls.append((config, name))
+        return (
+            {"sherpa": {"profile": name}},
+            SimpleNamespace(
+                name=name,
+                sha256=("a" if len(calls) == 1 else "b") * 64,
+                schema_version=1,
+            ),
+        )
+
+    monkeypatch.setattr(stt_eval, "_load_effective_config", lambda: effective)
+    monkeypatch.setattr(
+        "core.config.apply_final_stt_profile",
+        apply_profile,
+    )
+    monkeypatch.setattr(
+        stt_eval,
+        "_sherpa_config",
+        lambda config: config["sherpa"]["profile"],
+    )
+
+    resolved = stt_eval._load_profile_configs(
+        "sense-voice",
+        "parakeet-faster-whisper",
+    )
+
+    assert calls == [
+        (effective, "sense-voice"),
+        (effective, "parakeet-faster-whisper"),
+    ]
+    assert resolved == (
+        "sense-voice",
+        ("sense-voice", "a" * 64),
+        "parakeet-faster-whisper",
+        ("parakeet-faster-whisper", "b" * 64),
+    )
+    assert effective == {"sherpa": {"streaming": "unchanged"}}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--baseline-final-stt-profile", "sense-voice"],
+        ["--candidate-final-stt-profile", "parakeet-faster-whisper"],
+        [
+            "--baseline-final-stt-profile",
+            "sense-voice",
+            "--candidate-final-stt-profile",
+            "sense-voice",
+        ],
+        [
+            "--baseline-final-stt-profile",
+            "not-a-profile",
+            "--candidate-final-stt-profile",
+            "parakeet-faster-whisper",
+        ],
+        [
+            "--baseline-final-stt-profile",
+            "sense-voice",
+            "--candidate-final-stt-profile",
+            "parakeet-faster-whisper",
+            "--set",
+            "value=2",
+        ],
+    ],
+)
+def test_cli_rejects_non_atomic_or_mixed_profile_comparison_before_input_work(
+    argv,
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        stt_eval,
+        "_load_corpus",
+        lambda _path: pytest.fail("invalid profile comparison reached corpus work"),
+    )
+    monkeypatch.setattr(
+        stt_eval,
+        "_load_profile_configs",
+        lambda *_args: pytest.fail("invalid profile comparison reached config work"),
+    )
+    monkeypatch.setattr(
+        stt_eval,
+        "_load_config",
+        lambda: pytest.fail("invalid profile comparison reached config work"),
+    )
+
+    assert stt_eval.main(argv) == 2
+    assert json.loads(capsys.readouterr().out) == stt_eval._SAFE_ERROR
+
+
+def test_cli_resolves_and_hashes_complete_profile_pair_before_replay(
+    capsys,
+    monkeypatch,
+):
+    @dataclass(frozen=True)
+    class Config:
+        profile: str
+
+    item = stt_eval._CorpusItem("alpha beta", object(), 16_000, None)
+    baseline = _totals((("alpha beta", "alpha wrong"),))
+    candidate = _totals((("alpha beta", "alpha beta"),))
+    events = []
+
+    def load_profiles(baseline_name, candidate_name):
+        assert baseline_name == "sense-voice"
+        assert candidate_name == "parakeet-faster-whisper"
+        return (
+            Config("baseline"),
+            (baseline_name, "a" * 64),
+            Config("candidate"),
+            (candidate_name, "b" * 64),
+        )
+
+    def config_digest(config):
+        events.append(f"config:{config.profile}")
+        return ("c" if config.profile == "baseline" else "d") * 64
+
+    def model_digest(config):
+        events.append(f"model:{config.profile}")
+        return ("e" if config.profile == "baseline" else "f") * 64
+
+    def evaluate(config, _corpus, _keywords):
+        events.append(f"evaluate:{config.profile}")
+        if config.profile == "baseline":
+            return baseline, ((1, 5),)
+        return candidate, ((0, 0),)
+
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: _loaded_fixture(item))
+    monkeypatch.setattr(stt_eval, "_load_profile_configs", load_profiles)
+    monkeypatch.setattr(stt_eval, "_config_digest", config_digest)
+    monkeypatch.setattr(stt_eval, "_model_digest", model_digest)
+    monkeypatch.setattr(stt_eval, "_evaluate", evaluate)
+
+    assert (
+        stt_eval.main(
+            [
+                "--baseline-final-stt-profile",
+                "sense-voice",
+                "--candidate-final-stt-profile",
+                "parakeet-faster-whisper",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert events == [
+        "config:baseline",
+        "model:baseline",
+        "config:candidate",
+        "model:candidate",
+        "evaluate:baseline",
+        "evaluate:candidate",
+    ]
+    assert payload["baseline_final_stt_profile"] == "sense-voice"
+    assert payload["baseline_final_stt_profile_digest"] == "a" * 64
+    assert payload["candidate_final_stt_profile"] == "parakeet-faster-whisper"
+    assert payload["candidate_final_stt_profile_digest"] == "b" * 64
+    assert payload["baseline_config_digest"] == "c" * 64
+    assert payload["candidate_config_digest"] == "d" * 64
+    assert payload["baseline_model_digest"] == "e" * 64
+    assert payload["candidate_model_digest"] == "f" * 64
+    assert payload["comparison"]["promotable"] is True
+    assert payload["ok"] is True
+
+
+def test_cli_profile_pair_digest_failure_runs_neither_cell(capsys, monkeypatch):
+    @dataclass(frozen=True)
+    class Config:
+        profile: str
+
+    item = stt_eval._CorpusItem("reference", object(), 16_000, None)
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: _loaded_fixture(item))
+    monkeypatch.setattr(
+        stt_eval,
+        "_load_profile_configs",
+        lambda *_args: (
+            Config("baseline"),
+            ("sense-voice", "a" * 64),
+            Config("candidate"),
+            ("parakeet-faster-whisper", "b" * 64),
+        ),
+    )
+    monkeypatch.setattr(stt_eval, "_config_digest", lambda _config: "c" * 64)
+
+    def model_digest(config):
+        if config.profile == "candidate":
+            raise stt_eval.EvaluationPrerequisiteError()
+        return "d" * 64
+
+    monkeypatch.setattr(stt_eval, "_model_digest", model_digest)
+    monkeypatch.setattr(
+        stt_eval,
+        "_evaluate",
+        lambda *_args, **_kwargs: pytest.fail("profile cell ran before pair binding"),
+    )
+
+    assert (
+        stt_eval.main(
+            [
+                "--baseline-final-stt-profile",
+                "sense-voice",
+                "--candidate-final-stt-profile",
+                "parakeet-faster-whisper",
+            ]
+        )
+        == 2
+    )
+    assert json.loads(capsys.readouterr().out) == stt_eval._SAFE_ERROR
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        SimpleNamespace(name="sense-voice", sha256="A" * 64, schema_version=1),
+        SimpleNamespace(name="sense-voice", sha256="a" * 63, schema_version=1),
+        SimpleNamespace(
+            name="parakeet-faster-whisper",
+            sha256="a" * 64,
+            schema_version=1,
+        ),
+        SimpleNamespace(name="sense-voice", sha256="a" * 64, schema_version=True),
+    ],
+)
+def test_profile_binding_rejects_noncanonical_or_mismatched_metadata(metadata):
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError):
+        stt_eval._profile_binding(metadata, "sense-voice")

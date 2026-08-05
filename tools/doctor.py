@@ -13,6 +13,7 @@ import os
 import sys
 from typing import Callable, Iterable, Optional
 
+from core.config import FINAL_STT_PROFILE_NAMES, apply_final_stt_profile
 from core.readiness import (
     DEFAULT_OLLAMA_MODELS,
     SHERPA_REQUIRED,
@@ -76,6 +77,7 @@ def run_all(
     exists: Callable[[str], bool] = os.path.exists,
     models_needed: Optional[Iterable[str]] = None,
     device=None,
+    final_stt_profile: str | None = None,
     llm_mode: str = "configured",
     platform: str = sys.platform,
     pipewire_state: Optional[PipeWireState] = None,
@@ -83,7 +85,15 @@ def run_all(
 ) -> list[Check]:
     """Resolve/apply one profile, then run every check over that merged view."""
     merged, _ = resolve_check_config(config, device)
-    return [check_python(), check_platform()] + run_runtime_checks(
+    prefix = [check_python(), check_platform()]
+    if final_stt_profile:
+        merged, metadata = apply_final_stt_profile(merged, final_stt_profile)
+        prefix.append(Check(
+            "final STT profile",
+            True,
+            f"{metadata.name}; sha256={metadata.sha256}",
+        ))
+    return prefix + run_runtime_checks(
         merged,
         resolved=True,
         llm_mode=llm_mode,
@@ -124,6 +134,15 @@ def main(argv: list[str] | None = None) -> int:
         help="check a device profile (e.g. open_speaker); default = config.device",
     )
     parser.add_argument(
+        "--final-stt-profile",
+        choices=FINAL_STT_PROFILE_NAMES,
+        default=None,
+        help=(
+            "apply the same complete session-scoped final-STT profile that core "
+            "will use before checking models and runtime readiness"
+        ),
+    )
+    parser.add_argument(
         "--defer-ollama",
         action="store_true",
         help=(
@@ -153,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             checks = run_all(
                 config,
                 device=args.device,
+                final_stt_profile=args.final_stt_profile,
                 llm_mode="echo",
             )
         elif args.defer_ollama:
@@ -171,13 +191,26 @@ def main(argv: list[str] | None = None) -> int:
                 checks = run_all(
                     config,
                     device=args.device,
+                    final_stt_profile=args.final_stt_profile,
                     llm_mode="echo",
                 )
         else:
-            checks = run_all(config, device=args.device)
+            checks = run_all(
+                config,
+                device=args.device,
+                final_stt_profile=args.final_stt_profile,
+            )
     except ValueError as exc:
+        label = "final STT profile" if args.final_stt_profile else "device profile"
         checks = [Check(
-            "device profile", False, str(exc), "use a listed --device profile"
+            label,
+            False,
+            str(exc),
+            (
+                "use the complete configured --final-stt-profile map"
+                if args.final_stt_profile
+                else "use a listed --device profile"
+            ),
         )]
     ready, text = summarize(checks)
     print(text)

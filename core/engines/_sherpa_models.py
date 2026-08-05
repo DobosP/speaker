@@ -249,9 +249,10 @@ def build_final_recognizer(c: "SherpaConfig"):
     -> "Hey, are you listening to me.") at ~150ms/utterance.
 
     None unless ``asr_final_backend`` (``sense_voice``, ``whisper``, or
-    ``nemo_transducer``) is set and the model exists. Fail-OPEN: any build error
-    returns None so the engine simply keeps the streaming final -- a bad
-    second-pass config never breaks capture.
+    ``nemo_transducer``) is set and the model exists. Ordinary configuration
+    stays fail-open: a build error returns None and keeps the streaming final.
+    An explicit named profile sets ``asr_final_required`` and fails closed
+    before capture instead of silently degrading to streaming-only finals.
 
     ``nemo_transducer`` is the exact sherpa-onnx export contract used by the
     measured Parakeet candidates. Keep sherpa-onnx's documented
@@ -260,7 +261,10 @@ def build_final_recognizer(c: "SherpaConfig"):
     NeMo path, not a reason to silently rewrite the frontend contract.
     """
     backend = (getattr(c, "asr_final_backend", "") or "").strip().lower()
+    required = bool(getattr(c, "asr_final_required", False))
     if not backend:
+        if required:
+            raise RuntimeError("required final recognizer backend is unset")
         return None
     import os
 
@@ -272,6 +276,10 @@ def build_final_recognizer(c: "SherpaConfig"):
         # final, which is much lower accuracy (the garbled-transcript symptom). Make
         # that LOUD so a missing/relative-path download isn't invisible in the run
         # bundle, instead of returning None with no trace.
+        if required:
+            raise RuntimeError(
+                f"required {backend} final recognizer model is unavailable"
+            )
         import logging
 
         logging.getLogger("speaker.sherpa").warning(
@@ -281,6 +289,26 @@ def build_final_recognizer(c: "SherpaConfig"):
             backend, model or "(unset)",
         )
         return None
+    if required:
+        required_paths = {"tokens": tokens}
+        if backend in {"whisper", "nemo_transducer"}:
+            required_paths["decoder"] = (
+                getattr(c, "asr_final_decoder", "") or ""
+            )
+        if backend == "nemo_transducer":
+            required_paths["joiner"] = (
+                getattr(c, "asr_final_joiner", "") or ""
+            )
+        missing = [
+            label
+            for label, path in required_paths.items()
+            if not path or not os.path.exists(path)
+        ]
+        if missing:
+            raise RuntimeError(
+                f"required {backend} final recognizer artifacts unavailable: "
+                + ", ".join(missing)
+            )
     try:
         import sherpa_onnx
 
@@ -302,17 +330,35 @@ def build_final_recognizer(c: "SherpaConfig"):
                 val = getattr(c, cfg_key, "") or ""
                 if val:
                     kwargs[kw] = val
-            return sherpa_onnx.OfflineRecognizer.from_sense_voice(**_supported(
-                sherpa_onnx.OfflineRecognizer.from_sense_voice, kwargs))
+            recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                **_supported(
+                    sherpa_onnx.OfflineRecognizer.from_sense_voice,
+                    kwargs,
+                )
+            )
+            if required and recognizer is None:
+                raise RuntimeError(
+                    "required sense_voice constructor returned no recognizer"
+                )
+            return recognizer
         if backend == "whisper":
             kwargs = dict(
                 encoder=model, decoder=getattr(c, "asr_final_decoder", "") or "",
                 tokens=tokens, num_threads=c.resolved_asr_threads, provider=c.provider,
             )
-            return sherpa_onnx.OfflineRecognizer.from_whisper(**_supported(
-                sherpa_onnx.OfflineRecognizer.from_whisper, kwargs))
+            recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+                **_supported(
+                    sherpa_onnx.OfflineRecognizer.from_whisper,
+                    kwargs,
+                )
+            )
+            if required and recognizer is None:
+                raise RuntimeError(
+                    "required whisper constructor returned no recognizer"
+                )
+            return recognizer
         if backend == "nemo_transducer":
-            return sherpa_onnx.OfflineRecognizer.from_transducer(
+            recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
                 encoder=model,
                 decoder=getattr(c, "asr_final_decoder", "") or "",
                 joiner=getattr(c, "asr_final_joiner", "") or "",
@@ -325,12 +371,25 @@ def build_final_recognizer(c: "SherpaConfig"):
                 provider=c.provider,
                 model_type="nemo_transducer",
             )
-    except Exception:  # noqa: BLE001 - fail open to the streaming final
+            if required and recognizer is None:
+                raise RuntimeError(
+                    "required nemo_transducer constructor returned no recognizer"
+                )
+            return recognizer
+    except Exception as exc:  # noqa: BLE001 - optional path fails open
+        if required:
+            raise RuntimeError(
+                f"required {backend} final recognizer failed to build"
+            ) from exc
         import logging
 
         logging.getLogger("speaker.sherpa").warning(
             "second-pass recognizer (%s) failed to build; using the streaming final",
             backend, exc_info=True)
+    if required:
+        raise RuntimeError(
+            f"required final recognizer backend {backend!r} is unsupported"
+        )
     return None
 
 
@@ -339,15 +398,22 @@ def build_final_verifier(c: "SherpaConfig"):
 
     The verifier is independent of the existing streaming and offline
     recognizers.  It is disabled unless an explicit backend and existing local
-    model directory are configured.  Construction failures fail open to the
-    established final-selection baseline.
+    model directory are configured. Construction failures fail open to the
+    established final-selection baseline unless an explicit named profile set
+    ``asr_final_required``. Required verifiers also warm eagerly so corrupt
+    lazy-loaded model artifacts cannot reach capture.
     """
     backend = (
         getattr(c, "asr_final_verifier_backend", "") or ""
     ).strip().lower()
+    required = bool(getattr(c, "asr_final_required", False))
     if not backend:
         return None
     if backend != "faster_whisper":
+        if required:
+            raise RuntimeError(
+                f"required final verifier backend {backend!r} is unsupported"
+            )
         log.warning(
             "unsupported final verifier backend %r; verifier disabled",
             backend,
@@ -356,6 +422,10 @@ def build_final_verifier(c: "SherpaConfig"):
 
     model = getattr(c, "asr_final_verifier_model", "") or ""
     if not model:
+        if required:
+            raise RuntimeError(
+                "required faster_whisper verifier model is unavailable"
+            )
         log.warning(
             "faster_whisper final verifier has no local model path; "
             "verifier disabled"
@@ -364,8 +434,17 @@ def build_final_verifier(c: "SherpaConfig"):
     try:
         from ._faster_whisper import FasterWhisperEndpointRecognizer
 
-        return FasterWhisperEndpointRecognizer(model)
-    except Exception:  # noqa: BLE001 - preserve the established final baseline
+        cpu_threads = getattr(c, "asr_final_verifier_cpu_threads", 0)
+        options = {"cpu_threads": cpu_threads} if cpu_threads else {}
+        verifier = FasterWhisperEndpointRecognizer(model, **options)
+        if required:
+            verifier.warm()
+        return verifier
+    except Exception as exc:  # noqa: BLE001 - optional path preserves baseline
+        if required:
+            raise RuntimeError(
+                "required faster_whisper final verifier failed to build"
+            ) from exc
         log.warning(
             "faster_whisper final verifier failed to build; verifier disabled",
             exc_info=True,

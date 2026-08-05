@@ -88,6 +88,77 @@ def test_app_main_console_writes_bundle(tmp_path, monkeypatch):
     assert list(tmp_path.glob("run-*.txt"))
 
 
+def test_app_final_stt_profile_is_session_scoped_and_digest_bound(
+    tmp_path, monkeypatch
+):
+    observed = {}
+
+    def ready(config, *_args, **_kwargs):
+        observed["readiness"] = dict(config["sherpa"])
+
+    def build_engine(_args, config, **_kwargs):
+        observed["engine"] = dict(config["sherpa"])
+        return ScriptedEngine()
+
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "_require_sherpa_runtime_ready", ready)
+    monkeypatch.setattr(app, "_build_engine", build_engine)
+    monkeypatch.setattr(app, "_run_live", lambda _runtime: None)
+
+    rc = app.main([
+        "--session",
+        "local",
+        "--llm",
+        "echo",
+        "--device",
+        "desktop",
+        "--final-stt-profile",
+        "sense-voice",
+    ])
+
+    assert rc == 0
+    data = json.loads(next(tmp_path.glob("run-*.summary.json")).read_text())
+    assert data["meta"]["final_stt_profile"] == "sense-voice"
+    assert len(data["meta"]["final_stt_profile_sha256"]) == 64
+    assert data["meta"]["final_stt_profile_schema_version"] == 1
+    assert observed["readiness"] == observed["engine"]
+    assert observed["engine"]["asr_final_backend"] == "sense_voice"
+    assert observed["engine"]["asr_final_verifier_backend"] == ""
+    assert "pretrained_models" not in json.dumps(
+        {
+            key: value
+            for key, value in data["meta"].items()
+            if key.startswith("final_stt_profile")
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "session_args",
+    [
+        ["--session", "console"],
+        ["--session", "local", "--enroll"],
+    ],
+)
+def test_app_final_stt_profile_rejects_non_stt_or_enrollment_session(session_args):
+    with pytest.raises(SystemExit) as exc:
+        app.main([*session_args, "--final-stt-profile", "sense-voice"])
+    assert exc.value.code == 2
+
+
+def test_app_final_stt_profile_is_mutually_exclusive_with_legacy_asr_override():
+    with pytest.raises(SystemExit) as exc:
+        app.main([
+            "--session",
+            "console",
+            "--asr-final",
+            "streaming",
+            "--final-stt-profile",
+            "sense-voice",
+        ])
+    assert exc.value.code == 2
+
+
 def test_trusted_lan_requires_explicit_setup_and_finalizes_bundle(
     tmp_path, monkeypatch, capsys
 ):

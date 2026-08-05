@@ -21,8 +21,12 @@ historical private names some tools/tests still import.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
+import re
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 __all__ = [
@@ -30,19 +34,235 @@ __all__ = [
     "load_config",
     "resolve_device",
     "apply_device_profile",
+    "FINAL_STT_PROFILE_NAMES",
+    "FinalSttProfileMetadata",
+    "apply_final_stt_profile",
     "_load_config",
     "_apply_device_profile",
 ]
 
 
-# Keys whose dict value is an OPAQUE, backend-specific bag that must be replaced
-# WHOLESALE rather than recursively merged. ``llm.options`` carries
-# backend-specific generation params -- Ollama's ``num_ctx`` vs llama.cpp's
-# (which has no such generation kwarg and would TypeError). A device_profile that
-# switches ``llm.backend`` and sets its own ``options`` must NOT inherit the base
-# backend's option keys; the old shallow merge replaced these wholesale, so we
-# preserve that here while still deep-merging every other nested key.
-_OPAQUE_KEYS = frozenset({"options"})
+# Keys whose dict value is an OPAQUE bag that must be replaced WHOLESALE rather
+# than recursively merged. ``llm.options`` carries backend-specific generation
+# params -- Ollama's ``num_ctx`` vs llama.cpp's (which has no such generation
+# kwarg and would TypeError). ``final_stt_profiles`` is a complete, validated
+# profile collection: merging only model or verifier leaves would destroy its
+# atomic evidence identity. Preserve wholesale behavior for both bags.
+_OPAQUE_KEYS = frozenset({"options", "final_stt_profiles"})
+
+
+FINAL_STT_PROFILE_NAMES = ("sense-voice", "parakeet-faster-whisper")
+_FINAL_STT_PROFILE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_FINAL_STT_STRING_FIELDS = frozenset(
+    {
+        "asr_final_backend",
+        "asr_final_model",
+        "asr_final_tokens",
+        "asr_final_decoder",
+        "asr_final_joiner",
+        "asr_final_language",
+        "asr_final_verifier_backend",
+        "asr_final_verifier_model",
+        "asr_final_hr_dict_dir",
+        "asr_final_hr_lexicon",
+        "asr_final_hr_rule_fsts",
+        "asr_final_rule_fsts",
+    }
+)
+_FINAL_STT_BOOL_FIELDS = frozenset(
+    {"asr_final_use_itn", "asr_final_async", "asr_final_required"}
+)
+_FINAL_STT_NUMBER_FIELDS = frozenset(
+    {"asr_final_min_sec", "asr_final_preroll_sec"}
+)
+_FINAL_STT_INTEGER_FIELDS = frozenset({"asr_final_verifier_cpu_threads"})
+_FINAL_STT_SHERPA_FIELDS = (
+    _FINAL_STT_STRING_FIELDS
+    | _FINAL_STT_BOOL_FIELDS
+    | _FINAL_STT_NUMBER_FIELDS
+    | _FINAL_STT_INTEGER_FIELDS
+)
+
+
+@dataclass(frozen=True)
+class FinalSttProfileMetadata:
+    """Path- and transcript-free identity for one applied final-STT profile."""
+
+    name: str
+    sha256: str
+    schema_version: int
+
+
+def _canonical_profile_sha256(profile: dict) -> str:
+    try:
+        payload = json.dumps(
+            profile,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"final STT profile is not canonical JSON: {exc}") from exc
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_final_stt_profile(name: str, profile: object) -> dict:
+    if not isinstance(profile, dict):
+        raise ValueError(f"final STT profile {name!r} must be an object")
+    if set(profile) != {"schema_version", "sherpa"}:
+        raise ValueError(
+            f"final STT profile {name!r} must contain exactly "
+            "'schema_version' and 'sherpa'"
+        )
+    schema_version = profile.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != 1
+    ):
+        raise ValueError(f"final STT profile {name!r} schema_version must be 1")
+    sherpa = profile.get("sherpa")
+    if not isinstance(sherpa, dict):
+        raise ValueError(f"final STT profile {name!r} sherpa must be an object")
+    missing = sorted(_FINAL_STT_SHERPA_FIELDS - set(sherpa))
+    extra = sorted(set(sherpa) - _FINAL_STT_SHERPA_FIELDS)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if extra:
+            details.append(f"unknown {', '.join(extra)}")
+        raise ValueError(
+            f"final STT profile {name!r} has an incomplete sherpa object: "
+            + "; ".join(details)
+        )
+    for key in _FINAL_STT_STRING_FIELDS:
+        value = sherpa[key]
+        if not isinstance(value, str) or "\x00" in value:
+            raise ValueError(f"final STT profile {name!r} {key} must be a string")
+    for key in _FINAL_STT_BOOL_FIELDS:
+        if not isinstance(sherpa[key], bool):
+            raise ValueError(f"final STT profile {name!r} {key} must be boolean")
+    for key in _FINAL_STT_NUMBER_FIELDS:
+        value = sherpa[key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise ValueError(
+                f"final STT profile {name!r} {key} must be a finite non-negative number"
+            )
+    threads = sherpa["asr_final_verifier_cpu_threads"]
+    if (
+        isinstance(threads, bool)
+        or not isinstance(threads, int)
+        or not 0 <= threads <= 256
+    ):
+        raise ValueError(
+            f"final STT profile {name!r} asr_final_verifier_cpu_threads "
+            "must be an integer from 0 to 256"
+        )
+
+    backend = sherpa["asr_final_backend"]
+    verifier = sherpa["asr_final_verifier_backend"]
+    expected_pair = {
+        "sense-voice": ("sense_voice", ""),
+        "parakeet-faster-whisper": ("nemo_transducer", "faster_whisper"),
+    }[name]
+    if (backend, verifier) != expected_pair:
+        raise ValueError(
+            f"final STT profile {name!r} must select "
+            f"backend={expected_pair[0]!r}, verifier={expected_pair[1]!r}"
+        )
+    if not sherpa["asr_final_model"] or not sherpa["asr_final_tokens"]:
+        raise ValueError(f"final STT profile {name!r} needs final model and tokens")
+    if backend == "sense_voice":
+        if sherpa["asr_final_decoder"] or sherpa["asr_final_joiner"]:
+            raise ValueError(
+                f"final STT profile {name!r} cannot set decoder or joiner"
+            )
+    else:
+        if not sherpa["asr_final_decoder"] or not sherpa["asr_final_joiner"]:
+            raise ValueError(
+                f"final STT profile {name!r} needs decoder and joiner"
+            )
+    if verifier:
+        if not sherpa["asr_final_verifier_model"] or threads < 1:
+            raise ValueError(
+                f"final STT profile {name!r} needs a verifier model and bounded CPU threads"
+            )
+    elif sherpa["asr_final_verifier_model"] or threads:
+        raise ValueError(
+            f"final STT profile {name!r} has asr_final_verifier_model or "
+            "asr_final_verifier_cpu_threads settings while disabled"
+        )
+    fixed_policy = {
+        "asr_final_use_itn": True,
+        "asr_final_language": "en",
+        "asr_final_hr_dict_dir": "",
+        "asr_final_hr_lexicon": "",
+        "asr_final_hr_rule_fsts": "",
+        "asr_final_rule_fsts": "",
+        "asr_final_min_sec": 0.5,
+        "asr_final_async": True,
+        "asr_final_required": True,
+        "asr_final_preroll_sec": 0.8,
+        "asr_final_verifier_cpu_threads": (
+            0 if name == "sense-voice" else 1
+        ),
+    }
+    for key, expected in fixed_policy.items():
+        if sherpa[key] != expected:
+            raise ValueError(
+                f"final STT profile {name!r} {key} must remain {expected!r}"
+            )
+    return profile
+
+
+def apply_final_stt_profile(
+    config: dict, name: str
+) -> tuple[dict, FinalSttProfileMetadata]:
+    """Atomically apply one complete, validated final-STT profile.
+
+    The profile is applied after device selection by callers and replaces every
+    final-ASR model, verifier, biasing, timing, and scheduling field as one unit.
+    Inputs are never mutated.  The returned metadata deliberately contains only
+    a CLI-safe name and the canonical selected-profile digest; model paths never
+    need to enter a run summary.
+    """
+
+    if not isinstance(config, dict):
+        raise ValueError("config must be an object")
+    if (
+        not isinstance(name, str)
+        or not _FINAL_STT_PROFILE_NAME_RE.fullmatch(name)
+        or name not in FINAL_STT_PROFILE_NAMES
+    ):
+        valid = ", ".join(FINAL_STT_PROFILE_NAMES)
+        raise ValueError(f"unknown final STT profile {name!r}; valid profiles: {valid}")
+    profiles = config.get("final_stt_profiles")
+    if not isinstance(profiles, dict) or set(profiles) != set(
+        FINAL_STT_PROFILE_NAMES
+    ):
+        raise ValueError(
+            "final_stt_profiles must be one complete opaque map containing "
+            + ", ".join(FINAL_STT_PROFILE_NAMES)
+        )
+    validated = {
+        profile_name: _validate_final_stt_profile(profile_name, value)
+        for profile_name, value in profiles.items()
+    }
+    selected = validated[name]
+    effective = deep_merge(config, {"sherpa": dict(selected["sherpa"])})
+    metadata = FinalSttProfileMetadata(
+        name=name,
+        sha256=_canonical_profile_sha256(selected),
+        schema_version=1,
+    )
+    return effective, metadata
 
 
 def deep_merge(base: dict, overrides: dict, *, opaque_keys: frozenset = _OPAQUE_KEYS) -> dict:
@@ -55,10 +275,11 @@ def deep_merge(base: dict, overrides: dict, *, opaque_keys: frozenset = _OPAQUE_
     a scalar (or vice versa) -- replaces wholesale, matching the previous
     behaviour for configs without nested overrides.
 
-    Keys in ``opaque_keys`` (default ``{"options"}``) are ALWAYS replaced
-    wholesale even when both sides are dicts: they are backend-specific bags
-    where merging the base backend's keys into a profile that switched backends
-    would inject invalid params. Inputs are not mutated.
+    Keys in ``opaque_keys`` (by default ``options`` and
+    ``final_stt_profiles``) are ALWAYS replaced wholesale even when both sides
+    are dicts: they are indivisible backend/profile bags where recursive merging
+    could inject invalid params or break an evidence identity. Inputs are not
+    mutated.
     """
     merged = dict(base)
     for key, value in overrides.items():

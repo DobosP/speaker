@@ -1054,14 +1054,25 @@ class _SelectedLiveConfig:
 
 
 def _selected_live_config(
-    root: Path, requested_device: str | None
+    root: Path,
+    requested_device: str | None,
+    final_stt_profile: str | None = None,
 ) -> _SelectedLiveConfig:
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
     if not config_path.exists():
+        if final_stt_profile:
+            raise LauncherError(
+                "--final-stt-profile needs the repository config.json profile map"
+            )
         return _SelectedLiveConfig("ollama", None)
     try:
-        from core.config import apply_device_profile, load_config, resolve_device
+        from core.config import (
+            apply_device_profile,
+            apply_final_stt_profile,
+            load_config,
+            resolve_device,
+        )
 
         config = load_config(
             str(config_path), local=str(root / "config.local.json")
@@ -1069,8 +1080,12 @@ def _selected_live_config(
         requested = requested_device or config.get("device", "auto")
         device, _rationale = resolve_device(config, requested)
         config = apply_device_profile(config, device, strict=True)
+        if final_stt_profile:
+            config, _metadata = apply_final_stt_profile(config, final_stt_profile)
     except (OSError, ValueError) as exc:
-        raise LauncherError(f"could not resolve the selected device profile: {exc}") from exc
+        raise LauncherError(
+            f"could not resolve the selected live configuration: {exc}"
+        ) from exc
     llm = config.get("llm", {}) or {}
     backend = str(llm.get("backend", "ollama") or "ollama").lower()
     if backend not in {"ollama", "llamacpp"}:
@@ -1296,6 +1311,7 @@ _VALUE_OPTIONS = (
     ("--model", "model"),
     ("--fast-model", "fast_model"),
     ("--asr-final", "asr_final"),
+    ("--final-stt-profile", "final_stt_profile"),
     ("--device", "device"),
     ("--mode", "mode"),
     ("--input-gain", "input_gain"),
@@ -1307,6 +1323,7 @@ _FLAG_OPTIONS = (
 
 def _live_parser() -> argparse.ArgumentParser:
     from always_on_agent.events import Mode
+    from core.config import FINAL_STT_PROFILE_NAMES
 
     parser = argparse.ArgumentParser(
         description=(
@@ -1325,11 +1342,22 @@ def _live_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm", choices=["echo", "ollama"], default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--fast-model", dest="fast_model", default=None)
-    parser.add_argument(
+    final_stt_selector = parser.add_mutually_exclusive_group()
+    final_stt_selector.add_argument(
         "--asr-final",
         dest="asr_final",
         choices=["streaming", "sense_voice", "whisper", "nemo_transducer"],
         default=None,
+    )
+    final_stt_selector.add_argument(
+        "--final-stt-profile",
+        dest="final_stt_profile",
+        choices=FINAL_STT_PROFILE_NAMES,
+        default=None,
+        help=(
+            "select one complete session-scoped final-STT A/B profile for both "
+            "readiness and the recorded runtime"
+        ),
     )
     parser.add_argument("--device", default=None)
     parser.add_argument("--mode", choices=[mode.value for mode in Mode], default=None)
@@ -1440,7 +1468,11 @@ def run_live_session(
             env.pop(unsafe_audio_env, None)
 
         llm_mode = str(args.llm or "ollama").lower()
-        selected = _selected_live_config(root, args.device)
+        selected = _selected_live_config(
+            root,
+            args.device,
+            args.final_stt_profile,
+        )
         if llm_mode != "echo" and selected.llm_backend == "ollama":
             ollama_host = _loopback_ollama_host(selected.ollama_host)
             env["OLLAMA_HOST"] = ollama_host
@@ -1464,6 +1496,8 @@ def run_live_session(
         doctor = [sys.executable, "-m", "tools.doctor"]
         if args.device:
             doctor.extend(["--device", args.device])
+        if args.final_stt_profile:
+            doctor.extend(["--final-stt-profile", args.final_stt_profile])
         if llm_mode == "echo":
             doctor.append(
                 "--defer-ollama"

@@ -15,8 +15,10 @@ from always_on_agent.react import PlannerConfig
 
 from .capabilities import RecallConfig
 from .config import (
+    FINAL_STT_PROFILE_NAMES,
     _apply_device_profile,
     _load_config,
+    apply_final_stt_profile,
     apply_device_profile,
     load_config,
     resolve_device,
@@ -791,7 +793,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="small Ollama model for quick spoken replies",
     )
-    parser.add_argument(
+    final_stt_selector = parser.add_mutually_exclusive_group()
+    final_stt_selector.add_argument(
         "--asr-final",
         dest="asr_final",
         choices=["streaming", "sense_voice", "whisper", "nemo_transducer"],
@@ -801,6 +804,17 @@ def main(argv: list[str] | None = None) -> int:
         "short/casual speech where the offline pass over-confidently hallucinates); "
         "'sense_voice'/'whisper'/'nemo_transducer' = offline second pass. "
         "Default: config asr_final_backend.",
+    )
+    final_stt_selector.add_argument(
+        "--final-stt-profile",
+        dest="final_stt_profile",
+        choices=FINAL_STT_PROFILE_NAMES,
+        default=None,
+        help=(
+            "apply one complete session-scoped final-STT A/B profile after the "
+            "device profile; mutually exclusive with --asr-final and does not "
+            "persist configuration"
+        ),
     )
     parser.add_argument(
         "--device",
@@ -932,6 +946,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     requested_engine = args.engine or engine_for_session(args.session)
+    if args.final_stt_profile and (requested_engine not in {"sherpa", "replay"} or args.enroll):
+        parser.error(
+            "--final-stt-profile requires a non-enrollment local or replay STT session"
+        )
     if args.record_playback_reference or args.record_pre_dsp_reference:
         args.record = True
 
@@ -1015,6 +1033,27 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"[device] {exc}", file=sys.stderr)
         return 2
+    if args.final_stt_profile:
+        try:
+            config, final_stt_metadata = apply_final_stt_profile(
+                config, args.final_stt_profile
+            )
+        except ValueError as exc:
+            try:
+                monitor.stop()
+            except Exception:  # noqa: BLE001 - preserve the profile error
+                pass
+            try:
+                runlog.finalize(None)
+            except Exception:  # noqa: BLE001 - preserve the profile error
+                pass
+            print(f"[final-stt-profile] {exc}", file=sys.stderr)
+            return 2
+        runlog.summary.note(
+            final_stt_profile=final_stt_metadata.name,
+            final_stt_profile_sha256=final_stt_metadata.sha256,
+            final_stt_profile_schema_version=final_stt_metadata.schema_version,
+        )
     # CLI audio overrides win over config.json's sherpa block.
     sherpa_overrides = {
         "input_device": args.input_device,

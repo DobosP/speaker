@@ -201,6 +201,47 @@ latency, natural-conversation, or live behavior
 ([ADR-0124](adr/0124-replay-private-diagnostic-inputs-through-final-selector.md),
 [ADR-0126](adr/0126-bind-private-diagnostic-case-labels.md)).
 
+## Compare complete final-STT profiles
+
+For a physical control/candidate check, use the same private reference plan in
+two separate runs. Speak every planned case exactly once and in the same order
+in each run:
+
+```bash
+./live.sh --run-label owner-stt-sense-control --llm echo \
+  --final-stt-profile sense-voice
+
+./live.sh --run-label owner-stt-parakeet-fws --llm echo \
+  --final-stt-profile parakeet-faster-whisper
+```
+
+Each run still uses the single supported physical entry and creates its own
+synchronized private bundle. The profile name and canonical selection digest
+are recorded in its private summary. Readiness consumes the same complete
+profile as the core child and stops before capture if any selected artifact or
+runtime is unavailable. Do not use the backend-only `--asr-final` option for
+this comparison.
+
+After exporting one labelled exact-input corpus as above, compare both complete
+selectors on the *same* PCM without relying on the machine's ambient final-ASR
+configuration:
+
+```bash
+python -m tools.recorded_stt_eval \
+  --manifest /private/path/exact-final-input-corpus/corpus.json \
+  --baseline-final-stt-profile sense-voice \
+  --candidate-final-stt-profile parakeet-faster-whisper \
+  --keyword vault \
+  --output /private/path/new-final-profile-report.json
+```
+
+The two profile arguments are a pair and cannot be mixed with `--set`. Keep the
+report in a private directory and use a new output name. This replay measures
+the production final-selection result after the endpoint on identical audio;
+the two physical bundles separately expose capture, room, interruption, and
+latency behavior. Neither result alone authorizes a default change
+([ADR-0144](adr/0144-add-atomic-live-final-stt-profiles.md)).
+
 ## Dry-run recognized-text tool routing
 
 Route-labelled cases may additionally carry exactly one of these private tags:

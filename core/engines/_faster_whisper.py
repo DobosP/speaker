@@ -55,10 +55,12 @@ class FasterWhisperEndpointRecognizer:
         self,
         model_path: str | PathLike[str],
         *,
+        cpu_threads: int = 0,
         model_factory: _ModelFactory | None = None,
         resampler_factory: _ResamplerFactory | None = None,
     ) -> None:
         self._model_path = _local_model_directory(model_path)
+        self._cpu_threads = _bounded_cpu_threads(cpu_threads)
         self._model_factory = model_factory
         self._resampler_factory = resampler_factory or AudioResampler
         self._model: Any | None = None
@@ -147,14 +149,18 @@ class FasterWhisperEndpointRecognizer:
                     from faster_whisper import WhisperModel
 
                     factory = WhisperModel
-                model = factory(
-                    str(self._model_path),
-                    device="cuda",
-                    device_index=0,
-                    compute_type="float16",
-                    num_workers=1,
-                    local_files_only=True,
-                )
+                model_options = {
+                    "device": "cuda",
+                    "device_index": 0,
+                    "compute_type": "float16",
+                    "num_workers": 1,
+                    "local_files_only": True,
+                }
+                # Keep the existing constructor exactly unchanged unless an
+                # explicit session profile supplies a positive bound.
+                if self._cpu_threads:
+                    model_options["cpu_threads"] = self._cpu_threads
+                model = factory(str(self._model_path), **model_options)
                 if model is None:
                     raise RuntimeError("Faster-Whisper model construction failed")
                 self._model = model
@@ -189,6 +195,18 @@ def _positive_integer_sample_rate(sample_rate: int) -> int:
         raise ValueError("sample_rate must be a positive integer") from None
     if value <= 0:
         raise ValueError("sample_rate must be a positive integer")
+    return value
+
+
+def _bounded_cpu_threads(cpu_threads: int) -> int:
+    if isinstance(cpu_threads, bool):
+        raise ValueError("cpu_threads must be an integer from 0 to 256")
+    try:
+        value = operator.index(cpu_threads)
+    except TypeError:
+        raise ValueError("cpu_threads must be an integer from 0 to 256") from None
+    if not 0 <= value <= 256:
+        raise ValueError("cpu_threads must be an integer from 0 to 256")
     return value
 
 

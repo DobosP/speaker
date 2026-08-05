@@ -1,25 +1,25 @@
 """Materialize the EdAcc part of the private conversation/STT fixture.
 
-The command accepts both the exact EdAcc v1.0 archive and its directly
-extracted ``edacc_v1.0`` directory.  It verifies the published archive MD5,
-freezes a local SHA-256, recomputes the official test metadata, binds every
-used extracted file back to the archive, selects 24 scoreable turns, and
-publishes the official key-matched filtered-STM references in a private
-schema-v2 streaming corpus.
+Production owns descriptor-safe extraction of the exact EdAcc v1.0 archive
+into a new private ``edacc_v1.0`` directory.  It verifies the published
+archive MD5, freezes a local SHA-256, validates the complete archive and
+source layout, recomputes the official test metadata, binds every used file
+back to the archive, selects 24 scoreable turns, and publishes the official
+key-matched filtered-STM references in a private schema-v2 streaming corpus.
 
 No download, recognizer, or audio device is used.  Literal references,
 speaker identifiers, linguistic-background values, source paths, and audio
 remain outside the preparation receipt.
 
-The command does not extract the archive.  Production acquisition remains
-gated on full archive-layout validation and descriptor-bound extraction as
-recorded by ADR-0131.
+An explicitly synthetic ``TestSourceInjection`` may retain an existing source
+tree for deterministic tests.  It never constitutes production evidence.
 """
 
 from __future__ import annotations
 
 from array import array
 import argparse
+from contextlib import contextmanager
 import csv
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -34,7 +34,8 @@ import stat
 import sys
 import tarfile
 import wave
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
+import zlib
 
 from core.wer import normalize
 from tools import public_conversation_fixture as fixture
@@ -124,9 +125,56 @@ _METADATA_LIMITS = {
     "test/utt2spk": 8 * 1024 * 1024,
     "linguistic_background.csv": 2 * 1024 * 1024,
 }
+_ARCHIVE_DIRECTORIES = frozenset(
+    {
+        ARCHIVE_ROOT,
+        f"{ARCHIVE_ROOT}/data",
+        f"{ARCHIVE_ROOT}/dev",
+        f"{ARCHIVE_ROOT}/test",
+    }
+)
+_ARCHIVE_ROOT_FILE_LIMITS = {
+    "evaluate.sh": 1024 * 1024,
+    "glm": 2 * 1024 * 1024,
+    "linguistic_background.csv": _METADATA_LIMITS[
+        "linguistic_background.csv"
+    ],
+}
+_ARCHIVE_SPLIT_FILE_LIMITS = {
+    "company.ctm": 64 * 1024 * 1024,
+    "conv.list": _METADATA_LIMITS["test/conv.list"],
+    "segments": _METADATA_LIMITS["test/segments"],
+    "stm": _METADATA_LIMITS["test/stm"],
+    "stm.filt": _METADATA_LIMITS["test/stm.filt"],
+    "text": _METADATA_LIMITS["test/text"],
+    "utt2spk": _METADATA_LIMITS["test/utt2spk"],
+}
+_ARCHIVE_REQUIRED_FILES = frozenset(
+    {
+        *(f"{ARCHIVE_ROOT}/{name}" for name in _ARCHIVE_ROOT_FILE_LIMITS),
+        *(
+            f"{ARCHIVE_ROOT}/{split}/{name}"
+            for split in ("dev", "test")
+            for name in _ARCHIVE_SPLIT_FILE_LIMITS
+        ),
+    }
+)
 _MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_AUDIO_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_AUDIO_FILES = 1_024
+_MAX_DECLARED_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_METADATA_BYTES = 256 * 1024 * 1024
+_MAX_TAR_TRAILING_ZERO_BYTES = 1024 * 1024
+_MAX_TAR_STREAM_BYTES = (
+    _MAX_DECLARED_ARCHIVE_BYTES
+    + (_MAX_ARCHIVE_MEMBERS + 32) * 1024
+    + _MAX_TAR_TRAILING_ZERO_BYTES
+)
+_MAX_TAR_NAME_BYTES = 255
+_MAX_GZIP_EXPANSION_RATIO = 64
+_GZIP_EXPANSION_FLOOR_BYTES = 64 * 1024 * 1024
+_ARCHIVE_IO_CHUNK_BYTES = 1024 * 1024
 _MAX_ROWS = 100_000
 _MAX_LINE_CHARS = 32_768
 _MAX_REFERENCE_CHARS = 4_096
@@ -134,6 +182,8 @@ _MAX_SOURCE_REFERENCE_CHARS = 32_000
 _MAX_RECEIPT_BYTES = 256 * 1024
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
 _SAFE_FIXTURE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
+_SAFE_TAR_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
+_SAFE_ARCHIVE_AUDIO_RE = re.compile(r"EDACC-C[0-9]{2,4}\.wav\Z")
 _MD5_RE = re.compile(r"[0-9a-f]{32}\Z")
 _SPECIAL_TOKEN_RE = re.compile(r"<[^<>\r\n]{1,80}>")
 _ALTERNATIVE_REFERENCE_RE = re.compile(r"[{}\[\]()]|(?:^|\s)/|/(?:\s|$)")
@@ -233,6 +283,63 @@ class _PrivatePaths:
     source_identity: tuple[int, ...] = field(repr=False)
     archive_identity: tuple[int, ...] = field(repr=False)
     output_parent_identity: tuple[int, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _PrivateAcquisitionPaths:
+    source_root: Path = field(repr=False)
+    archive_path: Path = field(repr=False)
+    output_dir: Path = field(repr=False)
+    source_parent_identity: tuple[int, ...] = field(repr=False)
+    archive_identity: tuple[int, ...] = field(repr=False)
+    output_parent_identity: tuple[int, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _RawTarMember:
+    name: str
+    is_directory: bool
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveMemberBinding:
+    name: str
+    is_directory: bool
+    size_bytes: int
+    sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveSnapshot:
+    archive: _ArchiveBinding
+    members: Mapping[str, _ArchiveMemberBinding] = field(repr=False)
+    layout_sha256: str
+    extraction_parent_identity: tuple[int, ...] | None = field(
+        default=None,
+        repr=False,
+    )
+    extracted_directory_identities: Mapping[str, tuple[int, ...]] | None = field(
+        default=None,
+        repr=False,
+    )
+    extracted_file_identities: Mapping[str, tuple[int, ...]] | None = field(
+        default=None,
+        repr=False,
+    )
+
+
+@dataclass(slots=True)
+class _ExtractionTree:
+    root: Path = field(repr=False)
+    parent_descriptor: int = field(repr=False)
+    directory_descriptors: Mapping[str, int] = field(repr=False)
+    parent_identity: tuple[int, ...] = field(repr=False)
+    directory_identities: Mapping[str, tuple[int, ...]] = field(repr=False)
+    file_identities: dict[str, tuple[int, ...]] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,6 +633,76 @@ def _validate_private_paths(
         raise EdaccPreparationError() from None
 
 
+def _validate_private_acquisition_paths(
+    *,
+    source_root: Path | str,
+    archive_path: Path | str,
+    output_dir: Path | str,
+    production: bool,
+) -> _PrivateAcquisitionPaths:
+    """Bind an absent extraction root and its exact private parent."""
+
+    try:
+        root = _absolute_canonical(source_root, must_exist=False)
+        archive = _absolute_canonical(archive_path, must_exist=True)
+        destination = _absolute_canonical(output_dir, must_exist=False)
+        archive_metadata = archive.lstat()
+        if (
+            root.name != ARCHIVE_ROOT
+            or os.path.lexists(root)
+            or not _private_archive_file(archive_metadata)
+            or destination.name in {"", ".", ".."}
+            or os.path.lexists(destination)
+            or destination == root
+            or root in destination.parents
+            or archive in {root, destination}
+        ):
+            raise EdaccPreparationError()
+        with opened_directory_nofollow(archive.parent):
+            pass
+        with opened_directory_nofollow(
+            root.parent,
+            require_private=True,
+        ) as (bound_source_parent, source_parent_descriptor):
+            source_parent = os.fstat(source_parent_descriptor)
+            if (
+                bound_source_parent != root.parent
+                or not _private_source_root(source_parent)
+                or _directory_entry_identity(root.parent.lstat())
+                != _directory_entry_identity(source_parent)
+            ):
+                raise EdaccPreparationError()
+        with opened_directory_nofollow(destination.parent) as (
+            bound_output_parent,
+            output_parent_descriptor,
+        ):
+            output_parent = os.fstat(output_parent_descriptor)
+            if (
+                bound_output_parent != destination.parent
+                or _directory_entry_identity(destination.parent.lstat())
+                != _directory_entry_identity(output_parent)
+            ):
+                raise EdaccPreparationError()
+        if production and (
+            _has_git_ancestor(root.parent)
+            or _has_git_ancestor(archive.parent)
+            or _has_git_ancestor(destination.parent)
+        ):
+            raise EdaccPreparationError()
+        return _PrivateAcquisitionPaths(
+            source_root=root,
+            archive_path=archive,
+            output_dir=destination,
+            source_parent_identity=_directory_entry_identity(source_parent),
+            archive_identity=_file_identity(archive_metadata),
+            output_parent_identity=_directory_entry_identity(output_parent),
+        )
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
 def _canonical_json_bytes(value: object) -> bytes:
     try:
         return (
@@ -680,20 +857,565 @@ def _validate_fixture_source_contract(
         raise EdaccPreparationError()
 
 
-def _hash_archive(
-    path: Path | str,
+class _CompressedArchiveStream:
+    """Bounded single-member gzip reader that hashes every compressed byte."""
+
+    def __init__(self, descriptor: int, *, expected_size: int) -> None:
+        self._descriptor = descriptor
+        self._expected_size = expected_size
+        self._decompressor = zlib.decompressobj(wbits=31)
+        self._md5 = hashlib.md5(usedforsecurity=False)
+        self._sha256 = hashlib.sha256()
+        self._compressed_bytes = 0
+        self._decompressed_bytes = 0
+        self._raw_eof = False
+        self._finished = False
+
+    @property
+    def compressed_bytes(self) -> int:
+        return self._compressed_bytes
+
+    @property
+    def decompressed_bytes(self) -> int:
+        return self._decompressed_bytes
+
+    @property
+    def md5(self) -> str:
+        if not self._finished:
+            raise EdaccPreparationError()
+        return self._md5.hexdigest()
+
+    @property
+    def sha256(self) -> str:
+        if not self._finished:
+            raise EdaccPreparationError()
+        return self._sha256.hexdigest()
+
+    def _read_compressed(self) -> bytes:
+        if self._raw_eof:
+            return b""
+        remaining = self._expected_size + 1 - self._compressed_bytes
+        if remaining <= 0:
+            raise EdaccPreparationError()
+        chunk = os.read(
+            self._descriptor,
+            min(_ARCHIVE_IO_CHUNK_BYTES, remaining),
+        )
+        if not chunk:
+            self._raw_eof = True
+            return b""
+        self._compressed_bytes += len(chunk)
+        if self._compressed_bytes > self._expected_size:
+            raise EdaccPreparationError()
+        self._md5.update(chunk)
+        self._sha256.update(chunk)
+        return chunk
+
+    def _record_decompressed(self, count: int) -> None:
+        self._decompressed_bytes += count
+        ratio_limit = max(
+            _GZIP_EXPANSION_FLOOR_BYTES,
+            self._compressed_bytes * _MAX_GZIP_EXPANSION_RATIO,
+        )
+        if (
+            self._decompressed_bytes > _MAX_TAR_STREAM_BYTES
+            or self._decompressed_bytes > ratio_limit
+        ):
+            raise EdaccPreparationError()
+
+    def read(self, size: int) -> bytes:
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise EdaccPreparationError()
+        if self._finished:
+            return b""
+        result = bytearray()
+        while len(result) < size and not self._finished:
+            compressed = self._decompressor.unconsumed_tail
+            if not compressed:
+                compressed = self._read_compressed()
+                if not compressed:
+                    if not self._decompressor.eof:
+                        raise EdaccPreparationError()
+                    self._finished = True
+                    break
+            produced = self._decompressor.decompress(
+                compressed,
+                max_length=min(
+                    _ARCHIVE_IO_CHUNK_BYTES,
+                    size - len(result),
+                ),
+            )
+            if self._decompressor.unused_data:
+                raise EdaccPreparationError()
+            if produced:
+                self._record_decompressed(len(produced))
+                result.extend(produced)
+            if self._decompressor.eof:
+                if self._decompressor.unused_data:
+                    raise EdaccPreparationError()
+                if self._read_compressed():
+                    raise EdaccPreparationError()
+                if self._compressed_bytes != self._expected_size:
+                    raise EdaccPreparationError()
+                self._finished = True
+            elif not produced and not self._decompressor.unconsumed_tail:
+                continue
+        return bytes(result)
+
+
+def _read_archive_exact(stream: _CompressedArchiveStream, size: int) -> bytes:
+    result = bytearray()
+    while len(result) < size:
+        chunk = stream.read(min(_ARCHIVE_IO_CHUNK_BYTES, size - len(result)))
+        if not chunk:
+            raise EdaccPreparationError()
+        result.extend(chunk)
+    return bytes(result)
+
+
+def _tar_octal(
+    field_value: bytes,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> int:
+    if (
+        not field_value
+        or field_value[0] & 0x80
+        or re.fullmatch(rb" *[0-7]+[\x00 ]*", field_value) is None
+    ):
+        if allow_empty and not field_value.strip(b"\x00 "):
+            return 0
+        raise EdaccPreparationError()
+    digits = field_value.strip(b"\x00 ")
+    try:
+        result = int(digits, 8)
+    except ValueError:
+        raise EdaccPreparationError() from None
+    if result < 0 or result > maximum:
+        raise EdaccPreparationError()
+    return result
+
+
+def _tar_text(field_value: bytes, *, allow_empty: bool) -> str:
+    nul = field_value.find(b"\0")
+    if nul >= 0:
+        if any(field_value[nul + 1 :]):
+            raise EdaccPreparationError()
+        value = field_value[:nul]
+    else:
+        value = field_value
+    if not value and not allow_empty:
+        raise EdaccPreparationError()
+    try:
+        return value.decode("ascii", errors="strict")
+    except UnicodeError:
+        raise EdaccPreparationError() from None
+
+
+def _safe_tar_member_name(raw_name: str, *, is_directory: bool) -> str:
+    if not raw_name or "\\" in raw_name or ":" in raw_name:
+        raise EdaccPreparationError()
+    if is_directory and raw_name.endswith("/"):
+        name = raw_name[:-1]
+    else:
+        name = raw_name
+    try:
+        encoded = name.encode("ascii", errors="strict")
+    except UnicodeError:
+        raise EdaccPreparationError() from None
+    parts = name.split("/")
+    if (
+        not encoded
+        or len(encoded) > _MAX_TAR_NAME_BYTES
+        or raw_name.startswith("/")
+        or (not is_directory and raw_name.endswith("/"))
+        or any(
+            part in {"", ".", ".."}
+            or _SAFE_TAR_COMPONENT_RE.fullmatch(part) is None
+            for part in parts
+        )
+        or "/".join(parts) != name
+    ):
+        raise EdaccPreparationError()
+    return name
+
+
+def _parse_tar_header(header: bytes) -> _RawTarMember:
+    if len(header) != 512 or header == b"\0" * 512:
+        raise EdaccPreparationError()
+    if any(header[345:512]):
+        raise EdaccPreparationError()
+    mode = _tar_octal(header[100:108], maximum=0o7777)
+    _tar_octal(header[108:116], maximum=(1 << 31) - 1)
+    _tar_octal(header[116:124], maximum=(1 << 31) - 1)
+    size = _tar_octal(header[124:136], maximum=_MAX_DECLARED_ARCHIVE_BYTES)
+    _tar_octal(header[136:148], maximum=(1 << 63) - 1)
+    checksum = _tar_octal(header[148:156], maximum=512 * 255)
+    if mode & ~0o777 or checksum != (
+        sum(header[:148]) + 8 * ord(" ") + sum(header[156:])
+    ):
+        raise EdaccPreparationError()
+    magic_version = (header[257:263], header[263:265])
+    if magic_version not in {
+        (b"\0" * 6, b"\0" * 2),
+        (b"ustar\0", b"00"),
+        (b"ustar ", b" \0"),
+    }:
+        raise EdaccPreparationError()
+    if _tar_octal(header[329:337], maximum=(1 << 31) - 1, allow_empty=True):
+        raise EdaccPreparationError()
+    if _tar_octal(header[337:345], maximum=(1 << 31) - 1, allow_empty=True):
+        raise EdaccPreparationError()
+    raw_name = _tar_text(header[:100], allow_empty=False)
+    link_name = _tar_text(header[157:257], allow_empty=True)
+    member_type = header[156:157]
+    if member_type in {tarfile.REGTYPE, tarfile.AREGTYPE}:
+        is_directory = False
+        if size <= 0 or link_name:
+            raise EdaccPreparationError()
+    elif member_type == tarfile.DIRTYPE:
+        is_directory = True
+        if size != 0 or link_name:
+            raise EdaccPreparationError()
+    else:
+        raise EdaccPreparationError()
+    name = _safe_tar_member_name(raw_name, is_directory=is_directory)
+    try:
+        parsed = tarfile.TarInfo.frombuf(
+            header,
+            encoding="ascii",
+            errors="strict",
+        )
+    except Exception:
+        raise EdaccPreparationError() from None
+    if (
+        parsed.name.rstrip("/") != name
+        or parsed.size != size
+        or parsed.type != member_type
+    ):
+        raise EdaccPreparationError()
+    return _RawTarMember(
+        name=name,
+        is_directory=is_directory,
+        size_bytes=size,
+    )
+
+
+def _regular_archive_target(name: str) -> tuple[str, str, int, bool]:
+    parts = name.split("/")
+    if len(parts) == 2 and parts[0] == ARCHIVE_ROOT:
+        maximum = _ARCHIVE_ROOT_FILE_LIMITS.get(parts[1])
+        if maximum is not None:
+            return ARCHIVE_ROOT, parts[1], maximum, False
+    if (
+        len(parts) == 3
+        and parts[0] == ARCHIVE_ROOT
+        and parts[1] in {"dev", "test"}
+    ):
+        maximum = _ARCHIVE_SPLIT_FILE_LIMITS.get(parts[2])
+        if maximum is not None:
+            return f"{ARCHIVE_ROOT}/{parts[1]}", parts[2], maximum, False
+    if (
+        len(parts) == 3
+        and parts[:2] == [ARCHIVE_ROOT, "data"]
+        and _SAFE_ARCHIVE_AUDIO_RE.fullmatch(parts[2]) is not None
+    ):
+        return f"{ARCHIVE_ROOT}/data", parts[2], _MAX_AUDIO_BYTES, True
+    raise EdaccPreparationError()
+
+
+def _verify_extraction_directories(tree: _ExtractionTree) -> None:
+    try:
+        parent = os.fstat(tree.parent_descriptor)
+        lexical_parent = tree.root.parent.lstat()
+        if (
+            _directory_entry_identity(parent) != tree.parent_identity
+            or _directory_entry_identity(lexical_parent) != tree.parent_identity
+            or tree.root.parent.resolve(strict=True) != tree.root.parent
+        ):
+            raise EdaccPreparationError()
+        root_descriptor = tree.directory_descriptors[ARCHIVE_ROOT]
+        root_opened = os.fstat(root_descriptor)
+        root_entry = os.stat(
+            tree.root.name,
+            dir_fd=tree.parent_descriptor,
+            follow_symlinks=False,
+        )
+        root_lexical = tree.root.lstat()
+        root_identity = tree.directory_identities[ARCHIVE_ROOT]
+        if (
+            _directory_entry_identity(root_opened) != root_identity
+            or _directory_entry_identity(root_entry) != root_identity
+            or _directory_entry_identity(root_lexical) != root_identity
+            or not _private_source_root(root_opened)
+            or not _private_source_root(root_entry)
+            or not _private_source_root(root_lexical)
+            or tree.root.resolve(strict=True) != tree.root
+        ):
+            raise EdaccPreparationError()
+        for child in ("data", "dev", "test"):
+            name = f"{ARCHIVE_ROOT}/{child}"
+            descriptor = tree.directory_descriptors[name]
+            opened = os.fstat(descriptor)
+            entry = os.stat(
+                child,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            lexical = (tree.root / child).lstat()
+            identity = tree.directory_identities[name]
+            if (
+                _directory_entry_identity(opened) != identity
+                or _directory_entry_identity(entry) != identity
+                or _directory_entry_identity(lexical) != identity
+                or not _private_source_root(opened)
+                or not _private_source_root(entry)
+                or not _private_source_root(lexical)
+                or (tree.root / child).resolve(strict=True) != tree.root / child
+            ):
+                raise EdaccPreparationError()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+@contextmanager
+def _new_extraction_tree(
+    root: Path,
+    *,
+    expected_parent_identity: tuple[int, ...],
+) -> Iterator[_ExtractionTree]:
+    descriptors: dict[str, int] = {}
+    try:
+        with opened_directory_nofollow(
+            root.parent,
+            require_private=True,
+        ) as (bound_parent, parent_descriptor):
+            parent = os.fstat(parent_descriptor)
+            if (
+                bound_parent != root.parent
+                or _directory_entry_identity(parent) != expected_parent_identity
+                or _directory_entry_identity(root.parent.lstat())
+                != expected_parent_identity
+                or os.path.lexists(root)
+            ):
+                raise EdaccPreparationError()
+            os.mkdir(root.name, mode=0o700, dir_fd=parent_descriptor)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            root_descriptor = os.open(root.name, flags, dir_fd=parent_descriptor)
+            descriptors[ARCHIVE_ROOT] = root_descriptor
+            os.fchmod(root_descriptor, 0o700)
+            for child in ("data", "dev", "test"):
+                os.mkdir(child, mode=0o700, dir_fd=root_descriptor)
+                child_descriptor = os.open(
+                    child,
+                    flags,
+                    dir_fd=root_descriptor,
+                )
+                os.fchmod(child_descriptor, 0o700)
+                descriptors[f"{ARCHIVE_ROOT}/{child}"] = child_descriptor
+            identities = {
+                name: _directory_entry_identity(os.fstat(descriptor))
+                for name, descriptor in descriptors.items()
+            }
+            tree = _ExtractionTree(
+                root=root,
+                parent_descriptor=parent_descriptor,
+                directory_descriptors=dict(descriptors),
+                parent_identity=expected_parent_identity,
+                directory_identities=identities,
+            )
+            os.fsync(root_descriptor)
+            os.fsync(parent_descriptor)
+            _verify_extraction_directories(tree)
+            yield tree
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+    finally:
+        for descriptor in reversed(tuple(descriptors.values())):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    consumed = 0
+    while consumed < len(view):
+        written = os.write(descriptor, view[consumed:])
+        if written <= 0:
+            raise EdaccPreparationError()
+        consumed += written
+
+
+def _consume_archive_file(
+    stream: _CompressedArchiveStream,
+    member: _RawTarMember,
+    *,
+    tree: _ExtractionTree | None,
+) -> str:
+    parent_name, filename, maximum, _is_audio = _regular_archive_target(member.name)
+    if member.size_bytes > maximum:
+        raise EdaccPreparationError()
+    descriptor = -1
+    digest = hashlib.sha256()
+    try:
+        if tree is not None:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(
+                filename,
+                flags,
+                0o600,
+                dir_fd=tree.directory_descriptors[parent_name],
+            )
+            os.fchmod(descriptor, 0o600)
+        remaining = member.size_bytes
+        while remaining:
+            chunk = stream.read(min(_ARCHIVE_IO_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise EdaccPreparationError()
+            remaining -= len(chunk)
+            digest.update(chunk)
+            if descriptor >= 0:
+                _write_all(descriptor, chunk)
+        padding_size = (-member.size_bytes) % 512
+        if padding_size and any(_read_archive_exact(stream, padding_size)):
+            raise EdaccPreparationError()
+        if descriptor >= 0:
+            os.fsync(descriptor)
+            opened = os.fstat(descriptor)
+            if (
+                not _private_output_file(opened)
+                or opened.st_size != member.size_bytes
+            ):
+                raise EdaccPreparationError()
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            persisted_digest = hashlib.sha256()
+            persisted_remaining = member.size_bytes
+            while persisted_remaining:
+                persisted = os.read(
+                    descriptor,
+                    min(_ARCHIVE_IO_CHUNK_BYTES, persisted_remaining),
+                )
+                if not persisted:
+                    raise EdaccPreparationError()
+                persisted_remaining -= len(persisted)
+                persisted_digest.update(persisted)
+            if os.read(descriptor, 1):
+                raise EdaccPreparationError()
+            after_read = os.fstat(descriptor)
+            entry = os.stat(
+                filename,
+                dir_fd=tree.directory_descriptors[parent_name],
+                follow_symlinks=False,
+            )
+            if (
+                _file_identity(after_read) != _file_identity(opened)
+                or _file_identity(after_read) != _file_identity(entry)
+                or not _private_output_file(after_read)
+                or not _private_output_file(entry)
+                or after_read.st_size != member.size_bytes
+                or persisted_digest.hexdigest() != digest.hexdigest()
+            ):
+                raise EdaccPreparationError()
+            tree.file_identities[member.name] = _file_identity(after_read)
+        return digest.hexdigest()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _finalize_extraction_tree(
+    tree: _ExtractionTree,
+    members: Mapping[str, _ArchiveMemberBinding],
+) -> None:
+    try:
+        _verify_extraction_directories(tree)
+        expected_root = {
+            "data",
+            "dev",
+            "test",
+            *_ARCHIVE_ROOT_FILE_LIMITS,
+        }
+        expected_split = set(_ARCHIVE_SPLIT_FILE_LIMITS)
+        expected_audio = {
+            name.rsplit("/", 1)[1]
+            for name, binding in members.items()
+            if not binding.is_directory and name.startswith(f"{ARCHIVE_ROOT}/data/")
+        }
+        root_descriptor = tree.directory_descriptors[ARCHIVE_ROOT]
+        if set(os.listdir(root_descriptor)) != expected_root:
+            raise EdaccPreparationError()
+        for split in ("dev", "test"):
+            if (
+                set(os.listdir(tree.directory_descriptors[f"{ARCHIVE_ROOT}/{split}"]))
+                != expected_split
+            ):
+                raise EdaccPreparationError()
+        if (
+            not expected_audio
+            or set(os.listdir(tree.directory_descriptors[f"{ARCHIVE_ROOT}/data"]))
+            != expected_audio
+        ):
+            raise EdaccPreparationError()
+        expected_files = {name for name, value in members.items() if not value.is_directory}
+        if set(tree.file_identities) != expected_files:
+            raise EdaccPreparationError()
+        for name in expected_files:
+            parent_name, filename, _maximum, _is_audio = _regular_archive_target(name)
+            current = os.stat(
+                filename,
+                dir_fd=tree.directory_descriptors[parent_name],
+                follow_symlinks=False,
+            )
+            if (
+                _file_identity(current) != tree.file_identities[name]
+                or not _private_output_file(current)
+                or current.st_size != members[name].size_bytes
+            ):
+                raise EdaccPreparationError()
+        for descriptor in tree.directory_descriptors.values():
+            os.fsync(descriptor)
+        os.fsync(tree.parent_descriptor)
+        _verify_extraction_directories(tree)
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _consume_archive(
+    path: Path,
     *,
     expected_identity: tuple[int, ...],
     expected_size: int,
     expected_md5: str,
-) -> _ArchiveBinding:
-    candidate = Path(os.path.abspath(Path(path).expanduser()))
+    extraction_root: Path | None = None,
+    extraction_parent_identity: tuple[int, ...] | None = None,
+) -> _ArchiveSnapshot:
     descriptor = -1
+    tree_context = None
     try:
-        before = candidate.lstat()
+        before = path.lstat()
         if (
-            not _private_archive_file(before)
-            or _file_identity(before) != expected_identity
+            _file_identity(before) != expected_identity
+            or not _private_archive_file(before)
             or before.st_size != expected_size
             or expected_size <= 0
             or expected_size > _MAX_ARCHIVE_BYTES
@@ -702,49 +1424,157 @@ def _hash_archive(
             raise EdaccPreparationError()
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(candidate, flags)
+        descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
         if (
             _file_identity(opened) != expected_identity
             or not _private_archive_file(opened)
         ):
             raise EdaccPreparationError()
-        md5 = hashlib.md5(usedforsecurity=False)
-        sha256 = hashlib.sha256()
-        consumed = 0
-        while consumed <= expected_size:
-            chunk = os.read(descriptor, min(1024 * 1024, expected_size + 1 - consumed))
+        if (extraction_root is None) != (extraction_parent_identity is None):
+            raise EdaccPreparationError()
+        if extraction_root is None:
+            tree = None
+        else:
+            tree_context = _new_extraction_tree(
+                extraction_root,
+                expected_parent_identity=extraction_parent_identity,
+            )
+            tree = tree_context.__enter__()
+
+        stream = _CompressedArchiveStream(descriptor, expected_size=expected_size)
+        members: dict[str, _ArchiveMemberBinding] = {}
+        folded_names: set[str] = set()
+        declared_bytes = 0
+        metadata_bytes = 0
+        audio_files = 0
+        zero_blocks = 0
+        while zero_blocks < 2:
+            header = _read_archive_exact(stream, 512)
+            if header == b"\0" * 512:
+                zero_blocks += 1
+                continue
+            if zero_blocks:
+                raise EdaccPreparationError()
+            member = _parse_tar_header(header)
+            if len(members) >= _MAX_ARCHIVE_MEMBERS:
+                raise EdaccPreparationError()
+            folded = member.name.casefold()
+            if member.name in members or folded in folded_names:
+                raise EdaccPreparationError()
+            folded_names.add(folded)
+            if member.is_directory:
+                if member.name not in _ARCHIVE_DIRECTORIES:
+                    raise EdaccPreparationError()
+                binding = _ArchiveMemberBinding(
+                    name=member.name,
+                    is_directory=True,
+                    size_bytes=0,
+                    sha256=None,
+                )
+            else:
+                _parent, _filename, maximum, is_audio = _regular_archive_target(
+                    member.name
+                )
+                if member.size_bytes > maximum:
+                    raise EdaccPreparationError()
+                declared_bytes += member.size_bytes
+                if declared_bytes > _MAX_DECLARED_ARCHIVE_BYTES:
+                    raise EdaccPreparationError()
+                if is_audio:
+                    audio_files += 1
+                    if audio_files > _MAX_ARCHIVE_AUDIO_FILES:
+                        raise EdaccPreparationError()
+                else:
+                    metadata_bytes += member.size_bytes
+                    if metadata_bytes > _MAX_ARCHIVE_METADATA_BYTES:
+                        raise EdaccPreparationError()
+                binding = _ArchiveMemberBinding(
+                    name=member.name,
+                    is_directory=False,
+                    size_bytes=member.size_bytes,
+                    sha256=_consume_archive_file(stream, member, tree=tree),
+                )
+            members[member.name] = binding
+
+        trailing = 0
+        while True:
+            chunk = stream.read(_ARCHIVE_IO_CHUNK_BYTES)
             if not chunk:
                 break
-            consumed += len(chunk)
-            if consumed > expected_size:
+            trailing += len(chunk)
+            if trailing > _MAX_TAR_TRAILING_ZERO_BYTES or any(chunk):
                 raise EdaccPreparationError()
-            md5.update(chunk)
-            sha256.update(chunk)
-        after = os.fstat(descriptor)
-        current = candidate.lstat()
+        if trailing % 512:
+            raise EdaccPreparationError()
         if (
-            consumed != expected_size
-            or md5.hexdigest() != expected_md5
-            or _file_identity(after) != expected_identity
+            set(name for name, value in members.items() if value.is_directory)
+            != _ARCHIVE_DIRECTORIES
+            or not _ARCHIVE_REQUIRED_FILES <= set(members)
+            or audio_files <= 0
+            or stream.compressed_bytes != expected_size
+            or stream.md5 != expected_md5
+        ):
+            raise EdaccPreparationError()
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            _file_identity(after) != expected_identity
             or _file_identity(current) != expected_identity
             or not _private_archive_file(after)
             or not _private_archive_file(current)
-            or candidate.resolve(strict=True) != candidate
+            or path.resolve(strict=True) != path
         ):
             raise EdaccPreparationError()
-        return _ArchiveBinding(
-            path=candidate,
-            size_bytes=consumed,
-            md5=md5.hexdigest(),
-            sha256=sha256.hexdigest(),
-            identity=_file_identity(opened),
+        if tree is not None:
+            _finalize_extraction_tree(tree, members)
+        layout_payload = [
+            {
+                "directory": value.is_directory,
+                "name": value.name,
+                "sha256": value.sha256,
+                "size_bytes": value.size_bytes,
+            }
+            for value in sorted(members.values(), key=lambda item: item.name)
+        ]
+        extracted_directory_identities = (
+            None
+            if tree is None
+            else {
+                name: _directory_identity(os.fstat(descriptor))
+                for name, descriptor in tree.directory_descriptors.items()
+            }
+        )
+        return _ArchiveSnapshot(
+            archive=_ArchiveBinding(
+                path=path,
+                size_bytes=expected_size,
+                md5=stream.md5,
+                sha256=stream.sha256,
+                identity=expected_identity,
+            ),
+            members=dict(members),
+            layout_sha256=_canonical_sha256(layout_payload),
+            extraction_parent_identity=(
+                None
+                if tree is None
+                else _directory_entry_identity(os.fstat(tree.parent_descriptor))
+            ),
+            extracted_directory_identities=extracted_directory_identities,
+            extracted_file_identities=(
+                None if tree is None else dict(tree.file_identities)
+            ),
         )
     except EdaccPreparationError:
         raise
     except Exception:
         raise EdaccPreparationError() from None
     finally:
+        if tree_context is not None:
+            try:
+                tree_context.__exit__(None, None, None)
+            except Exception:
+                pass
         if descriptor >= 0:
             try:
                 os.close(descriptor)
@@ -864,6 +1694,7 @@ def _verify_bound_source_tree(
 def _verify_private_source_snapshot(
     paths: _PrivatePaths,
     *,
+    archive_snapshot: _ArchiveSnapshot,
     metadata: Mapping[str, _FileBinding],
     audio: Mapping[str, _FileBinding],
     production: bool,
@@ -877,6 +1708,10 @@ def _verify_private_source_snapshot(
             reread_metadata=True,
         )
         _verify_bound_archive(paths)
+        _validate_complete_archive_source_layout(
+            paths.source_root,
+            archive_snapshot,
+        )
 
         parent = paths.output_dir.parent
         with opened_directory_nofollow(parent) as (
@@ -923,6 +1758,10 @@ def _verify_private_source_snapshot(
             reread_metadata=False,
         )
         _verify_bound_archive(paths)
+        _validate_complete_archive_source_layout(
+            paths.source_root,
+            archive_snapshot,
+        )
     except EdaccPreparationError:
         raise
     except Exception:
@@ -1044,6 +1883,272 @@ def _parse_conversations(data: bytes) -> frozenset[str]:
     if len(set(values)) != len(values):
         raise EdaccPreparationError()
     return frozenset(values)
+
+
+def _read_archive_bound_layout_file(
+    *,
+    root: Path,
+    archive: _ArchiveSnapshot,
+    relative: str,
+    maximum_bytes: int,
+) -> bytes:
+    try:
+        member_name = f"{ARCHIVE_ROOT}/{relative}"
+        member = archive.members.get(member_name)
+        if member is None or member.is_directory or member.sha256 is None:
+            raise EdaccPreparationError()
+        path = root / relative
+        before = path.lstat()
+        extracted_identity = (
+            None
+            if archive.extracted_file_identities is None
+            else archive.extracted_file_identities.get(member_name)
+        )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size != member.size_bytes
+            or member.size_bytes > maximum_bytes
+            or path.resolve(strict=True) != path
+            or (
+                extracted_identity is not None
+                and _file_identity(before) != extracted_identity
+            )
+        ):
+            raise EdaccPreparationError()
+        snapshot = read_regular_bounded(
+            path,
+            maximum_bytes=maximum_bytes,
+            expected_bytes=member.size_bytes,
+        )
+        after = path.lstat()
+        if (
+            snapshot.path != path
+            or _file_identity(after) != _file_identity(before)
+            or (
+                extracted_identity is not None
+                and _file_identity(after) != extracted_identity
+            )
+            or hashlib.sha256(snapshot.data).hexdigest() != member.sha256
+        ):
+            raise EdaccPreparationError()
+        return snapshot.data
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _validate_complete_archive_source_layout(
+    root: Path,
+    archive: _ArchiveSnapshot,
+) -> None:
+    """Bind the exact extracted inventory and its split/audio relationships."""
+
+    expected_root = {"data", "dev", "test", *_ARCHIVE_ROOT_FILE_LIMITS}
+    expected_split = set(_ARCHIVE_SPLIT_FILE_LIMITS)
+    expected_audio = {
+        name.rsplit("/", 1)[1]
+        for name, member in archive.members.items()
+        if not member.is_directory and name.startswith(f"{ARCHIVE_ROOT}/data/")
+    }
+    expected_members = {
+        *_ARCHIVE_DIRECTORIES,
+        *_ARCHIVE_REQUIRED_FILES,
+        *(f"{ARCHIVE_ROOT}/data/{name}" for name in expected_audio),
+    }
+    try:
+        if set(archive.members) != expected_members or not expected_audio:
+            raise EdaccPreparationError()
+        with opened_directory_nofollow(
+            root,
+            require_private=True,
+        ) as (bound_root, root_descriptor):
+            root_identity = _directory_identity(os.fstat(root_descriptor))
+            extracted_root_identity = (
+                None
+                if archive.extracted_directory_identities is None
+                else archive.extracted_directory_identities.get(ARCHIVE_ROOT)
+            )
+            if (
+                bound_root != root
+                or root.name != ARCHIVE_ROOT
+                or root.resolve(strict=True) != root
+                or _directory_identity(root.lstat()) != root_identity
+                or (
+                    extracted_root_identity is not None
+                    and root_identity != extracted_root_identity
+                )
+                or set(os.listdir(root_descriptor)) != expected_root
+            ):
+                raise EdaccPreparationError()
+            directory_bindings: dict[str, tuple[int, tuple[int, ...]]] = {}
+            with (
+                opened_directory_nofollow(root / "data") as (
+                    _bound_data,
+                    data_descriptor,
+                ),
+                opened_directory_nofollow(root / "dev") as (
+                    _bound_dev,
+                    dev_descriptor,
+                ),
+                opened_directory_nofollow(root / "test") as (
+                    _bound_test,
+                    test_descriptor,
+                ),
+            ):
+                for name, descriptor in (
+                    ("data", data_descriptor),
+                    ("dev", dev_descriptor),
+                    ("test", test_descriptor),
+                ):
+                    path = root / name
+                    identity = _directory_identity(os.fstat(descriptor))
+                    extracted_identity = (
+                        None
+                        if archive.extracted_directory_identities is None
+                        else archive.extracted_directory_identities.get(
+                            f"{ARCHIVE_ROOT}/{name}"
+                        )
+                    )
+                    if (
+                        path.resolve(strict=True) != path
+                        or _directory_identity(path.lstat()) != identity
+                        or (
+                            extracted_identity is not None
+                            and identity != extracted_identity
+                        )
+                    ):
+                        raise EdaccPreparationError()
+                    directory_bindings[name] = (descriptor, identity)
+                if (
+                    set(os.listdir(data_descriptor)) != expected_audio
+                    or set(os.listdir(dev_descriptor)) != expected_split
+                    or set(os.listdir(test_descriptor)) != expected_split
+                ):
+                    raise EdaccPreparationError()
+
+                for name, maximum in _ARCHIVE_ROOT_FILE_LIMITS.items():
+                    _read_archive_bound_layout_file(
+                        root=root,
+                        archive=archive,
+                        relative=name,
+                        maximum_bytes=maximum,
+                    )
+
+                recordings: dict[str, frozenset[str]] = {}
+                for split in ("dev", "test"):
+                    split_payloads = {
+                        name: _read_archive_bound_layout_file(
+                            root=root,
+                            archive=archive,
+                            relative=f"{split}/{name}",
+                            maximum_bytes=maximum,
+                        )
+                        for name, maximum in _ARCHIVE_SPLIT_FILE_LIMITS.items()
+                    }
+                    segment_rows = _parse_segments(split_payloads["segments"])
+                    split_recordings = frozenset(
+                        recording for recording, _start, _end in segment_rows.values()
+                    )
+                    split_conversations = _parse_conversations(
+                        split_payloads["conv.list"]
+                    )
+                    if (
+                        not split_recordings
+                        or not split_conversations
+                        or not split_conversations <= split_recordings
+                    ):
+                        raise EdaccPreparationError()
+                    recordings[split] = split_recordings
+
+                if recordings["dev"] & recordings["test"]:
+                    raise EdaccPreparationError()
+                expected_recordings = {
+                    name[: -len(".wav")] for name in expected_audio
+                }
+                if recordings["dev"] | recordings["test"] != expected_recordings:
+                    raise EdaccPreparationError()
+                for filename in expected_audio:
+                    member_name = f"{ARCHIVE_ROOT}/data/{filename}"
+                    path = root / "data" / filename
+                    current = path.lstat()
+                    member = archive.members[member_name]
+                    extracted_identity = (
+                        None
+                        if archive.extracted_file_identities is None
+                        else archive.extracted_file_identities.get(member_name)
+                    )
+                    if (
+                        not stat.S_ISREG(current.st_mode)
+                        or current.st_nlink != 1
+                        or current.st_size != member.size_bytes
+                        or path.resolve(strict=True) != path
+                        or (
+                            extracted_identity is not None
+                            and (
+                                _file_identity(current) != extracted_identity
+                                or not _private_output_file(current)
+                            )
+                        )
+                    ):
+                        raise EdaccPreparationError()
+
+                if (
+                    set(os.listdir(root_descriptor)) != expected_root
+                    or set(os.listdir(data_descriptor)) != expected_audio
+                    or set(os.listdir(dev_descriptor)) != expected_split
+                    or set(os.listdir(test_descriptor)) != expected_split
+                    or _directory_identity(os.fstat(root_descriptor))
+                    != root_identity
+                    or _directory_identity(root.lstat()) != root_identity
+                ):
+                    raise EdaccPreparationError()
+                for name, (descriptor, identity) in directory_bindings.items():
+                    path = root / name
+                    if (
+                        _directory_identity(os.fstat(descriptor)) != identity
+                        or _directory_identity(path.lstat()) != identity
+                        or path.resolve(strict=True) != path
+                    ):
+                        raise EdaccPreparationError()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _verify_archive_source_bindings(
+    archive: _ArchiveSnapshot,
+    *,
+    metadata: Mapping[str, _FileBinding],
+    audio: Mapping[str, _FileBinding],
+) -> None:
+    expected = {
+        **{
+            f"{ARCHIVE_ROOT}/{relative}": binding
+            for relative, binding in metadata.items()
+        },
+        **{
+            f"{ARCHIVE_ROOT}/data/{recording}.wav": binding
+            for recording, binding in audio.items()
+        },
+    }
+    try:
+        for name, source in expected.items():
+            member = archive.members.get(name)
+            if (
+                member is None
+                or member.is_directory
+                or member.sha256 is None
+                or member.size_bytes != source.size_bytes
+                or member.sha256 != source.sha256
+            ):
+                raise EdaccPreparationError()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
 
 
 def _speaker_key(value: str) -> tuple[int, str] | None:
@@ -1367,73 +2472,6 @@ def _bind_audio(path: Path) -> _FileBinding:
             sha256=digest.sha256,
             identity=_file_identity(current),
         )
-    except EdaccPreparationError:
-        raise
-    except Exception:
-        raise EdaccPreparationError() from None
-
-
-def _verify_archive_members(
-    archive: _ArchiveBinding,
-    metadata: Mapping[str, _FileBinding],
-    audio: Mapping[str, _FileBinding],
-) -> None:
-    expected: dict[str, _FileBinding] = {
-        f"{ARCHIVE_ROOT}/{relative}": binding for relative, binding in metadata.items()
-    }
-    expected.update(
-        {
-            f"{ARCHIVE_ROOT}/data/{recording}.wav": binding
-            for recording, binding in audio.items()
-        }
-    )
-    found: set[str] = set()
-    try:
-        if _file_identity(archive.path.lstat()) != archive.identity:
-            raise EdaccPreparationError()
-        with archive.path.open("rb", buffering=0) as raw:
-            if _file_identity(os.fstat(raw.fileno())) != archive.identity:
-                raise EdaccPreparationError()
-            with tarfile.open(fileobj=raw, mode="r|gz") as package:
-                for index, member in enumerate(package):
-                    if index >= _MAX_ARCHIVE_MEMBERS:
-                        raise EdaccPreparationError()
-                    binding = expected.get(member.name)
-                    if binding is None:
-                        continue
-                    if (
-                        member.name in found
-                        or not member.isfile()
-                        or member.size != binding.size_bytes
-                        or member.size <= 0
-                        or member.size > _MAX_AUDIO_BYTES
-                    ):
-                        raise EdaccPreparationError()
-                    extracted = package.extractfile(member)
-                    if extracted is None:
-                        raise EdaccPreparationError()
-                    digest = hashlib.sha256()
-                    consumed = 0
-                    while consumed <= member.size:
-                        chunk = extracted.read(
-                            min(1024 * 1024, member.size + 1 - consumed)
-                        )
-                        if not chunk:
-                            break
-                        consumed += len(chunk)
-                        if consumed > member.size:
-                            raise EdaccPreparationError()
-                        digest.update(chunk)
-                    if consumed != member.size or digest.hexdigest() != binding.sha256:
-                        raise EdaccPreparationError()
-                    found.add(member.name)
-            if _file_identity(os.fstat(raw.fileno())) != archive.identity:
-                raise EdaccPreparationError()
-        if (
-            found != set(expected)
-            or _file_identity(archive.path.lstat()) != archive.identity
-        ):
-            raise EdaccPreparationError()
     except EdaccPreparationError:
         raise
     except Exception:
@@ -2017,15 +3055,26 @@ def prepare_edacc_conversation_fixture(
             raise EdaccPreparationError()
         production = test_source_injection is None
         dataset = dataset_by_id(DATASET_ID)
-        paths = _validate_private_paths(
-            source_root=source_root,
-            archive_path=archive_path,
-            output_dir=output_dir,
-            production=production,
-        )
-        root = paths.source_root
-        archive_candidate = paths.archive_path
-        destination = paths.output_dir
+        supplied_root = Path(source_root).expanduser()
+        existing_test_source = not production and os.path.lexists(supplied_root)
+        if existing_test_source:
+            acquisition = None
+            paths = _validate_private_paths(
+                source_root=source_root,
+                archive_path=archive_path,
+                output_dir=output_dir,
+                production=False,
+            )
+            archive_candidate = paths.archive_path
+        else:
+            paths = None
+            acquisition = _validate_private_acquisition_paths(
+                source_root=source_root,
+                archive_path=archive_path,
+                output_dir=output_dir,
+                production=production,
+            )
+            archive_candidate = acquisition.archive_path
         lock = load_fixture_lock(lock_path)
         source = lock.source_by_id(SOURCE_ID)
         _validate_fixture_source_contract(source, dataset=dataset)
@@ -2040,12 +3089,51 @@ def prepare_edacc_conversation_fixture(
             expected_size, expected_md5 = ARCHIVE_SIZE_BYTES, ARCHIVE_MD5
         else:
             expected_size, expected_md5 = _test_contract(test_source_injection)
-        archive = _hash_archive(
+        archive_snapshot = _consume_archive(
             archive_candidate,
-            expected_identity=paths.archive_identity,
+            expected_identity=(
+                paths.archive_identity
+                if paths is not None
+                else acquisition.archive_identity
+            ),
             expected_size=expected_size,
             expected_md5=expected_md5,
+            extraction_root=(
+                None if acquisition is None else acquisition.source_root
+            ),
+            extraction_parent_identity=(
+                None
+                if acquisition is None
+                else acquisition.source_parent_identity
+            ),
         )
+        if acquisition is not None:
+            paths = _validate_private_paths(
+                source_root=acquisition.source_root,
+                archive_path=acquisition.archive_path,
+                output_dir=acquisition.output_dir,
+                production=production,
+            )
+            if (
+                paths.archive_identity != acquisition.archive_identity
+                or paths.output_parent_identity
+                != acquisition.output_parent_identity
+                or archive_snapshot.extraction_parent_identity
+                != acquisition.source_parent_identity
+                or archive_snapshot.extracted_directory_identities is None
+                or paths.source_identity
+                != archive_snapshot.extracted_directory_identities.get(
+                    ARCHIVE_ROOT
+                )
+                or _directory_entry_identity(paths.source_root.parent.lstat())
+                != acquisition.source_parent_identity
+            ):
+                raise EdaccPreparationError()
+        if paths is None:
+            raise EdaccPreparationError()
+        root = paths.source_root
+        destination = paths.output_dir
+        archive = archive_snapshot.archive
 
         with opened_directory_nofollow(
             root,
@@ -2062,6 +3150,7 @@ def prepare_edacc_conversation_fixture(
                 pass
             with opened_directory_nofollow(root / "data"):
                 pass
+            _validate_complete_archive_source_layout(root, archive_snapshot)
             metadata_bindings = _snapshot_metadata(root)
             parsed = _parse_source(metadata_bindings)
             selected, eligible_digest, selected_digest = _select_rows(parsed)
@@ -2070,7 +3159,11 @@ def prepare_edacc_conversation_fixture(
                 recording: _bind_audio(root / "data" / f"{recording}.wav")
                 for recording in recordings
             }
-            _verify_archive_members(archive, metadata_bindings, audio_bindings)
+            _verify_archive_source_bindings(
+                archive_snapshot,
+                metadata=metadata_bindings,
+                audio=audio_bindings,
+            )
 
             published_cases: list[CorpusWriteCase] = []
             receipt_cases: list[dict[str, object]] = []
@@ -2217,6 +3310,7 @@ def prepare_edacc_conversation_fixture(
         )
         _verify_private_source_snapshot(
             paths,
+            archive_snapshot=archive_snapshot,
             metadata=metadata_bindings,
             audio=audio_bindings,
             production=production,
@@ -2233,6 +3327,7 @@ def prepare_edacc_conversation_fixture(
         )
         _verify_private_source_snapshot(
             paths,
+            archive_snapshot=archive_snapshot,
             metadata=metadata_bindings,
             audio=audio_bindings,
             production=production,
@@ -2253,6 +3348,7 @@ def prepare_edacc_conversation_fixture(
             raise EdaccPreparationError()
         _verify_private_source_snapshot(
             paths,
+            archive_snapshot=archive_snapshot,
             metadata=metadata_bindings,
             audio=audio_bindings,
             production=production,
@@ -2302,8 +3398,8 @@ class _SafeArgumentParser(argparse.ArgumentParser):
 def _parser() -> argparse.ArgumentParser:
     parser = _SafeArgumentParser(
         description=(
-            "Verify an acquired EdAcc v1.0 archive plus its direct extraction "
-            "and publish the private 24-case conversation fixture source."
+            "Safely extract and verify an acquired EdAcc v1.0 archive, then "
+            "publish the private 24-case conversation fixture source."
         )
     )
     parser.add_argument("--archive", type=Path, required=True)

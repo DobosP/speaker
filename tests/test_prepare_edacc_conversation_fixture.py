@@ -4,6 +4,7 @@ from array import array
 from collections import Counter
 import csv
 from dataclasses import replace
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -39,8 +40,10 @@ def _write_wav(path: Path, index: int) -> None:
 def _source_tree(tmp_path: Path) -> Path:
     root = tmp_path / prepare.ARCHIVE_ROOT
     test = root / "test"
+    dev = root / "dev"
     data = root / "data"
     test.mkdir(parents=True)
+    dev.mkdir()
     data.mkdir()
 
     segments: list[str] = []
@@ -164,11 +167,52 @@ def _source_tree(tmp_path: Path) -> Path:
     )
 
     (test / "conv.list").write_text("".join(conversations), encoding="utf-8")
+    (test / "company.ctm").write_text(
+        "EDACC-C00 1 0.00 0.50 SYNTHETIC\n",
+        encoding="utf-8",
+    )
     (test / "segments").write_text("".join(segments), encoding="utf-8")
     (test / "utt2spk").write_text("".join(utt2spk), encoding="utf-8")
     (test / "text").write_text("".join(text), encoding="utf-8")
     (test / "stm").write_text("".join(stm), encoding="utf-8")
     (test / "stm.filt").write_text("".join(filtered_stm), encoding="utf-8")
+
+    dev_recording = "EDACC-C24"
+    dev_utterance = "dev-utt"
+    dev_speaker = f"{dev_recording}-A"
+    _write_wav(data / f"{dev_recording}.wav", 24)
+    (dev / "company.ctm").write_text(
+        f"{dev_recording} 1 0.00 0.50 DEVELOPMENT\n",
+        encoding="utf-8",
+    )
+    (dev / "conv.list").write_text(f"{dev_recording}\n", encoding="utf-8")
+    (dev / "segments").write_text(
+        f"{dev_utterance} {dev_recording} 0.00 0.50\n",
+        encoding="utf-8",
+    )
+    (dev / "stm").write_text(
+        f"{dev_recording} 1 {dev_speaker} 0.00 0.50 "
+        "<female,l1> DEVELOPMENT WORDS\n",
+        encoding="utf-8",
+    )
+    (dev / "stm.filt").write_text(
+        f"{dev_recording} 1 {dev_speaker} 0.00 0.50 "
+        "<female,l1> DEVELOPMENT WORDS\n",
+        encoding="utf-8",
+    )
+    (dev / "text").write_text(
+        f"{dev_utterance} DEVELOPMENT WORDS\n",
+        encoding="utf-8",
+    )
+    (dev / "utt2spk").write_text(
+        f"{dev_utterance} {dev_speaker}\n",
+        encoding="utf-8",
+    )
+    (root / "evaluate.sh").write_text(
+        "#!/bin/sh\nexit 0\n",
+        encoding="utf-8",
+    )
+    (root / "glm").write_text(";; synthetic GLM\n", encoding="utf-8")
     with (root / "linguistic_background.csv").open(
         "w", encoding="utf-8", newline=""
     ) as handle:
@@ -184,7 +228,11 @@ def _source_tree(tmp_path: Path) -> Path:
 
 def _archive(tmp_path: Path, root: Path, *, name: str = "source.tar.gz") -> Path:
     archive = tmp_path / name
-    with tarfile.open(archive, "w:gz") as package:
+    with tarfile.open(
+        archive,
+        "w:gz",
+        format=tarfile.USTAR_FORMAT,
+    ) as package:
         package.add(root, arcname=prepare.ARCHIVE_ROOT)
     archive.chmod(0o600)
     return archive
@@ -222,6 +270,373 @@ def _prepare(tmp_path: Path, *, output_name: str = "prepared"):
     return result, root, archive
 
 
+def _tree_snapshot(root: Path) -> tuple[frozenset[Path], dict[Path, bytes]]:
+    directories: set[Path] = set()
+    files: dict[Path, bytes] = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if path.is_dir():
+            directories.add(relative)
+        else:
+            files[relative] = path.read_bytes()
+    return frozenset(directories), files
+
+
+@pytest.fixture(scope="module")
+def valid_edacc_archive_bytes(tmp_path_factory) -> bytes:
+    fixture_root = tmp_path_factory.mktemp("edacc-raw-archive")
+    source = _source_tree(fixture_root / "source")
+    return _archive(fixture_root, source).read_bytes()
+
+
+def _raw_tar_members(payload: bytes | bytearray) -> tuple[tuple[str, int, int], ...]:
+    members: list[tuple[str, int, int]] = []
+    offset = 0
+    while offset + 512 <= len(payload):
+        header = payload[offset : offset + 512]
+        if header == b"\0" * 512:
+            return tuple(members)
+        name = bytes(header[:100]).split(b"\0", 1)[0].decode("ascii")
+        size_field = bytes(header[124:136]).strip(b"\0 ") or b"0"
+        size = int(size_field, 8)
+        end = offset + 512 + ((size + 511) // 512) * 512
+        assert end <= len(payload)
+        members.append((name, offset, end))
+        offset = end
+    raise AssertionError("synthetic tar has no terminator")
+
+
+def _raw_tar_member(
+    payload: bytes | bytearray,
+    name: str,
+) -> tuple[int, int]:
+    for member_name, start, end in _raw_tar_members(payload):
+        if member_name == name:
+            return start, end
+    raise AssertionError(f"missing synthetic member: {name}")
+
+
+def _raw_tar_terminator(payload: bytes | bytearray) -> int:
+    members = _raw_tar_members(payload)
+    assert members
+    return members[-1][2]
+
+
+def _rewrite_raw_tar_header(
+    payload: bytearray,
+    offset: int,
+    *,
+    name: str | None = None,
+    member_type: bytes | None = None,
+    size: int | None = None,
+    checksum: bool = True,
+) -> None:
+    header = bytearray(payload[offset : offset + 512])
+    assert len(header) == 512
+    if name is not None:
+        encoded = name.encode("ascii")
+        assert len(encoded) <= 100
+        header[:100] = encoded.ljust(100, b"\0")
+    if member_type is not None:
+        assert len(member_type) == 1
+        header[156:157] = member_type
+    if size is not None:
+        header[124:136] = f"{size:011o}\0".encode("ascii")
+    if checksum:
+        header[148:156] = b" " * 8
+        header[148:156] = f"{sum(header):06o}\0 ".encode("ascii")
+    payload[offset : offset + 512] = header
+
+
+def _append_raw_tar_member(
+    payload: bytearray,
+    *,
+    source_name: str,
+    target_name: str,
+) -> None:
+    start, end = _raw_tar_member(payload, source_name)
+    member = bytearray(payload[start:end])
+    _rewrite_raw_tar_header(member, 0, name=target_name)
+    terminator = _raw_tar_terminator(payload)
+    payload[terminator:terminator] = member
+
+
+def _write_raw_tar_archive(
+    tmp_path: Path,
+    payload: bytes | bytearray,
+    *,
+    name: str = "mutated.tar.gz",
+) -> Path:
+    archive = tmp_path / name
+    archive.write_bytes(gzip.compress(bytes(payload), compresslevel=1, mtime=0))
+    archive.chmod(0o600)
+    return archive
+
+
+def _assert_archive_scanner_rejects(tmp_path: Path, archive: Path) -> Path:
+    extraction_parent = tmp_path / "private-extraction"
+    extraction_parent.mkdir(mode=0o700)
+    source_root = extraction_parent / prepare.ARCHIVE_ROOT
+    canary = extraction_parent / "escape"
+    canary.write_bytes(b"unchanged escape canary")
+    canary.chmod(0o600)
+    output = tmp_path / "must-not-exist"
+
+    with pytest.raises(prepare.EdaccPreparationError) as failure:
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=_injection(archive),
+        )
+
+    assert failure.value.args == ()
+    assert source_root.is_dir()
+    assert source_root.stat().st_mode & 0o777 == 0o700
+    assert canary.read_bytes() == b"unchanged escape canary"
+    assert canary.stat().st_mode & 0o777 == 0o600
+    assert not output.exists()
+    return source_root
+
+
+def test_absent_source_root_is_extracted_with_exact_private_layout(tmp_path):
+    archive_source = _source_tree(tmp_path / "archive-input")
+    expected_directories, expected_files = _tree_snapshot(archive_source)
+    archive = _archive(tmp_path, archive_source)
+    extraction_parent = tmp_path / "private-extraction"
+    extraction_parent.mkdir(mode=0o700)
+    source_root = extraction_parent / prepare.ARCHIVE_ROOT
+    output = tmp_path / "prepared-from-archive"
+
+    result = prepare.prepare_edacc_conversation_fixture(
+        source_root=source_root,
+        archive_path=archive,
+        output_dir=output,
+        accepted_terms=prepare.REQUIRED_TERMS,
+        test_source_injection=_injection(archive),
+    )
+
+    actual_directories, actual_files = _tree_snapshot(source_root)
+    assert actual_directories == expected_directories
+    assert actual_files == expected_files
+    assert source_root.stat().st_mode & 0o777 == 0o700
+    assert all(
+        (source_root / relative).stat().st_mode & 0o777 == 0o700
+        for relative in actual_directories
+    )
+    assert all(
+        (source_root / relative).stat().st_mode & 0o777 == 0o600
+        for relative in actual_files
+    )
+    assert result.production_evidence is False
+    assert result.corpus.path.parent == output
+    assert len(result.corpus.cases) == prepare.CASE_COUNT
+    assert output.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    (
+        f"{prepare.ARCHIVE_ROOT}/unexpected",
+        f"{prepare.ARCHIVE_ROOT}/../escape",
+        "/absolute",
+        f"{prepare.ARCHIVE_ROOT}\\escape",
+    ),
+    ids=("unexpected", "traversal", "absolute", "backslash"),
+)
+def test_archive_scanner_rejects_unsafe_or_unexpected_member_names(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    member_name,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+    )
+    _rewrite_raw_tar_header(payload, offset, name=member_name)
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize(
+    "member_type",
+    (
+        tarfile.SYMTYPE,
+        tarfile.LNKTYPE,
+        tarfile.FIFOTYPE,
+        tarfile.CHRTYPE,
+        tarfile.BLKTYPE,
+        tarfile.XHDTYPE,
+        tarfile.XGLTYPE,
+        tarfile.GNUTYPE_LONGNAME,
+        tarfile.GNUTYPE_LONGLINK,
+        tarfile.GNUTYPE_SPARSE,
+        b"Z",
+    ),
+    ids=(
+        "symlink",
+        "hardlink",
+        "fifo",
+        "character-device",
+        "block-device",
+        "pax",
+        "global-pax",
+        "gnu-longname",
+        "gnu-longlink",
+        "gnu-sparse",
+        "unknown",
+    ),
+)
+def test_archive_scanner_rejects_non_regular_types_from_the_header(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    member_type,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    offset, _end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+    )
+    _rewrite_raw_tar_header(payload, offset, member_type=member_type)
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize("collision", ("duplicate", "casefold"))
+def test_archive_scanner_rejects_duplicate_and_casefold_collisions(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    collision,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    original = f"{prepare.ARCHIVE_ROOT}/evaluate.sh"
+    target = (
+        original
+        if collision == "duplicate"
+        else f"{prepare.ARCHIVE_ROOT}/EVALUATE.SH"
+    )
+    _append_raw_tar_member(
+        payload,
+        source_name=original,
+        target_name=target,
+    )
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+def test_archive_scanner_rejects_missing_fixed_member(
+    tmp_path,
+    valid_edacc_archive_bytes,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    start, end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+    )
+    del payload[start:end]
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize("relationship", ("orphan", "missing-referenced"))
+def test_archive_scanner_rejects_audio_split_relationship_drift(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    relationship,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    referenced = f"{prepare.ARCHIVE_ROOT}/data/EDACC-C24.wav"
+    if relationship == "orphan":
+        _append_raw_tar_member(
+            payload,
+            source_name=referenced,
+            target_name=f"{prepare.ARCHIVE_ROOT}/data/EDACC-C999.wav",
+        )
+    else:
+        start, end = _raw_tar_member(payload, referenced)
+        del payload[start:end]
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+@pytest.mark.parametrize("corruption", ("checksum", "padding", "tail"))
+def test_archive_scanner_rejects_tar_integrity_corruption(
+    tmp_path,
+    valid_edacc_archive_bytes,
+    corruption,
+):
+    payload = bytearray(gzip.decompress(valid_edacc_archive_bytes))
+    start, _end = _raw_tar_member(
+        payload,
+        f"{prepare.ARCHIVE_ROOT}/evaluate.sh",
+    )
+    if corruption == "checksum":
+        assert payload[start + 148] in b"01234567"
+        payload[start + 148] ^= 1
+    elif corruption == "padding":
+        size = int(bytes(payload[start + 124 : start + 136]).strip(b"\0 "), 8)
+        assert size % 512
+        payload[start + 512 + size] = 1
+    else:
+        trailing = _raw_tar_terminator(payload) + 1024
+        if trailing == len(payload):
+            payload.extend(b"\0" * 512)
+        assert trailing < len(payload)
+        payload[trailing] = 1
+
+    archive = _write_raw_tar_archive(tmp_path, payload)
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+def test_archive_scanner_rejects_concatenated_gzip_members(
+    tmp_path,
+    valid_edacc_archive_bytes,
+):
+    archive = tmp_path / "concatenated.tar.gz"
+    archive.write_bytes(
+        valid_edacc_archive_bytes
+        + gzip.compress(b"\0" * 512, compresslevel=1, mtime=0)
+    )
+    archive.chmod(0o600)
+
+    _assert_archive_scanner_rejects(tmp_path, archive)
+
+
+def test_archive_scanner_rejects_huge_extension_before_reading_its_body(
+    tmp_path,
+    monkeypatch,
+):
+    extension = tarfile.TarInfo(f"{prepare.ARCHIVE_ROOT}/pax-extension")
+    extension.mode = 0o600
+    extension.uid = 0
+    extension.gid = 0
+    extension.mtime = 0
+    extension.type = tarfile.XHDTYPE
+    extension.size = 1 << 30
+    header = extension.tobuf(format=tarfile.USTAR_FORMAT)
+    assert len(header) == 512
+    archive = _write_raw_tar_archive(tmp_path, header, name="huge-pax.tar.gz")
+    read_sizes: list[int] = []
+    original_read = prepare._CompressedArchiveStream.read
+
+    def tracking_read(self, size):
+        read_sizes.append(size)
+        return original_read(self, size)
+
+    monkeypatch.setattr(prepare._CompressedArchiveStream, "read", tracking_read)
+
+    _assert_archive_scanner_rejects(tmp_path, archive)
+    assert read_sizes == [512]
+
+
 def test_materializes_private_schema_v2_and_transcript_free_receipt(tmp_path):
     result, _root, archive = _prepare(tmp_path)
     corpus = result.corpus
@@ -238,7 +653,10 @@ def test_materializes_private_schema_v2_and_transcript_free_receipt(tmp_path):
         "contract": prepare.DECODER_CONTRACT,
         "closure_sha256": receipt["decoder"]["closure_sha256"],
         "files": 24,
-        "bytes": sum(path.stat().st_size for path in (_root / "data").glob("*.wav")),
+        "bytes": sum(
+            (_root / "data" / f"EDACC-C{index:02d}.wav").stat().st_size
+            for index in range(24)
+        ),
         "production_evidence": False,
     }
     assert receipt["selection"]["eligible_rows"] == 24
@@ -546,6 +964,59 @@ def test_production_paths_are_private_canonical_and_outside_git(tmp_path):
         )
 
 
+def test_preexisting_source_root_cannot_bypass_production_owned_extraction(
+    tmp_path,
+    monkeypatch,
+):
+    source = _source_tree(tmp_path)
+    archive = _archive(
+        tmp_path,
+        source,
+        name=prepare.ARCHIVE_FILENAME,
+    )
+    identity = _injection(archive)
+    output = tmp_path / "must-not-exist"
+    acquisition_calls = 0
+    consume_calls = 0
+    original_validate = prepare._validate_private_acquisition_paths
+
+    def tracking_validate(**kwargs):
+        nonlocal acquisition_calls
+        acquisition_calls += 1
+        return original_validate(**kwargs)
+
+    def forbidden_consume(*args, **kwargs):
+        nonlocal consume_calls
+        consume_calls += 1
+        raise prepare.EdaccPreparationError()
+
+    monkeypatch.setattr(prepare, "_validate_catalog_contract", lambda: None)
+    monkeypatch.setattr(
+        prepare,
+        "ARCHIVE_SIZE_BYTES",
+        identity.archive_size_bytes,
+    )
+    monkeypatch.setattr(prepare, "ARCHIVE_MD5", identity.archive_md5)
+    monkeypatch.setattr(
+        prepare,
+        "_validate_private_acquisition_paths",
+        tracking_validate,
+    )
+    monkeypatch.setattr(prepare, "_consume_archive", forbidden_consume)
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+        )
+
+    assert acquisition_calls == 1
+    assert consume_calls == 0
+    assert not output.exists()
+
+
 def test_production_paths_ignore_stable_inert_git_sentinel(tmp_path):
     cache = tmp_path / "non-git-cache"
     cache.mkdir()
@@ -705,6 +1176,13 @@ def test_source_snapshot_rejects_mutation_during_path_resolution(
         production=False,
     )
     metadata = prepare._snapshot_metadata(root)
+    identity = _injection(archive)
+    archive_snapshot = prepare._consume_archive(
+        archive,
+        expected_identity=prepare._file_identity(archive.lstat()),
+        expected_size=identity.archive_size_bytes,
+        expected_md5=identity.archive_md5,
+    )
     audio_path = root / "data" / "EDACC-C00.wav"
     audio = {"EDACC-C00": prepare._bind_audio(audio_path)}
     selected = {
@@ -728,6 +1206,7 @@ def test_source_snapshot_rejects_mutation_during_path_resolution(
     with pytest.raises(prepare.EdaccPreparationError):
         prepare._verify_private_source_snapshot(
             paths,
+            archive_snapshot=archive_snapshot,
             metadata=metadata,
             audio=audio,
             production=False,
@@ -753,6 +1232,13 @@ def test_source_snapshot_rebinds_every_input_after_metadata_reads(
         production=False,
     )
     metadata = prepare._snapshot_metadata(root)
+    identity = _injection(archive)
+    archive_snapshot = prepare._consume_archive(
+        archive,
+        expected_identity=prepare._file_identity(archive.lstat()),
+        expected_size=identity.archive_size_bytes,
+        expected_md5=identity.archive_md5,
+    )
     audio_path = root / "data" / "EDACC-C00.wav"
     audio = {"EDACC-C00": prepare._bind_audio(audio_path)}
     selected = {
@@ -778,6 +1264,7 @@ def test_source_snapshot_rebinds_every_input_after_metadata_reads(
     with pytest.raises(prepare.EdaccPreparationError):
         prepare._verify_private_source_snapshot(
             paths,
+            archive_snapshot=archive_snapshot,
             metadata=metadata,
             audio=audio,
             production=False,
@@ -1158,4 +1645,324 @@ def test_rejects_pcm_mutation_after_final_snapshot_read(
             test_source_injection=injection,
         )
     assert calls == 3
+    assert output.is_dir()
+
+
+def _new_archive_extraction_request(tmp_path: Path):
+    archive_source = _source_tree(tmp_path / "archive-input")
+    archive = _archive(tmp_path, archive_source)
+    source_parent = tmp_path / "private-extraction"
+    source_parent.mkdir(mode=0o700)
+    return (
+        source_parent,
+        source_parent / prepare.ARCHIVE_ROOT,
+        archive,
+        tmp_path / "must-not-publish",
+        _injection(archive),
+    )
+
+
+@pytest.mark.parametrize("replacement_phase", ("during", "after"))
+def test_extraction_rejects_source_parent_replacement_at_consume_handoff(
+    tmp_path,
+    monkeypatch,
+    replacement_phase,
+):
+    source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    moved_parent = tmp_path / f"original-parent-{replacement_phase}"
+    canary = b"replacement parent must stay untouched\n"
+    replacement_happened = False
+
+    def replace_parent() -> None:
+        nonlocal replacement_happened
+        source_parent.rename(moved_parent)
+        source_parent.mkdir(mode=0o700)
+        (source_parent / "canary").write_bytes(canary)
+        replacement_happened = True
+
+    if replacement_phase == "during":
+        original_consume_file = prepare._consume_archive_file
+
+        def replacing_consume_file(stream, member, *, tree):
+            result = original_consume_file(stream, member, tree=tree)
+            if not replacement_happened:
+                replace_parent()
+            return result
+
+        monkeypatch.setattr(
+            prepare,
+            "_consume_archive_file",
+            replacing_consume_file,
+        )
+    else:
+        original_consume = prepare._consume_archive
+
+        def replacing_consume(*args, **kwargs):
+            snapshot = original_consume(*args, **kwargs)
+            replace_parent()
+            return snapshot
+
+        monkeypatch.setattr(prepare, "_consume_archive", replacing_consume)
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=injection,
+        )
+
+    assert replacement_happened is True
+    assert (source_parent / "canary").read_bytes() == canary
+    assert (moved_parent / prepare.ARCHIVE_ROOT).is_dir()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("target", ("root", "data", "dev", "test"))
+def test_extraction_rejects_directory_replacement_before_layout_validation(
+    tmp_path,
+    monkeypatch,
+    target,
+):
+    _source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    original_validate = prepare._validate_complete_archive_source_layout
+    moved = tmp_path / f"original-{target}"
+    canary = b"replacement directory must stay untouched\n"
+    replacement_happened = False
+
+    def replacing_validate(root, snapshot):
+        nonlocal replacement_happened
+        selected = root if target == "root" else root / target
+        selected.rename(moved)
+        selected.mkdir(mode=0o700)
+        (selected / "canary").write_bytes(canary)
+        replacement_happened = True
+        return original_validate(root, snapshot)
+
+    monkeypatch.setattr(
+        prepare,
+        "_validate_complete_archive_source_layout",
+        replacing_validate,
+    )
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=injection,
+        )
+
+    replacement = source_root if target == "root" else source_root / target
+    assert replacement_happened is True
+    assert (replacement / "canary").read_bytes() == canary
+    assert moved.is_dir()
+    assert not output.exists()
+
+
+def test_extraction_rejects_archive_path_replacement_during_raw_consumption(
+    tmp_path,
+    monkeypatch,
+):
+    _source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    original_archive = archive.read_bytes()
+    moved_archive = tmp_path / "opened-archive.tar.gz"
+    replacement_archive = bytearray(original_archive)
+    replacement_archive[-1] ^= 1
+    original_read = prepare._CompressedArchiveStream.read
+    replacement_happened = False
+
+    def replacing_read(stream, size):
+        nonlocal replacement_happened
+        payload = original_read(stream, size)
+        if payload and not replacement_happened:
+            archive.rename(moved_archive)
+            archive.write_bytes(replacement_archive)
+            archive.chmod(0o600)
+            replacement_happened = True
+        return payload
+
+    monkeypatch.setattr(prepare._CompressedArchiveStream, "read", replacing_read)
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=injection,
+        )
+
+    assert replacement_happened is True
+    assert moved_archive.read_bytes() == original_archive
+    assert archive.read_bytes() == bytes(replacement_archive)
+    assert source_root.is_dir()
+    assert not output.exists()
+
+
+def test_failed_extraction_retains_private_partial_tree_and_refuses_retry(
+    tmp_path,
+    monkeypatch,
+):
+    _source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    original_consume = prepare._consume_archive
+    original_consume_file = prepare._consume_archive_file
+    consume_calls = 0
+    regular_calls = 0
+
+    def tracking_consume(*args, **kwargs):
+        nonlocal consume_calls
+        consume_calls += 1
+        return original_consume(*args, **kwargs)
+
+    def failing_consume_file(stream, member, *, tree):
+        nonlocal regular_calls
+        regular_calls += 1
+        if regular_calls == 2:
+            raise prepare.EdaccPreparationError()
+        return original_consume_file(stream, member, tree=tree)
+
+    monkeypatch.setattr(prepare, "ARCHIVE_SIZE_BYTES", injection.archive_size_bytes)
+    monkeypatch.setattr(prepare, "ARCHIVE_MD5", injection.archive_md5)
+    monkeypatch.setattr(prepare, "_validate_catalog_contract", lambda: None)
+    monkeypatch.setattr(
+        prepare,
+        "_validate_fixture_source_contract",
+        lambda source, *, dataset: None,
+    )
+    monkeypatch.setattr(prepare, "_consume_archive", tracking_consume)
+    monkeypatch.setattr(
+        prepare,
+        "_consume_archive_file",
+        failing_consume_file,
+    )
+
+    def run_production_attempt() -> None:
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+        )
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        run_production_attempt()
+
+    retained_files = tuple(
+        path.relative_to(source_root)
+        for path in source_root.rglob("*")
+        if path.is_file()
+    )
+    assert consume_calls == 1
+    assert regular_calls == 2
+    assert len(retained_files) == 1
+    assert source_root.stat().st_mode & 0o777 == 0o700
+    assert all(
+        path.stat().st_mode & 0o777 == 0o700
+        for path in (source_root / "data", source_root / "dev", source_root / "test")
+    )
+    assert not output.exists()
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        run_production_attempt()
+
+    assert consume_calls == 1
+    assert regular_calls == 2
+    assert tuple(
+        path.relative_to(source_root)
+        for path in source_root.rglob("*")
+        if path.is_file()
+    ) == retained_files
+    assert not output.exists()
+
+
+def test_extraction_rejects_persisted_member_mutation_before_readback(
+    tmp_path,
+    monkeypatch,
+):
+    _source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    original_lseek = prepare.os.lseek
+    mutated = False
+
+    def mutating_lseek(descriptor, offset, whence):
+        nonlocal mutated
+        if not mutated:
+            first = prepare.os.pread(descriptor, 1, 0)
+            assert first
+            assert prepare.os.pwrite(
+                descriptor,
+                bytes((first[0] ^ 1,)),
+                0,
+            ) == 1
+            mutated = True
+        return original_lseek(descriptor, offset, whence)
+
+    monkeypatch.setattr(prepare.os, "lseek", mutating_lseek)
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=injection,
+        )
+
+    assert mutated is True
+    assert source_root.is_dir()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("target", ("root-metadata", "unselected-audio"))
+def test_complete_extracted_layout_is_rebound_after_publication(
+    tmp_path,
+    monkeypatch,
+    target,
+):
+    _source_parent, source_root, archive, output, injection = (
+        _new_archive_extraction_request(tmp_path)
+    )
+    selected = (
+        source_root / "evaluate.sh"
+        if target == "root-metadata"
+        else source_root / "data" / "EDACC-C24.wav"
+    )
+    original_publish = prepare._publish_private_corpus_bound
+    mutated = False
+
+    def mutating_publish(**kwargs):
+        nonlocal mutated
+        result = original_publish(**kwargs)
+        _mutate_first_byte(selected)
+        mutated = True
+        return result
+
+    monkeypatch.setattr(
+        prepare,
+        "_publish_private_corpus_bound",
+        mutating_publish,
+    )
+
+    with pytest.raises(prepare.EdaccPreparationError):
+        prepare.prepare_edacc_conversation_fixture(
+            source_root=source_root,
+            archive_path=archive,
+            output_dir=output,
+            accepted_terms=prepare.REQUIRED_TERMS,
+            test_source_injection=injection,
+        )
+
+    assert mutated is True
     assert output.is_dir()

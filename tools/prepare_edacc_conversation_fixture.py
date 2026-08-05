@@ -10,6 +10,10 @@ schema-v2 streaming corpus.
 No download, recognizer, or audio device is used.  Literal references,
 speaker identifiers, linguistic-background values, source paths, and audio
 remain outside the preparation receipt.
+
+The command does not extract the archive.  Production acquisition remains
+gated on full archive-layout validation and descriptor-bound extraction as
+recorded by ADR-0131.
 """
 
 from __future__ import annotations
@@ -33,6 +37,8 @@ import wave
 from typing import Mapping, Sequence
 
 from core.wer import normalize
+from tools import public_conversation_fixture as fixture
+from tools.streaming_stt import corpus_writer
 from tools.public_conversation_fixture import (
     DEFAULT_LOCK,
     FIXTURE_ID,
@@ -54,8 +60,13 @@ from tools.streaming_stt.bounded_io import (
     opened_directory_nofollow,
     read_regular_bounded,
 )
-from tools.streaming_stt.corpus import CorpusProvenance, LoadedCorpus
-from tools.streaming_stt.corpus_writer import CorpusWriteCase, publish_private_corpus
+from tools.streaming_stt.corpus import (
+    CorpusProvenance,
+    LoadedCorpus,
+    load_corpus,
+    verify_corpus_snapshot,
+)
+from tools.streaming_stt.corpus_writer import CorpusWriteCase
 from tools.streaming_stt.protocol import MAX_CORPUS_BYTES, MAX_PCM_BYTES
 
 
@@ -70,6 +81,7 @@ LICENSE_ID = "CC-BY-SA-4.0"
 REQUIRED_TERMS = frozenset({LICENSE_ID})
 DECODER_CONTRACT = "edacc-wav-pcm16-mono32k-box2-f32le16k-v1"
 PREPARER_CONTRACT = "public-conversation-edacc-v1"
+CORPUS_PURPOSE = "EdAcc v1.0 official test conversation fixture"
 SOURCE_RECIPE_ALGORITHM = "hash_speaker_stratified_v1"
 SOURCE_RECIPE_ELIGIBILITY = (
     "official_test_human_text",
@@ -214,6 +226,16 @@ class _ArchiveBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class _PrivatePaths:
+    source_root: Path = field(repr=False)
+    archive_path: Path = field(repr=False)
+    output_dir: Path = field(repr=False)
+    source_identity: tuple[int, ...] = field(repr=False)
+    archive_identity: tuple[int, ...] = field(repr=False)
+    output_parent_identity: tuple[int, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class _Segment:
     utterance_id: str = field(repr=False)
     recording_id: str = field(repr=False)
@@ -265,6 +287,8 @@ def _file_identity(value: os.stat_result) -> tuple[int, ...]:
         value.st_dev,
         value.st_ino,
         stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        value.st_uid,
         value.st_size,
         value.st_mtime_ns,
         value.st_ctime_ns,
@@ -277,8 +301,43 @@ def _directory_identity(value: os.stat_result) -> tuple[int, ...]:
         value.st_dev,
         value.st_ino,
         stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
         value.st_mtime_ns,
         value.st_ctime_ns,
+    )
+
+
+def _directory_entry_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        value.st_uid,
+    )
+
+
+def _owned_by_process(value: os.stat_result) -> bool:
+    return not hasattr(os, "geteuid") or value.st_uid == os.geteuid()
+
+
+def _private_source_root(value: os.stat_result) -> bool:
+    return (
+        stat.S_ISDIR(value.st_mode)
+        and stat.S_IMODE(value.st_mode) == 0o700
+        and _owned_by_process(value)
+    )
+
+
+def _private_archive_file(value: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(value.st_mode)
+        and stat.S_IMODE(value.st_mode) == 0o600
+        and value.st_nlink == 1
+        and _owned_by_process(value)
     )
 
 
@@ -290,7 +349,31 @@ def _git_marker_present(directory_fd: int) -> bool:
         except FileNotFoundError:
             return False
         if stat.S_ISREG(marker.st_mode):
-            return marker.st_size > 0
+            if marker.st_size > 0:
+                return True
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            marker_fd = os.open(".git", flags, dir_fd=directory_fd)
+            opened = os.fstat(marker_fd)
+            if (
+                _file_identity(opened) != _file_identity(marker)
+                or not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or os.read(marker_fd, 1)
+            ):
+                raise EdaccPreparationError()
+            after = os.fstat(marker_fd)
+            current_marker = os.stat(
+                ".git",
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _file_identity(after) != _file_identity(opened)
+                or _file_identity(current_marker) != _file_identity(marker)
+            ):
+                raise EdaccPreparationError()
+            return False
         if stat.S_ISLNK(marker.st_mode) or not stat.S_ISDIR(marker.st_mode):
             return True
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
@@ -303,8 +386,21 @@ def _git_marker_present(directory_fd: int) -> bool:
         try:
             os.stat("HEAD", dir_fd=marker_fd, follow_symlinks=False)
         except FileNotFoundError:
-            return False
-        return True
+            has_head = False
+        else:
+            has_head = True
+        current_marker = os.stat(
+            ".git",
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _directory_identity(os.fstat(marker_fd))
+            != _directory_identity(opened)
+            or _directory_identity(current_marker) != _directory_identity(marker)
+        ):
+            raise EdaccPreparationError()
+        return has_head
     except EdaccPreparationError:
         raise
     except Exception:
@@ -318,11 +414,31 @@ def _git_marker_present(directory_fd: int) -> bool:
 
 
 def _has_git_ancestor(directory: Path) -> bool:
-    for ancestor in (directory, *directory.parents):
-        with opened_directory_nofollow(ancestor) as (_stable, descriptor):
-            if _git_marker_present(descriptor):
-                return True
-    return False
+    try:
+        for ancestor in (directory, *directory.parents):
+            with opened_directory_nofollow(ancestor) as (stable, descriptor):
+                opened = os.fstat(descriptor)
+                if (
+                    stable != ancestor
+                    or _directory_identity(ancestor.lstat())
+                    != _directory_identity(opened)
+                ):
+                    raise EdaccPreparationError()
+                has_marker = _git_marker_present(descriptor)
+                if (
+                    _directory_identity(os.fstat(descriptor))
+                    != _directory_identity(opened)
+                    or _directory_identity(ancestor.lstat())
+                    != _directory_identity(opened)
+                ):
+                    raise EdaccPreparationError()
+                if has_marker:
+                    return True
+        return False
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
 
 
 def _absolute_canonical(value: Path | str, *, must_exist: bool) -> Path:
@@ -351,7 +467,7 @@ def _validate_private_paths(
     archive_path: Path | str,
     output_dir: Path | str,
     production: bool,
-) -> tuple[Path, Path, Path]:
+) -> _PrivatePaths:
     try:
         root = _absolute_canonical(source_root, must_exist=True)
         archive = _absolute_canonical(archive_path, must_exist=True)
@@ -360,11 +476,8 @@ def _validate_private_paths(
         archive_metadata = archive.lstat()
         if (
             root.name != ARCHIVE_ROOT
-            or not stat.S_ISDIR(root_metadata.st_mode)
-            or stat.S_IMODE(root_metadata.st_mode) != 0o700
-            or not stat.S_ISREG(archive_metadata.st_mode)
-            or archive_metadata.st_nlink != 1
-            or stat.S_IMODE(archive_metadata.st_mode) != 0o600
+            or not _private_source_root(root_metadata)
+            or not _private_archive_file(archive_metadata)
             or destination.name in {"", ".", ".."}
             or os.path.lexists(destination)
             or destination == root
@@ -372,27 +485,41 @@ def _validate_private_paths(
             or archive == destination
         ):
             raise EdaccPreparationError()
-        if hasattr(os, "geteuid") and (
-            root_metadata.st_uid != os.geteuid()
-            or archive_metadata.st_uid != os.geteuid()
-        ):
-            raise EdaccPreparationError()
-        with opened_directory_nofollow(root) as (bound_root, descriptor):
+        with opened_directory_nofollow(
+            root,
+            require_private=True,
+        ) as (bound_root, descriptor):
             if bound_root != root or _directory_identity(
                 os.fstat(descriptor)
             ) != _directory_identity(root_metadata):
                 raise EdaccPreparationError()
         with opened_directory_nofollow(archive.parent):
             pass
-        with opened_directory_nofollow(destination.parent):
-            pass
+        with opened_directory_nofollow(destination.parent) as (
+            bound_parent,
+            parent_descriptor,
+        ):
+            parent_metadata = os.fstat(parent_descriptor)
+            if (
+                bound_parent != destination.parent
+                or _directory_entry_identity(destination.parent.lstat())
+                != _directory_entry_identity(parent_metadata)
+            ):
+                raise EdaccPreparationError()
         if production and (
             _has_git_ancestor(root)
             or _has_git_ancestor(archive.parent)
             or _has_git_ancestor(destination.parent)
         ):
             raise EdaccPreparationError()
-        return root, archive, destination
+        return _PrivatePaths(
+            source_root=root,
+            archive_path=archive,
+            output_dir=destination,
+            source_identity=_directory_identity(root_metadata),
+            archive_identity=_file_identity(archive_metadata),
+            output_parent_identity=_directory_entry_identity(parent_metadata),
+        )
     except EdaccPreparationError:
         raise
     except Exception:
@@ -556,6 +683,7 @@ def _validate_fixture_source_contract(
 def _hash_archive(
     path: Path | str,
     *,
+    expected_identity: tuple[int, ...],
     expected_size: int,
     expected_md5: str,
 ) -> _ArchiveBinding:
@@ -564,8 +692,8 @@ def _hash_archive(
     try:
         before = candidate.lstat()
         if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
+            not _private_archive_file(before)
+            or _file_identity(before) != expected_identity
             or before.st_size != expected_size
             or expected_size <= 0
             or expected_size > _MAX_ARCHIVE_BYTES
@@ -576,7 +704,10 @@ def _hash_archive(
         flags |= getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(candidate, flags)
         opened = os.fstat(descriptor)
-        if _file_identity(opened) != _file_identity(before):
+        if (
+            _file_identity(opened) != expected_identity
+            or not _private_archive_file(opened)
+        ):
             raise EdaccPreparationError()
         md5 = hashlib.md5(usedforsecurity=False)
         sha256 = hashlib.sha256()
@@ -595,8 +726,10 @@ def _hash_archive(
         if (
             consumed != expected_size
             or md5.hexdigest() != expected_md5
-            or _file_identity(after) != _file_identity(opened)
-            or _file_identity(current) != _file_identity(opened)
+            or _file_identity(after) != expected_identity
+            or _file_identity(current) != expected_identity
+            or not _private_archive_file(after)
+            or not _private_archive_file(current)
             or candidate.resolve(strict=True) != candidate
         ):
             raise EdaccPreparationError()
@@ -647,6 +780,153 @@ def _metadata_bytes(bindings: Mapping[str, _FileBinding], relative: str) -> byte
     ):
         raise EdaccPreparationError()
     return snapshot.data
+
+
+def _verify_bound_source_file(binding: _FileBinding) -> None:
+    before = binding.path.lstat()
+    if (
+        _file_identity(before) != binding.identity
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size != binding.size_bytes
+    ):
+        raise EdaccPreparationError()
+    resolved = binding.path.resolve(strict=True)
+    after = binding.path.lstat()
+    if (
+        resolved != binding.path
+        or _file_identity(after) != binding.identity
+        or not stat.S_ISREG(after.st_mode)
+        or after.st_nlink != 1
+        or after.st_size != binding.size_bytes
+    ):
+        raise EdaccPreparationError()
+
+
+def _verify_bound_archive(paths: _PrivatePaths) -> None:
+    before = paths.archive_path.lstat()
+    if (
+        _file_identity(before) != paths.archive_identity
+        or not _private_archive_file(before)
+    ):
+        raise EdaccPreparationError()
+    resolved = paths.archive_path.resolve(strict=True)
+    after = paths.archive_path.lstat()
+    if (
+        resolved != paths.archive_path
+        or _file_identity(after) != paths.archive_identity
+        or not _private_archive_file(after)
+    ):
+        raise EdaccPreparationError()
+
+
+def _verify_bound_source_tree(
+    paths: _PrivatePaths,
+    *,
+    metadata: Mapping[str, _FileBinding],
+    audio: Mapping[str, _FileBinding],
+    reread_metadata: bool,
+) -> None:
+    root = paths.source_root
+    source_files = (*metadata.values(), *audio.values())
+    with opened_directory_nofollow(
+        root,
+        require_private=True,
+    ) as (bound_root, root_descriptor):
+        if (
+            bound_root != root
+            or root.resolve(strict=True) != root
+            or _directory_identity(os.fstat(root_descriptor))
+            != paths.source_identity
+            or _directory_identity(root.lstat()) != paths.source_identity
+        ):
+            raise EdaccPreparationError()
+        with opened_directory_nofollow(root / "test"):
+            pass
+        with opened_directory_nofollow(root / "data"):
+            pass
+        for binding in source_files:
+            _verify_bound_source_file(binding)
+        if reread_metadata:
+            for relative in metadata:
+                _metadata_bytes(metadata, relative)
+        for binding in source_files:
+            _verify_bound_source_file(binding)
+        if (
+            _directory_identity(os.fstat(root_descriptor))
+            != paths.source_identity
+            or _directory_identity(root.lstat()) != paths.source_identity
+            or root.resolve(strict=True) != root
+        ):
+            raise EdaccPreparationError()
+
+
+def _verify_private_source_snapshot(
+    paths: _PrivatePaths,
+    *,
+    metadata: Mapping[str, _FileBinding],
+    audio: Mapping[str, _FileBinding],
+    production: bool,
+    output_created: bool,
+) -> None:
+    try:
+        _verify_bound_source_tree(
+            paths,
+            metadata=metadata,
+            audio=audio,
+            reread_metadata=True,
+        )
+        _verify_bound_archive(paths)
+
+        parent = paths.output_dir.parent
+        with opened_directory_nofollow(parent) as (
+            bound_parent,
+            parent_descriptor,
+        ):
+            if (
+                bound_parent != parent
+                or parent.resolve(strict=True) != parent
+                or _directory_entry_identity(os.fstat(parent_descriptor))
+                != paths.output_parent_identity
+                or _directory_entry_identity(parent.lstat())
+                != paths.output_parent_identity
+            ):
+                raise EdaccPreparationError()
+            try:
+                output_metadata = os.stat(
+                    paths.output_dir.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                if output_created:
+                    raise EdaccPreparationError() from None
+            else:
+                if (
+                    not output_created
+                    or not _private_source_root(output_metadata)
+                    or _directory_entry_identity(paths.output_dir.lstat())
+                    != _directory_entry_identity(output_metadata)
+                ):
+                    raise EdaccPreparationError()
+
+        if production and (
+            _has_git_ancestor(paths.source_root)
+            or _has_git_ancestor(paths.archive_path.parent)
+            or _has_git_ancestor(paths.output_dir.parent)
+        ):
+            raise EdaccPreparationError()
+        _verify_bound_source_tree(
+            paths,
+            metadata=metadata,
+            audio=audio,
+            reread_metadata=False,
+        )
+        _verify_bound_archive(paths)
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
 
 
 def _parse_keyed_text(data: bytes) -> dict[str, str]:
@@ -1262,6 +1542,461 @@ def _test_contract(value: TestSourceInjection) -> tuple[int, str]:
     return value.archive_size_bytes, value.archive_md5
 
 
+def _verify_bound_publication_directory(
+    *,
+    destination: Path,
+    parent_descriptor: int,
+    directory_descriptor: int,
+    expected_parent_identity: tuple[int, ...],
+    output_identity: tuple[int, ...],
+) -> None:
+    try:
+        parent = os.fstat(parent_descriptor)
+        opened = os.fstat(directory_descriptor)
+        entry = os.stat(
+            destination.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        lexical_parent = destination.parent.lstat()
+        lexical_output = destination.lstat()
+        if (
+            _directory_entry_identity(parent) != expected_parent_identity
+            or _directory_entry_identity(lexical_parent)
+            != expected_parent_identity
+            or destination.parent.resolve(strict=True) != destination.parent
+            or _directory_entry_identity(opened) != output_identity
+            or _directory_entry_identity(entry) != output_identity
+            or _directory_entry_identity(lexical_output) != output_identity
+            or destination.resolve(strict=True) != destination
+            or not _private_source_root(opened)
+            or not _private_source_root(entry)
+            or not _private_source_root(lexical_output)
+        ):
+            raise EdaccPreparationError()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _publish_private_corpus_bound(
+    *,
+    cases: Sequence[CorpusWriteCase],
+    provenance: CorpusProvenance,
+    output_dir: Path,
+    purpose: str,
+    sidecars: Mapping[str, bytes],
+    expected_parent_identity: tuple[int, ...],
+) -> LoadedCorpus:
+    """Publish through the exact parent bound during EdAcc preflight."""
+
+    directory_descriptor = -1
+    try:
+        prepared, prepared_sidecars = corpus_writer._preflight(
+            cases,
+            provenance,
+            purpose,
+            sidecars,
+        )
+        rows, manifest_payload = corpus_writer._serialize_manifest(
+            prepared,
+            provenance,
+            purpose,
+        )
+        manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+        with opened_directory_nofollow(output_dir.parent) as (
+            bound_parent,
+            parent_descriptor,
+        ):
+            parent_metadata = os.fstat(parent_descriptor)
+            if (
+                bound_parent != output_dir.parent
+                or _directory_entry_identity(parent_metadata)
+                != expected_parent_identity
+                or _directory_entry_identity(output_dir.parent.lstat())
+                != expected_parent_identity
+            ):
+                raise EdaccPreparationError()
+            os.mkdir(output_dir.name, mode=0o700, dir_fd=parent_descriptor)
+            created = os.stat(
+                output_dir.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(created.st_mode):
+                raise EdaccPreparationError()
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            directory_descriptor = os.open(
+                output_dir.name,
+                flags,
+                dir_fd=parent_descriptor,
+            )
+            os.fchmod(directory_descriptor, 0o700)
+            output_metadata = os.fstat(directory_descriptor)
+            output_identity = _directory_entry_identity(output_metadata)
+            if (
+                _directory_entry_identity(created) != output_identity
+                or not _private_source_root(output_metadata)
+            ):
+                raise EdaccPreparationError()
+            os.fsync(directory_descriptor)
+            os.fsync(parent_descriptor)
+            _verify_bound_publication_directory(
+                destination=output_dir,
+                parent_descriptor=parent_descriptor,
+                directory_descriptor=directory_descriptor,
+                expected_parent_identity=expected_parent_identity,
+                output_identity=output_identity,
+            )
+
+            sidecar_receipts = [
+                (
+                    corpus_writer._write_new_private(
+                        directory_descriptor,
+                        filename,
+                        payload,
+                    ),
+                    payload,
+                )
+                for filename, payload in prepared_sidecars
+            ]
+            audio_receipts = [
+                corpus_writer._write_new_private(
+                    directory_descriptor,
+                    str(row["file"]),
+                    case.audio_bytes,
+                )
+                for case, row in zip(prepared, rows, strict=True)
+            ]
+            manifest_receipt = corpus_writer._write_new_private(
+                directory_descriptor,
+                "corpus.json",
+                manifest_payload,
+            )
+            _verify_bound_publication_directory(
+                destination=output_dir,
+                parent_descriptor=parent_descriptor,
+                directory_descriptor=directory_descriptor,
+                expected_parent_identity=expected_parent_identity,
+                output_identity=output_identity,
+            )
+            for receipt, expected in sidecar_receipts:
+                corpus_writer._read_exact_written_private(
+                    directory_descriptor,
+                    receipt,
+                    expected,
+                    maximum_bytes=corpus_writer._MAX_SIDECAR_BYTES,
+                )
+            if (
+                corpus_writer._read_exact_written_private(
+                    directory_descriptor,
+                    manifest_receipt,
+                    manifest_payload,
+                    maximum_bytes=corpus_writer._MAX_CORPUS_MANIFEST_BYTES,
+                )
+                != manifest_sha256
+            ):
+                raise EdaccPreparationError()
+            for receipt in audio_receipts:
+                corpus_writer._verify_written_private_metadata(
+                    directory_descriptor,
+                    receipt,
+                )
+
+            loaded = load_corpus(output_dir / "corpus.json")
+            _verify_bound_publication_directory(
+                destination=output_dir,
+                parent_descriptor=parent_descriptor,
+                directory_descriptor=directory_descriptor,
+                expected_parent_identity=expected_parent_identity,
+                output_identity=output_identity,
+            )
+            for receipt, expected in sidecar_receipts:
+                corpus_writer._read_exact_written_private(
+                    directory_descriptor,
+                    receipt,
+                    expected,
+                    maximum_bytes=corpus_writer._MAX_SIDECAR_BYTES,
+                )
+            if (
+                corpus_writer._read_exact_written_private(
+                    directory_descriptor,
+                    manifest_receipt,
+                    manifest_payload,
+                    maximum_bytes=corpus_writer._MAX_CORPUS_MANIFEST_BYTES,
+                )
+                != manifest_sha256
+            ):
+                raise EdaccPreparationError()
+            for receipt in audio_receipts:
+                corpus_writer._verify_written_private_metadata(
+                    directory_descriptor,
+                    receipt,
+                )
+            if (
+                loaded.path != output_dir / "corpus.json"
+                or loaded.digest != manifest_sha256
+                or loaded.provenance != provenance
+            ):
+                raise EdaccPreparationError()
+            _verify_bound_publication_directory(
+                destination=output_dir,
+                parent_descriptor=parent_descriptor,
+                directory_descriptor=directory_descriptor,
+                expected_parent_identity=expected_parent_identity,
+                output_identity=output_identity,
+            )
+            os.fsync(directory_descriptor)
+            os.fsync(parent_descriptor)
+            return loaded
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+    finally:
+        if directory_descriptor >= 0:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                pass
+
+
+def _private_output_file(value: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(value.st_mode)
+        and stat.S_IMODE(value.st_mode) == 0o600
+        and value.st_nlink == 1
+        and value.st_size > 0
+        and _owned_by_process(value)
+    )
+
+
+def _published_case_surface(
+    value: LoadedCorpus,
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            case.case_id,
+            case.source_path.name,
+            case.sha256,
+            case.samples,
+            case.expected_text,
+            case.assertion,
+            case.commands,
+            case.forbidden_commands,
+            case.tags,
+        )
+        for case in value.cases
+    )
+
+
+def _expected_case_surface(
+    cases: Sequence[CorpusWriteCase],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            case.case_id,
+            f"{case.case_id}.f32le",
+            hashlib.sha256(case.audio_bytes).hexdigest(),
+            len(case.audio_bytes) // 4,
+            case.reference,
+            case.assertion,
+            case.commands,
+            case.forbidden_commands,
+            case.tags,
+        )
+        for case in cases
+    )
+
+
+def _verify_output_parent(
+    destination: Path,
+    *,
+    expected_parent_identity: tuple[int, ...],
+) -> None:
+    try:
+        parent = destination.parent
+        with opened_directory_nofollow(parent) as (
+            bound_parent,
+            parent_descriptor,
+        ):
+            parent_metadata = os.fstat(parent_descriptor)
+            output_metadata = os.stat(
+                destination.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                bound_parent != parent
+                or parent.resolve(strict=True) != parent
+                or _directory_entry_identity(parent_metadata)
+                != expected_parent_identity
+                or _directory_entry_identity(parent.lstat())
+                != expected_parent_identity
+                or not _private_source_root(output_metadata)
+                or _directory_entry_identity(destination.lstat())
+                != _directory_entry_identity(output_metadata)
+            ):
+                raise EdaccPreparationError()
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _published_output_snapshot(
+    *,
+    destination: Path,
+    receipt_payload: bytes,
+    provenance: CorpusProvenance,
+    expected_cases: Sequence[CorpusWriteCase],
+    expected_manifest_sha256: str,
+    expected_parent_identity: tuple[int, ...],
+) -> LoadedCorpus:
+    try:
+        _verify_output_parent(
+            destination,
+            expected_parent_identity=expected_parent_identity,
+        )
+        expected_names = {
+            "corpus.json",
+            "preparation-receipt.json",
+            *(f"{case.case_id}.f32le" for case in expected_cases),
+        }
+        with opened_directory_nofollow(
+            destination,
+            require_private=True,
+        ) as (bound_destination, directory_descriptor):
+            directory_identity = _directory_identity(
+                os.fstat(directory_descriptor)
+            )
+            file_identities: dict[str, tuple[int, ...]] = {}
+            if (
+                bound_destination != destination
+                or destination.resolve(strict=True) != destination
+                or _directory_identity(destination.lstat()) != directory_identity
+                or set(os.listdir(directory_descriptor)) != expected_names
+            ):
+                raise EdaccPreparationError()
+            for name in expected_names:
+                metadata = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                if not _private_output_file(metadata):
+                    raise EdaccPreparationError()
+                file_identities[name] = _file_identity(metadata)
+
+            receipt = read_regular_bounded(
+                destination / "preparation-receipt.json",
+                maximum_bytes=_MAX_RECEIPT_BYTES,
+                expected_bytes=len(receipt_payload),
+            )
+            if receipt.data != receipt_payload:
+                raise EdaccPreparationError()
+            loaded = load_corpus(destination / "corpus.json")
+            if (
+                loaded.path != destination / "corpus.json"
+                or loaded.digest != expected_manifest_sha256
+                or loaded.schema_version != 2
+                or loaded.purpose != CORPUS_PURPOSE
+                or loaded.provenance != provenance
+                or len(loaded.cases) != CASE_COUNT
+                or loaded.audio_bytes
+                != sum(len(case.audio_bytes) for case in expected_cases)
+                or _published_case_surface(loaded)
+                != _expected_case_surface(expected_cases)
+            ):
+                raise EdaccPreparationError()
+            verify_corpus_snapshot(loaded)
+            if (
+                _directory_identity(os.fstat(directory_descriptor))
+                != directory_identity
+                or _directory_identity(destination.lstat()) != directory_identity
+                or set(os.listdir(directory_descriptor)) != expected_names
+            ):
+                raise EdaccPreparationError()
+            for name in expected_names:
+                current = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not _private_output_file(current)
+                    or _file_identity(current) != file_identities[name]
+                ):
+                    raise EdaccPreparationError()
+            _verify_output_parent(
+                destination,
+                expected_parent_identity=expected_parent_identity,
+            )
+            return loaded
+    except EdaccPreparationError:
+        raise
+    except Exception:
+        raise EdaccPreparationError() from None
+
+
+def _validate_published_output(
+    *,
+    published: LoadedCorpus,
+    destination: Path,
+    receipt_payload: bytes,
+    receipt_sha256: str,
+    provenance: CorpusProvenance,
+    expected_cases: Sequence[CorpusWriteCase],
+    lock: fixture.FixtureLock,
+    production: bool,
+    expected_parent_identity: tuple[int, ...],
+) -> LoadedCorpus:
+    first = _published_output_snapshot(
+        destination=destination,
+        receipt_payload=receipt_payload,
+        provenance=provenance,
+        expected_cases=expected_cases,
+        expected_manifest_sha256=published.digest,
+        expected_parent_identity=expected_parent_identity,
+    )
+    if (
+        published.path != first.path
+        or published.digest != first.digest
+        or published.provenance != first.provenance
+        or published.schema_version != first.schema_version
+        or published.audio_bytes != first.audio_bytes
+        or _published_case_surface(published) != _published_case_surface(first)
+    ):
+        raise EdaccPreparationError()
+    if production:
+        try:
+            binding = fixture.validate_private_source(
+                first.path,
+                lock=lock,
+                expected_source_id=SOURCE_ID,
+            )
+        except Exception:
+            raise EdaccPreparationError() from None
+        if (
+            binding.receipt_sha256 != receipt_sha256
+            or binding.corpus_manifest_sha256 != first.digest
+            or binding.cases != CASE_COUNT
+            or binding.pcm_bytes != first.audio_bytes
+        ):
+            raise EdaccPreparationError()
+    return _published_output_snapshot(
+        destination=destination,
+        receipt_payload=receipt_payload,
+        provenance=provenance,
+        expected_cases=expected_cases,
+        expected_manifest_sha256=first.digest,
+        expected_parent_identity=expected_parent_identity,
+    )
+
+
 def prepare_edacc_conversation_fixture(
     *,
     source_root: Path | str,
@@ -1282,12 +2017,15 @@ def prepare_edacc_conversation_fixture(
             raise EdaccPreparationError()
         production = test_source_injection is None
         dataset = dataset_by_id(DATASET_ID)
-        root, archive_candidate, destination = _validate_private_paths(
+        paths = _validate_private_paths(
             source_root=source_root,
             archive_path=archive_path,
             output_dir=output_dir,
             production=production,
         )
+        root = paths.source_root
+        archive_candidate = paths.archive_path
+        destination = paths.output_dir
         lock = load_fixture_lock(lock_path)
         source = lock.source_by_id(SOURCE_ID)
         _validate_fixture_source_contract(source, dataset=dataset)
@@ -1304,13 +2042,21 @@ def prepare_edacc_conversation_fixture(
             expected_size, expected_md5 = _test_contract(test_source_injection)
         archive = _hash_archive(
             archive_candidate,
+            expected_identity=paths.archive_identity,
             expected_size=expected_size,
             expected_md5=expected_md5,
         )
 
-        with opened_directory_nofollow(root) as (bound_root, root_fd):
-            root_identity = _directory_identity(os.fstat(root_fd))
-            if bound_root != root or root.name != ARCHIVE_ROOT:
+        with opened_directory_nofollow(
+            root,
+            require_private=True,
+        ) as (bound_root, root_fd):
+            if (
+                bound_root != root
+                or root.name != ARCHIVE_ROOT
+                or _directory_identity(os.fstat(root_fd))
+                != paths.source_identity
+            ):
                 raise EdaccPreparationError()
             with opened_directory_nofollow(root / "test"):
                 pass
@@ -1399,7 +2145,11 @@ def prepare_edacc_conversation_fixture(
                 < 8
             ):
                 raise EdaccPreparationError()
-            if _directory_identity(os.fstat(root_fd)) != root_identity:
+            if (
+                _directory_identity(os.fstat(root_fd))
+                != paths.source_identity
+                or _directory_identity(root.lstat()) != paths.source_identity
+            ):
                 raise EdaccPreparationError()
 
         decoder = {
@@ -1465,19 +2215,57 @@ def prepare_edacc_conversation_fixture(
             metadata_sha256=parsed.metadata_sha256,
             source_set_sha256=receipt_sha256,
         )
-        corpus = publish_private_corpus(
-            cases=tuple(published_cases),
+        _verify_private_source_snapshot(
+            paths,
+            metadata=metadata_bindings,
+            audio=audio_bindings,
+            production=production,
+            output_created=False,
+        )
+        published_cases_tuple = tuple(published_cases)
+        published = _publish_private_corpus_bound(
+            cases=published_cases_tuple,
             provenance=provenance,
             output_dir=destination,
-            purpose="EdAcc v1.0 official test conversation fixture",
+            purpose=CORPUS_PURPOSE,
             sidecars={"preparation-receipt.json": receipt_payload},
+            expected_parent_identity=paths.output_parent_identity,
         )
-        if (
-            corpus.provenance != provenance
-            or _preparer_code_provenance(source.preparer_files) != preparer
-            or _file_identity(archive.path.lstat()) != archive.identity
-        ):
+        _verify_private_source_snapshot(
+            paths,
+            metadata=metadata_bindings,
+            audio=audio_bindings,
+            production=production,
+            output_created=True,
+        )
+        corpus = _validate_published_output(
+            published=published,
+            destination=destination,
+            receipt_payload=receipt_payload,
+            receipt_sha256=receipt_sha256,
+            provenance=provenance,
+            expected_cases=published_cases_tuple,
+            lock=lock,
+            production=production,
+            expected_parent_identity=paths.output_parent_identity,
+        )
+        if _preparer_code_provenance(source.preparer_files) != preparer:
             raise EdaccPreparationError()
+        _verify_private_source_snapshot(
+            paths,
+            metadata=metadata_bindings,
+            audio=audio_bindings,
+            production=production,
+            output_created=True,
+        )
+        corpus = _published_output_snapshot(
+            destination=destination,
+            receipt_payload=receipt_payload,
+            provenance=provenance,
+            expected_cases=published_cases_tuple,
+            expected_manifest_sha256=corpus.digest,
+            expected_parent_identity=paths.output_parent_identity,
+        )
         return PreparedEdaccCorpus(
             corpus=corpus,
             receipt_sha256=receipt_sha256,

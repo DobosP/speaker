@@ -71,8 +71,11 @@ actual checkout/archive/audio rather than accepting caller-authored hashes:
   WAV-stem authority, and only a terminal single-digit participant suffix is
   removed when comparing recording stems with strict `conv.list` conversation
   families. Recording and conversation-family sets stay disjoint across
-  splits. Caller-provided trees remain synthetic-only
-  ([ADR-0141](adr/0141-separate-edacc-recordings-from-conversations.md)).
+  splits. The pinned linguistic-background participant field is accepted only
+  as exact `PARTICIPANT_ID`, with no case or whitespace normalization; existing
+  accent, duplicate, and row parsing remains unchanged. Caller-provided trees
+  remain synthetic-only
+  ([ADR-0142](adr/0142-admit-edacc-participant-id-header.md)).
 - `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
   far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset. Its
   private `speech-end-labels.json` sibling and evaluation limits are specified
@@ -91,9 +94,13 @@ The unchanged EdAcc archive completed the hardened no-extraction scan over all
 98 members, and 76 WAVs. A subsequent fresh extraction fully materialized a
 94-file, 8,220,494,044-byte private source tree, then failed closed before
 corpus publication when the old validator equated two development conversation
-families with participant recording stems. Preserve that failed tree. This
-establishes archive identity and layout, not an EdAcc corpus, model result, or
-live claim.
+families with participant recording stems. The subsequent non-production
+exact-source preflight passed full archive, layout, and conversation-family
+validation, then failed before audio decode or publication because the pinned
+28-column CSV uses exact `PARTICIPANT_ID`, then absent from the fixed aliases;
+its output parent remained empty. Preserve every failed tree. This establishes
+archive identity, layout, and a narrow later-stage compatibility boundary, not
+an EdAcc corpus, model result, or live claim.
 
 Receipts cross-bind one same-owner snapshot; they are not signatures. The
 validator catches drift and inconsistent layer changes, but an actor able to

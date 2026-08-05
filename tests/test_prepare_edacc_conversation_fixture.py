@@ -6,6 +6,7 @@ import csv
 from dataclasses import replace
 import gzip
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -22,6 +23,7 @@ from tools.streaming_stt.corpus import load_corpus
 _ACCENT_FIELD = (
     "How would you describe your accent in English? (e.g. Italian, Glaswegian)"
 )
+_PARTICIPANT_FIELD = "PARTICIPANT_ID"
 _OBSERVED_EDACC_UID_FIELD = b"\x80\x00\x00\x00\x00\x22\x89\x10"
 _OBSERVED_EDACC_UID = 0x228910
 _OWNER_BASE256_MIN = 8**7
@@ -109,7 +111,7 @@ def _source_tree(tmp_path: Path) -> Path:
         _write_wav(data / f"{recording}.wav", index)
         accent_rows.append(
             {
-                "Final-Participant_ID": f"EDAC-C{index:02d}P1",
+                _PARTICIPANT_FIELD: f"EDAC-C{index:02d}P1",
                 _ACCENT_FIELD: f"Synthetic accent {index % 12}",
             }
         )
@@ -134,7 +136,7 @@ def _source_tree(tmp_path: Path) -> Path:
             other = f"EDACC-C{index:02d}-B"
             accent_rows.append(
                 {
-                    "Final-Participant_ID": f"EDAC-C{index:02d}P2",
+                    _PARTICIPANT_FIELD: f"EDAC-C{index:02d}P2",
                     _ACCENT_FIELD: f"Synthetic other accent {index}",
                 }
             )
@@ -278,7 +280,7 @@ def _source_tree(tmp_path: Path) -> Path:
     ) as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=("Final-Participant_ID", _ACCENT_FIELD),
+            fieldnames=(_PARTICIPANT_FIELD, _ACCENT_FIELD),
         )
         writer.writeheader()
         writer.writerows(accent_rows)
@@ -328,6 +330,47 @@ def _prepare(tmp_path: Path, *, output_name: str = "prepared"):
         test_source_injection=_injection(archive),
     )
     return result, root, archive
+
+
+def _accent_csv(participant_field: str) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow((participant_field, _ACCENT_FIELD))
+    writer.writerow(("EDAC-C07P1", "Synthetic Romanian accent"))
+    return output.getvalue().encode("utf-8")
+
+
+def test_exact_uppercase_participant_header_preserves_accent_lookup():
+    direct, keyed = prepare._parse_accents(_accent_csv(_PARTICIPANT_FIELD))
+
+    assert direct == {"EDAC-C07P1": "Synthetic Romanian accent"}
+    assert keyed == {(7, "A"): "Synthetic Romanian accent"}
+    assert (
+        prepare._accent_for_speaker("EDACC-C07-A", direct, keyed)
+        == "Synthetic Romanian accent"
+    )
+
+
+@pytest.mark.parametrize(
+    "participant_field",
+    (
+        "Participant_ID",
+        " PARTICIPANT_ID",
+        "PARTICIPANT_ID ",
+        "PARTICIPANT_\u0406D",
+    ),
+    ids=(
+        "case-mismatch",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "cyrillic-i-lookalike",
+    ),
+)
+def test_participant_header_near_misses_fail_closed(participant_field):
+    with pytest.raises(prepare.EdaccPreparationError) as failure:
+        prepare._parse_accents(_accent_csv(participant_field))
+
+    assert failure.value.args == ()
 
 
 def _tree_snapshot(root: Path) -> tuple[frozenset[Path], dict[Path, bytes]]:

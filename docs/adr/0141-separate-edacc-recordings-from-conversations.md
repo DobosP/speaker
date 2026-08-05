@@ -1,7 +1,7 @@
 # ADR-0141: Separate EdAcc recordings from conversation families
 
 Date: 2026-08-05
-Status: accepted
+Status: superseded-by ADR-0142
 
 Supersedes: ADR-0140
 

@@ -201,6 +201,7 @@ _PARTICIPANT_KEY_RE = re.compile(
 _PARTICIPANT_FIELDS = (
     "FINAL-Participant_ID",
     "Final-Participant_ID",
+    "PARTICIPANT_ID",
     "participant_id",
     "speaker_id",
 )

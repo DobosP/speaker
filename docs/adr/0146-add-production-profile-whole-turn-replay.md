@@ -22,6 +22,13 @@ revision, and main/fast Ollama blob plus effective-config contracts. Use the
 same fixed local evaluation header for identity probes and inference, and admit
 only exact local `OllamaLLM` main/fast clients.
 
+Resolve every active Sherpa artifact path against the directory containing the
+selected base configuration before runtime construction and before hashing the
+artifact closure. This keeps task-worktree execution independent of its current
+directory and guarantees the runtime receives the exact absolute paths whose
+contents the evaluator binds. Reject path fields that are syntactically nonempty
+but normalize to no path. Record that transform in replay-safety schema v2.
+
 Treat corpus rows as independent samples. Construct a fresh engine, router,
 runtime, metrics ledger, memory, and controller session for each row while
 sharing only the bound stateless main/fast Ollama clients. Require the runtime's
@@ -51,7 +58,11 @@ attempted TTS append as a response, exposed raw finals through ordinary runtime
 logging, hashed artifact trees through race-prone paths, silently ignored
 production arguments in fake mode, and could leave a partial report after a
 write failure. Those defects made retained results misleading or private-data
-unsafe.
+unsafe. The first clean real preflight additionally showed that loading
+configuration from the shared checkout while executing from a task worktree
+made relative SenseVoice paths resolve against the wrong checkout; the runtime
+failed closed before decoding audio. Config-root path binding closes that
+evaluator-only mismatch.
 
 A direct Faster-Whisper final is not introduced here. Existing command/noise
 evidence shows excessive false activations, and its isolated EdAcc accuracy is
@@ -75,6 +86,11 @@ artifact closure is a bounded same-owner consistency check with before/after
 rechecks, not a signed immutable provisioning receipt against a hostile local
 writer. Aggregate publication currently requires Linux `renameat2`; other
 platforms fail closed instead of weakening no-overwrite publication.
+
+The execution-config digest intentionally changes with the selected config-root
+path because it binds the absolute paths handed to native constructors. The
+separate active-artifact digest remains path-independent and binds file/tree
+contents instead.
 
 No report may promote a final-STT profile or change a default. Owner-labelled
 physical A/B through `./live.sh` remains required before any live selection,

@@ -35,8 +35,9 @@ from tools.streaming_stt.bounded_io import BoundedReadError, opened_directory_no
 
 
 _REPLAY_SAFETY_POLICY = {
-    "schema_version": 1,
+    "schema_version": 2,
     "memory_backend": "session",
+    "artifact_paths": "resolve_active_paths_against_config_root",
     "local_llm": {
         "host": LOCAL_OLLAMA_HOST,
         "cloud_enabled": False,
@@ -435,6 +436,70 @@ def _active_artifact_values(config: dict) -> tuple[tuple[str, str], ...]:
     return tuple(rows)
 
 
+def _bind_execution_artifact_paths(config: dict, *, config_root: Path) -> dict:
+    """Make active model paths independent of the evaluator's working tree.
+
+    The normal entrypoint starts in the repository containing ``config.json``,
+    so its relative Sherpa paths resolve there.  A task-worktree evaluator can
+    load that same machine-local configuration from another checkout; bind the
+    active paths to the configuration root before runtime construction so the
+    files hashed below are exactly the files the engine opens.
+    """
+    try:
+        raw_sherpa = config.get("sherpa", {})
+        if not isinstance(raw_sherpa, Mapping):
+            raise ProductionInputError()
+        sherpa = dict(raw_sherpa)
+        # Native constructors commonly use simple truth tests on path fields.
+        # Reject syntactically non-empty values that normalize to no path, and
+        # normalize every admitted component before deciding whether it is
+        # active, so a truthy runtime path cannot disappear from the hash set.
+        for field_name in _ARTIFACT_FIELDS:
+            if field_name not in sherpa:
+                continue
+            raw_value = sherpa[field_name]
+            if raw_value is None:
+                sherpa[field_name] = ""
+                continue
+            if not isinstance(raw_value, str):
+                raise ProductionInputError()
+            if field_name in _ARTIFACT_LIST_FIELDS:
+                if raw_value == "":
+                    continue
+                parts = tuple(part.strip() for part in raw_value.split(","))
+                if any(not part for part in parts):
+                    raise ProductionInputError()
+                sherpa[field_name] = ",".join(parts)
+            else:
+                normalized = raw_value.strip()
+                if raw_value and not normalized:
+                    raise ProductionInputError()
+                sherpa[field_name] = normalized
+
+        normalized_config = dict(config)
+        normalized_config["sherpa"] = sherpa
+        grouped: dict[str, list[str]] = {}
+        for field_name, raw_path in _active_artifact_values(normalized_config):
+            selected = Path(raw_path).expanduser()
+            if not selected.is_absolute():
+                selected = config_root / selected
+            grouped.setdefault(field_name, []).append(str(selected))
+
+        for field_name, paths in grouped.items():
+            if field_name not in _ARTIFACT_LIST_FIELDS and len(paths) != 1:
+                raise ProductionInputError()
+            sherpa[field_name] = (
+                ",".join(paths)
+                if field_name in _ARTIFACT_LIST_FIELDS
+                else paths[0]
+            )
+        bound = dict(config)
+        bound["sherpa"] = sherpa
+        return bound
+    except (OSError, RuntimeError, TypeError, ValueError, ProductionInputError):
+        raise ProductionInputError() from None
+
+
 def active_artifact_identity(
     config: dict,
     *,
@@ -631,10 +696,13 @@ def prepare_production(
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         raise ProductionInputError() from None
-    production_digest = _canonical_sha256(production_config)
-    execution_config = _apply_replay_safety(production_config)
-    safety_digest = _canonical_sha256(_REPLAY_SAFETY_POLICY)
     config_root = Path(config_path).expanduser().resolve(strict=True).parent
+    production_digest = _canonical_sha256(production_config)
+    execution_config = _bind_execution_artifact_paths(
+        _apply_replay_safety(production_config),
+        config_root=config_root,
+    )
+    safety_digest = _canonical_sha256(_REPLAY_SAFETY_POLICY)
     artifacts = (artifact_reader or active_artifact_identity)(
         execution_config,
         config_root=config_root,

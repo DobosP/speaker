@@ -191,6 +191,13 @@ def test_prepare_binds_atomic_profile_safety_and_close_time_config(tmp_path):
     config_path.write_text(json.dumps(configured), encoding="utf-8")
     local_path = tmp_path / "missing-local.json"
     readers = _prepared_readers()
+    hashed_configs = []
+
+    def artifact_reader(config, **_kwargs):
+        hashed_configs.append(config)
+        return "d" * 64, 5, 7, 1024
+
+    readers["artifact_reader"] = artifact_reader
 
     prepared = prepare_production(
         config_path=config_path,
@@ -206,6 +213,14 @@ def test_prepare_binds_atomic_profile_safety_and_close_time_config(tmp_path):
     assert prepared.config["llm"]["cloud"]["strategy"] == "local_only"
     assert prepared.config["llm"]["router_model"] is None
     assert prepared.config["llm"]["live_routing"] is False
+    assert prepared.replay_safety_schema_version == 2
+    assert prepared.config["sherpa"]["asr_final_model"] == str(
+        tmp_path / "pretrained_models/sherpa/sense_voice/model.int8.onnx"
+    )
+    assert prepared.config["sherpa"]["asr_final_tokens"] == str(
+        tmp_path / "pretrained_models/sherpa/sense_voice/tokens.txt"
+    )
+    assert hashed_configs == [prepared.config]
     assert all(
         prepared.config[name]["enabled"] is False
         for name in ("obsidian", "reminders", "trusted_apps", "web_search")
@@ -234,6 +249,59 @@ def test_prepare_binds_atomic_profile_safety_and_close_time_config(tmp_path):
             config_path=config_path,
             local_config_path=local_path,
             **readers,
+        )
+
+
+def test_prepare_normalizes_singleton_and_list_artifact_paths(tmp_path):
+    config_path = tmp_path / "config.json"
+    configured = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    configured["sherpa"]["punct_model"] = " models/punct.onnx "
+    configured["sherpa"]["tts_lexicon"] = " lexicon/a.txt, /models/b.txt "
+    config_path.write_text(json.dumps(configured), encoding="utf-8")
+    seen = []
+    readers = _prepared_readers()
+
+    def artifact_reader(config, **_kwargs):
+        seen.append(config)
+        return "d" * 64, 5, 7, 1024
+
+    readers["artifact_reader"] = artifact_reader
+    prepared = prepare_production(
+        config_path=config_path,
+        local_config_path=tmp_path / "missing-local.json",
+        device_profile="desktop_gpu_4090",
+        final_stt_profile="sense-voice",
+        **readers,
+    )
+
+    assert prepared.config["sherpa"]["punct_model"] == str(
+        tmp_path / "models/punct.onnx"
+    )
+    assert prepared.config["sherpa"]["tts_lexicon"] == (
+        f"{tmp_path / 'lexicon/a.txt'},/models/b.txt"
+    )
+    assert seen == [prepared.config]
+
+
+@pytest.mark.parametrize(
+    ("field_name", "raw_value"),
+    (("punct_model", "   "), ("tts_lexicon", ", ,")),
+)
+def test_prepare_rejects_truthy_artifact_values_with_no_path(
+    tmp_path, field_name, raw_value
+):
+    config_path = tmp_path / "config.json"
+    configured = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    configured["sherpa"][field_name] = raw_value
+    config_path.write_text(json.dumps(configured), encoding="utf-8")
+
+    with pytest.raises(ProductionInputError):
+        prepare_production(
+            config_path=config_path,
+            local_config_path=tmp_path / "missing-local.json",
+            device_profile="desktop_gpu_4090",
+            final_stt_profile="sense-voice",
+            **_prepared_readers(),
         )
 
 

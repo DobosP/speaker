@@ -91,16 +91,29 @@ pass the production fixture validator.
 The unchanged EdAcc archive completed the hardened no-extraction scan over all
 5,916,732,170 bytes with the MD5 and SHA-256 values above: layout SHA-256
 `a4deda10b3246d8795304a4cb11365f3401e1acbb11fe6210ace61369b54e01b`,
-98 members, and 76 WAVs. A subsequent fresh extraction fully materialized a
-94-file, 8,220,494,044-byte private source tree, then failed closed before
-corpus publication when the old validator equated two development conversation
-families with participant recording stems. The subsequent non-production
-exact-source preflight passed full archive, layout, and conversation-family
-validation, then failed before audio decode or publication because the pinned
-28-column CSV uses exact `PARTICIPANT_ID`, then absent from the fixed aliases;
-its output parent remained empty. Preserve every failed tree. This establishes
-archive identity, layout, and a narrow later-stage compatibility boundary, not
-an EdAcc corpus, model result, or live claim.
+98 members, and 76 WAVs. Preserve both the subsequent complete extraction that
+failed closed on the superseded conversation-family assumption and the later
+exact-source attempt that failed before decode/publication on the then-missing
+`PARTICIPANT_ID` alias.
+
+After ADR-0142, a new non-production exact-source preflight and a fresh
+production materialization matched metadata digest
+`e8d06327a595c6e7882bfddd4d9747be7242599fda7a9a09124ba41eb426bc45` and
+selection digest
+`d8b7e3e8e9dc4f43168ff96d700961261aea028e9d063d730851e53bbd25cd3b`.
+Their corpus digests deliberately differ because only the production run emits
+`production_evidence=true`. That run retained a new exact archive extraction
+of 94 files/8,220,494,044 bytes and published 26 files/4,821,792 bytes: 24
+cases containing 4,790,400 PCM bytes plus the corpus and receipt. Every retained
+directory was mode 0700; every retained file was mode 0600 with one link. The
+production corpus SHA-256 is
+`4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772` and
+the receipt SHA-256 is
+`3c516b6fbb8ce139498cd2e01d83a4faf825e58bf2b9abcaa52896bdab4c853f`.
+Preserve all failed, preflight, source, and production evidence. This proves
+bounded corpus construction only; it supplies no model, WER, live, or
+runtime-default claim. The next evaluation step is a receipt-bound EdAcc-only
+fixed 2x1 wrapper, kept separate from the four-source qualification gate.
 
 Receipts cross-bind one same-owner snapshot; they are not signatures. The
 validator catches drift and inconsistent layer changes, but an actor able to

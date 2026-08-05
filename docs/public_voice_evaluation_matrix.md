@@ -119,9 +119,9 @@ runtime-default claim.
 
 ### Fixed EdAcc-only 2x1 accuracy slice
 
-`tools.edacc_stt_comparison` is the receipt-bound wrapper for the next private
-model run. It accepts only the production corpus and sibling receipt whose
-SHA-256 values are
+`tools.edacc_stt_comparison` is the receipt-bound wrapper for the retained
+private model run. It accepts only the production corpus and sibling receipt
+whose SHA-256 values are
 `4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772` and
 `3c516b6fbb8ce139498cd2e01d83a4faf825e58bf2b9abcaa52896bdab4c853f`.
 It requires exactly 24 cases and reconstructs the locked EdAcc marginal as
@@ -139,6 +139,33 @@ reconstructs a fixed aggregate-only report after checking the corpus, receipt,
 workers, code, scratch, and checkpoint before and after execution. Its retained
 result is always `quality_decision=not_evaluated`, development-only, and
 non-promotional.
+
+The exact run from checkout `96c36fe` completed both coverage-only cells: 72
+evaluations per cell over three repeats, with zero final disagreements. Its
+20,956-byte mode-0600/single-link aggregate report has SHA-256
+`7edcd8a6e2c8422799a94f5b852314517170959167d2821c510a73cff56ed0ba`.
+Preserve that report and every bound corpus, worker, runtime, and model receipt.
+
+The Zipformer cell used manifest SHA-256
+`ae9db644c22cac5d24107253707729fc4b76d5b4e1c8ce9080bb55c4c3113516`.
+It produced WER/CER `.6583`/`.4884`, 0 exact matches, and 57 nonempty finals;
+clean/disfluent/overlap-adjacent WER was `.6250`/`.7627`/`.6053`. Its reported
+RSS was 376.141 MB with one thread. The Faster-Whisper Small cell used manifest
+SHA-256 `594128b55e675363357d446d2e3d3724c474b7e935e537b675926ffd8ddc14da`,
+runtime-receipt SHA-256
+`85dfc56712f9db4997836329c4fdb2b1e56a265ac9a54a4d5859f74e2ea309a2`,
+and model-receipt SHA-256
+`28d63ead1b37e6241dbca196155dfc988ea61220e7484ad64ca60b15e9f7c132`.
+It produced WER/CER `.3719`/`.2464`, 15 exact matches, and 72 nonempty finals;
+the same stratum WERs were `.3281`/`.5085`/`.3026`. Its reported RSS was
+1,052.668 MB with six threads. That is a 28.64-percentage-point, about 43.5%
+relative WER improvement over Zipformer on this fixed slice.
+
+Both cells reported peak VRAM as null. The external monitor did not sample the
+active interval, so this run establishes no peak-VRAM value. RTF and timing are
+non-comparable between these cells and are not live latency. The result remains
+a small fixed EdAcc accuracy slice: development-only, non-promotional, and
+insufficient to change any model or runtime default.
 
 This is an accuracy slice, not a latency comparison: the harness begins after
 PCM is available, burst timing is not device timing, and Faster-Whisper is a

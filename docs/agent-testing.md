@@ -82,6 +82,34 @@ nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B \
   --output "$EDACC_2X1_REPORT"
 ```
 
+The retained exact run from main/evaluation checkout `96c36fe` completed both
+coverage-only cells: 72 evaluations per cell across three repeats, with zero
+final disagreements. Its aggregate report is 20,956 bytes, mode 0600, has one
+link, and has SHA-256
+`7edcd8a6e2c8422799a94f5b852314517170959167d2821c510a73cff56ed0ba`.
+Preserve it and all evidence to which it is bound.
+
+The Zipformer manifest SHA-256 was
+`ae9db644c22cac5d24107253707729fc4b76d5b4e1c8ce9080bb55c4c3113516`.
+That cell reported WER/CER `.6583`/`.4884`, 0 exact matches, 57 nonempty
+finals, clean/disfluent/overlap-adjacent WER `.6250`/`.7627`/`.6053`, 376.141
+MB RSS, and one thread. The Faster-Whisper Small manifest SHA-256 was
+`594128b55e675363357d446d2e3d3724c474b7e935e537b675926ffd8ddc14da`;
+its runtime-receipt SHA-256 was
+`85dfc56712f9db4997836329c4fdb2b1e56a265ac9a54a4d5859f74e2ea309a2`
+and its model-receipt SHA-256 was
+`28d63ead1b37e6241dbca196155dfc988ea61220e7484ad64ca60b15e9f7c132`.
+That cell reported WER/CER `.3719`/`.2464`, 15 exact matches, 72 nonempty
+finals, stratum WER `.3281`/`.5085`/`.3026`, 1,052.668 MB RSS, and six threads.
+The observed WER difference is 28.64 percentage points, about 43.5% relative
+to Zipformer, on this fixed EdAcc slice.
+
+Reported peak VRAM was null for both cells, and the external monitor did not
+sample the active interval; make no peak-VRAM claim. RTF and timing are
+non-comparable and are not live latency. This small accuracy slice remains
+development-only and non-promotional, with no quality verdict or default
+change.
+
 Do not add geometry or pacing flags: the wrapper fixes three repeats,
 1,600-sample chunks, burst pacing, a 200 ms partial interval, zero tail
 padding, and baseline-then-candidate execution. Both destination parents must

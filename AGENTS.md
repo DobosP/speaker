@@ -10,6 +10,9 @@
 
 ## Parallel work (mandatory)
 - This shared checkout stays on `main`, clean — never switch branches or commit task work here.
+  Clean includes untracked: `git status --porcelain` must be empty when you finish. A stray
+  analysis script or report left here blocks the NEXT session's portable/Ctrl-N task in this repo
+  (agent-ops ADR-0063). Found a stray file you did not write? Report it, do not delete it.
 - One task = one branch (`<type>/<slug>`) = one worktree under `~/work/_worktrees/speaker/`:
   `python3 ~/work/agent-ops/scripts/create_task_worktree.py --repo ~/work/speaker --branch <type>/<slug> --task "..." --write`
 - Never create worktrees under `/tmp` (existing `/tmp/speaker-*` worktrees are legacy — migrate at

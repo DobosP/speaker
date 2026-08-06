@@ -70,8 +70,22 @@ latched endpoint. Neither is admitted.
 Pure state, deterministic capture replay, full diagnostic-manifest validation,
 capture-gap clearing, multiple reset ordinals, KWS termination, async whole-PCM
 ownership, rule-3, total-silence, and unchanged-default behavior can be proved
-headlessly. The exact three-cell retained-corpus replay remains required before
-this branch can land.
+headlessly. The exact one-thread CPU replay from clean source revision
+`63e25e8b31107e6ce88b99219e0b97ced7323a27` completed all 24 retained rows in
+all three cells. Acoustic and HOLD-only each produced 31 finals with 19
+single-final and five multi-final rows. Reset-and-accumulate produced 29 finals
+with 20 single-final and four multi-final rows: one multi-to-single repair
+against each control and no single-to-multi regression. It issued six HOLDs
+across five rows, versus 34 HOLD-only decisions across the same five rows.
+
+Reset-and-accumulate WER/CER was 0.4874/0.3237, versus acoustic
+0.5779/0.3919 and HOLD-only 0.5729/0.3896; all three cells kept four exact rows.
+Endpoint-delay p50/p95 was 900/1,700 ms, versus acoustic 800/1,200 ms and
+HOLD-only 800/1,700 ms. Preserve the mode-0600, single-link, 14,995-byte report
+whose SHA-256 is
+`98ea171dfcd9ad553604992a6e4bfb450c8340af5be57dbcb89c24cce142f5f3`.
+This is a partial repair with a latency tradeoff, not evidence that turn
+splitting is solved.
 
 Even a green retained replay authorizes only continued opt-in testing. It does
 not establish microphone STT quality, far-field timing, room/AEC behavior,

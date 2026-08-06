@@ -359,7 +359,7 @@ nice -n 15 ionice -c 3 \
   --local-config /home/dobo/work/speaker/config.local.json \
   --smart-turn-model /private/models/smart-turn-v3.2-cpu.onnx \
   --report /new/private/edacc-endpoint-integrity.json \
-  --watchdog-seconds 3600
+  --watchdog-seconds 7200
 ```
 
 The three CPU cells replay sequentially and may take several minutes because
@@ -375,8 +375,17 @@ multi-final rows; 34 candidate HOLD ticks across five rows repaired zero. The
 10,343-byte report SHA-256 is
 `9561b6f11ddddeef4cba04caf777f93d0eb9a128769686e2bcecc9b1ef6e04d6`.
 That report is the preserved schema-v1 two-cell result. Schema v2 adds the
-separate reset-and-accumulate cell and must publish to a new no-overwrite path;
-until its exact run completes, it carries no retained-corpus result.
+separate reset-and-accumulate cell. Its exact clean-source `63e25e8` run also
+completed all 24 rows in all three cells. Reset changed the common 19
+single/five multi row shape to 20/four, repairing one multi-final row against
+each control with no single-to-multi regression. It produced six HOLD ticks
+across five rows, WER/CER 0.4874/0.3237, and endpoint-delay p50/p95 900/1,700
+ms; acoustic was 0.5779/0.3919 and 800/1,200 ms, while HOLD-only was
+0.5729/0.3896 and 800/1,700 ms. All cells retained four exact rows. Preserve
+the mode-0600, single-link, 14,995-byte schema-v2 report SHA-256
+`98ea171dfcd9ad553604992a6e4bfb450c8340af5be57dbcb89c24cce142f5f3`.
+This partial repair does not promote the option; owner bare-speaker A/B remains
+required.
 
 ## Exact Parakeet Realtime EOU reference setup
 

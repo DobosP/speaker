@@ -4175,15 +4175,37 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         boundary: "LogicalTurnBoundary",
         legacy_text: str,
-    ) -> None:
+    ) -> Optional[int]:
         observer = self._logical_turn_shadow_observer()
         if observer is None:
-            return
+            return None
         try:
-            observer.compare_legacy_composition(
+            compared = observer.compare_legacy_composition(
                 boundary=boundary,
                 legacy_text=legacy_text,
             )
+            if not compared:
+                return None
+            return observer.claim_terminal_token()
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            self._logical_turn_shadow_failure(observer)
+            return None
+
+    def _logical_turn_shadow_bind_terminal(
+        self,
+        token: Optional[int],
+        acoustic: Optional[AcousticLineage],
+        revision: int,
+    ) -> None:
+        if token is None:
+            return
+        observer = self._logical_turn_shadow_observer()
+        if observer is None or acoustic is None:
+            if observer is not None:
+                self._logical_turn_shadow_failure(observer)
+            return
+        try:
+            observer.bind_terminal_lineage(token, acoustic, revision)
         except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
             self._logical_turn_shadow_failure(observer)
 
@@ -9043,6 +9065,7 @@ class SherpaOnnxEngine(AudioEngine):
                                 outcome="reset",
                             )
                     elif turn_decision.commit:
+                        shadow_terminal_token: Optional[int] = None
                         current_native_final = recognizer.get_result(stream)
                         observer = self._logical_turn_shadow_observer()
                         if observer is not None:
@@ -9085,9 +9108,11 @@ class SherpaOnnxEngine(AudioEngine):
                             if shadow_boundary is None:
                                 self._logical_turn_shadow_failure(observer)
                             else:
-                                self._logical_turn_shadow_compare(
-                                    boundary=shadow_boundary,
-                                    legacy_text=raw_final,
+                                shadow_terminal_token = (
+                                    self._logical_turn_shadow_compare(
+                                        boundary=shadow_boundary,
+                                        legacy_text=raw_final,
+                                    )
                                 )
                         elif observer is not None and type(raw_final) is not str:
                             self._logical_turn_shadow_failure(observer)
@@ -9118,6 +9143,12 @@ class SherpaOnnxEngine(AudioEngine):
                             owned_sample_count=int(owned_primary.size),
                             endpoint_reason=turn_decision.endpoint_reason,
                         )
+                        if shadow_terminal_token is not None:
+                            self._logical_turn_shadow_bind_terminal(
+                                shadow_terminal_token,
+                                final_acoustic,
+                                final_revision,
+                            )
                         self._bind_diagnostic_span(
                             final_acoustic, diagnostic_frame_span
                         )

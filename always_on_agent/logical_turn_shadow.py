@@ -13,12 +13,16 @@ commit.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, fields
 from enum import Enum
 from threading import Lock
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from core.engine import TranscriptAbortReason
+
+from .acoustic import AcousticLineage
 from .logical_turn import (
     LogicalTurnAbortReason,
     LogicalTurnBoundary,
@@ -31,6 +35,12 @@ class LogicalTurnShadowScope(str, Enum):
     """Closed name for the only supported comparison seam."""
 
     SHERPA_RAW_COMPOSITION = "sherpa_raw_composition_v1"
+
+
+class LogicalTurnTerminalLineageScope(str, Enum):
+    """Closed name for raw-commit to downstream-terminal evidence."""
+
+    SHERPA_SELECTED_TERMINAL = "sherpa_selected_terminal_lineage_v1"
 
 
 _CAPABILITIES: Mapping[str, bool] = MappingProxyType(
@@ -48,6 +58,28 @@ _CAPABILITIES: Mapping[str, bool] = MappingProxyType(
         "live_evidence": False,
     }
 )
+
+_TERMINAL_CAPABILITIES: Mapping[str, bool] = MappingProxyType(
+    {
+        "raw_commit_terminal_lineage": True,
+        "selected_final_lineage": True,
+        "typed_abort_lineage": True,
+        "typed_abort_reason_lineage": True,
+        "selected_final_text_parity": False,
+        "async_final_selection_parity": False,
+        "final_dispatcher_parity": False,
+        "supervisor_continuation_parity": False,
+        "runtime_stop_shutdown_parity": False,
+        "production_configuration_coverage": False,
+        "runtime_authority": False,
+        "live_evidence": False,
+    }
+)
+
+_TRANSCRIPT_ABORT_REASONS = tuple(TranscriptAbortReason)
+_TerminalLineageKey = tuple[tuple[tuple[str, int, int, str], ...], int]
+_MAX_TERMINAL_COMMITS = 256
+_MAX_TERMINAL_SPANS = 64
 
 
 def _non_negative_int(name: str, value: int) -> int:
@@ -182,6 +214,96 @@ class LogicalTurnShadowSnapshot:
             raise ValueError("started and multi-epoch turns exceed epoch evidence")
 
 
+@dataclass(frozen=True, slots=True)
+class LogicalTurnTerminalLineageSnapshot:
+    """Closed counters for exact raw-commit to typed-terminal correlation."""
+
+    scope: LogicalTurnTerminalLineageScope
+    closed: bool
+    raw_commits: int
+    claimed_raw_commits: int
+    bound_raw_commits: int
+    selected_finals: int
+    typed_aborts: int
+    matched_selected_finals: int
+    matched_typed_aborts: int
+    unscoped_selected_finals: int
+    unscoped_typed_aborts: int
+    duplicate_selected_finals: int
+    duplicate_typed_aborts: int
+    missing_downstream_terminals: int
+    unbound_raw_commits: int
+    binding_rejections: int
+    terminal_rejections: int
+    internal_errors: int
+    late_observations: int
+    abort_reason_counts: tuple[int, ...]
+    matched_abort_reason_counts: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not LogicalTurnTerminalLineageScope:
+            raise TypeError("scope must be a LogicalTurnTerminalLineageScope")
+        if type(self.closed) is not bool:
+            raise TypeError("closed must be a boolean")
+        for item in fields(self):
+            if item.name in {
+                "scope",
+                "closed",
+                "abort_reason_counts",
+                "matched_abort_reason_counts",
+            }:
+                continue
+            _non_negative_int(item.name, getattr(self, item.name))
+        for name, counts in (
+            ("abort_reason_counts", self.abort_reason_counts),
+            ("matched_abort_reason_counts", self.matched_abort_reason_counts),
+        ):
+            if type(counts) is not tuple or len(counts) != len(
+                _TRANSCRIPT_ABORT_REASONS
+            ):
+                raise TypeError(f"{name} must cover every typed abort reason")
+            for index, count in enumerate(counts):
+                _non_negative_int(f"{name}[{index}]", count)
+        matched = self.matched_selected_finals + self.matched_typed_aborts
+        if self.raw_commits != matched + self.missing_downstream_terminals:
+            raise ValueError("raw commit terminal totals do not reconcile")
+        if self.claimed_raw_commits > self.raw_commits:
+            raise ValueError("claimed raw commits exceed raw commits")
+        if self.bound_raw_commits > self.claimed_raw_commits:
+            raise ValueError("bound raw commits exceed claimed raw commits")
+        if self.unbound_raw_commits > self.missing_downstream_terminals:
+            raise ValueError("unbound raw commits exceed missing terminals")
+        if self.bound_raw_commits != matched + (
+            self.missing_downstream_terminals - self.unbound_raw_commits
+        ):
+            raise ValueError("bound raw commit totals do not reconcile")
+        if self.selected_finals != (
+            self.matched_selected_finals
+            + self.unscoped_selected_finals
+            + self.duplicate_selected_finals
+        ):
+            raise ValueError("selected final totals do not reconcile")
+        if self.typed_aborts != (
+            self.matched_typed_aborts
+            + self.unscoped_typed_aborts
+            + self.duplicate_typed_aborts
+        ):
+            raise ValueError("typed abort totals do not reconcile")
+        if sum(self.abort_reason_counts) != self.typed_aborts:
+            raise ValueError("typed abort reason totals do not reconcile")
+        if sum(self.matched_abort_reason_counts) != self.matched_typed_aborts:
+            raise ValueError("matched abort reason totals do not reconcile")
+        if any(
+            matched_count > observed_count
+            for matched_count, observed_count in zip(
+                self.matched_abort_reason_counts,
+                self.abort_reason_counts,
+                strict=True,
+            )
+        ):
+            raise ValueError("matched abort reasons exceed observed aborts")
+
+
 class LogicalTurnCompositionShadow:
     """Serialized, fail-contained raw-composition observer.
 
@@ -198,7 +320,10 @@ class LogicalTurnCompositionShadow:
         max_native_epochs: int = 64,
         max_native_finals: int = 256,
         max_text_chars: int = 32_768,
+        terminal_lineage: bool = False,
     ) -> None:
+        if type(terminal_lineage) is not bool:
+            raise TypeError("terminal_lineage must be a boolean")
         self._max_native_epochs = _positive_int("max_native_epochs", max_native_epochs)
         self._max_native_finals = _positive_int("max_native_finals", max_native_finals)
         self._max_text_chars = _positive_int("max_text_chars", max_text_chars)
@@ -235,6 +360,45 @@ class LogicalTurnCompositionShadow:
         self._bounds_overflows = 0
         self._internal_errors = 0
         self._late_observations = 0
+        self._terminal_lineage = terminal_lineage
+        self._terminal_raw_commits = 0
+        self._terminal_sequence = 0
+        self._terminal_untracked_commits = 0
+        self._terminal_claimable: deque[int] = deque()
+        self._terminal_claimed: set[int] = set()
+        self._terminal_claimed_raw_commits = 0
+        self._terminal_pending: dict[
+            int,
+            tuple[tuple[tuple[str, int, int, str], ...], int] | None,
+        ] = {}
+        self._terminal_by_lineage: dict[
+            tuple[tuple[tuple[str, int, int, str], ...], int],
+            int,
+        ] = {}
+        self._terminal_completed_lineages: set[
+            tuple[tuple[tuple[str, int, int, str], ...], int]
+        ] = set()
+        self._terminal_selected_finals = 0
+        self._terminal_typed_aborts = 0
+        self._terminal_matched_selected_finals = 0
+        self._terminal_matched_typed_aborts = 0
+        self._terminal_unscoped_selected_finals = 0
+        self._terminal_unscoped_typed_aborts = 0
+        self._terminal_duplicate_selected_finals = 0
+        self._terminal_duplicate_typed_aborts = 0
+        self._terminal_bound_raw_commits = 0
+        self._terminal_binding_rejections = 0
+        self._terminal_rejections = 0
+        self._terminal_internal_errors = 0
+        self._terminal_late_observations = 0
+        self._terminal_abort_counts = {
+            reason: 0 for reason in _TRANSCRIPT_ABORT_REASONS
+        }
+        self._terminal_matched_abort_counts = {
+            reason: 0 for reason in _TRANSCRIPT_ABORT_REASONS
+        }
+        self._terminal_missing_at_close: int | None = None
+        self._terminal_unbound_at_close: int | None = None
 
     def _new_coordinator(self) -> LogicalTurnCoordinator:
         return LogicalTurnCoordinator(
@@ -246,6 +410,183 @@ class LogicalTurnCompositionShadow:
     def _next_evidence(self) -> int:
         self._evidence_sequence += 1
         return self._evidence_sequence
+
+    @property
+    def terminal_lineage_enabled(self) -> bool:
+        """Whether this observer may collect downstream terminal evidence."""
+
+        return self._terminal_lineage
+
+    @staticmethod
+    def _terminal_lineage_key(
+        acoustic: AcousticLineage,
+        revision: int,
+    ) -> _TerminalLineageKey:
+        if not isinstance(acoustic, AcousticLineage):
+            raise TypeError("acoustic must be an AcousticLineage")
+        selected_revision = _non_negative_int("revision", revision)
+        if len(acoustic.spans) > _MAX_TERMINAL_SPANS:
+            raise ValueError("acoustic lineage has too many spans")
+        keys: list[tuple[str, int, int, str]] = []
+        for span in acoustic.spans:
+            if (
+                type(span.stream_id) is not str
+                or type(span.capture_epoch) is not int
+                or type(span.capture_generation) is not int
+                or type(span.utterance_id) is not str
+            ):
+                raise TypeError("acoustic lineage keys must use built-in scalars")
+            keys.append(
+                (
+                    span.stream_id,
+                    span.capture_epoch,
+                    span.capture_generation,
+                    span.utterance_id,
+                )
+            )
+        return (tuple(keys), selected_revision)
+
+    def _mint_terminal_token(self) -> None:
+        if not self._terminal_lineage:
+            return
+        self._terminal_raw_commits += 1
+        if self._terminal_sequence >= _MAX_TERMINAL_COMMITS:
+            self._terminal_untracked_commits += 1
+            self._terminal_rejections += 1
+            return
+        self._terminal_sequence += 1
+        token = self._terminal_sequence
+        self._terminal_pending[token] = None
+        self._terminal_claimable.append(token)
+
+    def claim_terminal_token(self) -> int | None:
+        """Claim the next opaque raw-commit token for acoustic binding."""
+
+        with self._lock:
+            if not self._terminal_lineage:
+                return None
+            if self._closed:
+                self._terminal_late_observations += 1
+                return None
+            if not self._terminal_claimable:
+                self._terminal_rejections += 1
+                return None
+            token = self._terminal_claimable.popleft()
+            self._terminal_claimed.add(token)
+            self._terminal_claimed_raw_commits += 1
+            return token
+
+    def bind_terminal_lineage(
+        self,
+        token: int,
+        acoustic: AcousticLineage,
+        revision: int,
+    ) -> bool:
+        """Bind one opaque raw commit to its stable in-memory acoustic key."""
+
+        try:
+            selected_token = _positive_int("terminal token", token)
+            lineage_key = self._terminal_lineage_key(acoustic, revision)
+        except (TypeError, ValueError):
+            with self._lock:
+                if self._terminal_lineage:
+                    self._terminal_binding_rejections += 1
+            return False
+        with self._lock:
+            if not self._terminal_lineage:
+                return False
+            if self._closed:
+                self._terminal_late_observations += 1
+                return False
+            if (
+                selected_token not in self._terminal_claimed
+                or selected_token not in self._terminal_pending
+                or self._terminal_pending[selected_token] is not None
+                or lineage_key in self._terminal_by_lineage
+                or lineage_key in self._terminal_completed_lineages
+            ):
+                self._terminal_binding_rejections += 1
+                return False
+            self._terminal_pending[selected_token] = lineage_key
+            self._terminal_by_lineage[lineage_key] = selected_token
+            self._terminal_bound_raw_commits += 1
+            return True
+
+    def _observe_downstream_terminal(
+        self,
+        acoustic: AcousticLineage,
+        revision: int,
+        *,
+        abort_reason: TranscriptAbortReason | None,
+    ) -> bool:
+        try:
+            lineage_key = self._terminal_lineage_key(acoustic, revision)
+            if abort_reason is not None and type(abort_reason) is not TranscriptAbortReason:
+                raise TypeError("abort_reason must be a TranscriptAbortReason")
+        except (TypeError, ValueError):
+            with self._lock:
+                if self._terminal_lineage:
+                    self._terminal_rejections += 1
+            return False
+        with self._lock:
+            if not self._terminal_lineage:
+                return False
+            if self._closed:
+                self._terminal_late_observations += 1
+                return False
+            is_abort = abort_reason is not None
+            if is_abort:
+                self._terminal_typed_aborts += 1
+                self._terminal_abort_counts[abort_reason] += 1
+            else:
+                self._terminal_selected_finals += 1
+            token = self._terminal_by_lineage.pop(lineage_key, None)
+            if token is None:
+                if lineage_key in self._terminal_completed_lineages:
+                    if is_abort:
+                        self._terminal_duplicate_typed_aborts += 1
+                    else:
+                        self._terminal_duplicate_selected_finals += 1
+                elif is_abort:
+                    self._terminal_unscoped_typed_aborts += 1
+                else:
+                    self._terminal_unscoped_selected_finals += 1
+                return True
+            self._terminal_pending.pop(token)
+            self._terminal_completed_lineages.add(lineage_key)
+            if is_abort:
+                self._terminal_matched_typed_aborts += 1
+                self._terminal_matched_abort_counts[abort_reason] += 1
+            else:
+                self._terminal_matched_selected_finals += 1
+            return True
+
+    def observe_selected_final(
+        self,
+        acoustic: AcousticLineage,
+        revision: int,
+    ) -> bool:
+        """Reduce one selected-final lineage match to counters."""
+
+        return self._observe_downstream_terminal(
+            acoustic,
+            revision,
+            abort_reason=None,
+        )
+
+    def observe_typed_abort(
+        self,
+        acoustic: AcousticLineage,
+        revision: int,
+        reason: TranscriptAbortReason,
+    ) -> bool:
+        """Reduce one typed-abort lineage and closed reason to counters."""
+
+        return self._observe_downstream_terminal(
+            acoustic,
+            revision,
+            abort_reason=reason,
+        )
 
     def _note_rejection(self, *, bounds: bool = False) -> None:
         if bounds:
@@ -303,6 +644,8 @@ class LogicalTurnCompositionShadow:
 
         with self._lock:
             self._internal_errors += 1
+            if self._terminal_lineage:
+                self._terminal_internal_errors += 1
             self._force_abort(LogicalTurnAbortReason.CONTROL)
 
     def observe_native_final(
@@ -509,6 +852,7 @@ class LogicalTurnCompositionShadow:
                 self._composition_matches += 1
             else:
                 self._composition_mismatches += 1
+            self._mint_terminal_token()
             self._clear_active_bookkeeping()
             return True
 
@@ -536,6 +880,22 @@ class LogicalTurnCompositionShadow:
             if self._coordinator.active_turn_id is not None:
                 self._missing_legacy_terminals += 1
                 self._force_abort(LogicalTurnAbortReason.SHUTDOWN)
+            if self._terminal_lineage:
+                self._terminal_missing_at_close = (
+                    len(self._terminal_pending) + self._terminal_untracked_commits
+                )
+                self._terminal_unbound_at_close = (
+                    self._terminal_untracked_commits
+                    + sum(
+                        lineage is None
+                        for lineage in self._terminal_pending.values()
+                    )
+                )
+                self._terminal_claimable.clear()
+                self._terminal_claimed.clear()
+                self._terminal_pending.clear()
+                self._terminal_by_lineage.clear()
+                self._terminal_completed_lineages.clear()
             self._closed = True
 
     def snapshot(self) -> LogicalTurnShadowSnapshot:
@@ -584,6 +944,63 @@ class LogicalTurnCompositionShadow:
                 bounds_overflows=self._bounds_overflows,
                 internal_errors=self._internal_errors,
                 late_observations=self._late_observations,
+            )
+
+    def terminal_lineage_snapshot(self) -> LogicalTurnTerminalLineageSnapshot:
+        """Return aggregate-safe terminal counters with no retained identities."""
+
+        with self._lock:
+            if not self._terminal_lineage:
+                raise RuntimeError("terminal lineage evidence is not enabled")
+            missing = (
+                self._terminal_missing_at_close
+                if self._terminal_missing_at_close is not None
+                else len(self._terminal_pending) + self._terminal_untracked_commits
+            )
+            unbound = (
+                self._terminal_unbound_at_close
+                if self._terminal_unbound_at_close is not None
+                else self._terminal_untracked_commits
+                + sum(lineage is None for lineage in self._terminal_pending.values())
+            )
+            return LogicalTurnTerminalLineageSnapshot(
+                scope=(
+                    LogicalTurnTerminalLineageScope.SHERPA_SELECTED_TERMINAL
+                ),
+                closed=self._closed,
+                raw_commits=self._terminal_raw_commits,
+                claimed_raw_commits=self._terminal_claimed_raw_commits,
+                bound_raw_commits=self._terminal_bound_raw_commits,
+                selected_finals=self._terminal_selected_finals,
+                typed_aborts=self._terminal_typed_aborts,
+                matched_selected_finals=(
+                    self._terminal_matched_selected_finals
+                ),
+                matched_typed_aborts=self._terminal_matched_typed_aborts,
+                unscoped_selected_finals=(
+                    self._terminal_unscoped_selected_finals
+                ),
+                unscoped_typed_aborts=self._terminal_unscoped_typed_aborts,
+                duplicate_selected_finals=(
+                    self._terminal_duplicate_selected_finals
+                ),
+                duplicate_typed_aborts=(
+                    self._terminal_duplicate_typed_aborts
+                ),
+                missing_downstream_terminals=missing,
+                unbound_raw_commits=unbound,
+                binding_rejections=self._terminal_binding_rejections,
+                terminal_rejections=self._terminal_rejections,
+                internal_errors=self._terminal_internal_errors,
+                late_observations=self._terminal_late_observations,
+                abort_reason_counts=tuple(
+                    self._terminal_abort_counts[reason]
+                    for reason in _TRANSCRIPT_ABORT_REASONS
+                ),
+                matched_abort_reason_counts=tuple(
+                    self._terminal_matched_abort_counts[reason]
+                    for reason in _TRANSCRIPT_ABORT_REASONS
+                ),
             )
 
 
@@ -889,10 +1306,320 @@ def validate_logical_turn_shadow_report(report: object) -> None:
         raise ValueError("logical-turn shadow parity verdict is inconsistent")
 
 
+_TERMINAL_SUM_FIELDS = tuple(
+    item.name
+    for item in fields(LogicalTurnTerminalLineageSnapshot)
+    if item.name
+    not in {
+        "scope",
+        "closed",
+        "abort_reason_counts",
+        "matched_abort_reason_counts",
+    }
+)
+
+
+def _terminal_abort_report(counts: tuple[int, ...]) -> dict[str, int]:
+    return {
+        reason.value: counts[index]
+        for index, reason in enumerate(_TRANSCRIPT_ABORT_REASONS)
+    }
+
+
+def aggregate_logical_turn_terminal_lineage(
+    snapshots: Iterable[LogicalTurnTerminalLineageSnapshot],
+) -> dict[str, object]:
+    """Build one strict aggregate without transcript or acoustic identities."""
+
+    items = tuple(snapshots)
+    if not items or any(
+        type(item) is not LogicalTurnTerminalLineageSnapshot for item in items
+    ):
+        raise ValueError("terminal lineage snapshots are missing or invalid")
+    if any(
+        not item.closed
+        or item.scope
+        is not LogicalTurnTerminalLineageScope.SHERPA_SELECTED_TERMINAL
+        for item in items
+    ):
+        raise ValueError("terminal lineage snapshots must be closed and scoped")
+    totals = {
+        name: sum(getattr(item, name) for item in items)
+        for name in _TERMINAL_SUM_FIELDS
+    }
+    abort_counts = tuple(
+        sum(item.abort_reason_counts[index] for item in items)
+        for index in range(len(_TRANSCRIPT_ABORT_REASONS))
+    )
+    matched_abort_counts = tuple(
+        sum(item.matched_abort_reason_counts[index] for item in items)
+        for index in range(len(_TRANSCRIPT_ABORT_REASONS))
+    )
+    health_ok = not any(
+        totals[name]
+        for name in (
+            "binding_rejections",
+            "terminal_rejections",
+            "internal_errors",
+            "late_observations",
+        )
+    )
+    evidence_sufficient = totals["raw_commits"] > 0
+    exact = bool(
+        evidence_sufficient
+        and health_ok
+        and totals["claimed_raw_commits"] == totals["raw_commits"]
+        and totals["bound_raw_commits"] == totals["raw_commits"]
+        and not any(
+            totals[name]
+            for name in (
+                "unscoped_selected_finals",
+                "unscoped_typed_aborts",
+                "duplicate_selected_finals",
+                "duplicate_typed_aborts",
+                "missing_downstream_terminals",
+                "unbound_raw_commits",
+            )
+        )
+    )
+    report: dict[str, object] = {
+        "schema_version": 1,
+        "scope": (
+            LogicalTurnTerminalLineageScope.SHERPA_SELECTED_TERMINAL.value
+        ),
+        "capabilities": dict(_TERMINAL_CAPABILITIES),
+        "coverage": {
+            "runs": len(items),
+            "closed_runs": len(items),
+            "terminal_observations": (
+                totals["selected_finals"] + totals["typed_aborts"]
+            ),
+            "complete": True,
+        },
+        "outcomes": {
+            "selected_finals": totals["selected_finals"],
+            "typed_aborts": totals["typed_aborts"],
+            "abort_reason_counts": _terminal_abort_report(abort_counts),
+        },
+        "lineage": {
+            "raw_commits": totals["raw_commits"],
+            "claimed_raw_commits": totals["claimed_raw_commits"],
+            "bound_raw_commits": totals["bound_raw_commits"],
+            "matched_selected_finals": totals["matched_selected_finals"],
+            "matched_typed_aborts": totals["matched_typed_aborts"],
+            "matched_abort_reason_counts": _terminal_abort_report(
+                matched_abort_counts
+            ),
+            "unscoped_selected_finals": totals["unscoped_selected_finals"],
+            "unscoped_typed_aborts": totals["unscoped_typed_aborts"],
+            "duplicate_selected_finals": totals["duplicate_selected_finals"],
+            "duplicate_typed_aborts": totals["duplicate_typed_aborts"],
+            "missing_downstream_terminals": totals[
+                "missing_downstream_terminals"
+            ],
+            "unbound_raw_commits": totals["unbound_raw_commits"],
+            "evidence_sufficient": evidence_sufficient,
+            "exact": exact,
+        },
+        "health": {
+            "binding_rejections": totals["binding_rejections"],
+            "terminal_rejections": totals["terminal_rejections"],
+            "internal_errors": totals["internal_errors"],
+            "late_observations": totals["late_observations"],
+            "ok": health_ok,
+        },
+    }
+    validate_logical_turn_terminal_lineage_report(report)
+    return report
+
+
+def validate_logical_turn_terminal_lineage_report(report: object) -> None:
+    """Reject unknown fields, forged totals, and unsupported capability claims."""
+
+    if type(report) is not dict or set(report) != {
+        "schema_version",
+        "scope",
+        "capabilities",
+        "coverage",
+        "outcomes",
+        "lineage",
+        "health",
+    }:
+        raise ValueError("invalid terminal lineage report shape")
+    if (
+        type(report["schema_version"]) is not int
+        or report["schema_version"] != 1
+        or type(report["scope"]) is not str
+        or report["scope"]
+        != LogicalTurnTerminalLineageScope.SHERPA_SELECTED_TERMINAL.value
+    ):
+        raise ValueError("invalid terminal lineage report identity")
+    capabilities = report["capabilities"]
+    if type(capabilities) is not dict or set(capabilities) != set(
+        _TERMINAL_CAPABILITIES
+    ):
+        raise ValueError("invalid terminal lineage capabilities")
+    if any(
+        type(capabilities[name]) is not bool
+        or capabilities[name] is not expected
+        for name, expected in _TERMINAL_CAPABILITIES.items()
+    ):
+        raise ValueError("invalid terminal lineage capabilities")
+    expected = {
+        "coverage": {
+            "runs",
+            "closed_runs",
+            "terminal_observations",
+            "complete",
+        },
+        "outcomes": {"selected_finals", "typed_aborts", "abort_reason_counts"},
+        "lineage": {
+            "raw_commits",
+            "claimed_raw_commits",
+            "bound_raw_commits",
+            "matched_selected_finals",
+            "matched_typed_aborts",
+            "matched_abort_reason_counts",
+            "unscoped_selected_finals",
+            "unscoped_typed_aborts",
+            "duplicate_selected_finals",
+            "duplicate_typed_aborts",
+            "missing_downstream_terminals",
+            "unbound_raw_commits",
+            "evidence_sufficient",
+            "exact",
+        },
+        "health": {
+            "binding_rejections",
+            "terminal_rejections",
+            "internal_errors",
+            "late_observations",
+            "ok",
+        },
+    }
+    for section, names in expected.items():
+        value = report.get(section)
+        if type(value) is not dict or set(value) != names:
+            raise ValueError("invalid terminal lineage report section")
+    coverage = report["coverage"]
+    outcomes = report["outcomes"]
+    lineage = report["lineage"]
+    health = report["health"]
+    for name, item in coverage.items():
+        if name == "complete":
+            if type(item) is not bool:
+                raise TypeError("coverage verdict must be boolean")
+        else:
+            _non_negative_int(name, item)
+    for name in ("selected_finals", "typed_aborts"):
+        _non_negative_int(name, outcomes[name])
+    for name, item in lineage.items():
+        if name in {
+            "matched_abort_reason_counts",
+            "evidence_sufficient",
+            "exact",
+        }:
+            continue
+        _non_negative_int(name, item)
+    for name, item in health.items():
+        if name == "ok":
+            if type(item) is not bool:
+                raise TypeError("health verdict must be boolean")
+        else:
+            _non_negative_int(name, item)
+    for name in ("evidence_sufficient", "exact"):
+        if type(lineage[name]) is not bool:
+            raise TypeError("lineage verdict must be boolean")
+    reason_names = {reason.value for reason in _TRANSCRIPT_ABORT_REASONS}
+    abort_counts = outcomes["abort_reason_counts"]
+    matched_abort_counts = lineage["matched_abort_reason_counts"]
+    for value in (abort_counts, matched_abort_counts):
+        if type(value) is not dict or set(value) != reason_names:
+            raise ValueError("invalid terminal abort reason counts")
+        for name, item in value.items():
+            _non_negative_int(name, item)
+    matched = (
+        lineage["matched_selected_finals"]
+        + lineage["matched_typed_aborts"]
+    )
+    if (
+        coverage["runs"] == 0
+        or coverage["closed_runs"] != coverage["runs"]
+        or coverage["complete"] is not True
+        or coverage["terminal_observations"]
+        != outcomes["selected_finals"] + outcomes["typed_aborts"]
+        or lineage["raw_commits"]
+        != matched + lineage["missing_downstream_terminals"]
+        or lineage["claimed_raw_commits"] > lineage["raw_commits"]
+        or lineage["bound_raw_commits"] > lineage["claimed_raw_commits"]
+        or lineage["unbound_raw_commits"]
+        > lineage["missing_downstream_terminals"]
+        or lineage["bound_raw_commits"]
+        != matched
+        + (
+            lineage["missing_downstream_terminals"]
+            - lineage["unbound_raw_commits"]
+        )
+        or outcomes["selected_finals"]
+        != lineage["matched_selected_finals"]
+        + lineage["unscoped_selected_finals"]
+        + lineage["duplicate_selected_finals"]
+        or outcomes["typed_aborts"]
+        != lineage["matched_typed_aborts"]
+        + lineage["unscoped_typed_aborts"]
+        + lineage["duplicate_typed_aborts"]
+        or sum(abort_counts.values()) != outcomes["typed_aborts"]
+        or sum(matched_abort_counts.values())
+        != lineage["matched_typed_aborts"]
+        or any(
+            matched_abort_counts[name] > abort_counts[name]
+            for name in reason_names
+        )
+    ):
+        raise ValueError("terminal lineage totals do not reconcile")
+    expected_health = not any(
+        health[name]
+        for name in (
+            "binding_rejections",
+            "terminal_rejections",
+            "internal_errors",
+            "late_observations",
+        )
+    )
+    if health["ok"] is not expected_health:
+        raise ValueError("terminal lineage health verdict is inconsistent")
+    expected_sufficient = lineage["raw_commits"] > 0
+    if lineage["evidence_sufficient"] is not expected_sufficient:
+        raise ValueError("terminal lineage sufficiency is inconsistent")
+    expected_exact = bool(
+        expected_sufficient
+        and expected_health
+        and lineage["claimed_raw_commits"] == lineage["raw_commits"]
+        and lineage["bound_raw_commits"] == lineage["raw_commits"]
+        and not any(
+            lineage[name]
+            for name in (
+                "unscoped_selected_finals",
+                "unscoped_typed_aborts",
+                "duplicate_selected_finals",
+                "duplicate_typed_aborts",
+                "missing_downstream_terminals",
+                "unbound_raw_commits",
+            )
+        )
+    )
+    if lineage["exact"] is not expected_exact:
+        raise ValueError("terminal lineage exactness verdict is inconsistent")
+
+
 __all__ = [
     "LogicalTurnCompositionShadow",
     "LogicalTurnShadowScope",
     "LogicalTurnShadowSnapshot",
+    "LogicalTurnTerminalLineageScope",
+    "LogicalTurnTerminalLineageSnapshot",
+    "aggregate_logical_turn_terminal_lineage",
     "aggregate_logical_turn_shadows",
+    "validate_logical_turn_terminal_lineage_report",
     "validate_logical_turn_shadow_report",
 ]

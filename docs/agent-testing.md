@@ -29,7 +29,7 @@
 | Exact private final-input evidence | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_diagnostic_bundle.py tests/test_reference_recording.py tests/test_sherpa_diagnostic_observations.py tests/test_asr_final_async.py tests/test_private_diagnostic_receipt.py tests/test_prepare_diagnostic_streaming_stt_corpus.py tests/test_recorded_stt_eval.py tests/test_streaming_stt_corpus_writer.py tests/test_streaming_stt_eval.py tests/test_app_replay_safety.py -q` | diagnostic schema-v1 read-only validation, schema-v2 exact f32le binding/lifecycle/tamper/backpressure, private schema-v3 bit-for-bit export and exact configured-selector replay, mandatory receipt-v2 label/case binding and v1 rejection, bounded regular-manifest dispatch, role/source accounting, post-copy/close-time mutation and report/input-alias rejection in every shared consumer, public schema-v2 separation, aggregate-only CLI privacy, and synchronized-directory replay refusal pass headlessly; no owner corpus, model, GPU, audio device, WER, latency, or live claim (ADR-0108/0124/0126) |
 | Dry recorded tool-route gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_tool_route_gate.py tests/test_recorded_stt_eval.py tests/test_public_voice_fixtures.py tests/test_obsidian.py tests/test_trusted_apps.py tests/test_device_tools_runtime.py -q` | receipt-bound schema-v3 expected-tag preflight, one-final boundary, closed vault/web/reminder/app/negative routing, fixed-clock empty-state matching, no-invoke/no-launch sentinels, aggregate/profile privacy, and candidate promotion safety pass with production analyzer/planner/match contracts only. No model, provider, capability invocation, vault read, reminder mutation, app launch, runtime, device, or live authority follows (ADR-0125/0126) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced synchronous Sherpa session seam, fixed aggregate conditions/privacy, evaluator, deterministic AMI preparation, and explicit production-owner rejection pass without a model or audio device; the digest binds but replay does not execute the dedicated owner (ADR-0092/0111) |
-| EdAcc endpoint-integrity contracts | `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_edacc_endpoint_integrity_eval.py tests/test_capture_replay_eval.py tests/test_logical_turn.py tests/test_logical_turn_shadow.py -q` | `173 passed`: exact retained-corpus/profile/Smart-Turn admission; distinct acoustic, HOLD-only, and opt-in reset-and-accumulate capture-loop cells; false/false/true reset attestation; fixed logical rule-3 binding; pairwise transitions; HOLD exercise; optional per-row closed raw-composition observers in all cells; non-vacuous selected-final lower bounds; schema-2 default isolation; schema-3 mode/source/worker binding; aggregate privacy and capability tamper rejection; retained-byte verification; rechecks; and no-clobber publication pass with fakes. No model, selected-final parity, async, audio-device, runtime-default, or live claim follows (ADR-0147/0148/0153) |
+| EdAcc endpoint-integrity contracts | `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_edacc_endpoint_integrity_eval.py tests/test_capture_replay_eval.py tests/test_logical_turn.py tests/test_logical_turn_shadow.py tests/test_semantic_hold_capture.py -q` | `259 passed`: exact retained-corpus/profile/Smart-Turn admission; distinct acoustic, HOLD-only, and opt-in reset-and-accumulate capture-loop cells; optional per-row closed raw-composition observers; exact in-memory `(AcousticSpan.key, revision)` binding to inline selected-final/typed-abort callbacks; out-of-order, mismatch, duplicate/conflict, bound, close, privacy, reason-marginal, cross-section, observer-failure, source-closure, guarded receipt/mode, balanced-forgery, default/schema-3 isolation, strict schema-4 mode/worker, and no-clobber tests. No selected-text, async worker, dispatcher, supervisor, device, runtime-default, authority, or live claim follows (ADR-0147/0148/0153/0155) |
 | Isolated streaming-STT harness | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_*.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `1,015 passed, 1 skipped, 5 deselected`: fake, Moonshine Tiny/Small/Medium, Nemotron, Parakeet NeMo, parakeet.cpp, phase-separated scoped-resource, and AMI endpoint-proxy private-source/exact-runtime or native-artifact, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass without a model or audio device; run the bounded-read race separately (ADR-0089/0090/0091/0099/0115/0119/0128/0129) |
 | Exact parakeet.cpp CPU candidate contracts | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_parakeet_cpp.py tests/test_streaming_stt_metrics_parakeet_cpp.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_protocol.py tests/test_streaming_stt_supervisor.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `464 passed, 1 deselected`: schema-v8 closed receipts and no-load provision, exact bridge/source/ELF/ABI binding, protocol-v4 first-EOU/text-freeze policy, no-network/no-NVIDIA sandbox, verified hard scope, aggregate metrics, evaluator binding, privacy, and teardown pass with fakes; no real model, device, live, tool, or adoption claim (ADR-0119) |
 | Phase-separated cgroup observations | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_streaming_stt_cgroup_observation.py tests/test_streaming_stt_supervisor.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_eval.py -q` | `210 passed`: pinned fake-cgroup/fake-clock parsing, bounded multi-line reads, exact startup/first-use/resident lifecycle hooks and failure cleanup, membership/path/counter failure, evaluator binding, privacy, and unchanged legacy report shape pass without a model, GPU, audio device, cache eviction, or cold/warm claim (ADR-0128) |
@@ -361,19 +361,22 @@ nice -n 15 ionice -c 3 \
   --local-config /home/dobo/work/speaker/config.local.json \
   --smart-turn-model /private/models/smart-turn-v3.2-cpu.onnx \
   --logical-turn-shadow \
+  --logical-turn-terminal-lineage \
   --report /new/private/edacc-endpoint-integrity.json \
   --watchdog-seconds 7200
 ```
 
 The three CPU cells replay sequentially and may take several minutes because
-the capture clock is paced. Omit `--logical-turn-shadow` only to reproduce the
-unchanged schema-2 report; the flag selects schema 3 and adds one strict,
-aggregate-only raw-composition section to every cell. A success receipt exposes only the report digest,
+the capture clock is paced. Omit both logical-turn flags to reproduce the
+unchanged schema-2 report. Raw shadow alone selects schema 3; adding
+`--logical-turn-terminal-lineage` requires that raw flag, selects schema 4, and
+adds strict aggregate-only inline selected-final/typed-abort correlation to
+every cell. A success receipt exposes only the report digest,
 row count, per-semantic-cell HOLD-row counts, and reset-cell repaired-multi-row
 counts against both controls. The report remains an offline counterfactual: it
-cannot establish selected-final or async parity, or authorize a threshold,
+cannot establish selected-text, async-worker, dispatcher, or supervisor parity, or authorize a threshold,
 runtime default, device claim, or live-conversation conclusion
-(ADR-0147/0148/0153).
+(ADR-0147/0148/0153/0155).
 
 The retained clean-revision `e538595` run completed all 24 rows. Control and
 HOLD-only candidate both produced 31 finals with 19 single-final and five
@@ -405,6 +408,17 @@ established. Peak process RSS was 864.781 MiB. Preserve the mode-0600,
 single-link, 18,719-byte report SHA-256
 `bcacaece6b1620520d3131054d3faef511fa5ecfe5d4a2b789a9dca5a72c6b8d`.
 No runtime, default, latency, device, or live claim follows (ADR-0153).
+
+The opt-in schema-4 run at clean source `dac50c9` bound all 35/35/32 raw
+commits to 31/31/29 inline selected finals plus 4/4/3 typed input-rejection
+aborts. All three cells were exact, every raw commit was acoustically bound,
+and binding, terminal, late-observation, and internal-error counters were zero.
+The guarded pre/post binding covered 19 source files. Preserve the mode-0600,
+single-link, 23,350-byte report SHA-256
+`1c03d64295fe9443d057c854b034fbc73723420641088f918f242a79cb1f5230`.
+It proves transcript-free inline terminal identity and typed outcome only;
+selected-text, async worker, dispatcher, supervisor, production authority,
+device, latency, and live parity remain false (ADR-0155).
 
 ## Exact Parakeet Realtime EOU reference setup
 

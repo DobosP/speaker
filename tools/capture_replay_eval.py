@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from always_on_agent.logical_turn_shadow import (
         LogicalTurnCompositionShadow,
         LogicalTurnShadowSnapshot,
+        LogicalTurnTerminalLineageSnapshot,
     )
 
 
@@ -258,6 +259,30 @@ class _CaseCollector:
         except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
             self._shadow_failure()
 
+    def _shadow_selected_terminal(self, result: FinalTranscript) -> None:
+        observer = self._logical_turn_shadow
+        if observer is None or not observer.terminal_lineage_enabled:
+            return
+        try:
+            if result.acoustic is None:
+                raise CaptureReplayEvaluationError()
+            observer.observe_selected_final(result.acoustic, result.revision)
+        except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
+            self._shadow_failure()
+
+    def _shadow_abort_terminal(self, result: TranscriptAbort) -> None:
+        observer = self._logical_turn_shadow
+        if observer is None or not observer.terminal_lineage_enabled:
+            return
+        try:
+            observer.observe_typed_abort(
+                result.acoustic,
+                result.revision,
+                result.reason,
+            )
+        except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
+            self._shadow_failure()
+
     @property
     def failed(self) -> bool:
         with self._lock:
@@ -301,6 +326,7 @@ class _CaseCollector:
         except Exception:  # noqa: BLE001 - callback must stop without leaking text
             self._fail()
             return
+        self._shadow_selected_terminal(result)
         with self._lock:
             self.finals.append(event)
 
@@ -346,6 +372,7 @@ class _CaseCollector:
         except Exception:  # noqa: BLE001
             self._fail()
             return
+        self._shadow_abort_terminal(result)
         with self._lock:
             self.abort_reasons.append(result.reason)
         if self._logical_turn_shadow is not None:
@@ -965,6 +992,68 @@ def _execute_case(
         engine._cb = EngineCallbacks()
 
 
+def _validate_terminal_lineage_against_metrics(
+    *,
+    raw_shadow: object,
+    terminal_lineage: object,
+    metrics: object,
+) -> None:
+    """Require exact agreement across raw, typed-terminal, and metric views."""
+
+    try:
+        if not all(
+            isinstance(value, Mapping)
+            for value in (raw_shadow, terminal_lineage, metrics)
+        ):
+            raise CaptureReplayEvaluationError()
+        raw_parity = raw_shadow["parity"]
+        outcomes = terminal_lineage["outcomes"]
+        lineage = terminal_lineage["lineage"]
+        streaming = metrics["streaming"]
+        if not all(
+            isinstance(value, Mapping)
+            for value in (raw_parity, outcomes, lineage, streaming)
+        ):
+            raise CaptureReplayEvaluationError()
+
+        def count(value: object) -> int:
+            if type(value) is not int or value < 0:
+                raise CaptureReplayEvaluationError()
+            return value
+
+        reason_names = {reason.value for reason in TranscriptAbortReason}
+        streaming_reasons = streaming["abort_reasons"]
+        terminal_reasons = outcomes["abort_reason_counts"]
+        matched_reasons = lineage["matched_abort_reason_counts"]
+        if (
+            not isinstance(streaming_reasons, Mapping)
+            or not isinstance(terminal_reasons, Mapping)
+            or not isinstance(matched_reasons, Mapping)
+            or not set(streaming_reasons).issubset(reason_names)
+            or set(terminal_reasons) != reason_names
+            or set(matched_reasons) != reason_names
+        ):
+            raise CaptureReplayEvaluationError()
+        expected_reasons = {
+            reason: count(streaming_reasons.get(reason, 0))
+            for reason in reason_names
+        }
+        selected = count(streaming["final_events"])
+        aborted = sum(expected_reasons.values())
+        raw_commits = count(lineage["raw_commits"])
+        if (
+            count(raw_parity["paired_terminals"]) != raw_commits
+            or raw_commits != selected + aborted
+            or count(outcomes["selected_finals"]) != selected
+            or count(outcomes["typed_aborts"]) != aborted
+            or dict(terminal_reasons) != expected_reasons
+            or dict(matched_reasons) != expected_reasons
+        ):
+            raise CaptureReplayEvaluationError()
+    except (KeyError, TypeError, ValueError, CaptureReplayEvaluationError):
+        raise CaptureReplayEvaluationError() from None
+
+
 def evaluate_capture_replay(
     corpus: LoadedReplayCorpus,
     configured: SherpaConfig,
@@ -973,10 +1062,15 @@ def evaluate_capture_replay(
     provider: str | None = None,
     asr_threads: int | None = None,
     logical_turn_shadow: bool = False,
+    logical_turn_terminal_lineage: bool = False,
 ) -> Mapping[str, object]:
     """Run the configured production capture stack and return aggregate evidence."""
 
-    if type(logical_turn_shadow) is not bool:
+    if (
+        type(logical_turn_shadow) is not bool
+        or type(logical_turn_terminal_lineage) is not bool
+        or (logical_turn_terminal_lineage and not logical_turn_shadow)
+    ):
         raise CaptureReplayEvaluationError()
     if (
         isinstance(repeats, bool)
@@ -1014,6 +1108,9 @@ def evaluate_capture_replay(
 
     records: list[ReplayRunRecord] = []
     shadow_snapshots: list["LogicalTurnShadowSnapshot"] = []
+    terminal_lineage_snapshots: list[
+        "LogicalTurnTerminalLineageSnapshot"
+    ] = []
     try:
         with _quiet_model_output():
             for repeat in range(repeats):
@@ -1024,7 +1121,9 @@ def evaluate_capture_replay(
                             LogicalTurnCompositionShadow,
                         )
 
-                        shadow = LogicalTurnCompositionShadow()
+                        shadow = LogicalTurnCompositionShadow(
+                            terminal_lineage=logical_turn_terminal_lineage,
+                        )
                     case_options: dict[str, object] = {
                         "case_index": case_index,
                         "repeat": repeat,
@@ -1035,6 +1134,10 @@ def evaluate_capture_replay(
                     if shadow is not None:
                         shadow.close()
                         shadow_snapshots.append(shadow.snapshot())
+                        if logical_turn_terminal_lineage:
+                            terminal_lineage_snapshots.append(
+                                shadow.terminal_lineage_snapshot()
+                            )
     finally:
         decode_session = engine._streaming_decode_session
         if decode_session is not None and not decode_session.closed:
@@ -1105,7 +1208,26 @@ def evaluate_capture_replay(
         if len(shadow_snapshots) != len(corpus.cases) * repeats:
             raise CaptureReplayEvaluationError()
         result["schema_version"] = 2
-        result["logical_turn_shadow"] = aggregate_logical_turn_shadows(shadow_snapshots)
+        result["logical_turn_shadow"] = aggregate_logical_turn_shadows(
+            shadow_snapshots
+        )
+    if logical_turn_terminal_lineage:
+        from always_on_agent.logical_turn_shadow import (
+            aggregate_logical_turn_terminal_lineage,
+        )
+
+        if len(terminal_lineage_snapshots) != len(corpus.cases) * repeats:
+            raise CaptureReplayEvaluationError()
+        terminal_report = aggregate_logical_turn_terminal_lineage(
+            terminal_lineage_snapshots
+        )
+        _validate_terminal_lineage_against_metrics(
+            raw_shadow=result["logical_turn_shadow"],
+            terminal_lineage=terminal_report,
+            metrics=metrics,
+        )
+        result["schema_version"] = 3
+        result["logical_turn_terminal_lineage"] = terminal_report
     # Final serialization is also the aggregate/privacy type gate.
     _json_digest(result)
     return result
@@ -1193,6 +1315,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--logical-turn-terminal-lineage",
+        action="store_true",
+        help=(
+            "add transcript-free inline selected-final/typed-abort lineage; "
+            "requires --logical-turn-shadow and does not cover async delivery"
+        ),
+    )
+    parser.add_argument(
         "--watchdog-seconds",
         type=_positive_int,
         default=1_800,
@@ -1201,9 +1331,74 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _mode_schema_version(
+    *,
+    logical_turn_shadow: bool,
+    logical_turn_terminal_lineage: bool,
+) -> int:
+    if (
+        type(logical_turn_shadow) is not bool
+        or type(logical_turn_terminal_lineage) is not bool
+        or (logical_turn_terminal_lineage and not logical_turn_shadow)
+    ):
+        raise CaptureReplayEvaluationError()
+    if logical_turn_terminal_lineage:
+        return 3
+    if logical_turn_shadow:
+        return 2
+    return 1
+
+
+def _validate_report_mode(
+    report: object,
+    *,
+    logical_turn_shadow: bool,
+    logical_turn_terminal_lineage: bool,
+) -> int:
+    expected_schema = _mode_schema_version(
+        logical_turn_shadow=logical_turn_shadow,
+        logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+    )
+    if (
+        not isinstance(report, Mapping)
+        or type(report.get("schema_version")) is not int
+        or report["schema_version"] != expected_schema
+        or ("logical_turn_shadow" in report) is not logical_turn_shadow
+        or ("logical_turn_terminal_lineage" in report)
+        is not logical_turn_terminal_lineage
+    ):
+        raise CaptureReplayEvaluationError()
+    if logical_turn_shadow:
+        from always_on_agent.logical_turn_shadow import (
+            validate_logical_turn_shadow_report,
+        )
+
+        validate_logical_turn_shadow_report(report["logical_turn_shadow"])
+    if logical_turn_terminal_lineage:
+        from always_on_agent.logical_turn_shadow import (
+            validate_logical_turn_terminal_lineage_report,
+        )
+
+        validate_logical_turn_terminal_lineage_report(
+            report["logical_turn_terminal_lineage"]
+        )
+        _validate_terminal_lineage_against_metrics(
+            raw_shadow=report["logical_turn_shadow"],
+            terminal_lineage=report["logical_turn_terminal_lineage"],
+            metrics=report["metrics"],
+        )
+    return expected_schema
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
+        expected_schema = _mode_schema_version(
+            logical_turn_shadow=args.logical_turn_shadow,
+            logical_turn_terminal_lineage=(
+                args.logical_turn_terminal_lineage
+            ),
+        )
         corpus = load_corpus(args.corpus)
         raw_config = load_config(
             str(args.config),
@@ -1225,6 +1420,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider=args.provider,
             asr_threads=args.asr_threads,
             logical_turn_shadow=args.logical_turn_shadow,
+            logical_turn_terminal_lineage=(
+                args.logical_turn_terminal_lineage
+            ),
+        )
+        _validate_report_mode(
+            report,
+            logical_turn_shadow=args.logical_turn_shadow,
+            logical_turn_terminal_lineage=(
+                args.logical_turn_terminal_lineage
+            ),
         )
         payload = (
             json.dumps(
@@ -1244,6 +1449,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "corpus_sha256": corpus.digest,
             "evaluations": report["metrics"]["evaluations"],
             "coverage_complete": report["metrics"]["coverage"]["complete"],
+            "schema_version": expected_schema,
+            "logical_turn_shadow": args.logical_turn_shadow,
+            "logical_turn_terminal_lineage": (
+                args.logical_turn_terminal_lineage
+            ),
         }
         code = 0
     except Exception:  # noqa: BLE001 - paths/transcript rows stay private
@@ -1265,7 +1475,13 @@ def _validated_worker_receipt(
     payload: bytes,
     *,
     returncode: int,
+    logical_turn_shadow: bool,
+    logical_turn_terminal_lineage: bool,
 ) -> Mapping[str, object]:
+    expected_schema = _mode_schema_version(
+        logical_turn_shadow=logical_turn_shadow,
+        logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+    )
     if not payload or len(payload) > _MAX_RECEIPT_BYTES:
         raise CaptureReplayEvaluationError()
     try:
@@ -1283,6 +1499,9 @@ def _validated_worker_receipt(
                 "corpus_sha256",
                 "evaluations",
                 "coverage_complete",
+                "schema_version",
+                "logical_turn_shadow",
+                "logical_turn_terminal_lineage",
             }
             or decoded.get("execution_complete") is not True
             or decoded.get("quality_verdict") != "diagnostic_only"
@@ -1296,6 +1515,13 @@ def _validated_worker_receipt(
             or not isinstance(decoded.get("evaluations"), int)
             or decoded["evaluations"] <= 0
             or not isinstance(decoded.get("coverage_complete"), bool)
+            or type(decoded.get("schema_version")) is not int
+            or decoded["schema_version"] != expected_schema
+            or type(decoded.get("logical_turn_shadow")) is not bool
+            or decoded["logical_turn_shadow"] is not logical_turn_shadow
+            or type(decoded.get("logical_turn_terminal_lineage")) is not bool
+            or decoded["logical_turn_terminal_lineage"]
+            is not logical_turn_terminal_lineage
         ):
             raise CaptureReplayEvaluationError()
         return decoded
@@ -1312,6 +1538,12 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
     try:
         raw_argv = list(sys.argv[1:] if argv is None else argv)
         args = _parser().parse_args(raw_argv)
+        _mode_schema_version(
+            logical_turn_shadow=args.logical_turn_shadow,
+            logical_turn_terminal_lineage=(
+                args.logical_turn_terminal_lineage
+            ),
+        )
         if args.watchdog_seconds > _MAX_WATCHDOG_SECONDS:
             raise CaptureReplayEvaluationError()
         environment = dict(os.environ)
@@ -1338,6 +1570,10 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         result = _validated_worker_receipt(
             payload,
             returncode=completed.returncode,
+            logical_turn_shadow=args.logical_turn_shadow,
+            logical_turn_terminal_lineage=(
+                args.logical_turn_terminal_lineage
+            ),
         )
         code = completed.returncode
     except Exception:  # noqa: BLE001 - parent never exposes paths/model output

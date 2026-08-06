@@ -55,6 +55,16 @@ from .voice_session import (
 log = logging.getLogger("speaker.app")
 
 
+def _lower_sha256(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise argparse.ArgumentTypeError("expected 64 lowercase hexadecimal characters")
+    return value
+
+
 # Config loading + device-profile layering now live in ``core/config.py``; the
 # LLM construction factory (``build_llms`` + the cloud-wrapping helpers) lives in
 # ``core/llm_factory.py``. They are imported at module top and re-exported here so
@@ -102,6 +112,11 @@ def _require_sherpa_runtime_ready(
     models_needed=None,
     run_checks=None,
     virtual_audio_binder=None,
+    include_speaker: bool = True,
+    include_tts: bool = True,
+    include_kws: bool = True,
+    audio_device_kinds: tuple[str, ...] = ("input", "output"),
+    require_os_echo_route: bool = True,
 ) -> None:
     """Fail before model/device construction when sherpa cannot run correctly.
 
@@ -124,6 +139,16 @@ def _require_sherpa_runtime_ready(
     # compatible.
     if virtual_audio_binder is not None:
         check_kwargs["virtual_audio_binder"] = virtual_audio_binder
+    if not include_speaker:
+        check_kwargs["include_speaker"] = False
+    if not include_tts:
+        check_kwargs["include_tts"] = False
+    if not include_kws:
+        check_kwargs["include_kws"] = False
+    if audio_device_kinds != ("input", "output"):
+        check_kwargs["audio_device_kinds"] = audio_device_kinds
+    if not require_os_echo_route:
+        check_kwargs["require_os_echo_route"] = False
     checks = run_checks(config, **check_kwargs)
     failures = [check for check in checks if not check.ok]
     if not failures:
@@ -528,6 +553,230 @@ def _run_live(runtime: VoiceRuntime) -> None:
         pass
 
 
+def _build_capture_only_engine(config: dict) -> AudioEngine:
+    """Construct local capture/STT without assistant or playback purpose."""
+
+    from .engines.sherpa import (
+        SherpaConfig,
+        SherpaExecutionPurpose,
+        SherpaOnnxEngine,
+    )
+
+    sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+    _require_asr_models(sherpa_cfg, "sherpa")
+    return SherpaOnnxEngine(
+        sherpa_cfg,
+        purpose=SherpaExecutionPurpose.STT_CAPTURE_ONLY,
+    )
+
+
+def _capture_only_recording_paths(engine: AudioEngine, config: dict, runlog) -> dict:
+    """Bind the established synchronized private diagnostic bundle."""
+
+    from .recorder import sidecar_wav_path
+
+    if not hasattr(engine, "set_record_path"):
+        raise RuntimeError("capture-only engine has no recorder")
+    sherpa = config.get("sherpa", {}) or {}
+    if not (
+        bool(sherpa.get("record_pre_dsp_reference"))
+        and bool(sherpa.get("record_playback_reference"))
+    ):
+        raise RuntimeError("capture-only diagnostics are not fully selected")
+    recording = os.path.join(
+        os.path.dirname(runlog.log_path), f"run-{runlog.run_id}.wav"
+    )
+    engine.set_record_path(recording)
+    paths = {
+        "recording": recording,
+        "pre_dsp_reference": sidecar_wav_path(recording, "pre-dsp"),
+        "playback_reference": sidecar_wav_path(recording, "ref"),
+        "asr_input_reference": sidecar_wav_path(recording, "asr"),
+        "final_model_input": (
+            recording[:-4] + ".final-input.f32le"
+            if recording.lower().endswith(".wav")
+            else recording + ".final-input.f32le"
+        ),
+        "diagnostic_timeline": (
+            recording[:-4] + ".timeline.jsonl"
+            if recording.lower().endswith(".wav")
+            else recording + ".timeline.jsonl"
+        ),
+        "diagnostic_manifest": (
+            recording[:-4] + ".diagnostic.json"
+            if recording.lower().endswith(".wav")
+            else recording + ".diagnostic.json"
+        ),
+    }
+    runlog.summary.note(**paths)
+    return paths
+
+
+def _capture_only_diagnostic_status(engine: AudioEngine) -> dict[str, object] | None:
+    diagnostic_status = getattr(engine, "diagnostic_status", None)
+    try:
+        payload = diagnostic_status() if callable(diagnostic_status) else diagnostic_status
+        if not isinstance(payload, dict):
+            return None
+        return dict(payload)
+    except Exception:  # noqa: BLE001 - evidence status must fail closed
+        return None
+
+
+def _capture_only_evidence_complete(
+    engine: AudioEngine,
+    paths: dict,
+    *,
+    expected_final_count: int,
+) -> tuple[bool, dict[str, object] | None]:
+    """Validate post-stop aggregate status and every promised artifact."""
+
+    from .diagnostic_bundle import validate_manifest
+
+    status = _capture_only_diagnostic_status(engine)
+    if status is None:
+        return False, None
+    failure_codes = status.get("failure_codes")
+    status_ok = (
+        status.get("status") == "complete"
+        and isinstance(failure_codes, (list, tuple))
+        and not failure_codes
+    )
+    manifest_path = paths.get("diagnostic_manifest")
+    artifacts_ok = False
+    if isinstance(manifest_path, str):
+        parent = os.path.abspath(os.path.dirname(manifest_path))
+        public_paths = tuple(
+            paths.get(name)
+            for name in (
+                "recording",
+                "pre_dsp_reference",
+                "playback_reference",
+                "asr_input_reference",
+                "final_model_input",
+                "diagnostic_timeline",
+            )
+        )
+        paths_bound = all(
+            isinstance(path, str)
+            and os.path.abspath(os.path.dirname(path)) == parent
+            for path in public_paths
+        )
+        if paths_bound:
+            expected_files = frozenset(
+                os.path.basename(path) for path in public_paths
+            )
+            artifacts_ok = validate_manifest(
+                manifest_path,
+                expected_final_model_input_count=expected_final_count,
+                expected_artifact_files=expected_files,
+            )
+    return status_ok and artifacts_ok, status
+
+
+def _print_capture_only_artifacts(runlog, paths: dict) -> None:
+    print(f"[log] full log: {runlog.log_path}")
+    print(f"[log] summary:  {runlog.summary_path}")
+    print(f"[log] audio:    {paths['recording']}")
+    print(f"[log] pre-DSP:  {paths['pre_dsp_reference']}")
+    print(f"[log] playback: {paths['playback_reference']}")
+    print(f"[log] ASR input: {paths['asr_input_reference']}")
+    print(f"[log] final input: {paths['final_model_input']}")
+    print(f"[log] timeline:  {paths['diagnostic_timeline']}")
+    manifest = paths["diagnostic_manifest"]
+    if os.path.exists(manifest):
+        print(f"[log] manifest:  {manifest}")
+    else:
+        print(f"[log] diagnostics: manifest not published ({manifest})")
+
+
+def _run_capture_only(
+    args,
+    config: dict,
+    *,
+    runlog,
+    monitor: SystemMonitor,
+) -> int:
+    """Run the typed effect-free capture path and finalize its evidence."""
+
+    from .guided_stt_plan import GuidedSttPlanError, load_private_guided_stt_plan
+    from .stt_capture import CaptureOnlyError, CaptureOnlySession
+
+    engine = None
+    session = None
+    paths: dict = {}
+    result = None
+    status_payload = None
+    return_code = 2
+    try:
+        plan = load_private_guided_stt_plan(args.capture_only_plan)
+        engine = _build_capture_only_engine(config)
+        paths = _capture_only_recording_paths(engine, config, runlog)
+        monitor.mark("after_build")
+        session = CaptureOnlySession(engine, plan)
+        result = session.run()
+        evidence_complete, status_payload = _capture_only_evidence_complete(
+            engine,
+            paths,
+            expected_final_count=result.planned_cases,
+        )
+        if result.completed and evidence_complete:
+            return_code = 0
+        else:
+            runlog.logger.error("[capture] diagnostic evidence is incomplete")
+    except KeyboardInterrupt:
+        return_code = 130
+        runlog.logger.warning("[capture] guided STT capture interrupted")
+    except (CaptureOnlyError, GuidedSttPlanError):
+        return_code = 2
+        runlog.logger.error("[capture] guided STT capture failed")
+    except Exception as exc:  # noqa: BLE001 - finalize evidence on every failure
+        return_code = 2
+        runlog.logger.error("[capture] failed: %s", type(exc).__name__)
+    finally:
+        if session is not None and not session.stopped:
+            try:
+                session.stop()
+            except Exception as exc:  # noqa: BLE001 - still finalize diagnostics
+                return_code = 2
+                runlog.logger.error(
+                    "[cleanup] capture-only session stop failed: %s",
+                    type(exc).__name__,
+                )
+        try:
+            monitor.stop()
+        except Exception:  # noqa: BLE001 - telemetry cannot hide capture outcome
+            pass
+        if result is not None:
+            runlog.summary.note(**result.summary_facts())
+        else:
+            runlog.summary.note(
+                capture_completed=False,
+                capture_accepted_finals=(
+                    session.accepted_finals if session is not None else 0
+                ),
+                capture_state=(
+                    session.capture_state if session is not None else "not_started"
+                ),
+                effects_enabled=False,
+            )
+        if engine is not None and status_payload is None:
+            status_payload = _capture_only_diagnostic_status(engine)
+        if status_payload is not None:
+            runlog.summary.note(diagnostic_status=status_payload)
+        else:
+            runlog.summary.note(
+                diagnostic_status={"status": "unavailable", "failure_codes": []}
+            )
+        runlog.finalize(None)
+        if paths:
+            _print_capture_only_artifacts(runlog, paths)
+        else:
+            print(f"[log] full log: {runlog.log_path}")
+            print(f"[log] summary:  {runlog.summary_path}")
+    return return_code
+
+
 def build_runtime(
     config: dict,
     *,
@@ -744,7 +993,10 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
     except (ValueError, OSError):  # noqa: PERF203 - non-main thread / platform quirk
         pass
-    parser = argparse.ArgumentParser(description="Modular voice assistant runtime")
+    parser = argparse.ArgumentParser(
+        description="Modular voice assistant runtime",
+        allow_abbrev=False,
+    )
     session_selector = parser.add_mutually_exclusive_group()
     session_selector.add_argument(
         "--session",
@@ -954,7 +1206,31 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=argparse.SUPPRESS,
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--capture-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--capture-only-plan",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--capture-only-profile-sha256",
+        type=_lower_sha256,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--capture-only-sherpa-sha256",
+        type=_lower_sha256,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    explicit_options = {token.split("=", 1)[0] for token in raw_argv}
     requested_engine = args.engine or engine_for_session(args.session)
     if args.final_stt_profile and (requested_engine not in {"sherpa", "replay"} or args.enroll):
         parser.error(
@@ -968,6 +1244,56 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.record_playback_reference or args.record_pre_dsp_reference:
         args.record = True
+    capture_binding_args = (
+        args.capture_only_plan,
+        args.capture_only_profile_sha256,
+        args.capture_only_sherpa_sha256,
+    )
+    if not args.capture_only and any(
+        value is not None for value in capture_binding_args
+    ):
+        parser.error("--capture-only-* arguments require --capture-only")
+    if args.capture_only:
+        if requested_engine != "sherpa" or args.enroll:
+            parser.error("--capture-only requires a non-enrollment local session")
+        if args.list_devices:
+            parser.error("--capture-only cannot be combined with --list-devices")
+        assistant_conflicts = sorted(
+            explicit_options
+            & {
+                "--llm",
+                "--model",
+                "--fast-model",
+                "--mode",
+                "--stream-tts",
+                "--agent",
+                "--gui-actions",
+                "--planner",
+            }
+        )
+        if assistant_conflicts:
+            parser.error(
+                "--capture-only cannot be combined with assistant option(s): "
+                + ", ".join(assistant_conflicts)
+            )
+        if not args.no_speaker_enrollment:
+            parser.error("--capture-only requires --no-speaker-enrollment")
+        if not args.final_stt_profile:
+            parser.error("--capture-only requires --final-stt-profile")
+        if any(value is None for value in capture_binding_args):
+            parser.error(
+                "--capture-only requires its plan and both expected configuration digests"
+            )
+        if not (
+            args.record
+            and args.record_pre_dsp_reference
+            and args.record_playback_reference
+        ):
+            parser.error(
+                "--capture-only requires synchronized pre-DSP and playback references"
+            )
+        if args.autotest_virtual_delay_contract:
+            parser.error("--capture-only does not accept a virtual delay contract")
 
     virtual_audio_binder = None
     if args.autotest_virtual_delay_contract:
@@ -1039,7 +1365,10 @@ def main(argv: list[str] | None = None) -> int:
         session=session_plan.mode.value,
         topology=session_plan.topology.value,
         audio_egress=session_plan.audio_egress.value,
-        engine=args.engine, llm=args.llm, device=device, mode=args.mode,
+        engine=args.engine,
+        llm=("disabled" if args.capture_only else args.llm),
+        device=device,
+        mode=args.mode,
         model=args.model, fast_model=args.fast_model,
     )
     # cross-platform-8: strict -> a mistyped --device fails fast (lists valid
@@ -1049,6 +1378,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"[device] {exc}", file=sys.stderr)
         return 2
+    final_stt_metadata = None
     if args.final_stt_profile:
         try:
             config, final_stt_metadata = apply_final_stt_profile(
@@ -1085,12 +1415,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[speaker-identity] {exc}", file=sys.stderr)
             return 2
         runlog.summary.note(speaker_identity_policy="off_for_session")
-        identity_notice = (
-            "speaker identity is OFF for this session; configured references "
-            "and files are unchanged; speaker verification is unavailable, "
-            "so other audible speakers may converse and use read or "
-            "direct-live-confirmed tools"
-        )
+        if args.capture_only:
+            identity_notice = (
+                "speaker identity is OFF for this capture-only session; configured "
+                "references and files are unchanged; assistant, tool, control, "
+                "memory, TTS, KWS, speaker-verification, and playback effects "
+                "are unavailable"
+            )
+        else:
+            identity_notice = (
+                "speaker identity is OFF for this session; configured references "
+                "and files are unchanged; speaker verification is unavailable, "
+                "so other audible speakers may converse and use read or "
+                "direct-live-confirmed tools"
+            )
         runlog.logger.info(identity_notice)
         print(f"[speaker-identity] {identity_notice}", file=sys.stderr)
     # CLI audio overrides win over config.json's sherpa block.
@@ -1118,6 +1456,50 @@ def main(argv: list[str] | None = None) -> int:
         # Like the playback reference, this privacy-sensitive evidence tap is
         # explicit for low-level core callers and enabled in-memory only.
         config.setdefault("sherpa", {})["record_pre_dsp_reference"] = True
+
+    if args.capture_only:
+        from .guided_stt_plan import (
+            GuidedSttPlanError,
+            guided_stt_sherpa_config_sha256,
+        )
+
+        try:
+            actual_sherpa_sha256 = guided_stt_sherpa_config_sha256(
+                config.get("sherpa", {})
+            )
+        except GuidedSttPlanError:
+            actual_sherpa_sha256 = ""
+        profile_matches = bool(
+            final_stt_metadata is not None
+            and final_stt_metadata.sha256 == args.capture_only_profile_sha256
+        )
+        sherpa_matches = bool(
+            actual_sherpa_sha256
+            and actual_sherpa_sha256 == args.capture_only_sherpa_sha256
+        )
+        if not (profile_matches and sherpa_matches):
+            try:
+                monitor.stop()
+            except Exception:  # noqa: BLE001 - preserve contract failure
+                pass
+            try:
+                runlog.finalize(None)
+            except Exception:  # noqa: BLE001 - preserve contract failure
+                pass
+            parser.error("capture-only configuration binding does not match")
+        runlog.summary.note(
+            capture_only_profile_sha256=args.capture_only_profile_sha256,
+            capture_only_sherpa_sha256=args.capture_only_sherpa_sha256,
+            execution_purpose="stt_capture_only",
+            llm_constructed=False,
+            control_plane_constructed=False,
+            tts_constructed=False,
+            keyword_spotter_constructed=False,
+            speaker_gate_constructed=False,
+            playback_worker_constructed=False,
+            output_device_queried=False,
+            owner_authority=False,
+        )
 
     if virtual_audio_binder is not None:
         contract = virtual_audio_binder.contract
@@ -1159,7 +1541,8 @@ def main(argv: list[str] | None = None) -> int:
         llm_cfg = config.get("llm", {}) or {}
         requested_models = None
         if (
-            args.llm != "echo"
+            not args.capture_only
+            and args.llm != "echo"
             and str(llm_cfg.get("backend", "ollama")).lower() == "ollama"
         ):
             requested_models = tuple(dict.fromkeys(
@@ -1171,11 +1554,21 @@ def main(argv: list[str] | None = None) -> int:
                 if value
             ))
         try:
+            readiness_kwargs = {
+                "models_needed": requested_models,
+                "virtual_audio_binder": virtual_audio_binder,
+            }
+            if args.capture_only:
+                readiness_kwargs.update(
+                    include_speaker=False,
+                    include_tts=False,
+                    include_kws=False,
+                    audio_device_kinds=("input",),
+                )
             _require_sherpa_runtime_ready(
                 config,
-                args.llm,
-                models_needed=requested_models,
-                virtual_audio_binder=virtual_audio_binder,
+                "echo" if args.capture_only else args.llm,
+                **readiness_kwargs,
             )
         except BaseException:
             # This check runs before the main runtime try/finally. Do not strand
@@ -1189,6 +1582,14 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - preserve the readiness error
                 pass
             raise
+
+    if args.capture_only:
+        return _run_capture_only(
+            args,
+            config,
+            runlog=runlog,
+            monitor=monitor,
+        )
 
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(

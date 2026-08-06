@@ -3152,15 +3152,41 @@ def _validate_legacy_manifest(path: Path, manifest: Mapping[str, object]) -> boo
     )
 
 
-def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
+def validate_manifest(
+    manifest_path: os.PathLike[str] | str,
+    *,
+    expected_final_model_input_count: int | None = None,
+    expected_artifact_files: frozenset[str] | None = None,
+) -> bool:
     """Return ``True`` only for a complete, private, internally bound bundle."""
 
+    if expected_final_model_input_count is not None and (
+        isinstance(expected_final_model_input_count, bool)
+        or not isinstance(expected_final_model_input_count, int)
+        or expected_final_model_input_count < 0
+    ):
+        return False
+    if expected_artifact_files is not None and (
+        not isinstance(expected_artifact_files, frozenset)
+        or any(
+            not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+            for name in expected_artifact_files
+        )
+    ):
+        return False
     path = _absolute_path(manifest_path)
     manifest_snapshot = _read_manifest_snapshot(path)
     if manifest_snapshot is None:
         return False
     manifest, manifest_identity = manifest_snapshot
     if manifest.get("schema_version") == 1:
+        if (
+            expected_final_model_input_count is not None
+            or expected_artifact_files is not None
+        ):
+            return False
         return bool(
             _validate_legacy_manifest(path, manifest)
             and _path_matches_identity(path, manifest_identity)
@@ -3248,6 +3274,17 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
     entries = [timeline, *tracks.values(), final_model_input]
     names = [entry["file"] for entry in entries]  # type: ignore[index]
     if len(names) != len(set(names)) or path.name in names:
+        return False
+    if (
+        expected_final_model_input_count is not None
+        and final_model_input["input_count"]  # type: ignore[index]
+        != expected_final_model_input_count
+    ):
+        return False
+    if (
+        expected_artifact_files is not None
+        and frozenset(names) != expected_artifact_files
+    ):
         return False
 
     parent = path.parent

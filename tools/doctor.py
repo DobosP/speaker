@@ -88,6 +88,7 @@ def run_all(
     platform: str = sys.platform,
     pipewire_state: Optional[PipeWireState] = None,
     pipewire_probe: Callable[[], Optional[PipeWireState]] = probe_pipewire_state,
+    capture_only: bool = False,
 ) -> list[Check]:
     """Resolve/apply one profile, then run every check over that merged view."""
     merged, _ = resolve_check_config(config, device)
@@ -101,13 +102,16 @@ def run_all(
         ))
     if no_speaker_enrollment:
         merged = apply_no_speaker_enrollment(merged)
-        prefix.append(Check(
-            "speaker identity policy",
-            True,
-            "off for this process only; configured references and files are "
+        detail = (
+            "off for this capture-only process; configured references and files "
+            "are unchanged; assistant, tool, control, TTS, KWS, speaker-"
+            "verification, and playback effects are unavailable"
+            if capture_only
+            else "off for this process only; configured references and files are "
             "unchanged; speaker verification is unavailable; other audible "
-            "speakers may converse and use read or direct-live-confirmed tools",
-        ))
+            "speakers may converse and use read or direct-live-confirmed tools"
+        )
+        prefix.append(Check("speaker identity policy", True, detail))
     runtime_checks = run_runtime_checks(
         merged,
         resolved=True,
@@ -121,6 +125,10 @@ def run_all(
         platform=platform,
         pipewire_state=pipewire_state,
         pipewire_probe=pipewire_probe,
+        include_speaker=not capture_only,
+        include_tts=not capture_only,
+        include_kws=not capture_only,
+        audio_device_kinds=("input",) if capture_only else ("input", "output"),
     )
     if no_speaker_enrollment:
         # Avoid the normal "run --enroll" nudge when references are
@@ -150,7 +158,8 @@ def summarize(checks: Iterable[Check]) -> tuple[bool, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Preflight check for the native voice runtime"
+        description="Preflight check for the native voice runtime",
+        allow_abbrev=False,
     )
     parser.add_argument("--config", default="config.json")
     parser.add_argument(
@@ -191,9 +200,23 @@ def main(argv: list[str] | None = None) -> int:
             "the configured local LLM; success is BASE READY, never READY"
         ),
     )
+    parser.add_argument(
+        "--capture-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     if args.defer_ollama and args.defer_llm:
         parser.error("choose only one LLM deferral option")
+    if args.capture_only:
+        if not args.defer_llm:
+            parser.error("--capture-only requires --defer-llm")
+        if args.defer_ollama:
+            parser.error("--capture-only does not accept --defer-ollama")
+        if not args.final_stt_profile:
+            parser.error("--capture-only requires --final-stt-profile")
+        if not args.no_speaker_enrollment:
+            parser.error("--capture-only requires --no-speaker-enrollment")
     try:
         from core.app import _load_config
 
@@ -208,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 final_stt_profile=args.final_stt_profile,
                 no_speaker_enrollment=args.no_speaker_enrollment,
                 llm_mode="echo",
+                capture_only=args.capture_only,
             )
         elif args.defer_ollama:
             merged, _ = resolve_check_config(config, args.device)
@@ -261,6 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     print()
     deferred = args.defer_ollama or args.defer_llm
     if ready:
+        if args.capture_only:
+            print(
+                "CAPTURE READY -- assistant, tool, control, TTS, KWS, and "
+                "playback effects are unavailable"
+            )
+            return 0
         if deferred:
             label = "Ollama deferred" if args.defer_ollama else "local LLM deferred"
             print(
@@ -270,7 +300,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print("READY -> python -m core --session local")
         return 0
-    if deferred:
+    if args.capture_only:
+        print(
+            "CAPTURE NOT READY -- fix the FAIL lines above, then re-run the "
+            "capture-only doctor"
+        )
+    elif deferred:
         flag = "--defer-ollama" if args.defer_ollama else "--defer-llm"
         print(
             "BASE NOT READY -- fix the FAIL lines above, then re-run "

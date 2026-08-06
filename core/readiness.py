@@ -90,6 +90,9 @@ def check_sherpa_models(
     config: dict,
     exists: Callable[[str], bool] = os.path.exists,
     bpe_vocab_validator: Callable[..., str] = validate_bpe_vocab_file,
+    *,
+    include_tts: bool = True,
+    include_kws: bool = True,
 ) -> Check:
     sherpa = (config or {}).get("sherpa", {}) or {}
     problems: list[str] = []
@@ -118,7 +121,12 @@ def check_sherpa_models(
             return
         require(key, label=label)
 
-    for key in SHERPA_REQUIRED:
+    required_paths = (
+        SHERPA_REQUIRED
+        if include_tts
+        else tuple(key for key in SHERPA_REQUIRED if not key.startswith("tts_"))
+    )
+    for key in required_paths:
         require(key)
 
     # Contextual biasing is selected by the phrase list, not by an inert vocab
@@ -183,14 +191,15 @@ def check_sherpa_models(
     # ``tts_voices`` selects Kokoro instead of the VITS/Piper constructor.  Its
     # native loader hard-aborts on a missing voices file; configured data/lexicon
     # paths are also passed straight to that loader and therefore load-bearing.
-    if sherpa.get("tts_voices", ""):
-        require("tts_voices", label="Kokoro tts_voices")
-        require_if_configured("tts_data_dir")
-        require_if_configured("tts_lexicon", comma_separated=True)
-    else:
-        # VITS also consumes a configured espeak data directory.  A stale Kokoro
-        # lexicon is deliberately ignored when Kokoro is not selected.
-        require_if_configured("tts_data_dir")
+    if include_tts:
+        if sherpa.get("tts_voices", ""):
+            require("tts_voices", label="Kokoro tts_voices")
+            require_if_configured("tts_data_dir")
+            require_if_configured("tts_lexicon", comma_separated=True)
+        else:
+            # VITS also consumes a configured espeak data directory.  A stale Kokoro
+            # lexicon is deliberately ignored when Kokoro is not selected.
+            require_if_configured("tts_data_dir")
 
     # The second-pass recognizer owns the text sent to the LLM whenever a backend
     # is selected.  Missing artifacts currently make the runtime silently fall
@@ -252,7 +261,7 @@ def check_sherpa_models(
     # Punctuation and keyword spotting are also constructed eagerly.  A partial
     # KWS group is not a degraded optional path once its encoder selects it.
     require_if_configured("punct_model")
-    if sherpa.get("kws_encoder", ""):
+    if include_kws and sherpa.get("kws_encoder", ""):
         for key in (
             "kws_tokens", "kws_encoder", "kws_decoder", "kws_joiner",
             "kws_keywords_file",
@@ -271,7 +280,12 @@ def check_sherpa_models(
             "; ".join(problems) + " (config.json/config.local.json)",
             "python -m tools.setup_models  # writes config.local.json",
         )
-    return Check("sherpa models", True, "selected ASR + TTS/frontend paths set")
+    detail = (
+        "selected ASR + TTS/frontend paths set"
+        if include_tts
+        else "selected ASR/frontend paths set"
+    )
+    return Check("sherpa models", True, detail)
 
 
 def check_asr_final_verifier_runtime(
@@ -600,8 +614,17 @@ def _sounddevice_selector(value):
     return value
 
 
-def check_audio(config: Optional[dict] = None, sd=None) -> list[Check]:
+def check_audio(
+    config: Optional[dict] = None,
+    sd=None,
+    *,
+    device_kinds: tuple[str, ...] = ("input", "output"),
+) -> list[Check]:
     """Verify selected input/output devices, not merely sounddevice import."""
+    if not device_kinds or any(
+        kind not in {"input", "output"} for kind in device_kinds
+    ):
+        raise ValueError("device_kinds must select input and/or output")
     if sd is None:
         try:
             import sounddevice as sd  # noqa: PLC0415
@@ -616,7 +639,7 @@ def check_audio(config: Optional[dict] = None, sd=None) -> list[Check]:
             return [Check("audio", False, str(exc), "python -m pip install sounddevice")]
     sherpa = (config or {}).get("sherpa", {}) or {}
     out: list[Check] = []
-    for kind in ("input", "output"):
+    for kind in device_kinds:
         try:
             selected = _sounddevice_selector(sherpa.get(f"{kind}_device"))
             if selected is None or selected == "":
@@ -1100,7 +1123,10 @@ def run_runtime_checks(
     pipewire_state: Optional[PipeWireState] = None,
     pipewire_probe: Callable[[], Optional[PipeWireState]] = probe_pipewire_state,
     include_speaker: bool = True,
+    include_tts: bool = True,
+    include_kws: bool = True,
     require_audio_devices: bool = True,
+    audio_device_kinds: tuple[str, ...] = ("input", "output"),
     require_os_echo_route: bool = True,
     virtual_audio_binder=None,
 ) -> list[Check]:
@@ -1133,7 +1159,14 @@ def run_runtime_checks(
     if llm_mode != "echo":
         imports.append("llama_cpp" if backend == "llamacpp" else "ollama")
     checks = check_imports(imports, import_fn=import_fn)
-    checks.append(check_sherpa_models(merged, exists=exists))
+    checks.append(
+        check_sherpa_models(
+            merged,
+            exists=exists,
+            include_tts=include_tts,
+            include_kws=include_kws,
+        )
+    )
     final_backend = str(
         ((merged.get("sherpa", {}) or {}).get("asr_final_backend", "")) or ""
     ).strip().lower()
@@ -1166,7 +1199,11 @@ def run_runtime_checks(
             )
 
     if require_audio_devices:
-        checks += check_audio(merged, sd=sd)
+        checks += check_audio(
+            merged,
+            sd=sd,
+            device_kinds=audio_device_kinds,
+        )
     checks += check_audio_frontend(
         merged,
         import_fn=import_fn,

@@ -44,9 +44,15 @@ jq -c 'select(.kind == "final_model_input")' \
 v1. Those legacy bundles lack the exact f32le slices and cannot be exported by
 the tool below. A newly recorded export source must be diagnostic schema v2.
 
-## Bind a planned live script automatically
+## Bind an already-retained diagnostic bundle
 
-Prepare the reference plan before recording and keep it in an owner-private
+This legacy binder is only for an already-retained bundle whose collection
+path was separately established as safe for the labelled phrases. Do not use
+the ordinary assistant runtime to collect a new command plan: deterministic
+routes can execute even when its LLM is `echo`. For a new physical control/
+candidate recording, use the effect-free guided capture procedure below.
+
+For an eligible retained bundle, keep its reference plan in an owner-private
 directory. The plan deliberately contains no receipt indexes or hashes:
 
 ```json
@@ -72,17 +78,9 @@ directory. The plan deliberately contains no receipt indexes or hashes:
 }
 ```
 
-Save it mode `0600` under a mode-`0700` parent. Then make one lightweight live
-recording, speaking each case exactly once in file order and waiting for each
-turn to finish before starting the next:
-
-```bash
-./live.sh --run-label owner-stt-commands --llm echo
-```
-
-After one Ctrl-C and completed cleanup, use the `.diagnostic.json` path printed
-by the launcher. Both destinations below must be absent and their parents must
-already be private:
+Save it mode `0600` under a mode-`0700` parent. Use the retained bundle's
+`.diagnostic.json`; both destinations below must be absent and their parents
+must already be private:
 
 ```bash
 python -m tools.prepare_live_stt_corpus \
@@ -203,24 +201,28 @@ latency, natural-conversation, or live behavior
 
 ## Compare complete final-STT profiles
 
-For a physical control/candidate check, use the same private reference plan in
-two separate runs. Speak every planned case exactly once and in the same order
-in each run:
+For a physical control/candidate check, run the immutable guided plan once per
+complete profile. Follow the terminal geometry and case prompts; speak each
+armed phrase exactly once:
 
 ```bash
-./live.sh --run-label owner-stt-sense-control --llm echo \
+./live.sh --guided-stt-capture --run-label owner-stt-sense-control \
   --final-stt-profile sense-voice
 
-./live.sh --run-label owner-stt-parakeet-fws --llm echo \
+./live.sh --guided-stt-capture --run-label owner-stt-parakeet-candidate \
   --final-stt-profile parakeet-faster-whisper
 ```
 
-Each run still uses the single supported physical entry and creates its own
-synchronized private bundle. The profile name and canonical selection digest
-are recorded in its private summary. Readiness consumes the same complete
-profile as the core child and stops before capture if any selected artifact or
-runtime is unavailable. Do not use the backend-only `--asr-final` option for
-this comparison.
+Each run uses the single physical entry and creates its own synchronized
+private bundle. The capture path has no assistant or effect plane: it does not
+construct tools, control, memory, TTS, KWS, speaker identity, playback, or an
+output device. The private contract binds the fixed plan, profile, device,
+input gain, and effective capture/configuration digests before microphone
+startup. Exit zero additionally requires 16/16 armed live finals and a valid
+post-stop diagnostic manifest. Keep both bundles; a separate paired
+qualification and physical owner review are still required before a profile
+verdict. Do not substitute `--llm echo`, the backend-only `--asr-final`
+option, or a low-level core command (ADR-0157).
 
 After exporting one labelled exact-input corpus as above, compare both complete
 selectors on the *same* PCM without relying on the machine's ambient final-ASR

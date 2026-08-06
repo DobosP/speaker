@@ -16,8 +16,8 @@ current.
 **Every open thread funnels through the Windows OS mic level.** The capture
 runs at ~6e-5 RMS ambient / ~7e-4 speech (30-70x too quiet): the tail-cut
 attribution, the KWS phantom-cut rate, the ADR-0013 physical gate, calibration,
-re-enrollment, and the Windows STT track are all measuring noise floor until it
-is fixed. Nothing below Track A1 is trustworthy before it.
+optional multi-voice enrollment, and the Windows STT track are all measuring
+noise floor until it is fixed. Nothing below Track A1 is trustworthy before it.
 
 ## Track A — root lever + barge verdict (owner at the machine, ~1 session)
 
@@ -26,9 +26,11 @@ is fixed. Nothing below Track A1 is trustworthy before it.
   speaking — it A/B-records the presets through the real front end, scores by
   faster-whisper WER, and prints the winning `config.local.json` block. Gate
   for everything below.
-- **A2. Re-enroll**: `python -m core --enroll` — required; the verified
-  `wasapi-communications-aec -> gtcrn` capture domain rejects the legacy
-  reference by design (ADR-0047/0056 provenance).
+- **A2. Select identity scope**: follow the current policy in `STATUS.md` and
+  ADR-0157. Re-enroll in the healthy capture domain only for an explicit
+  multi-voice/speaker-authority evaluation; it is not a prerequisite for
+  generic open-speaker barge-in or STT capture. A selected enrollment still
+  has to satisfy ADR-0047/0056 provenance.
 - **A3. Attribute the ★ tail-cut** (backlog top item — owner hears a
   deterministic cut "same spot at the end"): one `tools/echo_probe.py` run +
   one short live run, then read the bundle — the word-cut funnel line (now

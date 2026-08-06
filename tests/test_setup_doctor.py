@@ -15,6 +15,7 @@ import pytest
 
 import core.readiness as readiness
 import tools.setup_models as setup_models
+from core.config import FINAL_STT_PROFILE_NAMES
 from core.minicpm_identity import MINICPM_Q8_CONTRACT
 from tools.doctor import (
     PipeWireState,
@@ -2906,3 +2907,137 @@ def test_run_all_ready_when_everything_passes():
     )
     ready, _ = summarize(checks)
     assert ready
+
+
+def test_capture_model_readiness_skips_tts_and_kws_but_keeps_stt_frontends() -> None:
+    checked: list[str] = []
+    sherpa = {
+        "asr_tokens": "/models/asr-tokens",
+        "asr_encoder": "/models/asr-encoder",
+        "asr_decoder": "/models/asr-decoder",
+        "asr_joiner": "/models/asr-joiner",
+        "vad_model": "/models/vad",
+        "punct_model": "/models/punctuation",
+        "tts_model": "/forbidden/tts-model",
+        "tts_tokens": "/forbidden/tts-tokens",
+        "kws_encoder": "/forbidden/kws-encoder",
+    }
+
+    def exists(path: str) -> bool:
+        checked.append(path)
+        if path.startswith("/forbidden/"):
+            raise AssertionError("capture readiness probed TTS/KWS")
+        return True
+
+    result = check_sherpa_models(
+        {"sherpa": sherpa},
+        exists=exists,
+        include_tts=False,
+        include_kws=False,
+    )
+
+    assert result.ok
+    assert "/models/vad" in checked
+    assert "/models/punctuation" in checked
+
+
+def test_capture_audio_readiness_queries_only_the_input_device() -> None:
+    calls: list[str] = []
+
+    class FakeSD:
+        def query_devices(self, *_args, kind):
+            calls.append(kind)
+            if kind == "output":
+                raise AssertionError("capture readiness queried output")
+            return {"name": "capture-input", "default_samplerate": 48_000.0}
+
+    checks = check_audio(sd=FakeSD(), device_kinds=("input",))
+
+    assert [check.name for check in checks] == ["audio input"]
+    assert calls == ["input"]
+
+
+def test_doctor_capture_run_all_selects_effect_free_shared_readiness(monkeypatch) -> None:
+    import tools.doctor as doctor
+
+    captured = {}
+    monkeypatch.setattr(
+        doctor,
+        "resolve_check_config",
+        lambda config, _device: (config, "safe"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_runtime_checks",
+        lambda config, **kwargs: captured.update(config=config, kwargs=kwargs) or [],
+    )
+
+    checks = doctor.run_all(
+        {"sherpa": {}},
+        no_speaker_enrollment=True,
+        llm_mode="echo",
+        capture_only=True,
+    )
+
+    assert captured["kwargs"]["include_speaker"] is False
+    assert captured["kwargs"]["include_tts"] is False
+    assert captured["kwargs"]["include_kws"] is False
+    assert captured["kwargs"]["audio_device_kinds"] == ("input",)
+    assert "require_os_echo_route" not in captured["kwargs"]
+    notice = next(check for check in checks if check.name == "speaker identity policy")
+    assert "assistant, tool, control" in notice.detail
+    assert "playback effects are unavailable" in notice.detail
+
+
+def test_doctor_capture_cli_requires_full_effect_free_selector_and_reports_ready(
+    monkeypatch,
+    capsys,
+) -> None:
+    import core.app
+    import tools.doctor as doctor
+
+    calls = []
+    monkeypatch.setattr(core.app, "_load_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        doctor,
+        "run_all",
+        lambda config, **kwargs: calls.append((config, kwargs))
+        or [doctor.Check("capture STT", True, "ready")],
+    )
+
+    code = doctor.main(
+        [
+            "--capture-only",
+            "--defer-llm",
+            "--final-stt-profile",
+            FINAL_STT_PROFILE_NAMES[0],
+            "--no-speaker-enrollment",
+        ]
+    )
+
+    assert code == 0
+    assert calls[0][1]["capture_only"] is True
+    assert calls[0][1]["llm_mode"] == "echo"
+    assert "CAPTURE READY" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--capture-only"],
+        ["--capture-only", "--defer-llm"],
+        [
+            "--capture-only",
+            "--defer-llm",
+            "--final-stt-profile",
+            FINAL_STT_PROFILE_NAMES[0],
+        ],
+    ],
+)
+def test_doctor_capture_cli_rejects_incomplete_selectors(arguments) -> None:
+    import tools.doctor as doctor
+
+    with pytest.raises(SystemExit) as raised:
+        doctor.main(arguments)
+
+    assert raised.value.code == 2

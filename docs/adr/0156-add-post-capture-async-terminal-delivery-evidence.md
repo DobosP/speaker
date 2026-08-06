@@ -97,6 +97,31 @@ no admission fence: callers must independently prove producer quiescence.
 
 Before the exact model replay, the branch passed 295 focused stage/engine/
 capture/EdAcc tests with one skip, 522 adjacent Sherpa/ownership/APM tests, and
-318 EdAcc/logical-turn contract tests. Scoped Ruff and whitespace checks are
-green. Exact model-backed v5 results and the retained report binding will be
-recorded here before landing.
+318 EdAcc/logical-turn contract tests. Scoped Ruff and whitespace checks were
+green.
+
+The exact schema-v5 replay at clean source `ab4f4eb` completed all 24 rows in
+all three cells. Each cell observed 24 clean drains and 24 worker sessions on
+the persistent evaluator thread distinct from capture. Acoustic and HOLD-only
+each accepted and finished 31 items as 31 worker selected finals; reset and
+accumulate accepted and finished 29 as 29 worker selected finals. No accepted
+item produced a worker abort, no selected final ran inline, and the separately
+matched capture-side prequeue typed aborts remained 4/4/3. All async health,
+stage-release, cancellation, overflow, and unfinished counters were zero. The
+existing raw and inline lineage sections remained exact at 35/35/32 raw
+commits, 31/31/29 selected finals, and 4/4/3 typed aborts; reset retained five
+multi-epoch commits. The guarded parent reopened schema 5 with all three flags
+enabled and a 21-file source closure at the same revision.
+
+Preserve the mode-0600, single-link, 29,952-byte aggregate report with SHA-256
+`b3c749fcbdc867c179fbac77717552147de65240c1e815e6fcaef6d12b9a0852`.
+Peak process RSS was 1,269.109 MiB. The result is diagnostic-only and makes no
+claim about live capture/finalizer concurrency, selected text, stop/shutdown,
+dispatcher, supervisor, runtime/defaults, device, latency, authority, or STT
+quality.
+
+After the replay, the focused gate remained 295 passed with one skip, the full
+EdAcc/logical-turn contract remained 318 passed, and APM/double-talk remained
+6 passed. Independent implementation and evidence/privacy reviews reran 88
+passed with one skip and 228 passed respectively; both returned GO with no
+blocking findings.

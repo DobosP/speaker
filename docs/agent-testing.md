@@ -425,6 +425,22 @@ It proves transcript-free inline terminal identity and typed outcome only;
 selected-text, async worker, dispatcher, supervisor, production authority,
 device, latency, and live parity remain false (ADR-0155).
 
+The opt-in schema-5 run at clean source `ab4f4eb` retained the same exact
+35/35/32 raw and inline terminal lineage. Its post-capture worker accepted,
+started, finished, and selected all 31/31/29 final items; all 24 rows per cell
+observed a clean empty-stage drain on the persistent evaluator thread distinct
+from capture. The 4/4/3 input-rejection aborts remained capture-side prequeue
+outcomes, no selected final ran inline, and every async health, release,
+cancellation, overflow, and unfinished counter was zero. The guarded source
+closure covered 21 files. Preserve the mode-0600, single-link, 29,952-byte
+report SHA-256
+`b3c749fcbdc867c179fbac77717552147de65240c1e815e6fcaef6d12b9a0852`.
+Peak process RSS was 1,269.109 MiB. This proves only deterministic accepted
+handoff to post-capture dedicated-worker callback delivery; simultaneous live
+capture/finalizer concurrency, selected-text parity, stop/shutdown, overflow,
+dispatcher, supervisor, runtime/defaults, device, latency, authority, and STT
+quality remain unproven (ADR-0156).
+
 ## Exact Parakeet Realtime EOU reference setup
 
 Start with an already-downloaded private 183-wheel closure, the exact local

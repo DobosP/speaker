@@ -1,10 +1,11 @@
 """Aggregate-only EdAcc endpoint-integrity counterfactual.
 
-This diagnostic compares the configured native acoustic endpoint with the exact
-Smart Turn v3.2 model using Speaker's production Sherpa capture loop.  Smart
-Turn is deliberately HOLD-only here: the wrapper forces ``allow_early=False``
-at the typed turn-evaluation seam, so this run cannot promote early commits or
-change a live default.
+This diagnostic compares the configured native acoustic endpoint with two exact
+Smart Turn v3.2 cells using Speaker's production Sherpa capture loop.  Both
+semantic cells force ``allow_early=False`` at the typed turn-evaluation seam.
+One preserves the original HOLD-only behavior; the other opts into native-stream
+reset-and-accumulate after a typed HOLD.  The run cannot promote early commits
+or change a live default.
 
 The retained EdAcc reference, hypotheses, case identifiers, PCM, and paths stay
 in memory.  Only closed counters, distributions, and cryptographic bindings may
@@ -80,8 +81,8 @@ from tools.streaming_stt.bounded_io import (
 from tools.streaming_stt.corpus import CorpusCase, LoadedCorpus
 
 
-SCHEMA_VERSION = 1
-KIND = "edacc-endpoint-integrity-v1"
+SCHEMA_VERSION = 2
+KIND = "edacc-endpoint-integrity-v2"
 EXPECTED_CORPUS_SHA256 = (
     "4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772"
 )
@@ -99,6 +100,7 @@ ACOUSTIC_RULE2_SEC = 0.8
 PROSODY_MIN_SILENCE_SEC = 0.15
 ENDPOINT_MIN_SILENCE_SEC = 0.5
 ENDPOINT_MAX_SILENCE_SEC = 1.6
+LOGICAL_RULE3_SEC = 20.0
 COMPLETE_THRESHOLD = 0.6
 INCOMPLETE_THRESHOLD = 0.3
 ASR_PROVIDER = "cpu"
@@ -115,6 +117,8 @@ _SAFE_ERROR: Mapping[str, object] = {
 _SOURCE_FILES = (
     "core/endpointing.py",
     "core/engine.py",
+    "core/engines/_asr_segment.py",
+    "core/engines/_semantic_hold.py",
     "core/engines/sherpa.py",
     "tools/bench/production.py",
     "tools/capture_replay/corpus.py",
@@ -126,7 +130,17 @@ _SOURCE_FILES = (
     "tools/setup_models.py",
     "tools/streaming_stt/bounded_io.py",
 )
-_CELL_NAMES = ("acoustic", "prosody_hold_only")
+_CELL_NAMES = (
+    "acoustic",
+    "prosody_hold_only",
+    "prosody_reset_accumulate",
+)
+_SEMANTIC_CELL_NAMES = frozenset(_CELL_NAMES[1:])
+_COMPARISON_NAMES = (
+    "prosody_hold_only_vs_acoustic",
+    "prosody_reset_accumulate_vs_acoustic",
+    "prosody_reset_accumulate_vs_prosody_hold_only",
+)
 _FINAL_BUCKETS = ("zero", "single", "multi")
 _FORBIDDEN_REPORT_KEYS = frozenset(
     {
@@ -160,6 +174,7 @@ _SAFE_STATIC_STRINGS = frozenset(
         DEVICE_PROFILE,
         FINAL_STT_PROFILE,
         *_CELL_NAMES,
+        *_COMPARISON_NAMES,
         *_FINAL_BUCKETS,
         *STRATA,
         *(state.value for state in CompletionScoreState),
@@ -344,11 +359,13 @@ def _cell_config(
         endpoint_adaptive_floor=False,
         endpoint_min_silence_sec=ENDPOINT_MIN_SILENCE_SEC,
         endpoint_max_silence_sec=ENDPOINT_MAX_SILENCE_SEC,
+        asr_rule3_min_utterance_length=LOGICAL_RULE3_SEC,
         endpoint_complete_threshold=COMPLETE_THRESHOLD,
         endpoint_incomplete_threshold=INCOMPLETE_THRESHOLD,
         endpoint_high_confidence_floor=0.0,
         endpoint_prosody_min_silence=PROSODY_MIN_SILENCE_SEC,
         endpoint_prosody_threads=1,
+        endpoint_reset_on_semantic_hold=False,
         provider=ASR_PROVIDER,
         asr_num_threads=ASR_THREADS,
     )
@@ -365,6 +382,14 @@ def _cell_config(
             endpoint_enabled=True,
             endpoint_detector="prosody",
             endpoint_prosody_model=str(model.path),
+        )
+    if cell == "prosody_reset_accumulate":
+        return replace(
+            common,
+            endpoint_enabled=True,
+            endpoint_detector="prosody",
+            endpoint_prosody_model=str(model.path),
+            endpoint_reset_on_semantic_hold=True,
         )
     raise EdaccEndpointIntegrityError()
 
@@ -550,7 +575,11 @@ def _fresh_policy(engine: SherpaOnnxEngine, *, candidate: bool) -> None:
         engine._endpoint_policy = None
 
 
-def _attest_engine(engine: SherpaOnnxEngine, *, candidate: bool) -> None:
+def _attest_engine(engine: SherpaOnnxEngine, *, cell: str) -> None:
+    if cell not in _CELL_NAMES:
+        raise EdaccEndpointIntegrityError()
+    candidate = cell in _SEMANTIC_CELL_NAMES
+    reset_accumulate = cell == "prosody_reset_accumulate"
     if (
         engine._recognizer is None
         or engine._vad is None
@@ -558,6 +587,7 @@ def _attest_engine(engine: SherpaOnnxEngine, *, candidate: bool) -> None:
         or engine.config.asr_final_backend != "sense_voice"
         or engine.config.provider != ASR_PROVIDER
         or engine.config.asr_num_threads != ASR_THREADS
+        or engine.config.endpoint_reset_on_semantic_hold is not reset_accumulate
     ):
         raise EdaccEndpointIntegrityError()
     if not candidate:
@@ -708,9 +738,9 @@ def _run_cell(
     *,
     cell: str,
 ) -> _CellResult:
-    candidate = cell == "prosody_hold_only"
     if cell not in _CELL_NAMES:
         raise EdaccEndpointIntegrityError()
+    candidate = cell in _SEMANTIC_CELL_NAMES
     try:
         executed = _replay_config(
             configured,
@@ -725,7 +755,7 @@ def _run_cell(
             engine._build()
             engine.warm()
         model_load_ms = (time.perf_counter() - build_started) * 1_000.0
-        _attest_engine(engine, candidate=candidate)
+        _attest_engine(engine, cell=cell)
         _install_hold_only_trace(engine, trace)
         try:
             with _quiet_model_output():
@@ -751,6 +781,9 @@ def _run_cell(
         report["config_sha256"] = _canonical_sha256(asdict(executed))
         report["provider"] = executed.provider
         report["asr_threads"] = executed.asr_num_threads
+        report["semantic_hold_reset_enabled"] = (
+            executed.endpoint_reset_on_semantic_hold
+        )
         report["model_load_ms"] = round(model_load_ms, 3)
         report["endpoint_trace"] = trace.report()
         buckets = tuple(aggregate.row_final_buckets)
@@ -786,6 +819,19 @@ def _row_transitions(
     return counts
 
 
+def _comparison_report(
+    control: Sequence[str],
+    candidate: Sequence[str],
+) -> dict[str, object]:
+    transitions = _row_transitions(control, candidate)
+    return {
+        "row_final_count_transitions": transitions,
+        "control_multi_to_candidate_single_rows": transitions["multi->single"],
+        "control_single_to_candidate_multi_rows": transitions["single->multi"],
+        "candidate_reduced_multi_rows": transitions["multi->single"] > 0,
+    }
+
+
 def _report(
     *,
     prepared: PreparedProduction,
@@ -793,10 +839,21 @@ def _report(
     source_sha256: str,
     cells: Mapping[str, _CellResult],
 ) -> dict[str, object]:
-    transitions = _row_transitions(
-        cells["acoustic"].row_final_buckets,
-        cells["prosody_hold_only"].row_final_buckets,
-    )
+    control_buckets = cells["acoustic"].row_final_buckets
+    comparisons = {
+        "prosody_hold_only_vs_acoustic": _comparison_report(
+            control_buckets,
+            cells["prosody_hold_only"].row_final_buckets,
+        ),
+        "prosody_reset_accumulate_vs_acoustic": _comparison_report(
+            control_buckets,
+            cells["prosody_reset_accumulate"].row_final_buckets,
+        ),
+        "prosody_reset_accumulate_vs_prosody_hold_only": _comparison_report(
+            cells["prosody_hold_only"].row_final_buckets,
+            cells["prosody_reset_accumulate"].row_final_buckets,
+        ),
+    }
     report: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
@@ -860,29 +917,21 @@ def _report(
             "policy_state": "fresh-per-row",
             "acoustic_rule2_ms": round(ACOUSTIC_RULE2_SEC * 1_000),
             "semantic_max_wait_ms": round(ENDPOINT_MAX_SILENCE_SEC * 1_000),
+            "logical_rule3_ms": round(LOGICAL_RULE3_SEC * 1_000),
             "complete_threshold": COMPLETE_THRESHOLD,
             "incomplete_threshold": INCOMPLETE_THRESHOLD,
             "asr_provider": ASR_PROVIDER,
             "asr_threads": ASR_THREADS,
         },
         "cells": {name: dict(cells[name].report) for name in _CELL_NAMES},
-        "comparison": {
-            "row_final_count_transitions": transitions,
-            "control_multi_to_candidate_single_rows": transitions[
-                "multi->single"
-            ],
-            "control_single_to_candidate_multi_rows": transitions[
-                "single->multi"
-            ],
-            "candidate_reduced_multi_rows": transitions["multi->single"] > 0,
-        },
+        "comparison": comparisons,
         "limitations": {
             "diagnostic_only": True,
             "capture_loop_counterfactual": True,
-            "native_endpoint_hold_only": True,
-            "native_hold_compatibility_only": True,
+            "hold_only_control_included": True,
+            "native_reset_accumulate_evaluated": True,
             "early_commit_evaluated": False,
-            "turn_repair_layer_evaluated": False,
+            "posthoc_turn_join_evaluated": False,
             "live_device_evidence": False,
             "model_quality_promotion": False,
             "runtime_default_authority": False,
@@ -963,7 +1012,12 @@ def _safe_leaf_walk(value: object) -> None:
     raise EdaccEndpointIntegrityError()
 
 
-def _validate_cell_report(value: object, *, candidate: bool) -> None:
+def _validate_cell_report(
+    value: object,
+    *,
+    candidate: bool,
+    reset_accumulate: bool,
+) -> None:
     cell = _require_keys(
         value,
         {
@@ -976,6 +1030,7 @@ def _validate_cell_report(value: object, *, candidate: bool) -> None:
             "config_sha256",
             "provider",
             "asr_threads",
+            "semantic_hold_reset_enabled",
             "model_load_ms",
             "endpoint_trace",
         },
@@ -1173,6 +1228,7 @@ def _validate_cell_report(value: object, *, candidate: bool) -> None:
         or not _is_sha256(cell["config_sha256"])
         or cell["provider"] != ASR_PROVIDER
         or cell["asr_threads"] != ASR_THREADS
+        or cell["semantic_hold_reset_enabled"] is not reset_accumulate
         or evaluations < rows
         or hold_rows > rows
         or hold_ticks > evaluations
@@ -1230,12 +1286,87 @@ def _validate_cell_report(value: object, *, candidate: bool) -> None:
         or (
             candidate
             and (
-                state_count_values[CompletionScoreState.UNAVAILABLE.value] != 0
+                hold_ticks <= 0
+                or state_count_values[CompletionScoreState.UNAVAILABLE.value] != 0
                 or state_count_values[CompletionScoreState.SCORED.value] <= 0
                 or basis_count_values[TurnDecisionBasis.SEMANTIC_WAIT.value]
                 != 0
             )
         )
+    ):
+        raise EdaccEndpointIntegrityError()
+
+
+def _validate_comparison_report(
+    value: object,
+    *,
+    control_cell: Mapping[str, object],
+    candidate_cell: Mapping[str, object],
+) -> None:
+    comparison = _require_keys(
+        value,
+        {
+            "row_final_count_transitions",
+            "control_multi_to_candidate_single_rows",
+            "control_single_to_candidate_multi_rows",
+            "candidate_reduced_multi_rows",
+        },
+    )
+    transitions = _require_keys(
+        comparison["row_final_count_transitions"],
+        {f"{left}->{right}" for left in _FINAL_BUCKETS for right in _FINAL_BUCKETS},
+    )
+    control_integrity = _require_keys(
+        control_cell["turn_integrity"],
+        {"finals", "zero_final_rows", "single_final_rows", "multi_final_rows"},
+    )
+    candidate_integrity = _require_keys(
+        candidate_cell["turn_integrity"],
+        {"finals", "zero_final_rows", "single_final_rows", "multi_final_rows"},
+    )
+    transition_counts = {
+        key: _nonnegative_int(item) for key, item in transitions.items()
+    }
+    control_marginals = {
+        bucket: sum(
+            transition_counts[f"{bucket}->{candidate_bucket}"]
+            for candidate_bucket in _FINAL_BUCKETS
+        )
+        for bucket in _FINAL_BUCKETS
+    }
+    candidate_marginals = {
+        bucket: sum(
+            transition_counts[f"{control_bucket}->{bucket}"]
+            for control_bucket in _FINAL_BUCKETS
+        )
+        for bucket in _FINAL_BUCKETS
+    }
+    expected_control_marginals = {
+        "zero": _nonnegative_int(control_integrity["zero_final_rows"]),
+        "single": _nonnegative_int(control_integrity["single_final_rows"]),
+        "multi": _nonnegative_int(control_integrity["multi_final_rows"]),
+    }
+    expected_candidate_marginals = {
+        "zero": _nonnegative_int(candidate_integrity["zero_final_rows"]),
+        "single": _nonnegative_int(candidate_integrity["single_final_rows"]),
+        "multi": _nonnegative_int(candidate_integrity["multi_final_rows"]),
+    }
+    control_accuracy = control_cell["joined_selected_final_accuracy"]
+    candidate_accuracy = candidate_cell["joined_selected_final_accuracy"]
+    if (
+        sum(transition_counts.values()) != EXPECTED_CASES
+        or control_marginals != expected_control_marginals
+        or candidate_marginals != expected_candidate_marginals
+        or control_accuracy["reference_words"]
+        != candidate_accuracy["reference_words"]
+        or control_accuracy["reference_characters"]
+        != candidate_accuracy["reference_characters"]
+        or comparison["control_multi_to_candidate_single_rows"]
+        != transition_counts["multi->single"]
+        or comparison["control_single_to_candidate_multi_rows"]
+        != transition_counts["single->multi"]
+        or comparison["candidate_reduced_multi_rows"]
+        is not (transition_counts["multi->single"] > 0)
     ):
         raise EdaccEndpointIntegrityError()
 
@@ -1303,6 +1434,7 @@ def _validate_report(value: object) -> None:
             "policy_state",
             "acoustic_rule2_ms",
             "semantic_max_wait_ms",
+            "logical_rule3_ms",
             "complete_threshold",
             "incomplete_threshold",
             "asr_provider",
@@ -1310,28 +1442,16 @@ def _validate_report(value: object) -> None:
         },
     )
     cells = _require_keys(report["cells"], set(_CELL_NAMES))
-    comparison = _require_keys(
-        report["comparison"],
-        {
-            "row_final_count_transitions",
-            "control_multi_to_candidate_single_rows",
-            "control_single_to_candidate_multi_rows",
-            "candidate_reduced_multi_rows",
-        },
-    )
-    transitions = _require_keys(
-        comparison["row_final_count_transitions"],
-        {f"{left}->{right}" for left in _FINAL_BUCKETS for right in _FINAL_BUCKETS},
-    )
+    comparisons = _require_keys(report["comparison"], set(_COMPARISON_NAMES))
     limitations = _require_keys(
         report["limitations"],
         {
             "diagnostic_only",
             "capture_loop_counterfactual",
-            "native_endpoint_hold_only",
-            "native_hold_compatibility_only",
+            "hold_only_control_included",
+            "native_reset_accumulate_evaluated",
             "early_commit_evaluated",
-            "turn_repair_layer_evaluated",
+            "posthoc_turn_join_evaluated",
             "live_device_evidence",
             "model_quality_promotion",
             "runtime_default_authority",
@@ -1339,47 +1459,32 @@ def _validate_report(value: object) -> None:
             "peak_rss_is_process_high_water",
         },
     )
-    _validate_cell_report(cells["acoustic"], candidate=False)
-    _validate_cell_report(cells["prosody_hold_only"], candidate=True)
-    control_integrity = _require_keys(
-        cells["acoustic"]["turn_integrity"],
-        {"finals", "zero_final_rows", "single_final_rows", "multi_final_rows"},
+    _validate_cell_report(
+        cells["acoustic"], candidate=False, reset_accumulate=False
     )
-    candidate_integrity = _require_keys(
-        cells["prosody_hold_only"]["turn_integrity"],
-        {"finals", "zero_final_rows", "single_final_rows", "multi_final_rows"},
+    _validate_cell_report(
+        cells["prosody_hold_only"], candidate=True, reset_accumulate=False
     )
-    transition_counts = {
-        key: _nonnegative_int(item) for key, item in transitions.items()
-    }
-    control_marginals = {
-        bucket: sum(
-            transition_counts[f"{bucket}->{candidate_bucket}"]
-            for candidate_bucket in _FINAL_BUCKETS
-        )
-        for bucket in _FINAL_BUCKETS
-    }
-    candidate_marginals = {
-        bucket: sum(
-            transition_counts[f"{control_bucket}->{bucket}"]
-            for control_bucket in _FINAL_BUCKETS
-        )
-        for bucket in _FINAL_BUCKETS
-    }
-    expected_control_marginals = {
-        "zero": _nonnegative_int(control_integrity["zero_final_rows"]),
-        "single": _nonnegative_int(control_integrity["single_final_rows"]),
-        "multi": _nonnegative_int(control_integrity["multi_final_rows"]),
-    }
-    expected_candidate_marginals = {
-        "zero": _nonnegative_int(candidate_integrity["zero_final_rows"]),
-        "single": _nonnegative_int(candidate_integrity["single_final_rows"]),
-        "multi": _nonnegative_int(candidate_integrity["multi_final_rows"]),
-    }
-    control_accuracy = cells["acoustic"]["joined_selected_final_accuracy"]
-    candidate_accuracy = cells["prosody_hold_only"][
-        "joined_selected_final_accuracy"
-    ]
+    _validate_cell_report(
+        cells["prosody_reset_accumulate"],
+        candidate=True,
+        reset_accumulate=True,
+    )
+    _validate_comparison_report(
+        comparisons["prosody_hold_only_vs_acoustic"],
+        control_cell=cells["acoustic"],
+        candidate_cell=cells["prosody_hold_only"],
+    )
+    _validate_comparison_report(
+        comparisons["prosody_reset_accumulate_vs_acoustic"],
+        control_cell=cells["acoustic"],
+        candidate_cell=cells["prosody_reset_accumulate"],
+    )
+    _validate_comparison_report(
+        comparisons["prosody_reset_accumulate_vs_prosody_hold_only"],
+        control_cell=cells["prosody_hold_only"],
+        candidate_cell=cells["prosody_reset_accumulate"],
+    )
     if (
         report["schema_version"] != SCHEMA_VERSION
         or report["kind"] != KIND
@@ -1436,32 +1541,20 @@ def _validate_report(value: object) -> None:
             "policy_state": "fresh-per-row",
             "acoustic_rule2_ms": 800,
             "semantic_max_wait_ms": 1_600,
+            "logical_rule3_ms": 20_000,
             "complete_threshold": COMPLETE_THRESHOLD,
             "incomplete_threshold": INCOMPLETE_THRESHOLD,
             "asr_provider": ASR_PROVIDER,
             "asr_threads": ASR_THREADS,
         }
-        or sum(transition_counts.values()) != EXPECTED_CASES
-        or control_marginals != expected_control_marginals
-        or candidate_marginals != expected_candidate_marginals
-        or control_accuracy["reference_words"]
-        != candidate_accuracy["reference_words"]
-        or control_accuracy["reference_characters"]
-        != candidate_accuracy["reference_characters"]
-        or comparison["control_multi_to_candidate_single_rows"]
-        != transitions["multi->single"]
-        or comparison["control_single_to_candidate_multi_rows"]
-        != transitions["single->multi"]
-        or comparison["candidate_reduced_multi_rows"]
-        is not (transitions["multi->single"] > 0)
         or limitations
         != {
             "diagnostic_only": True,
             "capture_loop_counterfactual": True,
-            "native_endpoint_hold_only": True,
-            "native_hold_compatibility_only": True,
+            "hold_only_control_included": True,
+            "native_reset_accumulate_evaluated": True,
             "early_commit_evaluated": False,
-            "turn_repair_layer_evaluated": False,
+            "posthoc_turn_join_evaluated": False,
             "live_device_evidence": False,
             "model_quality_promotion": False,
             "runtime_default_authority": False,
@@ -1486,7 +1579,7 @@ def evaluate_edacc_endpoint_integrity(
     local_config_path: Path | str,
     smart_turn_model: Path | str,
 ) -> Mapping[str, object]:
-    """Execute both fixed cells and return one validated aggregate report."""
+    """Execute all three fixed cells and return one validated aggregate report."""
 
     try:
         prepared = prepare_production(
@@ -2002,7 +2095,7 @@ def _positive_int(value: str) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = _SafeArgumentParser(
         description=(
-            "Run the fixed EdAcc acoustic/Smart-Turn HOLD-only capture-loop "
+            "Run the fixed three-cell EdAcc acoustic/Smart-Turn capture-loop "
             "counterfactual and publish aggregate evidence."
         )
     )
@@ -2031,15 +2124,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         payload = _canonical_bytes(report) + b"\n"
         published_sha256 = _publish_private_report(args.report, payload)
-        candidate = report["cells"]["prosody_hold_only"]
-        comparison = report["comparison"]
+        cells = report["cells"]
+        comparisons = report["comparison"]
+        hold_only = cells["prosody_hold_only"]
+        reset_accumulate = cells["prosody_reset_accumulate"]
         receipt: Mapping[str, object] = {
             "ok": True,
             "quality_verdict": "diagnostic_only",
             "report_sha256": published_sha256,
             "rows": EXPECTED_CASES,
-            "candidate_hold_rows": candidate["endpoint_trace"]["hold_rows"],
-            "multi_row_repairs": comparison[
+            "hold_only_hold_rows": hold_only["endpoint_trace"]["hold_rows"],
+            "reset_accumulate_hold_rows": reset_accumulate["endpoint_trace"][
+                "hold_rows"
+            ],
+            "reset_multi_row_repairs_vs_acoustic": comparisons[
+                "prosody_reset_accumulate_vs_acoustic"
+            ]["control_multi_to_candidate_single_rows"],
+            "reset_multi_row_repairs_vs_hold_only": comparisons[
+                "prosody_reset_accumulate_vs_prosody_hold_only"
+            ][
                 "control_multi_to_candidate_single_rows"
             ],
         }
@@ -2079,16 +2182,22 @@ def _validated_worker_receipt(
                 "quality_verdict",
                 "report_sha256",
                 "rows",
-                "candidate_hold_rows",
-                "multi_row_repairs",
+                "hold_only_hold_rows",
+                "reset_accumulate_hold_rows",
+                "reset_multi_row_repairs_vs_acoustic",
+                "reset_multi_row_repairs_vs_hold_only",
             }
             or value.get("ok") is not True
             or value.get("quality_verdict") != "diagnostic_only"
             or not _is_sha256(value.get("report_sha256"))
             or value.get("rows") != EXPECTED_CASES
-            or _nonnegative_int(value.get("candidate_hold_rows"))
+            or _nonnegative_int(value.get("hold_only_hold_rows"))
             > EXPECTED_CASES
-            or _nonnegative_int(value.get("multi_row_repairs"))
+            or _nonnegative_int(value.get("reset_accumulate_hold_rows"))
+            > EXPECTED_CASES
+            or _nonnegative_int(value.get("reset_multi_row_repairs_vs_acoustic"))
+            > EXPECTED_CASES
+            or _nonnegative_int(value.get("reset_multi_row_repairs_vs_hold_only"))
             > EXPECTED_CASES
         ):
             raise EdaccEndpointIntegrityError()
@@ -2216,15 +2325,25 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             )
             retained_cells = retained_report["cells"]
             retained_control = retained_cells["acoustic"]
-            retained_candidate = retained_cells["prosody_hold_only"]
-            retained_comparison = retained_report["comparison"]
+            retained_hold_only = retained_cells["prosody_hold_only"]
+            retained_reset = retained_cells["prosody_reset_accumulate"]
+            retained_comparisons = retained_report["comparison"]
             if (
                 receipt["rows"] != retained_control["coverage"]["rows"]
-                or receipt["rows"] != retained_candidate["coverage"]["rows"]
-                or receipt["candidate_hold_rows"]
-                != retained_candidate["endpoint_trace"]["hold_rows"]
-                or receipt["multi_row_repairs"]
-                != retained_comparison["control_multi_to_candidate_single_rows"]
+                or receipt["rows"] != retained_hold_only["coverage"]["rows"]
+                or receipt["rows"] != retained_reset["coverage"]["rows"]
+                or receipt["hold_only_hold_rows"]
+                != retained_hold_only["endpoint_trace"]["hold_rows"]
+                or receipt["reset_accumulate_hold_rows"]
+                != retained_reset["endpoint_trace"]["hold_rows"]
+                or receipt["reset_multi_row_repairs_vs_acoustic"]
+                != retained_comparisons[
+                    "prosody_reset_accumulate_vs_acoustic"
+                ]["control_multi_to_candidate_single_rows"]
+                or receipt["reset_multi_row_repairs_vs_hold_only"]
+                != retained_comparisons[
+                    "prosody_reset_accumulate_vs_prosody_hold_only"
+                ]["control_multi_to_candidate_single_rows"]
             ):
                 raise EdaccEndpointIntegrityError()
         code = returncode

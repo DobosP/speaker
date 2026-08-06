@@ -127,6 +127,7 @@ _FIELD_SYMBOLS = {
             "interrupted",
             "dropped",
             "failed",
+            "reset",
         }
     ),
     "playback_kind": frozenset(
@@ -159,6 +160,7 @@ class DiagnosticStage(str, Enum):
     ASR_STREAMING_FINAL = "asr_streaming_final"
     ENDPOINT_PAUSE_OBSERVED = "endpoint_pause_observed"
     ENDPOINT_EVALUATED = "endpoint_evaluated"
+    ENDPOINT_HELD_RESET = "endpoint_held_reset"
     ENDPOINT_COMMITTED = "endpoint_committed"
     FINALIZER_QUEUED = "finalizer_queued"
     FINALIZER_STARTED = "finalizer_started"
@@ -203,11 +205,20 @@ class EndpointReplayConfig:
     pause_margin: float = 0.15
     pause_min_samples: int = 8
     initial_pause_samples_sec: tuple[float, ...] = ()
+    semantic_hold_reset_enabled: bool = False
+    rule3_min_utterance_length_sec: float = 20.0
 
     def __post_init__(self) -> None:
-        if self.algorithm != "adaptive_endpoint_v1":
+        if self.algorithm not in (
+            "adaptive_endpoint_v1",
+            "adaptive_endpoint_v2",
+        ):
             raise ValueError("unknown endpoint replay algorithm")
-        for name in ("enabled", "adaptive_floor"):
+        for name in (
+            "enabled",
+            "adaptive_floor",
+            "semantic_hold_reset_enabled",
+        ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a boolean")
         for name in (
@@ -219,6 +230,7 @@ class EndpointReplayConfig:
             "high_confidence_score",
             "pause_quantile",
             "pause_margin",
+            "rule3_min_utterance_length_sec",
         ):
             value = _optional_number(name, getattr(self, name))
             assert value is not None
@@ -232,9 +244,23 @@ class EndpointReplayConfig:
             raise ValueError("initial pause state exceeds pause_window")
         for sample in self.initial_pause_samples_sec:
             _optional_number("initial_pause_samples_sec", sample)
+        if self.rule3_min_utterance_length_sec <= 0.0:
+            raise ValueError("rule3_min_utterance_length_sec must be positive")
+        if self.algorithm == "adaptive_endpoint_v1":
+            if (
+                self.semantic_hold_reset_enabled
+                or self.rule3_min_utterance_length_sec != 20.0
+            ):
+                raise ValueError(
+                    "endpoint replay v1 cannot configure semantic reset"
+                )
+        elif not self.semantic_hold_reset_enabled or not self.enabled:
+            raise ValueError(
+                "endpoint replay v2 requires enabled semantic reset"
+            )
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "algorithm": self.algorithm,
             "enabled": self.enabled,
             "min_silence_sec": self.min_silence_sec,
@@ -250,6 +276,14 @@ class EndpointReplayConfig:
             "pause_min_samples": self.pause_min_samples,
             "initial_pause_samples_sec": list(self.initial_pause_samples_sec),
         }
+        if self.algorithm == "adaptive_endpoint_v2":
+            payload.update(
+                semantic_hold_reset_enabled=self.semantic_hold_reset_enabled,
+                rule3_min_utterance_length_sec=(
+                    self.rule3_min_utterance_length_sec
+                ),
+            )
+        return payload
 
     @classmethod
     def from_payload(cls, payload: object) -> "EndpointReplayConfig":
@@ -271,6 +305,12 @@ class EndpointReplayConfig:
             "pause_min_samples",
             "initial_pause_samples_sec",
         }
+        algorithm = payload.get("algorithm")
+        if algorithm == "adaptive_endpoint_v2":
+            expected |= {
+                "semantic_hold_reset_enabled",
+                "rule3_min_utterance_length_sec",
+            }
         if set(payload) != expected:
             raise ValueError("endpoint replay config has an invalid shape")
         values = dict(payload)
@@ -327,7 +367,19 @@ _STAGE_FIELDS: dict[DiagnosticStage, tuple[frozenset[str], frozenset[str]]] = {
             "early_endpoint_allowed",
             "trailing_silence_sec",
             "boolean_value",
+            "native_acoustic_endpoint",
+            "semantic_hold_active",
+            "hard_boundary",
+            "utterance_elapsed_sec",
         },
+    ),
+    DiagnosticStage.ENDPOINT_HELD_RESET: (
+        frozenset(
+            {"span", "stream_id", "utterance_id", "ordinal", "outcome"}
+        ),
+        frozenset(
+            {"span", "stream_id", "utterance_id", "ordinal", "outcome"}
+        ),
     ),
     DiagnosticStage.ENDPOINT_COMMITTED: (
         frozenset(
@@ -720,11 +772,16 @@ class DiagnosticObservation:
     playback_kind: Optional[str] = None
     numeric_value: Optional[float] = None
     support: Optional[int] = None
+    ordinal: Optional[int] = None
     boolean_value: Optional[bool] = None
     acoustic_endpoint: Optional[bool] = None
+    native_acoustic_endpoint: Optional[bool] = None
+    semantic_hold_active: Optional[bool] = None
+    hard_boundary: Optional[bool] = None
     vad_active: Optional[bool] = None
     early_endpoint_allowed: Optional[bool] = None
     trailing_silence_sec: Optional[float] = None
+    utterance_elapsed_sec: Optional[float] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage, DiagnosticStage):
@@ -750,12 +807,16 @@ class DiagnosticObservation:
             _closed_symbol(name, getattr(self, name))
         _optional_number("numeric_value", self.numeric_value)
         _optional_non_negative_int("support", self.support)
+        _optional_non_negative_int("ordinal", self.ordinal)
         if self.boolean_value is not None and not isinstance(
             self.boolean_value, bool
         ):
             raise TypeError("boolean_value must be a boolean")
         for name in (
             "acoustic_endpoint",
+            "native_acoustic_endpoint",
+            "semantic_hold_active",
+            "hard_boundary",
             "vad_active",
             "early_endpoint_allowed",
         ):
@@ -764,6 +825,8 @@ class DiagnosticObservation:
                 raise TypeError(f"{name} must be a boolean")
         if self.trailing_silence_sec is not None:
             _finite_clock("trailing_silence_sec", self.trailing_silence_sec)
+        if self.utterance_elapsed_sec is not None:
+            _finite_clock("utterance_elapsed_sec", self.utterance_elapsed_sec)
         present = {
             name
             for name in (
@@ -783,11 +846,16 @@ class DiagnosticObservation:
                 "playback_kind",
                 "numeric_value",
                 "support",
+                "ordinal",
                 "boolean_value",
                 "acoustic_endpoint",
+                "native_acoustic_endpoint",
+                "semantic_hold_active",
+                "hard_boundary",
                 "vad_active",
                 "early_endpoint_allowed",
                 "trailing_silence_sec",
+                "utterance_elapsed_sec",
             )
             if getattr(self, name) is not None
         }
@@ -821,11 +889,16 @@ class DiagnosticObservation:
             "playback_kind",
             "numeric_value",
             "support",
+            "ordinal",
             "boolean_value",
             "acoustic_endpoint",
+            "native_acoustic_endpoint",
+            "semantic_hold_active",
+            "hard_boundary",
             "vad_active",
             "early_endpoint_allowed",
             "trailing_silence_sec",
+            "utterance_elapsed_sec",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -2352,11 +2425,16 @@ def _validate_observation_payload(
         "playback_kind",
         "numeric_value",
         "support",
+        "ordinal",
         "boolean_value",
         "acoustic_endpoint",
+        "native_acoustic_endpoint",
+        "semantic_hold_active",
+        "hard_boundary",
         "vad_active",
         "early_endpoint_allowed",
         "trailing_silence_sec",
+        "utterance_elapsed_sec",
     }
     if not set(record).issubset(allowed):
         return False
@@ -2412,11 +2490,15 @@ def _validate_observation_payload(
             _closed_symbol(name, record.get(name))  # type: ignore[arg-type]
         _optional_number("numeric_value", record.get("numeric_value"))  # type: ignore[arg-type]
         _optional_non_negative_int("support", record.get("support"))  # type: ignore[arg-type]
+        _optional_non_negative_int("ordinal", record.get("ordinal"))  # type: ignore[arg-type]
         boolean = record.get("boolean_value")
         if boolean is not None and not isinstance(boolean, bool):
             return False
         for name in (
             "acoustic_endpoint",
+            "native_acoustic_endpoint",
+            "semantic_hold_active",
+            "hard_boundary",
             "vad_active",
             "early_endpoint_allowed",
         ):
@@ -2426,6 +2508,9 @@ def _validate_observation_payload(
         trailing = record.get("trailing_silence_sec")
         if trailing is not None:
             _finite_clock("trailing_silence_sec", trailing)  # type: ignore[arg-type]
+        elapsed = record.get("utterance_elapsed_sec")
+        if elapsed is not None:
+            _finite_clock("utterance_elapsed_sec", elapsed)  # type: ignore[arg-type]
         present_fields = {
             name
             for name in (
@@ -2444,11 +2529,16 @@ def _validate_observation_payload(
                 "playback_kind",
                 "numeric_value",
                 "support",
+                "ordinal",
                 "boolean_value",
                 "acoustic_endpoint",
+                "native_acoustic_endpoint",
+                "semantic_hold_active",
+                "hard_boundary",
                 "vad_active",
                 "early_endpoint_allowed",
                 "trailing_silence_sec",
+                "utterance_elapsed_sec",
             )
             if record.get(name) is not None
         }
@@ -2476,7 +2566,7 @@ def _endpoint_commit_key(record: Mapping[str, object]) -> tuple[object, ...]:
 def _validate_endpoint_replay(
     records: list[dict[str, object]], config: EndpointReplayConfig
 ) -> bool:
-    """Replay every persisted turn decision and bind true decisions to commits."""
+    """Replay endpoint decisions plus every v2 native HOLD reset/terminal."""
 
     from .endpointing import (
         AdaptiveEndpointPolicy,
@@ -2508,20 +2598,102 @@ def _validate_endpoint_replay(
     except (TypeError, ValueError):
         return False
 
+    v2 = config.algorithm == "adaptive_endpoint_v2"
     pending_commit: Optional[dict[str, object]] = None
+    pending_reset: Optional[dict[str, object]] = None
+    held_turn_key: Optional[tuple[object, object]] = None
+    expected_reset_ordinal = 1
+
+    def turn_key(record: Mapping[str, object]) -> tuple[object, object]:
+        return (record.get("stream_id"), record.get("utterance_id"))
+
+    def reset_key(record: Mapping[str, object]) -> tuple[object, ...]:
+        return (
+            record.get("monotonic_ns"),
+            record.get("frame_index"),
+            record.get("bundle_sample_start"),
+            record.get("bundle_sample_end"),
+            record.get("stream_id"),
+            record.get("utterance_id"),
+        )
+
     try:
         for record in records:
             if record.get("kind") != "observation":
                 continue
             stage = DiagnosticStage(record["stage"])
             if stage is DiagnosticStage.ENDPOINT_PAUSE_OBSERVED:
-                if not config.enabled or pending_commit is not None:
+                if (
+                    not config.enabled
+                    or pending_commit is not None
+                    or pending_reset is not None
+                ):
                     return False
                 policy.observe_pause(float(record["numeric_value"]))
                 continue
             if stage is DiagnosticStage.ENDPOINT_EVALUATED:
-                if pending_commit is not None:
+                if pending_commit is not None or pending_reset is not None:
                     return False
+                v2_names = (
+                    "native_acoustic_endpoint",
+                    "semantic_hold_active",
+                    "hard_boundary",
+                    "utterance_elapsed_sec",
+                )
+                if not v2:
+                    if any(record.get(name) is not None for name in v2_names):
+                        return False
+                else:
+                    if any(record.get(name) is None for name in v2_names):
+                        return False
+                    current_turn_key = turn_key(record)
+                    if (
+                        current_turn_key != (None, None)
+                        and None in current_turn_key
+                    ):
+                        return False
+                    if (
+                        held_turn_key is not None
+                        and current_turn_key != held_turn_key
+                    ):
+                        return False
+                    native_endpoint = record["native_acoustic_endpoint"]
+                    hold_active = record["semantic_hold_active"]
+                    hard_boundary = record["hard_boundary"]
+                    if not all(
+                        isinstance(value, bool)
+                        for value in (
+                            native_endpoint,
+                            hold_active,
+                            hard_boundary,
+                        )
+                    ):
+                        return False
+                    if hold_active is not (held_turn_key is not None):
+                        return False
+                    vad_active = record["vad_active"]
+                    if not isinstance(vad_active, bool):
+                        return False
+                    trailing = float(record["trailing_silence_sec"])
+                    elapsed = float(record["utterance_elapsed_sec"])
+                    expected_hard = bool(
+                        hold_active
+                        and vad_active
+                        and elapsed >= config.rule3_min_utterance_length_sec
+                    )
+                    expected_max_silence = bool(
+                        hold_active
+                        and not vad_active
+                        and trailing >= config.max_silence_sec
+                    )
+                    if hard_boundary is not expected_hard:
+                        return False
+                    if record["acoustic_endpoint"] is not bool(
+                        native_endpoint
+                        or expected_hard
+                        or expected_max_silence
+                    ):
+                        return False
                 state = CompletionScoreState(record["completion_state"])
                 score = record.get("numeric_value")
                 if (state is CompletionScoreState.SCORED) != (score is not None):
@@ -2546,10 +2718,43 @@ def _validate_endpoint_replay(
                     return False
                 if decision.commit:
                     pending_commit = record
+                elif v2 and decision.basis.value == "semantic_hold":
+                    if (
+                        not config.semantic_hold_reset_enabled
+                        or turn_key(record) == (None, None)
+                        or record.get("native_acoustic_endpoint") is not True
+                        or record.get("hard_boundary") is not False
+                    ):
+                        return False
+                    pending_reset = record
+                continue
+            if stage is DiagnosticStage.ENDPOINT_HELD_RESET:
+                if (
+                    not v2
+                    or pending_reset is None
+                    or pending_commit is not None
+                    or reset_key(record) != reset_key(pending_reset)
+                    or record.get("ordinal") != expected_reset_ordinal
+                    or record.get("outcome") != "reset"
+                ):
+                    return False
+                current_turn_key = turn_key(record)
+                if (
+                    None in current_turn_key
+                    or (
+                        held_turn_key is not None
+                        and current_turn_key != held_turn_key
+                    )
+                ):
+                    return False
+                held_turn_key = current_turn_key
+                expected_reset_ordinal += 1
+                pending_reset = None
                 continue
             if stage is DiagnosticStage.ENDPOINT_COMMITTED:
                 if (
-                    pending_commit is None
+                    pending_reset is not None
+                    or pending_commit is None
                     or _endpoint_commit_key(record)
                     != _endpoint_commit_key(pending_commit)
                 ):
@@ -2559,7 +2764,22 @@ def _validate_endpoint_replay(
                     if identity is not None and record.get(name) != identity:
                         return False
                 pending_commit = None
-        return pending_commit is None
+                if held_turn_key is not None:
+                    if turn_key(record) != held_turn_key:
+                        return False
+                    held_turn_key = None
+                    expected_reset_ordinal = 1
+                continue
+            if stage is DiagnosticStage.FINAL_ABORTED and held_turn_key is not None:
+                if pending_reset is not None or turn_key(record) != held_turn_key:
+                    return False
+                held_turn_key = None
+                expected_reset_ordinal = 1
+        return (
+            pending_commit is None
+            and pending_reset is None
+            and held_turn_key is None
+        )
     except (KeyError, TypeError, ValueError):
         return False
 

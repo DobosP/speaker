@@ -20,6 +20,11 @@ from ._speech_evidence import (
     SpeechEvidenceProfile,
     SpeechEvidenceSnapshot,
 )
+from ._semantic_hold import (
+    HeldASRText,
+    SemanticEndpointBoundary,
+    resolve_semantic_endpoint_boundary,
+)
 
 
 class ASRSegment:
@@ -39,6 +44,7 @@ class ASRSegment:
         vad_available: bool,
         block_sec: float,
         speech_evidence_required: bool = False,
+        semantic_hold_reset_enabled: bool = False,
     ) -> None:
         self.sample_rate = max(1, int(sample_rate))
         self.pre_roll_samples = max(0, int(round(self.sample_rate * pre_roll_sec)))
@@ -67,6 +73,97 @@ class ASRSegment:
         self._speech_evidence: Optional[SpeechEvidenceAccumulator] = None
         self._speech_evidence_unavailable_reason: Optional[str] = None
         self._speech_evidence_bypass_reason: Optional[str] = None
+        self._held_asr_text = HeldASRText(
+            enabled=bool(semantic_hold_reset_enabled)
+        )
+
+    def bind_capture_scope(
+        self,
+        *,
+        capture_epoch: int,
+        capture_generation: int,
+    ) -> None:
+        """Bind capture-scoped transcript accumulation without changing PCM."""
+
+        self._held_asr_text.bind(
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+        )
+
+    def logical_text(
+        self,
+        current_native_text: str,
+        *,
+        capture_epoch: int,
+        capture_generation: int,
+    ) -> str:
+        return self._held_asr_text.compose(
+            current_native_text,
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+        )
+
+    def hold_native_endpoint(
+        self,
+        current_native_text: str,
+        *,
+        capture_epoch: int,
+        capture_generation: int,
+    ) -> int:
+        return self._held_asr_text.hold(
+            current_native_text,
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+        )
+
+    def consume_logical_final(
+        self,
+        current_native_text: str,
+        *,
+        capture_epoch: int,
+        capture_generation: int,
+    ) -> str:
+        return self._held_asr_text.consume(
+            current_native_text,
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+        )
+
+    @property
+    def semantic_hold_active(self) -> bool:
+        return self._held_asr_text.active
+
+    @property
+    def semantic_hold_reset_count(self) -> int:
+        return self._held_asr_text.reset_count
+
+    def semantic_endpoint_boundary(
+        self,
+        *,
+        enabled: bool,
+        native_acoustic_endpoint: bool,
+        now: float,
+        max_silence_sec: float,
+        rule3_min_utterance_length_sec: float,
+    ) -> SemanticEndpointBoundary:
+        """Return the effective endpoint while retaining native provenance."""
+
+        elapsed = 0.0
+        if self.first_speech_at is not None:
+            elapsed = max(
+                self.block_sec,
+                float(now) - self.first_speech_at + self.block_sec,
+            )
+        return resolve_semantic_endpoint_boundary(
+            enabled=enabled,
+            native_acoustic_endpoint=bool(native_acoustic_endpoint),
+            semantic_hold_active=self.semantic_hold_active,
+            vad_active=self.vad_active,
+            trailing_silence_sec=self.trailing_silence(now),
+            utterance_elapsed_sec=elapsed,
+            max_silence_sec=max_silence_sec,
+            rule3_min_utterance_length_sec=rule3_min_utterance_length_sec,
+        )
 
     def observe_vad(self, active: bool, now: float) -> Optional[float]:
         """Observe one post-front-end VAD verdict.
@@ -420,3 +517,4 @@ class ASRSegment:
         self._speech_evidence = None
         self._speech_evidence_unavailable_reason = None
         self._speech_evidence_bypass_reason = None
+        self._held_asr_text.clear()

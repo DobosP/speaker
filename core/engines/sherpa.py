@@ -140,6 +140,32 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 
+def _validate_semantic_hold_reset_config(config: "SherpaConfig") -> None:
+    """Validate the opt-in side effect before endpoint policy construction."""
+
+    enabled = getattr(config, "endpoint_reset_on_semantic_hold", False)
+    if not isinstance(enabled, bool):
+        raise TypeError("endpoint_reset_on_semantic_hold must be a boolean")
+    if not enabled:
+        return
+    if not isinstance(config.endpoint_enabled, bool) or not config.endpoint_enabled:
+        raise ValueError(
+            "endpoint_reset_on_semantic_hold requires endpoint_enabled=true"
+        )
+    for name in (
+        "endpoint_max_silence_sec",
+        "asr_rule3_min_utterance_length",
+    ):
+        value = getattr(config, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(f"{name} must be finite and positive")
+
+
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
 from ..asr_verifier import AsrConsensusOutcome, verify_asr_consensus
 from ..contract import is_stop_command, normalize_command
@@ -908,6 +934,12 @@ class SherpaConfig:
     # endpoint_min_silence_sec) and HOLD past rule2 (up to endpoint_max_silence_sec)
     # when it ends mid-phrase. Disabled (default) -> pure acoustic, unchanged.
     endpoint_enabled: bool = False
+    # Experimental native-stream compatibility for semantic HOLD.  Sherpa's
+    # endpoint latch belongs to one stream, so a held endpoint must reset that
+    # stream and accumulate its text while ASRSegment/VAD keep the logical turn.
+    # Opt-in only; requires a live VAD and preserves the established path when
+    # false. Promotion requires replay evidence plus owner live A/B validation.
+    endpoint_reset_on_semantic_hold: bool = False
     # MUST exceed the decoder's lookahead or an early commit clips the last word
     # (see core.endpointing). 0.5s is a safe default; validate on device.
     endpoint_min_silence_sec: float = 0.5
@@ -1825,6 +1857,7 @@ class SherpaOnnxEngine(AudioEngine):
         turn_detector=None,
         virtual_audio_binder=None,
     ):
+        _validate_semantic_hold_reset_config(config)
         self.config = config
         # Harness-only exact PipeWire proof. No SherpaConfig field exists, so a
         # production config or enrollment run cannot opt into this authority.
@@ -2419,7 +2452,22 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._endpoint_policy is not None
                     else ()
                 )
+                endpoint_replay_v2 = (
+                    {
+                        "semantic_hold_reset_enabled": True,
+                        "rule3_min_utterance_length_sec": float(
+                            self.config.asr_rule3_min_utterance_length
+                        ),
+                    }
+                    if self.config.endpoint_reset_on_semantic_hold
+                    else {}
+                )
                 endpoint_replay_config = EndpointReplayConfig(
+                    algorithm=(
+                        "adaptive_endpoint_v2"
+                        if self.config.endpoint_reset_on_semantic_hold
+                        else "adaptive_endpoint_v1"
+                    ),
                     enabled=self._endpoint_policy is not None,
                     min_silence_sec=endpoint_config.min_silence_sec,
                     max_silence_sec=endpoint_config.max_silence_sec,
@@ -2433,6 +2481,7 @@ class SherpaOnnxEngine(AudioEngine):
                     pause_margin=endpoint_config.pause_margin,
                     pause_min_samples=endpoint_config.pause_min_samples,
                     initial_pause_samples_sec=pause_samples,
+                    **endpoint_replay_v2,
                 )
 
                 path_by_role = {
@@ -3792,7 +3841,7 @@ class SherpaOnnxEngine(AudioEngine):
         if tracker is not None:
             acoustic, revision = tracker.terminal(emitted_at=detected_at)
         if self._cb.on_command_result is not None:
-            return self._emit_capture_callback(
+            delivered = self._emit_capture_callback(
                 self._cb.on_command_result,
                 CommandDetection(
                     keyword,
@@ -3801,11 +3850,19 @@ class SherpaOnnxEngine(AudioEngine):
                 ),
                 capture_epoch=capture_epoch,
             )
-        return self._emit_capture_callback(
-            self._cb.on_command,
-            keyword,
-            capture_epoch=capture_epoch,
-        )
+        else:
+            delivered = self._emit_capture_callback(
+                self._cb.on_command,
+                keyword,
+                capture_epoch=capture_epoch,
+            )
+        key = self._diagnostic_acoustic_key(acoustic)
+        if delivered and key is not None and key in self._diagnostic_spans:
+            # A semantic HOLD binds its endpoint span until the logical turn
+            # terminates.  KWS consumes that same turn before ASR can commit,
+            # so close the transcript-free replay lifecycle explicitly.
+            self._diagnostic_final_aborted(acoustic, revision, "command")
+        return delivered
 
     @staticmethod
     def _diagnostic_acoustic_key(
@@ -3847,11 +3904,16 @@ class SherpaOnnxEngine(AudioEngine):
         outcome: Optional[str] = None,
         numeric_value: Optional[float] = None,
         support: Optional[int] = None,
+        ordinal: Optional[int] = None,
         boolean_value: Optional[bool] = None,
         acoustic_endpoint: Optional[bool] = None,
+        native_acoustic_endpoint: Optional[bool] = None,
+        semantic_hold_active: Optional[bool] = None,
+        hard_boundary: Optional[bool] = None,
         vad_active: Optional[bool] = None,
         early_endpoint_allowed: Optional[bool] = None,
         trailing_silence_sec: Optional[float] = None,
+        utterance_elapsed_sec: Optional[float] = None,
         terminal: bool = False,
     ) -> bool:
         """Offer one typed observation without retaining transcript or PCM."""
@@ -3882,11 +3944,16 @@ class SherpaOnnxEngine(AudioEngine):
                 outcome=outcome,
                 numeric_value=numeric_value,
                 support=support,
+                ordinal=ordinal,
                 boolean_value=boolean_value,
                 acoustic_endpoint=acoustic_endpoint,
+                native_acoustic_endpoint=native_acoustic_endpoint,
+                semantic_hold_active=semantic_hold_active,
+                hard_boundary=hard_boundary,
                 vad_active=vad_active,
                 early_endpoint_allowed=early_endpoint_allowed,
                 trailing_silence_sec=trailing_silence_sec,
+                utterance_elapsed_sec=utterance_elapsed_sec,
             )
             accepted = self.record_diagnostic_observation(observation)
         except Exception:  # noqa: BLE001 - evidence cannot break the audio loop
@@ -4593,6 +4660,13 @@ class SherpaOnnxEngine(AudioEngine):
             self._virtual_route_failure = ""
             self._virtual_route_failure_in_progress = False
         self._build()
+        if (
+            self.config.endpoint_reset_on_semantic_hold
+            and self._vad is None
+        ):
+            raise RuntimeError(
+                "endpoint_reset_on_semantic_hold requires a live VAD model"
+            )
         self._running.set()
         in_dev = _norm_device(self.config.input_device)
         out_dev = _norm_device(self.config.output_device)
@@ -7164,6 +7238,9 @@ class SherpaOnnxEngine(AudioEngine):
             vad_available=self._vad is not None,
             block_sec=block_sec,
             speech_evidence_required=(self.config.final_speech_evidence_enabled),
+            semantic_hold_reset_enabled=(
+                self.config.endpoint_reset_on_semantic_hold
+            ),
         )
         media_session = self._capture_media_session
         media_finish = (
@@ -7195,6 +7272,10 @@ class SherpaOnnxEngine(AudioEngine):
             )
             self._acoustic_turn_tracker = acoustic_turn
         acoustic_turn.rotate_capture(
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+        )
+        segment.bind_capture_scope(
             capture_epoch=capture_epoch,
             capture_generation=capture_generation,
         )
@@ -7496,6 +7577,10 @@ class SherpaOnnxEngine(AudioEngine):
                     segment.reset()
                     capture_generation = captured.capture_generation
                     source_generation = captured.source_generation
+                    segment.bind_capture_scope(
+                        capture_epoch=capture_epoch,
+                        capture_generation=capture_generation,
+                    )
                     acoustic_turn.rotate_capture(
                         capture_epoch=capture_epoch,
                         capture_generation=capture_generation,
@@ -8560,22 +8645,33 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                         while recognizer.is_ready(stream):
                             recognizer.decode_stream(stream)
-                    text = recognizer.get_result(stream)
-                    if text and text != last_partial:
-                        last_partial = text
+                    native_text = recognizer.get_result(stream)
+                    logical_text = segment.logical_text(
+                        native_text,
+                        capture_epoch=capture_epoch,
+                        capture_generation=capture_generation,
+                    )
+                    if native_text and native_text != last_partial:
+                        last_partial = native_text
                         # Decoder advancement remains useful observability and is
                         # the fail-open speech clock when no VAD model exists. With
                         # VAD present it is NOT acoustic evidence: stable tokens
                         # during a long spoken word must not look like silence.
                         segment.observe_text(clock_now)
                         partials += 1
-                    if text and self._vad is not None and not segment.speech_seen:
+                    if (
+                        logical_text
+                        and self._vad is not None
+                        and not segment.speech_seen
+                    ):
                         # Do not leak idle decoder noise into the runtime's
                         # cancellation/continuation machinery. The first VAD
                         # onset resets this hypothesis before any fresh text
                         # can be published or finalized.
-                        log.debug("suppressing pre-VAD ASR partial: %r", text)
-                    elif text and text != last_published_partial:
+                        log.debug(
+                            "suppressing pre-VAD ASR partial: %r", logical_text
+                        )
+                    elif logical_text and logical_text != last_published_partial:
                         evidence_now = segment.speech_evidence_snapshot()
                         if not evidence_now.admitted:
                             # A partial cancels/supersedes work before the final.
@@ -8584,7 +8680,7 @@ class SherpaOnnxEngine(AudioEngine):
                             log.debug(
                                 "suppressing ASR partial without calibrated "
                                 "speech evidence: %r qualified=%d/%d run=%d/%d",
-                                text,
+                                logical_text,
                                 evidence_now.qualified_frames,
                                 evidence_now.required_qualified_frames,
                                 evidence_now.longest_qualified_run,
@@ -8594,9 +8690,9 @@ class SherpaOnnxEngine(AudioEngine):
                             # Casing only on partials (cheap, every block); the
                             # heavier punctuation model is reserved for the final.
                             shown = (
-                                restore_casing(text)
+                                restore_casing(logical_text)
                                 if self.config.asr_restore_casing
-                                else text
+                                else logical_text
                             )
                             log.debug("asr partial: %r", shown)
                             if not self._capture_epoch_is_current(capture_epoch):
@@ -8632,8 +8728,8 @@ class SherpaOnnxEngine(AudioEngine):
                                     acoustic=partial_acoustic,
                                     revision=partial_revision,
                                 )
-                            last_published_partial = text
-                    acoustic_endpoint = recognizer.is_endpoint(stream)
+                            last_published_partial = logical_text
+                    native_acoustic_endpoint = recognizer.is_endpoint(stream)
                     decision_now = clock_now
                     endpoint_silence = segment.trailing_silence(decision_now)
                     if segment.abandoned_without_text(
@@ -8663,10 +8759,35 @@ class SherpaOnnxEngine(AudioEngine):
                             capture_epoch=capture_epoch,
                         )
                         continue
+                    endpoint_boundary = None
+                    acoustic_endpoint = native_acoustic_endpoint
+                    if self.config.endpoint_reset_on_semantic_hold:
+                        endpoint_boundary = segment.semantic_endpoint_boundary(
+                            enabled=True,
+                            native_acoustic_endpoint=native_acoustic_endpoint,
+                            now=decision_now,
+                            max_silence_sec=float(
+                                self.config.endpoint_max_silence_sec
+                            ),
+                            rule3_min_utterance_length_sec=float(
+                                self.config.asr_rule3_min_utterance_length
+                            ),
+                        )
+                        acoustic_endpoint = (
+                            endpoint_boundary.effective_acoustic_endpoint
+                        )
+                    endpoint_partial = logical_text
+                    if (
+                        self.config.endpoint_reset_on_semantic_hold
+                        and not segment.speech_seen
+                    ):
+                        # The opt-in requires VAD precisely so idle decoder noise
+                        # can never become retained cross-stream transcript state.
+                        endpoint_partial = ""
                     owned_primary = owned_asr = None
                     if self._endpoint_audio_needed(
                         acoustic_endpoint=acoustic_endpoint,
-                        partial=last_partial,
+                        partial=endpoint_partial,
                         silence_sec=endpoint_silence,
                         allow_early=segment.early_endpoint_allowed,
                     ):
@@ -8678,7 +8799,7 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                     turn_observation, turn_decision = self._turn_evaluation(
                         acoustic_endpoint=acoustic_endpoint,
-                        partial=last_partial,
+                        partial=endpoint_partial,
                         silence_sec=endpoint_silence,
                         samples=endpoint_samples,
                         allow_early=segment.early_endpoint_allowed,
@@ -8709,9 +8830,69 @@ class SherpaOnnxEngine(AudioEngine):
                                 turn_observation.trailing_silence_sec
                             ),
                             boolean_value=turn_decision.commit,
+                            native_acoustic_endpoint=(
+                                endpoint_boundary.native_acoustic_endpoint
+                                if endpoint_boundary is not None
+                                else None
+                            ),
+                            semantic_hold_active=(
+                                endpoint_boundary.semantic_hold_active
+                                if endpoint_boundary is not None
+                                else None
+                            ),
+                            hard_boundary=(
+                                endpoint_boundary.hard_boundary
+                                if endpoint_boundary is not None
+                                else None
+                            ),
+                            utterance_elapsed_sec=(
+                                endpoint_boundary.utterance_elapsed_sec
+                                if endpoint_boundary is not None
+                                else None
+                            ),
                         )
-                    if turn_decision.commit:
-                        raw_final = recognizer.get_result(stream)
+                    reset_held_endpoint = False
+                    if self.config.endpoint_reset_on_semantic_hold:
+                        from ..endpointing import TurnDecisionBasis
+
+                        reset_held_endpoint = bool(
+                            native_acoustic_endpoint
+                            and turn_decision.basis
+                            is TurnDecisionBasis.SEMANTIC_HOLD
+                        )
+                    if reset_held_endpoint:
+                        native_held = native_text
+                        reset_ordinal = segment.hold_native_endpoint(
+                            native_held,
+                            capture_epoch=capture_epoch,
+                            capture_generation=capture_generation,
+                        )
+                        recognizer.reset(stream)
+                        self._confirm_handoff_stream_live = False
+                        last_partial = ""
+                        if diagnostic_frame_span is not None:
+                            from ..diagnostic_bundle import DiagnosticStage
+
+                            held_acoustic = acoustic_turn.current(
+                                emitted_at=decision_now
+                            )
+                            self._bind_diagnostic_span(
+                                held_acoustic, diagnostic_frame_span
+                            )
+                            self._diagnostic_observe(
+                                DiagnosticStage.ENDPOINT_HELD_RESET,
+                                at=decision_now,
+                                bundle_span=diagnostic_frame_span,
+                                acoustic=held_acoustic,
+                                ordinal=reset_ordinal,
+                                outcome="reset",
+                            )
+                    elif turn_decision.commit:
+                        raw_final = segment.consume_logical_final(
+                            recognizer.get_result(stream),
+                            capture_epoch=capture_epoch,
+                            capture_generation=capture_generation,
+                        )
                         recognizer.reset(stream)
                         self._confirm_handoff_stream_live = False
                         last_partial = ""
@@ -9003,6 +9184,7 @@ class SherpaOnnxEngine(AudioEngine):
                     TranscriptAbortReason.SHUTDOWN,
                     capture_epoch=capture_epoch,
                 )
+            segment.reset()
             try:
                 del self._capture_callback_context.epoch
             except AttributeError:

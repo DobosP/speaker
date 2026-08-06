@@ -128,6 +128,7 @@ def _cell_result(
     corpus: LoadedCorpus,
     *,
     candidate: bool,
+    reset_accumulate: bool = False,
     buckets: tuple[str, ...],
 ) -> endpoint_eval._CellResult:
     aggregate = endpoint_eval._CellAccumulator()
@@ -188,9 +189,12 @@ def _cell_result(
             ordinal=ordinal,
         )
     report = aggregate.report()
-    report["config_sha256"] = ("7" if candidate else "6") * 64
+    report["config_sha256"] = (
+        "9" if reset_accumulate else "7" if candidate else "6"
+    ) * 64
     report["provider"] = endpoint_eval.ASR_PROVIDER
     report["asr_threads"] = endpoint_eval.ASR_THREADS
+    report["semantic_hold_reset_enabled"] = reset_accumulate
     report["model_load_ms"] = 1.0
     report["endpoint_trace"] = trace.report()
     return endpoint_eval._CellResult(
@@ -201,8 +205,9 @@ def _cell_result(
 
 def _valid_report() -> dict[str, object]:
     corpus = _corpus()
-    control = ("multi",) + ("single",) * 23
-    candidate = ("single",) * 24
+    control = ("multi", "multi") + ("single",) * 22
+    hold_only = ("multi",) + ("single",) * 23
+    reset_accumulate = ("single",) * 24
     return endpoint_eval._report(
         prepared=_prepared(),
         model=_model(),
@@ -212,7 +217,13 @@ def _valid_report() -> dict[str, object]:
             "prosody_hold_only": _cell_result(
                 corpus,
                 candidate=True,
-                buckets=candidate,
+                buckets=hold_only,
+            ),
+            "prosody_reset_accumulate": _cell_result(
+                corpus,
+                candidate=True,
+                reset_accumulate=True,
+                buckets=reset_accumulate,
             ),
         },
     )
@@ -225,6 +236,7 @@ def test_exact_private_source_and_smart_turn_pins_are_fixed() -> None:
     assert endpoint_eval.EXPECTED_CASES == 24
     assert endpoint_eval.EXPECTED_SOURCE_BYTES == 4_790_400
     assert endpoint_eval.EXPECTED_STRATUM_COUNTS == (8, 8, 8)
+    assert endpoint_eval.LOGICAL_RULE3_SEC == 20.0
     assert endpoint_eval.SMART_TURN_MODEL_BYTES == 8_679_182
     assert endpoint_eval.SMART_TURN_MODEL_SHA256 == (
         "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
@@ -267,32 +279,51 @@ def test_capture_adapter_adds_exact_tail_and_no_invented_timing() -> None:
     assert adapted.word_intervals == ()
 
 
-def test_two_cells_are_exact_and_calibration_is_disabled() -> None:
+def test_three_cells_are_exact_and_calibration_is_disabled() -> None:
     model = _model()
     acoustic = endpoint_eval._cell_config(
         _base_config(), cell="acoustic", model=model
     )
-    candidate = endpoint_eval._cell_config(
+    hold_only = endpoint_eval._cell_config(
         _base_config(), cell="prosody_hold_only", model=model
+    )
+    reset_accumulate = endpoint_eval._cell_config(
+        _base_config(), cell="prosody_reset_accumulate", model=model
     )
     assert acoustic.endpoint_enabled is False
     assert acoustic.endpoint_prosody_model == ""
-    assert candidate.endpoint_enabled is True
-    assert candidate.endpoint_detector == "prosody"
-    assert candidate.endpoint_prosody_model == str(model.path)
-    for value in (acoustic, candidate):
+    assert acoustic.endpoint_reset_on_semantic_hold is False
+    assert hold_only.endpoint_enabled is True
+    assert hold_only.endpoint_detector == "prosody"
+    assert hold_only.endpoint_prosody_model == str(model.path)
+    assert hold_only.endpoint_reset_on_semantic_hold is False
+    assert reset_accumulate.endpoint_enabled is True
+    assert reset_accumulate.endpoint_detector == "prosody"
+    assert reset_accumulate.endpoint_prosody_model == str(model.path)
+    assert reset_accumulate.endpoint_reset_on_semantic_hold is True
+    for value in (acoustic, hold_only, reset_accumulate):
         assert value.provider == "cpu"
         assert value.asr_num_threads == 1
         assert value.input_calibrate is False
         assert value.input_calibrate_sec == 0.0
         assert value.asr_rule2_min_trailing_silence == 0.8
         assert value.endpoint_max_silence_sec == 1.6
+        assert value.asr_rule3_min_utterance_length == 20.0
         assert value.endpoint_complete_threshold == 0.6
         assert value.endpoint_incomplete_threshold == 0.3
         assert value.endpoint_adaptive_floor is False
 
 
-def test_run_cell_forces_hold_only_and_installs_fresh_policy_per_row(
+@pytest.mark.parametrize(
+    ("cell", "reset_accumulate"),
+    (
+        ("prosody_hold_only", False),
+        ("prosody_reset_accumulate", True),
+    ),
+)
+def test_run_semantic_cells_force_hold_only_and_install_fresh_policy_per_row(
+    cell: str,
+    reset_accumulate: bool,
     monkeypatch,
 ) -> None:
     policies = []
@@ -358,11 +389,12 @@ def test_run_cell_forces_hold_only_and_installs_fresh_policy_per_row(
     result = endpoint_eval._run_cell(
         _corpus(),
         endpoint_eval._cell_config(
-            _base_config(), cell="prosody_hold_only", model=_model()
+            _base_config(), cell=cell, model=_model()
         ),
-        cell="prosody_hold_only",
+        cell=cell,
     )
     assert result.report["coverage"] == {"rows": 24, "complete": True}
+    assert result.report["semantic_hold_reset_enabled"] is reset_accumulate
     assert received_allow_early == [False] * 24
     assert len(policies) == 24
     assert len({id(policy) for policy in policies}) == 24
@@ -433,6 +465,7 @@ def test_engine_attestation_rejects_lexical_fallback() -> None:
         endpoint_detector="prosody",
         endpoint_prosody_threads=1,
         endpoint_adaptive_floor=False,
+        endpoint_reset_on_semantic_hold=False,
     )
     engine = SimpleNamespace(
         _recognizer=object(),
@@ -443,10 +476,19 @@ def test_engine_attestation_rejects_lexical_fallback() -> None:
         _endpoint_wants_audio=True,
         config=config,
     )
-    endpoint_eval._attest_engine(engine, candidate=True)
+    endpoint_eval._attest_engine(engine, cell="prosody_hold_only")
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._attest_engine(
+            engine, cell="prosody_reset_accumulate"
+        )
+    config.endpoint_reset_on_semantic_hold = True
+    endpoint_eval._attest_engine(engine, cell="prosody_reset_accumulate")
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._attest_engine(engine, cell="prosody_hold_only")
+    config.endpoint_reset_on_semantic_hold = False
     engine._turn_detector = LexicalTurnCompletionDetector()
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
-        endpoint_eval._attest_engine(engine, candidate=True)
+        endpoint_eval._attest_engine(engine, cell="prosody_hold_only")
 
 
 @pytest.mark.parametrize(
@@ -462,6 +504,7 @@ def test_engine_attestation_rejects_cpu_execution_drift(
         provider="cpu",
         asr_num_threads=1,
         endpoint_enabled=False,
+        endpoint_reset_on_semantic_hold=False,
     )
     setattr(config, field, value)
     engine = SimpleNamespace(
@@ -472,7 +515,7 @@ def test_engine_attestation_rejects_cpu_execution_drift(
         config=config,
     )
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
-        endpoint_eval._attest_engine(engine, candidate=False)
+        endpoint_eval._attest_engine(engine, cell="acoustic")
 
 
 def test_aggregate_report_has_split_transitions_without_private_values() -> None:
@@ -481,18 +524,35 @@ def test_aggregate_report_has_split_transitions_without_private_values() -> None
     assert _PRIVATE_REFERENCE not in encoded
     assert _PRIVATE_HYPOTHESIS not in encoded
     assert "/private/" not in encoded
-    comparison = report["comparison"]
-    assert comparison["row_final_count_transitions"]["multi->single"] == 1
-    assert comparison["candidate_reduced_multi_rows"] is True
+    comparisons = report["comparison"]
+    assert comparisons["prosody_hold_only_vs_acoustic"][
+        "row_final_count_transitions"
+    ]["multi->single"] == 1
+    assert comparisons["prosody_reset_accumulate_vs_acoustic"][
+        "row_final_count_transitions"
+    ]["multi->single"] == 2
+    assert comparisons[
+        "prosody_reset_accumulate_vs_prosody_hold_only"
+    ]["row_final_count_transitions"]["multi->single"] == 1
+    assert comparisons["prosody_reset_accumulate_vs_acoustic"][
+        "candidate_reduced_multi_rows"
+    ] is True
     assert report["cells"]["prosody_hold_only"]["transcript_aborts"] == {
         "total": 1,
-        "terminal_events": 25,
+        "terminal_events": 26,
         "reason_counts": {
             reason.value: int(reason is TranscriptAbortReason.ABANDONED)
             for reason in TranscriptAbortReason
         },
     }
-    assert report["limitations"]["native_hold_compatibility_only"] is True
+    assert report["cells"]["acoustic"]["semantic_hold_reset_enabled"] is False
+    assert report["cells"]["prosody_hold_only"][
+        "semantic_hold_reset_enabled"
+    ] is False
+    assert report["cells"]["prosody_reset_accumulate"][
+        "semantic_hold_reset_enabled"
+    ] is True
+    assert report["limitations"]["native_reset_accumulate_evaluated"] is True
     assert report["limitations"]["model_quality_promotion"] is False
 
 
@@ -623,7 +683,13 @@ def test_private_report_requires_absolute_path_and_private_parent(
         "artifact_count",
         "source_revision",
         "runtime_digest",
+        "logical_rule3",
         "transition_marginal",
+        "reset_transition_marginal",
+        "comparison_missing",
+        "reset_flag",
+        "reset_zero_hold",
+        "reset_reference_totals",
         "word_geometry",
         "exact_with_errors",
         "character_geometry",
@@ -678,10 +744,47 @@ def test_report_numeric_and_binding_mutations_fail_closed(mutation: str) -> None
         report["bindings"]["production"]["source_revision"] = "not-a-revision"
     elif mutation == "runtime_digest":
         report["bindings"]["production"]["runtime_identities_sha256"] = "0"
+    elif mutation == "logical_rule3":
+        report["protocol"]["logical_rule3_ms"] = 19_000
     elif mutation == "transition_marginal":
-        transitions = report["comparison"]["row_final_count_transitions"]
+        transitions = report["comparison"]["prosody_hold_only_vs_acoustic"][
+            "row_final_count_transitions"
+        ]
         transitions["single->single"] -= 1
         transitions["zero->single"] += 1
+    elif mutation == "reset_transition_marginal":
+        transitions = report["comparison"][
+            "prosody_reset_accumulate_vs_prosody_hold_only"
+        ]["row_final_count_transitions"]
+        transitions["single->single"] -= 1
+        transitions["zero->single"] += 1
+    elif mutation == "comparison_missing":
+        report["comparison"].pop("prosody_reset_accumulate_vs_acoustic")
+    elif mutation == "reset_flag":
+        report["cells"]["prosody_reset_accumulate"][
+            "semantic_hold_reset_enabled"
+        ] = False
+    elif mutation == "reset_zero_hold":
+        reset_trace = report["cells"]["prosody_reset_accumulate"][
+            "endpoint_trace"
+        ]
+        reset_trace["evaluations"] -= 1
+        reset_trace["hold_rows"] = 0
+        reset_trace["hold_ticks"] = 0
+        reset_trace["state_counts"]["scored"] -= 1
+        reset_trace["basis_counts"]["semantic_hold"] = 0
+        reset_trace["state_transitions"]["scored->scored"] = 0
+        reset_trace["basis_transitions"]["semantic_hold->acoustic"] = 0
+    elif mutation == "reset_reference_totals":
+        reset_accuracy = report["cells"]["prosody_reset_accumulate"][
+            "joined_selected_final_accuracy"
+        ]
+        reset_accuracy["reference_words"] += 1
+        reset_accuracy["hypothesis_words"] += 1
+        reset_accuracy["wer"] = round(
+            reset_accuracy["word_errors"] / reset_accuracy["reference_words"],
+            4,
+        )
     elif mutation == "word_geometry":
         accuracy["hypothesis_words"] += 1
     elif mutation == "exact_with_errors":
@@ -740,8 +843,10 @@ def _guard_args(tmp_path: Path) -> list[str]:
 def _worker_success_bytes(
     report_sha256: str = "a" * 64,
     *,
-    candidate_hold_rows: int = 1,
-    multi_row_repairs: int = 1,
+    hold_only_hold_rows: int = 1,
+    reset_accumulate_hold_rows: int = 1,
+    reset_multi_row_repairs_vs_acoustic: int = 2,
+    reset_multi_row_repairs_vs_hold_only: int = 1,
 ) -> bytes:
     return (
         json.dumps(
@@ -750,8 +855,14 @@ def _worker_success_bytes(
                 "quality_verdict": "diagnostic_only",
                 "report_sha256": report_sha256,
                 "rows": 24,
-                "candidate_hold_rows": candidate_hold_rows,
-                "multi_row_repairs": multi_row_repairs,
+                "hold_only_hold_rows": hold_only_hold_rows,
+                "reset_accumulate_hold_rows": reset_accumulate_hold_rows,
+                "reset_multi_row_repairs_vs_acoustic": (
+                    reset_multi_row_repairs_vs_acoustic
+                ),
+                "reset_multi_row_repairs_vs_hold_only": (
+                    reset_multi_row_repairs_vs_hold_only
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -847,8 +958,10 @@ def test_guarded_parent_success_is_bounded_and_validated(
         "missing",
         "wrong_sha",
         "invalid_report",
-        "wrong_hold_summary",
-        "wrong_repair_summary",
+        "wrong_hold_only_summary",
+        "wrong_reset_hold_summary",
+        "wrong_acoustic_repair_summary",
+        "wrong_hold_only_repair_summary",
     ),
 )
 def test_guarded_parent_rejects_unverified_retained_report(
@@ -875,8 +988,18 @@ def test_guarded_parent_rejects_unverified_retained_report(
         )
         return 0, _worker_success_bytes(
             "a" * 64 if failure == "wrong_sha" else digest,
-            candidate_hold_rows=(0 if failure == "wrong_hold_summary" else 1),
-            multi_row_repairs=(0 if failure == "wrong_repair_summary" else 1),
+            hold_only_hold_rows=(
+                0 if failure == "wrong_hold_only_summary" else 1
+            ),
+            reset_accumulate_hold_rows=(
+                0 if failure == "wrong_reset_hold_summary" else 1
+            ),
+            reset_multi_row_repairs_vs_acoustic=(
+                0 if failure == "wrong_acoustic_repair_summary" else 2
+            ),
+            reset_multi_row_repairs_vs_hold_only=(
+                0 if failure == "wrong_hold_only_repair_summary" else 1
+            ),
         )
 
     monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", run_worker)
@@ -953,6 +1076,12 @@ def test_pre_post_binding_drift_fails_closed(monkeypatch, drift: str) -> None:
     candidate = _cell_result(
         corpus, candidate=True, buckets=("single",) * 24
     )
+    reset = _cell_result(
+        corpus,
+        candidate=True,
+        reset_accumulate=True,
+        buckets=("single",) * 24,
+    )
     monkeypatch.setattr(endpoint_eval, "prepare_production", lambda **_: prepared)
     monkeypatch.setattr(endpoint_eval, "load_production_corpus", lambda _: corpus)
     monkeypatch.setattr(endpoint_eval, "_base_config", lambda _: _base_config())
@@ -962,6 +1091,7 @@ def test_pre_post_binding_drift_fails_closed(monkeypatch, drift: str) -> None:
         lambda _corpus, _config, *, cell: {
             "acoustic": control,
             "prosody_hold_only": candidate,
+            "prosody_reset_accumulate": reset,
         }[cell],
     )
     model_values = iter(

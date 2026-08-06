@@ -1709,6 +1709,153 @@ def test_adaptive_endpoint_snapshot_and_pause_sequence_replay_exactly(
     assert not validate_manifest(manifest)
 
 
+def test_semantic_hold_reset_v2_validates_through_full_manifest(
+    tmp_path: Path,
+) -> None:
+    tracks, _timeline_path, manifest = _paths(tmp_path)
+    replay = EndpointReplayConfig(
+        algorithm="adaptive_endpoint_v2",
+        enabled=True,
+        min_silence_sec=0.7,
+        max_silence_sec=1.6,
+        complete_threshold=0.6,
+        incomplete_threshold=0.3,
+        semantic_hold_reset_enabled=True,
+        rule3_min_utterance_length_sec=20.0,
+    )
+    bundle = SynchronizedDiagnosticBundle(
+        tracks,
+        tmp_path / "run.timeline.jsonl",
+        manifest,
+        sample_rate=16_000,
+        endpoint_replay_config=replay,
+    )
+    hold_span = bundle.write_frame(_frame(4), _coordinate(1, 0, 12))
+    commit_span = bundle.write_frame(_frame(4), _coordinate(2, 12, 24))
+    assert hold_span is not None and commit_span is not None
+    stream_id = "sherpa-11111111111111111111111111111111"
+    utterance_id = "u1"
+    observations = (
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_EVALUATED,
+            monotonic_ns=10,
+            span=hold_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            reason="unknown",
+            basis="semantic_hold",
+            completion_state="scored",
+            numeric_value=0.05,
+            acoustic_endpoint=True,
+            native_acoustic_endpoint=True,
+            semantic_hold_active=False,
+            hard_boundary=False,
+            vad_active=False,
+            early_endpoint_allowed=True,
+            trailing_silence_sec=0.8,
+            utterance_elapsed_sec=1.0,
+            boolean_value=False,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_HELD_RESET,
+            monotonic_ns=10,
+            span=hold_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            ordinal=1,
+            outcome="reset",
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_EVALUATED,
+            monotonic_ns=20,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            reason="asr",
+            basis="acoustic",
+            completion_state="scored",
+            numeric_value=0.05,
+            acoustic_endpoint=True,
+            native_acoustic_endpoint=False,
+            semantic_hold_active=True,
+            hard_boundary=False,
+            vad_active=False,
+            early_endpoint_allowed=True,
+            trailing_silence_sec=1.6,
+            utterance_elapsed_sec=1.8,
+            boolean_value=True,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_COMMITTED,
+            monotonic_ns=20,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=1,
+            reason="asr",
+            basis="acoustic",
+            completion_state="scored",
+            numeric_value=0.05,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ASR_STREAMING_FINAL,
+            monotonic_ns=21,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=1,
+            outcome="nonempty",
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINALIZER_STARTED,
+            monotonic_ns=22,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=1,
+        ),
+    )
+    for observation in observations:
+        assert bundle.observe(observation)
+    assert bundle.write_final_model_input(
+        np.array([0.125, -0.25], dtype="float32"),
+        stream_id=stream_id,
+        utterance_id=utterance_id,
+        capture_epoch=3,
+        capture_generation=4,
+        revision=1,
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    ) is not None
+    for observation in (
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINAL_SELECTION,
+            monotonic_ns=23,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=1,
+            selected_source="streaming",
+            outcome="unavailable",
+            support=0,
+            boolean_value=False,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINAL_DISPATCHED,
+            monotonic_ns=24,
+            span=commit_span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=1,
+            outcome="callback_returned",
+        ),
+    ):
+        assert bundle.observe(observation)
+    bundle.close()
+
+    assert bundle.manifest_status is DiagnosticManifestStatus.COMPLETE
+    assert validate_manifest(manifest)
+
+
 def test_impossible_adaptive_pause_snapshot_fails_closed(tmp_path: Path) -> None:
     tracks, _timeline_path, manifest = _paths(tmp_path)
     bundle = SynchronizedDiagnosticBundle(

@@ -159,6 +159,7 @@ class ResumeTracker:
     runtime calls:
 
     * ``note_query(text)``    -- a normal final was dispatched (a new turn)
+    * ``replace_query(text)`` -- an accepted continuation started with composed text
     * ``note_spoken(text)``   -- legacy engine: a TTS sentence was admitted
     * ``stage_playback(...)`` -- receipt engine: register before playback
     * ``note_playback_started(...)`` -- first sink sample for that fragment
@@ -209,6 +210,18 @@ class ResumeTracker:
             self._heard_any = False
             self._cut = False
             self._cut_pending = False
+
+    def replace_query(self, text: str) -> None:
+        """Replace only the resumable query after a composed task starts.
+
+        Final admission already reset the playback window through
+        :meth:`note_query`.  A continuation can be composed later by the
+        supervisor, so this narrow update preserves any playback/cut evidence
+        that may have arrived in the meantime.
+        """
+
+        with self._lock:
+            self._query = text
 
     def clear_resume_lineage(self) -> None:
         """Forget resumable query/playback ownership but retain echo evidence.

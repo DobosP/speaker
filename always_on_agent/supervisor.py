@@ -162,6 +162,7 @@ class AgentSupervisor:
         defer_output_until_playback_receipt: bool = False,
         record_user_memory: Optional[Callable[[str], None]] = None,
         on_input_claimed: Optional[Callable[[int], None]] = None,
+        on_continuation_started: Optional[Callable[[int, int, str], None]] = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -199,6 +200,7 @@ class AgentSupervisor:
         self._admission_load_ceiling = float(admission_load_ceiling)
         self._on_turn_merged = on_turn_merged
         self._on_continuation_admitted = on_continuation_admitted
+        self._on_continuation_started = on_continuation_started
         self._on_input_claimed = on_input_claimed
         self._on_input_resolved = on_input_resolved
         self._record_user_memory = record_user_memory
@@ -2388,9 +2390,32 @@ class AgentSupervisor:
             self._rollback_task_start(task)
             raise
         if started is not False:
+            self._notify_continuation_started(task)
             return True
         self._rollback_task_start(task)
         return False
+
+    def _notify_continuation_started(self, task: AgentTask) -> None:
+        """Notify accepted composed lineage only after its worker starts."""
+
+        callback = self._on_continuation_started
+        continuation_of = task.metadata.get("continuation_of")
+        input_epoch = task.metadata.get("input_epoch")
+        input_generation = task.metadata.get("input_generation")
+        if (
+            callback is None
+            or not isinstance(continuation_of, str)
+            or not continuation_of
+            or type(input_epoch) is not int
+            or type(input_generation) is not int
+            or not isinstance(task.input_text, str)
+            or not task.input_text
+        ):
+            return
+        try:
+            callback(input_epoch, input_generation, task.input_text)
+        except Exception:  # noqa: BLE001 - resume bookkeeping must not break a task
+            log.exception("continuation-start callback failed")
 
     def _rollback_task_start(self, task: AgentTask) -> None:
         """Undo controller and actor ownership after synchronous start failure."""

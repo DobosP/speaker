@@ -477,6 +477,7 @@ class VoiceRuntime:
             load_fraction=admission_load,
             on_turn_merged=self.metrics.mark_merged_turn,
             on_continuation_admitted=self._clear_arrival_continuation,
+            on_continuation_started=self._on_continuation_started,
             on_input_claimed=self._mark_published_unheard_claimed,
             on_input_resolved=self._clear_published_unheard,
             record_user_memory=self._record_user_memory_ordered,
@@ -1329,6 +1330,35 @@ class VoiceRuntime:
                 self._arrival_continuations.clear()
             else:
                 self._arrival_continuations.pop(generation, None)
+
+    def _on_continuation_started(
+        self,
+        input_epoch: int,
+        input_generation: int,
+        composed_text: str,
+    ) -> None:
+        """Bind resume to the composed query only while its input is current."""
+
+        if (
+            type(input_epoch) is not int
+            or type(input_generation) is not int
+            or type(composed_text) is not str
+            or not composed_text
+        ):
+            return
+        with self._terminal_effect_lock:
+            if (
+                self._stopping
+                or self.supervisor.input_epoch != input_epoch
+                or self.supervisor.latest_input_generation != input_generation
+                or self.supervisor.latest_arrival_generation != input_generation
+                or self._latest_input_arrival_generation() != input_generation
+            ):
+                return
+            # The raw accepted final already opened this tracker turn. Replace
+            # only its query text: task output is queued behind the current bus
+            # dispatch, so no continuation TTS can be admitted before this seam.
+            self._resume.replace_query(composed_text)
 
     def _note_published_unheard(
         self,

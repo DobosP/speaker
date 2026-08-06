@@ -632,6 +632,89 @@ def test_continuation_merges_before_audio_into_single_turn():
     _drain_until_idle(supervisor)
 
 
+def test_continuation_start_notifies_only_after_worker_start(monkeypatch):
+    calls: list[tuple[object, ...]] = []
+    supervisor = AgentSupervisor(
+        on_continuation_started=lambda epoch, generation, text: calls.append(
+            ("callback", epoch, generation, text)
+        )
+    )
+    task = supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.ASSISTANT,
+            1.0,
+            "COMPOSED QUERY",
+            "test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    task.metadata.update(
+        {
+            "continuation_of": "parent-task",
+            "input_epoch": supervisor.input_epoch,
+            "input_generation": 0,
+        }
+    )
+    monkeypatch.setattr(
+        supervisor.tasks,
+        "start",
+        lambda started: calls.append(("worker", started.input_text)) or True,
+    )
+
+    try:
+        assert supervisor._start_task(task)  # noqa: SLF001
+        assert calls == [
+            ("worker", "COMPOSED QUERY"),
+            ("callback", 0, 0, "COMPOSED QUERY"),
+        ]
+    finally:
+        supervisor.cancel_all()
+
+
+def test_failed_or_faulting_continuation_notification_cannot_break_start(
+    monkeypatch,
+):
+    notified: list[str] = []
+
+    def fail_notification(_epoch, _generation, text):
+        notified.append(text)
+        raise RuntimeError("injected continuation callback fault")
+
+    supervisor = AgentSupervisor(on_continuation_started=fail_notification)
+
+    def continuation_task(text: str):
+        task = supervisor.tasks.create_task(
+            IntentDecision(
+                IntentKind.ASSISTANT,
+                1.0,
+                text,
+                "test",
+                mode=Mode.ASSISTANT,
+            )
+        )
+        task.metadata.update(
+            {
+                "continuation_of": "parent-task",
+                "input_epoch": supervisor.input_epoch,
+                "input_generation": 0,
+            }
+        )
+        return task
+
+    try:
+        monkeypatch.setattr(supervisor.tasks, "start", lambda _task: False)
+        assert not supervisor._start_task(  # noqa: SLF001
+            continuation_task("NOT STARTED")
+        )
+        assert notified == []
+
+        monkeypatch.setattr(supervisor.tasks, "start", lambda _task: True)
+        assert supervisor._start_task(continuation_task("STARTED"))  # noqa: SLF001
+        assert notified == ["STARTED"]
+    finally:
+        supervisor.cancel_all()
+
+
 def test_continuation_queues_behind_speaking_turn():
     classifier = ScriptedContinuationClassifier({"and also the forecast": CONTINUE})
     supervisor = _continuation_supervisor(classifier)

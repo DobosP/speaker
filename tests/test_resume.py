@@ -90,6 +90,17 @@ def test_a_new_query_clears_the_resumable_state():
     assert t.resume_prompt("continue") is None
 
 
+def test_replacing_composed_query_preserves_playback_and_cut_evidence():
+    t = _cut_story_tracker()
+
+    t.replace_query("Merged: moon phases; make it shorter")
+
+    prompt = t.resume_prompt("continue")
+    assert prompt is not None
+    assert "Merged: moon phases; make it shorter" in prompt
+    assert "spiral stairs" in prompt
+
+
 def test_cut_with_nothing_spoken_is_not_resumable():
     t = _live_tracker()
     t.note_query("Tell me a story")

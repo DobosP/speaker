@@ -996,6 +996,64 @@ def test_continuation_fences_pretoken_answer_before_its_gate_completes():
         runtime.stop()
 
 
+def test_accepted_preaudio_continuation_becomes_resume_query_after_barge():
+    original = "explain the moon phases"
+    addon = "make it shorter"
+    llm = _FirstPretokenBlockedEcho()
+    engine = ScriptedEngine(hold_speech=True)
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        unsure_acts=False,
+        continuation_config=ContinuationConfig(enabled=True),
+        resume_config=ResumeConfig(
+            enabled=True,
+            echo_guard_enabled=False,
+            template="RESUME<{query}>",
+        ),
+    )
+    runtime.start(run_bus=True)
+    try:
+        engine.final(original)
+        assert llm.first_started.wait(1.0)
+
+        engine.final(addon)
+        llm.release_first.set()
+        assert _wait_until(lambda: len(llm.prompts) >= 2)
+        assert _wait_until(lambda: engine.is_speaking)
+
+        accepted_merged = llm.prompts[1]
+        assert original in accepted_merged
+        assert addon in accepted_merged
+        assert engine.spoken[-1] == accepted_merged
+
+        engine.barge_in()
+        assert not engine.is_speaking
+        engine.final("continue")
+
+        assert _wait_until(lambda: len(llm.prompts) >= 3)
+        assert runtime.wait_idle(timeout=2.0, include_playback=False)
+        assert llm.prompts[2] == f"RESUME<{accepted_merged}>"
+        assert llm.prompts[2] != f"RESUME<{addon}>"
+
+        synthetic = [
+            event
+            for event in runtime.supervisor.state.event_log
+            if event.kind == EventKind.STT_FINAL
+            and event.payload.get("text") == llm.prompts[2]
+        ]
+        assert len(synthetic) == 1
+        assert synthetic[0].payload.get("owner_verified") is False
+        assert synthetic[0].payload.get("origin") == "unknown"
+        synthetic_metadata = synthetic[0].payload.get("metadata")
+        assert isinstance(synthetic_metadata, dict)
+        assert synthetic_metadata.get("post_barge_response_only") is True
+        assert synthetic_metadata.get("skip_user_memory") is True
+    finally:
+        llm.release_first.set()
+        runtime.stop()
+
+
 def test_preaudio_reservation_marks_victim_superseded_before_gate_finishes():
     """The watchdog must not diagnose a knowingly cancelled victim as stuck."""
     llm = _FirstPretokenBlockedEcho()
@@ -2130,11 +2188,15 @@ def test_backlogged_reserved_final_keeps_lineage_for_a_second_addon():
         runtime.stop()
 
 
-def test_nonassistant_reserved_final_discards_synthetic_metadata():
+def test_nonassistant_reserved_final_discards_synthetic_metadata(monkeypatch):
     admitted: list[int] = []
+    started_continuations: list[tuple[int, int, str]] = []
     supervisor = AgentSupervisor(
         continuation_config=ContinuationConfig(enabled=True),
         on_continuation_admitted=admitted.append,
+        on_continuation_started=lambda epoch, generation, text: (
+            started_continuations.append((epoch, generation, text))
+        ),
     )
     victim = supervisor.tasks.create_task(
         IntentDecision(
@@ -2160,25 +2222,67 @@ def test_nonassistant_reserved_final_discards_synthetic_metadata():
             "input_generation": generation,
         }
     )
+    assert supervisor.note_input_arrival(generation)
     assert supervisor.commit_input_generation(generation)
     started = []
-    supervisor._start_task = lambda task, *args, **kwargs: (  # type: ignore[method-assign]
-        started.append(task) or True
+    monkeypatch.setattr(
+        supervisor.tasks,
+        "start",
+        lambda task: started.append(task) or True,
     )
 
-    supervisor.handle_event(AgentEvent.final(raw, metadata=metadata))
+    try:
+        supervisor.handle_event(AgentEvent.final(raw, metadata=metadata))
 
-    assert len(started) == 1
-    task = started[0]
-    assert task.mode == Mode.RESEARCH
-    assert task.input_text == "that too"
-    assert not any(
-        key == "reserved_continuation"
-        or key == "skip_user_memory"
-        or key.startswith("continuation_")
-        for key in task.metadata
+        assert len(started) == 1
+        task = started[0]
+        assert task.mode == Mode.RESEARCH
+        assert task.input_text == "that too"
+        assert not any(
+            key == "reserved_continuation"
+            or key == "skip_user_memory"
+            or key.startswith("continuation_")
+            for key in task.metadata
+        )
+        assert admitted == [generation]
+        assert started_continuations == []
+    finally:
+        supervisor.cancel_all()
+
+
+@pytest.mark.parametrize("stale_by", ["input_epoch", "input_generation"])
+def test_stale_continuation_start_cannot_replace_newer_resume_query(stale_by):
+    runtime = VoiceRuntime(
+        ScriptedEngine(),
+        EchoLLM(),
+        resume_config=ResumeConfig(enabled=True, echo_guard_enabled=False),
     )
-    assert admitted == [generation]
+    try:
+        stale_epoch = runtime.supervisor.input_epoch
+        stale_generation = runtime._new_input_generation()  # noqa: SLF001
+        assert runtime.supervisor.commit_input_generation(stale_generation)
+
+        if stale_by == "input_epoch":
+            runtime.supervisor.cancel_all()
+        else:
+            current_generation = runtime._new_input_generation()  # noqa: SLF001
+            assert runtime.supervisor.commit_input_generation(current_generation)
+
+        runtime._resume.note_query("newer question")  # noqa: SLF001
+        runtime._on_continuation_started(  # noqa: SLF001
+            stale_epoch,
+            stale_generation,
+            "STALE COMPOSED QUERY",
+        )
+        runtime._resume.note_spoken("The newer answer started.")  # noqa: SLF001
+        runtime._resume.note_cut()  # noqa: SLF001
+
+        prompt = runtime._resume.preview_resume_prompt("continue")  # noqa: SLF001
+        assert prompt is not None
+        assert "newer question" in prompt
+        assert "STALE COMPOSED QUERY" not in prompt
+    finally:
+        runtime.stop()
 
 
 class _SpeakingThenBlockedEcho:

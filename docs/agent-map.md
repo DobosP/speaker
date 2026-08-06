@@ -26,6 +26,7 @@
 | Native capture latency/gaps | `core/media_session.py`, `core/engines/sherpa.py`, ADR-0088 | reader-time playback/source context + control-lane tests, then APM gate |
 | Post-ASR mailbox/order | `always_on_agent/event_bus.py`, ADR-0093 | `tests/test_event_bus.py` plus supervisor/playback/preprocessing race tests |
 | Session/task/tool/TTS ownership | `always_on_agent/session_actor.py`, `always_on_agent/tasks.py`, `always_on_agent/supervisor.py`, ADR-0086 | `tests/test_session_actor.py` plus focused cancellation/playback tests |
+| Accepted continuation → resume lineage | `always_on_agent/supervisor.py`, `core/runtime.py`, `core/resume.py`, ADR-0154 | successful/failed start, non-assistant rejection, stale epoch/generation, query-only tracker, and held-playback merge → barge → `continue` tests; then APM/DTD |
 | Trusted LiveKit publisher media | `core/engines/livekit_agents_session.py`, `core/engines/livekit_agents.py`, ADR-0096/0104 | fake-SDK manual-RoomIO publisher/route/disposal tests first; pinned SDK and self-hosted live A/B are separate promotion evidence |
 | Fixture/test update | `tests/barge_fixtures.py`, matching tests | targeted pytest |
 | Recording-driven STT/verifier | `core/config.py` final-STT profiles, `tools/recorded_stt_eval.py`, `tools/local_gpu_stt_eval.py`, `tools/stt_consensus_v2_eval.py`, `core/asr_verifier.py`, `core/engines/_faster_whisper.py` | explicit complete-profile aggregate endpoint-path A/B, focused resolver/verifier/adapter tests, then the same profiles through manual `./live.sh` A/B (ADR-0078/0080/0144) |

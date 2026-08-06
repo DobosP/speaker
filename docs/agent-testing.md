@@ -585,6 +585,16 @@ conversation turn-taking, room echo, owner identity, live audio, or a default
 change. Streaming deadline/backlog metrics are explicitly null/not applicable;
 only complete-PCM-to-final decode latency is meaningful (ADR-0102).
 
+The exact 2026-08-06 CUDA/FP16 run at `a46942c` used the freshly materialized
+24-case AMI close/far corpus for three repeats and completed 72/72 evaluations
+with tags `ami`, `close`, `far`, `isolated`, and `turn_transition` and zero
+disagreement. Overall/close/far WER was `.3797`/`.2025`/`.5570`;
+complete-PCM finalization p50/p95 was `28.562`/`80.935` ms and the final-only
+adapter emitted no partials. Preserve the private 16,062-byte mode-0600,
+single-link report with SHA-256
+`06e51d89536e19d7c2e232d7c11e9857c3bb95eab535cec79b2361ac535dfc47`.
+ADR-0151 records the evidence boundary and next gate.
+
 ## Exact Nemotron benchmark setup
 
 Start with an already-downloaded private wheelhouse, the official six-file

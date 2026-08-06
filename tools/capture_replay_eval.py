@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         LogicalTurnShadowSnapshot,
         LogicalTurnTerminalLineageSnapshot,
     )
+    from tools.capture_replay.async_delivery import AsyncFinalDeliveryObserver
 
 
 _SAFE_ERROR: Mapping[str, object] = {
@@ -107,7 +108,9 @@ _SAFE_FINAL_BACKENDS = frozenset(
 _SAFE_VERIFIER_BACKENDS = frozenset({"", "faster_whisper"})
 _MAX_REPEATS = 8
 _MAX_WATCHDOG_SECONDS = 7_200
+_ASYNC_FINAL_DRAIN_TIMEOUT_SECONDS = 120.0
 _MAX_RECEIPT_BYTES = 4_096
+_MAX_REPORT_BYTES = 16 * 1024 * 1024
 _WORKER_ENV = "SPEAKER_CAPTURE_REPLAY_WORKER"
 _LOWER_HEX = frozenset("0123456789abcdef")
 _MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
@@ -146,6 +149,10 @@ _LOGICAL_TURN_SHADOW_SOURCE_FILES = (
     "always_on_agent/logical_turn.py",
     "always_on_agent/logical_turn_shadow.py",
     "core/contract.py",
+)
+_ASYNC_TERMINAL_DELIVERY_SOURCE_FILES = (
+    "core/realtime_media_stage.py",
+    "tools/capture_replay/async_delivery.py",
 )
 
 
@@ -230,9 +237,11 @@ class _CaseCollector:
         self,
         stop: Callable[[], None],
         logical_turn_shadow: "LogicalTurnCompositionShadow | None" = None,
+        async_final_delivery: "AsyncFinalDeliveryObserver | None" = None,
     ) -> None:
         self._stop = stop
         self._logical_turn_shadow = logical_turn_shadow
+        self._async_final_delivery = async_final_delivery
         self._lock = threading.Lock()
         self._error = False
         self.partials: list[TimedHypothesis] = []
@@ -283,6 +292,24 @@ class _CaseCollector:
         except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
             self._shadow_failure()
 
+    def _observe_async_selected(self, result: FinalTranscript) -> None:
+        observer = self._async_final_delivery
+        if observer is None:
+            return
+        try:
+            observer.observe_selected(result)
+        except Exception:  # noqa: BLE001 - evaluator evidence must fail closed
+            self._fail()
+
+    def _observe_async_abort(self, result: TranscriptAbort) -> None:
+        observer = self._async_final_delivery
+        if observer is None:
+            return
+        try:
+            observer.observe_abort(result)
+        except Exception:  # noqa: BLE001 - evaluator evidence must fail closed
+            self._fail()
+
     @property
     def failed(self) -> bool:
         with self._lock:
@@ -329,6 +356,7 @@ class _CaseCollector:
         self._shadow_selected_terminal(result)
         with self._lock:
             self.finals.append(event)
+        self._observe_async_selected(result)
 
     def on_command(self, result: CommandDetection) -> None:
         try:
@@ -375,6 +403,7 @@ class _CaseCollector:
         self._shadow_abort_terminal(result)
         with self._lock:
             self.abort_reasons.append(result.reason)
+        self._observe_async_abort(result)
         if self._logical_turn_shadow is not None:
             try:
                 from always_on_agent.logical_turn import (
@@ -557,23 +586,35 @@ def _json_digest(value: object) -> str:
 def _evaluator_source_files(
     *,
     logical_turn_shadow: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> tuple[str, ...]:
-    if type(logical_turn_shadow) is not bool:
+    if (
+        type(logical_turn_shadow) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
+        or (logical_turn_async_terminal_delivery and not logical_turn_shadow)
+    ):
         raise CaptureReplayEvaluationError()
+    suffix: tuple[str, ...] = ()
     if logical_turn_shadow:
-        return _EVALUATOR_SOURCE_FILES + _LOGICAL_TURN_SHADOW_SOURCE_FILES
-    return _EVALUATOR_SOURCE_FILES
+        suffix += _LOGICAL_TURN_SHADOW_SOURCE_FILES
+    if logical_turn_async_terminal_delivery:
+        suffix += _ASYNC_TERMINAL_DELIVERY_SOURCE_FILES
+    return _EVALUATOR_SOURCE_FILES + suffix
 
 
 def _evaluator_source_digest(
     *,
     logical_turn_shadow: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
     try:
         for relative in _evaluator_source_files(
-            logical_turn_shadow=logical_turn_shadow
+            logical_turn_shadow=logical_turn_shadow,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
         ):
             snapshot = read_regular_bounded(
                 root / relative,
@@ -694,7 +735,10 @@ def _replay_config(
     *,
     provider: str | None,
     asr_threads: int | None,
+    async_final_delivery: bool = False,
 ) -> SherpaConfig:
+    if type(async_final_delivery) is not bool:
+        raise CaptureReplayEvaluationError()
     selected_provider = configured.provider if provider is None else provider
     if selected_provider not in _SAFE_PROVIDERS:
         raise CaptureReplayEvaluationError()
@@ -710,7 +754,7 @@ def _replay_config(
         configured,
         provider=selected_provider,
         asr_num_threads=threads,
-        asr_final_async=False,
+        asr_final_async=async_final_delivery,
         tts_model="",
         tts_tokens="",
         tts_data_dir="",
@@ -893,6 +937,8 @@ def _execute_case(
     case_index: int,
     repeat: int,
     logical_turn_shadow: "LogicalTurnCompositionShadow | None" = None,
+    async_final_delivery: "AsyncFinalDeliveryObserver | None" = None,
+    async_final_worker: object | None = None,
 ) -> ReplayRunRecord:
     if logical_turn_shadow is not None:
         from always_on_agent.logical_turn_shadow import (
@@ -904,11 +950,44 @@ def _execute_case(
             LogicalTurnCompositionShadow,
         ):
             raise CaptureReplayEvaluationError()
+    if (async_final_delivery is None) is not (async_final_worker is None):
+        raise CaptureReplayEvaluationError()
+    if async_final_delivery is not None:
+        from tools.capture_replay.async_delivery import (
+            AsyncFinalDeliveryObserver,
+            AsyncFinalWorkerHarness,
+        )
+
+        if (
+            not isinstance(async_final_delivery, AsyncFinalDeliveryObserver)
+            or not isinstance(async_final_worker, AsyncFinalWorkerHarness)
+            or logical_turn_shadow is None
+            or not logical_turn_shadow.terminal_lineage_enabled
+            or engine.config.asr_final_async is not True
+        ):
+            raise CaptureReplayEvaluationError()
     started = time.perf_counter()
     session: ReplayCaptureSession | None = None
     control_lane: CaptureControlLane | None = None
+    final_stage = None
+    async_delivery_completed = False
     engine._cb = EngineCallbacks()
     try:
+        if async_final_delivery is not None:
+            engine._maybe_setup_async_final()
+            final_stage = engine._final_stage
+            if final_stage is None:
+                raise CaptureReplayEvaluationError()
+            initial_stage = final_stage.snapshot()
+            if (
+                initial_stage.closed
+                or initial_stage.queued
+                or initial_stage.in_flight
+                or initial_stage.offered
+                or initial_stage.accepted
+                or initial_stage.finished
+            ):
+                raise CaptureReplayEvaluationError()
         _reset_case_frontends(engine)
         replay_case = _calibrate_case(engine, case)
         source = _ReplayInputIdentity()
@@ -927,6 +1006,7 @@ def _execute_case(
         collector = _CaseCollector(
             engine._running.clear,
             logical_turn_shadow,
+            async_final_delivery,
         )
         engine._cb = collector.callbacks()
 
@@ -960,10 +1040,22 @@ def _execute_case(
         }
         if logical_turn_shadow is not None:
             capture_options["logical_turn_shadow"] = logical_turn_shadow
+        if async_final_delivery is not None:
+            capture_options["close_logical_turn_shadow"] = False
         engine._capture_loop(**capture_options)
-        wall_seconds = time.perf_counter() - started
         if not session.naturally_exhausted or session.error is not None:
             raise CaptureReplayEvaluationError()
+        if async_final_delivery is not None:
+            assert async_final_worker is not None
+            assert final_stage is not None
+            async_final_worker.drain(
+                final_stage,
+                async_final_delivery,
+                timeout=_ASYNC_FINAL_DRAIN_TIMEOUT_SECONDS,
+            )
+            async_final_delivery.close()
+            async_delivery_completed = True
+        wall_seconds = time.perf_counter() - started
         return collector.record(
             case_index=case_index,
             repeat=repeat,
@@ -971,7 +1063,19 @@ def _execute_case(
             peak_rss_mb=_rss_mb(),
         )
     finally:
-        if logical_turn_shadow is not None:
+        safe_to_release_callbacks = (
+            async_final_delivery is None or async_delivery_completed
+        )
+        if (
+            async_final_delivery is not None
+            and not async_delivery_completed
+            and final_stage is not None
+        ):
+            try:
+                final_stage.close()
+            except Exception:  # noqa: BLE001 - guarded worker will fail closed
+                pass
+        if logical_turn_shadow is not None and safe_to_release_callbacks:
             try:
                 logical_turn_shadow.close()
             except Exception:  # noqa: BLE001 - replay cleanup remains private
@@ -989,7 +1093,8 @@ def _execute_case(
         engine._capture_control_lane = None
         engine._capture_media_session = None
         engine._stream_in = None
-        engine._cb = EngineCallbacks()
+        if safe_to_release_callbacks:
+            engine._cb = EngineCallbacks()
 
 
 def _validate_terminal_lineage_against_metrics(
@@ -1063,13 +1168,19 @@ def evaluate_capture_replay(
     asr_threads: int | None = None,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> Mapping[str, object]:
     """Run the configured production capture stack and return aggregate evidence."""
 
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise CaptureReplayEvaluationError()
     if (
@@ -1084,12 +1195,23 @@ def evaluate_capture_replay(
         configured,
         provider=provider,
         asr_threads=asr_threads,
+        async_final_delivery=logical_turn_async_terminal_delivery,
     )
     configured_digest = _json_digest(asdict(configured))
     executed_digest = _json_digest(asdict(executed))
     artifact_digest = _artifact_metadata_digest(executed)
-    source_files = _evaluator_source_files(logical_turn_shadow=logical_turn_shadow)
-    source_digest = _evaluator_source_digest(logical_turn_shadow=logical_turn_shadow)
+    source_files = _evaluator_source_files(
+        logical_turn_shadow=logical_turn_shadow,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
+    )
+    source_digest = _evaluator_source_digest(
+        logical_turn_shadow=logical_turn_shadow,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
+    )
 
     build_started = time.perf_counter()
     with _quiet_model_output():
@@ -1102,6 +1224,14 @@ def evaluate_capture_replay(
             engine._final_recognizer is not None
         ):
             raise CaptureReplayEvaluationError()
+        if logical_turn_async_terminal_delivery and (
+            (
+                engine._final_recognizer is None
+                and engine._final_verifier is None
+            )
+            or engine._final_stage is None
+        ):
+            raise CaptureReplayEvaluationError()
         engine.warm()
         verifier_probe = _install_verifier_probe(engine, executed)
     model_load_ms = (time.perf_counter() - build_started) * 1000.0
@@ -1111,6 +1241,12 @@ def evaluate_capture_replay(
     terminal_lineage_snapshots: list[
         "LogicalTurnTerminalLineageSnapshot"
     ] = []
+    async_delivery_snapshots: list[object] = []
+    async_final_worker = None
+    if logical_turn_async_terminal_delivery:
+        from tools.capture_replay.async_delivery import AsyncFinalWorkerHarness
+
+        async_final_worker = AsyncFinalWorkerHarness(engine)
     try:
         with _quiet_model_output():
             for repeat in range(repeats):
@@ -1124,13 +1260,25 @@ def evaluate_capture_replay(
                         shadow = LogicalTurnCompositionShadow(
                             terminal_lineage=logical_turn_terminal_lineage,
                         )
+                    async_delivery = None
+                    if logical_turn_async_terminal_delivery:
+                        from tools.capture_replay.async_delivery import (
+                            AsyncFinalDeliveryObserver,
+                        )
+
+                        async_delivery = AsyncFinalDeliveryObserver()
                     case_options: dict[str, object] = {
                         "case_index": case_index,
                         "repeat": repeat,
                     }
                     if shadow is not None:
                         case_options["logical_turn_shadow"] = shadow
+                    if async_delivery is not None:
+                        case_options["async_final_delivery"] = async_delivery
+                        case_options["async_final_worker"] = async_final_worker
                     records.append(_execute_case(engine, case, **case_options))
+                    if async_delivery is not None:
+                        async_delivery_snapshots.append(async_delivery.snapshot())
                     if shadow is not None:
                         shadow.close()
                         shadow_snapshots.append(shadow.snapshot())
@@ -1139,6 +1287,13 @@ def evaluate_capture_replay(
                                 shadow.terminal_lineage_snapshot()
                             )
     finally:
+        if async_final_worker is not None:
+            try:
+                async_final_worker.close(
+                    timeout=_ASYNC_FINAL_DRAIN_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                raise CaptureReplayEvaluationError() from None
         decode_session = engine._streaming_decode_session
         if decode_session is not None and not decode_session.closed:
             try:
@@ -1147,7 +1302,12 @@ def evaluate_capture_replay(
                 raise CaptureReplayEvaluationError() from None
     verify_corpus_snapshot(corpus)
     if (
-        _evaluator_source_digest(logical_turn_shadow=logical_turn_shadow)
+        _evaluator_source_digest(
+            logical_turn_shadow=logical_turn_shadow,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
+        )
         != source_digest
     ):
         raise CaptureReplayEvaluationError()
@@ -1192,7 +1352,11 @@ def evaluate_capture_replay(
                 _SAFE_VERIFIER_BACKENDS,
             ),
             "asr_final_verifier_execution": verifier_execution,
-            "final_execution": "inline-deterministic-replay",
+            "final_execution": (
+                "post-capture-dedicated-worker-drain"
+                if logical_turn_async_terminal_delivery
+                else "inline-deterministic-replay"
+            ),
             "streaming_decode_execution": streaming_decode_execution,
             "public_identity_models_loaded": False,
             "output_models_loaded": False,
@@ -1228,6 +1392,23 @@ def evaluate_capture_replay(
         )
         result["schema_version"] = 3
         result["logical_turn_terminal_lineage"] = terminal_report
+    if logical_turn_async_terminal_delivery:
+        from tools.capture_replay.async_delivery import (
+            aggregate_async_final_delivery,
+            validate_async_final_delivery_against_sections,
+        )
+
+        if len(async_delivery_snapshots) != len(corpus.cases) * repeats:
+            raise CaptureReplayEvaluationError()
+        async_report = aggregate_async_final_delivery(async_delivery_snapshots)
+        validate_async_final_delivery_against_sections(
+            async_delivery=async_report,
+            raw_shadow=result["logical_turn_shadow"],
+            terminal_lineage=result["logical_turn_terminal_lineage"],
+            metrics=metrics,
+        )
+        result["schema_version"] = 4
+        result["logical_turn_async_terminal_delivery"] = async_report
     # Final serialization is also the aggregate/privacy type gate.
     _json_digest(result)
     return result
@@ -1323,6 +1504,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--logical-turn-async-terminal-delivery",
+        action="store_true",
+        help=(
+            "add transcript-free post-capture dedicated-final-worker delivery "
+            "lineage; requires both logical-turn lineage flags and does not "
+            "cover capture/worker concurrency or inline text parity"
+        ),
+    )
+    parser.add_argument(
         "--watchdog-seconds",
         type=_positive_int,
         default=1_800,
@@ -1335,13 +1525,21 @@ def _mode_schema_version(
     *,
     logical_turn_shadow: bool,
     logical_turn_terminal_lineage: bool,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> int:
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise CaptureReplayEvaluationError()
+    if logical_turn_async_terminal_delivery:
+        return 4
     if logical_turn_terminal_lineage:
         return 3
     if logical_turn_shadow:
@@ -1354,10 +1552,14 @@ def _validate_report_mode(
     *,
     logical_turn_shadow: bool,
     logical_turn_terminal_lineage: bool,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> int:
     expected_schema = _mode_schema_version(
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
     if (
         not isinstance(report, Mapping)
@@ -1366,6 +1568,8 @@ def _validate_report_mode(
         or ("logical_turn_shadow" in report) is not logical_turn_shadow
         or ("logical_turn_terminal_lineage" in report)
         is not logical_turn_terminal_lineage
+        or ("logical_turn_async_terminal_delivery" in report)
+        is not logical_turn_async_terminal_delivery
     ):
         raise CaptureReplayEvaluationError()
     if logical_turn_shadow:
@@ -1387,6 +1591,21 @@ def _validate_report_mode(
             terminal_lineage=report["logical_turn_terminal_lineage"],
             metrics=report["metrics"],
         )
+    if logical_turn_async_terminal_delivery:
+        from tools.capture_replay.async_delivery import (
+            validate_async_final_delivery_against_sections,
+            validate_async_final_delivery_report,
+        )
+
+        validate_async_final_delivery_report(
+            report["logical_turn_async_terminal_delivery"]
+        )
+        validate_async_final_delivery_against_sections(
+            async_delivery=report["logical_turn_async_terminal_delivery"],
+            raw_shadow=report["logical_turn_shadow"],
+            terminal_lineage=report["logical_turn_terminal_lineage"],
+            metrics=report["metrics"],
+        )
     return expected_schema
 
 
@@ -1397,6 +1616,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             logical_turn_shadow=args.logical_turn_shadow,
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
+            ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
             ),
         )
         corpus = load_corpus(args.corpus)
@@ -1423,12 +1645,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
             ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
+            ),
         )
         _validate_report_mode(
             report,
             logical_turn_shadow=args.logical_turn_shadow,
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
+            ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
             ),
         )
         payload = (
@@ -1454,6 +1682,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "logical_turn_terminal_lineage": (
                 args.logical_turn_terminal_lineage
             ),
+            "logical_turn_async_terminal_delivery": (
+                args.logical_turn_async_terminal_delivery
+            ),
         }
         code = 0
     except Exception:  # noqa: BLE001 - paths/transcript rows stay private
@@ -1477,10 +1708,14 @@ def _validated_worker_receipt(
     returncode: int,
     logical_turn_shadow: bool,
     logical_turn_terminal_lineage: bool,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> Mapping[str, object]:
     expected_schema = _mode_schema_version(
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
     if not payload or len(payload) > _MAX_RECEIPT_BYTES:
         raise CaptureReplayEvaluationError()
@@ -1502,6 +1737,7 @@ def _validated_worker_receipt(
                 "schema_version",
                 "logical_turn_shadow",
                 "logical_turn_terminal_lineage",
+                "logical_turn_async_terminal_delivery",
             }
             or decoded.get("execution_complete") is not True
             or decoded.get("quality_verdict") != "diagnostic_only"
@@ -1522,12 +1758,64 @@ def _validated_worker_receipt(
             or type(decoded.get("logical_turn_terminal_lineage")) is not bool
             or decoded["logical_turn_terminal_lineage"]
             is not logical_turn_terminal_lineage
+            or type(decoded.get("logical_turn_async_terminal_delivery"))
+            is not bool
+            or decoded["logical_turn_async_terminal_delivery"]
+            is not logical_turn_async_terminal_delivery
         ):
             raise CaptureReplayEvaluationError()
         return decoded
     if returncode != 2 or decoded != dict(_SAFE_ERROR):
         raise CaptureReplayEvaluationError()
     return decoded
+
+
+def _reopen_async_report(
+    path: Path,
+    receipt: Mapping[str, object],
+) -> None:
+    """Rebind a schema-4 child receipt to one stable private report snapshot."""
+
+    try:
+        metadata = Path(path).lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or (hasattr(os, "geteuid") and metadata.st_uid != os.geteuid())
+        ):
+            raise CaptureReplayEvaluationError()
+        snapshot = read_regular_bounded(
+            Path(path),
+            maximum_bytes=_MAX_REPORT_BYTES,
+        )
+        if hashlib.sha256(snapshot.data).hexdigest() != receipt["report_sha256"]:
+            raise CaptureReplayEvaluationError()
+        decoded = json.loads(snapshot.data.decode("utf-8"))
+        _validate_report_mode(
+            decoded,
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+        if (
+            decoded["corpus"]["manifest_sha256"] != receipt["corpus_sha256"]
+            or decoded["metrics"]["evaluations"] != receipt["evaluations"]
+            or decoded["metrics"]["coverage"]["complete"]
+            is not receipt["coverage_complete"]
+        ):
+            raise CaptureReplayEvaluationError()
+    except (
+        BoundedReadError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        CaptureReplayEvaluationError,
+    ):
+        raise CaptureReplayEvaluationError() from None
 
 
 def guarded_main(argv: Sequence[str] | None = None) -> int:
@@ -1542,6 +1830,9 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             logical_turn_shadow=args.logical_turn_shadow,
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
+            ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
             ),
         )
         if args.watchdog_seconds > _MAX_WATCHDOG_SECONDS:
@@ -1574,7 +1865,12 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
             ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
+            ),
         )
+        if args.logical_turn_async_terminal_delivery:
+            _reopen_async_report(args.report, result)
         code = completed.returncode
     except Exception:  # noqa: BLE001 - parent never exposes paths/model output
         result = _SAFE_ERROR

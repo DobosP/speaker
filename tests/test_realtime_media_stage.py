@@ -68,6 +68,64 @@ def test_stage_rejects_invalid_capacity_scope_item_and_timeout() -> None:
         stage.take(timeout=-0.1)
     with pytest.raises(ValueError, match="timeout"):
         stage.take(timeout=math.inf)
+    with pytest.raises(TypeError, match="timeout"):
+        stage.wait_idle(timeout=False)
+    with pytest.raises(TypeError, match="timeout"):
+        stage.wait_idle(timeout="0")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="timeout"):
+        stage.wait_idle(timeout=-0.1)
+    with pytest.raises(ValueError, match="timeout"):
+        stage.wait_idle(timeout=math.nan)
+    with pytest.raises(ValueError, match="timeout"):
+        stage.wait_idle(timeout=math.inf)
+
+
+def test_wait_idle_returns_immediately_for_empty_stage() -> None:
+    stage = RealtimeMediaStage[str](1)
+
+    assert stage.wait_idle(timeout=0.0)
+
+
+def test_wait_idle_blocks_until_exact_in_flight_item_finishes() -> None:
+    stage = RealtimeMediaStage[str](1)
+    scope = CaptureScope(capture_epoch=1, capture_generation=2)
+    offered = stage.offer_nowait(scope, "owned")
+    active = stage.take(timeout=0.0)
+    assert active is offered.item
+    waiting = Event()
+    returned: list[bool] = []
+
+    def wait_for_idle() -> None:
+        waiting.set()
+        returned.append(stage.wait_idle(timeout=1.0))
+
+    waiter = Thread(target=wait_for_idle)
+    waiter.start()
+    assert waiting.wait(timeout=1.0)
+    waiter.join(timeout=0.01)
+    assert waiter.is_alive()
+
+    assert stage.finish(active)
+    waiter.join(timeout=1.0)
+
+    assert not waiter.is_alive()
+    assert returned == [True]
+
+
+def test_wait_idle_times_out_while_queue_or_in_flight_ownership_remains() -> None:
+    stage = RealtimeMediaStage[str](2)
+    scope = CaptureScope(capture_epoch=3, capture_generation=4)
+    active = stage.offer_nowait(scope, "active").item
+    queued = stage.offer_nowait(scope, "queued").item
+    assert stage.take(timeout=0.0) is active
+
+    assert not stage.wait_idle(timeout=0.01)
+
+    retirement = stage.retire_scope(scope)
+    assert retirement.retired == (queued,)
+    assert not stage.wait_idle(timeout=0.01)
+    assert stage.finish(active)
+    assert stage.wait_idle(timeout=0.0)
 
 
 def test_stage_item_is_immutable_but_payload_ownership_stays_with_caller() -> None:

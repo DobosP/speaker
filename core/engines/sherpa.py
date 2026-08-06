@@ -6283,9 +6283,29 @@ class SherpaOnnxEngine(AudioEngine):
                 revision=revision,
             )
 
+    @staticmethod
+    def _notify_final_delivery_observer(
+        observer,
+        method_name: str,
+        *args,
+    ) -> None:
+        """Fail-contain one private async-final lifecycle observation."""
+
+        if observer is None:
+            return
+        try:
+            callback = getattr(observer, method_name)
+            if not callable(callback):
+                raise TypeError("final-delivery observer method is not callable")
+            callback(*args)
+        except Exception:  # noqa: BLE001 - evidence cannot alter final delivery
+            log.warning("final-delivery observer %s failed", method_name)
+
     def _final_worker(
         self,
         stage: Optional[RealtimeMediaStage[_FinalWorkItem]] = None,
+        *,
+        final_delivery_observer=None,
     ) -> None:
         """Drain one exact single-run final stage in capture order."""
 
@@ -6301,6 +6321,13 @@ class SherpaOnnxEngine(AudioEngine):
 
             work = stage_item.payload
             scope = stage_item.scope
+            self._notify_final_delivery_observer(
+                final_delivery_observer,
+                "begin_worker_item",
+                stage_item.sequence,
+                work.acoustic,
+                work.revision,
+            )
             previous_callback_epoch = getattr(
                 self._capture_callback_context, "epoch", None
             )
@@ -6351,7 +6378,13 @@ class SherpaOnnxEngine(AudioEngine):
                     capture_epoch=scope.capture_epoch,
                 )
             finally:
-                stage.finish(stage_item)
+                finish_succeeded = stage.finish(stage_item)
+                self._notify_final_delivery_observer(
+                    final_delivery_observer,
+                    "finish_worker_item",
+                    stage_item.sequence,
+                    finish_succeeded,
+                )
                 if previous_callback_epoch is None:
                     try:
                         del self._capture_callback_context.epoch
@@ -7231,7 +7264,10 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         close_decode_session: bool = True,
         logical_turn_shadow: Optional["LogicalTurnCompositionShadow"] = None,
+        close_logical_turn_shadow: bool = True,
     ) -> None:
+        if type(close_logical_turn_shadow) is not bool:
+            raise TypeError("close_logical_turn_shadow must be a boolean")
         if logical_turn_shadow is not None:
             from always_on_agent.logical_turn_shadow import (
                 LogicalTurnCompositionShadow,
@@ -7259,7 +7295,10 @@ class SherpaOnnxEngine(AudioEngine):
             if decode_session is not None:
                 decode_session.bind_current_thread()
                 owns_decode_session = True
-            self._capture_loop_body(decode_session)
+            self._capture_loop_body(
+                decode_session,
+                close_logical_turn_shadow=close_logical_turn_shadow,
+            )
         except Exception:
             if self._running.is_set():
                 log.exception(
@@ -7268,7 +7307,8 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             self._running.clear()
         finally:
-            self._logical_turn_shadow_close()
+            if close_logical_turn_shadow:
+                self._logical_turn_shadow_close()
             try:
                 del self._capture_callback_context.logical_turn_shadow
             except AttributeError:
@@ -7346,9 +7386,13 @@ class SherpaOnnxEngine(AudioEngine):
         decode_session: Optional[
             SherpaStreamingDecodeSession | SherpaStreamingDecodeOwner
         ],
+        *,
+        close_logical_turn_shadow: bool = True,
     ) -> None:
         import numpy as np
 
+        if type(close_logical_turn_shadow) is not bool:
+            raise TypeError("close_logical_turn_shadow must be a boolean")
         last_partial = ""
         last_published_partial = ""
         recognizer = decode_session
@@ -9413,7 +9457,8 @@ class SherpaOnnxEngine(AudioEngine):
                     TranscriptAbortReason.SHUTDOWN,
                     capture_epoch=capture_epoch,
                 )
-            self._logical_turn_shadow_close()
+            if close_logical_turn_shadow:
+                self._logical_turn_shadow_close()
             segment.reset()
             try:
                 del self._capture_callback_context.epoch

@@ -36,6 +36,12 @@ from tools.capture_replay.metrics import (
     ReplayRunRecord,
     TimedFinal,
 )
+from tools.capture_replay.async_delivery import (
+    AsyncFinalDeliverySnapshot,
+    aggregate_async_final_delivery,
+    validate_async_final_delivery_against_sections,
+    validate_async_final_delivery_report,
+)
 from tools.streaming_stt.corpus import CorpusCase, LoadedCorpus
 from tools import edacc_endpoint_integrity_eval as endpoint_eval
 
@@ -140,7 +146,10 @@ def _cell_result(
     buckets: tuple[str, ...],
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> endpoint_eval._CellResult:
+    if logical_turn_async_terminal_delivery and not logical_turn_terminal_lineage:
+        raise AssertionError("async fixture requires terminal lineage")
     aggregate = endpoint_eval._CellAccumulator()
     trace = endpoint_eval._TraceAccumulator(candidate=candidate)
     for ordinal, (case, bucket) in enumerate(zip(corpus.cases, buckets, strict=True)):
@@ -219,6 +228,13 @@ def _cell_result(
         report["logical_turn_shadow"] = _logical_turn_shadow_report(
             buckets,
             multi_epoch=reset_accumulate,
+        )
+    if logical_turn_async_terminal_delivery:
+        report["logical_turn_async_terminal_delivery"] = (
+            _async_delivery_report(
+                buckets,
+                include_abort=candidate,
+            )
         )
     return endpoint_eval._CellResult(
         report=report,
@@ -345,10 +361,72 @@ def _logical_turn_lineage_reports(
     )
 
 
+def _async_delivery_report(
+    buckets: tuple[str, ...],
+    *,
+    include_abort: bool,
+) -> dict[str, object]:
+    snapshots = []
+    for ordinal, bucket in enumerate(buckets):
+        finals = {"zero": 0, "single": 1, "multi": 2}[bucket]
+        inline_reasons = tuple(
+            int(
+                include_abort
+                and ordinal == 0
+                and reason is TranscriptAbortReason.INPUT_REJECTED
+            )
+            for reason in TranscriptAbortReason
+        )
+        snapshots.append(
+            AsyncFinalDeliverySnapshot(
+                worker_bound=True,
+                worker_distinct_from_capture=True,
+                worker_session_completed=True,
+                clean_drain=True,
+                stage_closed=True,
+                observer_closed=True,
+                worker_items_started=finals,
+                worker_items_finished=finals,
+                worker_selected_finals=finals,
+                inline_selected_finals=0,
+                worker_abort_reason_counts=tuple(
+                    0 for _reason in TranscriptAbortReason
+                ),
+                inline_abort_reason_counts=inline_reasons,
+                pre_drain_queued=finals,
+                pre_drain_in_flight=0,
+                pre_drain_finished=0,
+                final_queued=0,
+                final_in_flight=0,
+                offered=finals,
+                accepted=finals,
+                rejected_closed=0,
+                overflow_released=0,
+                scope_released=0,
+                scope_in_flight_cancelled=0,
+                close_released=0,
+                close_in_flight_cancelled=0,
+                finished=finals,
+                close_retired_queued=0,
+                close_cancelled_in_flight=0,
+                foreign_callbacks=0,
+                late_callbacks=0,
+                duplicate_terminals=0,
+                conflicting_terminals=0,
+                missing_worker_terminals=0,
+                finish_failures=0,
+                internal_errors=0,
+                exact=True,
+            )
+        )
+    return aggregate_async_final_delivery(snapshots)
+
+
 def _valid_report(
     *,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> dict[str, object]:
     corpus = _corpus()
     control = ("multi", "multi") + ("single",) * 22
@@ -367,6 +445,9 @@ def _valid_report(
                 logical_turn_terminal_lineage=(
                     logical_turn_terminal_lineage
                 ),
+                logical_turn_async_terminal_delivery=(
+                    logical_turn_async_terminal_delivery
+                ),
             ),
             "prosody_hold_only": _cell_result(
                 corpus,
@@ -375,6 +456,9 @@ def _valid_report(
                 logical_turn_shadow=logical_turn_shadow,
                 logical_turn_terminal_lineage=(
                     logical_turn_terminal_lineage
+                ),
+                logical_turn_async_terminal_delivery=(
+                    logical_turn_async_terminal_delivery
                 ),
             ),
             "prosody_reset_accumulate": _cell_result(
@@ -386,10 +470,16 @@ def _valid_report(
                 logical_turn_terminal_lineage=(
                     logical_turn_terminal_lineage
                 ),
+                logical_turn_async_terminal_delivery=(
+                    logical_turn_async_terminal_delivery
+                ),
             ),
         },
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
 
 
@@ -414,6 +504,11 @@ def test_shadow_source_binding_is_strictly_conditional() -> None:
         logical_turn_shadow=True,
         logical_turn_terminal_lineage=True,
     )
+    async_files = endpoint_eval._source_files(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
     assert default_files == endpoint_eval._SOURCE_FILES
     assert shadow_files == (
         *default_files,
@@ -433,10 +528,54 @@ def test_shadow_source_binding_is_strictly_conditional() -> None:
         logical_turn_shadow=True,
         logical_turn_terminal_lineage=True,
     ) != endpoint_eval._source_binding(logical_turn_shadow=True)
+    assert async_files == (
+        *terminal_files,
+        "core/realtime_media_stage.py",
+        "tools/capture_replay/async_delivery.py",
+    )
+    assert endpoint_eval._source_binding(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    ) != endpoint_eval._source_binding(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+    )
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
         endpoint_eval._source_files(logical_turn_terminal_lineage=True)
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._source_files(
+            logical_turn_shadow=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
         endpoint_eval._source_files(logical_turn_shadow=1)  # type: ignore[arg-type]
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._source_files(
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=1,  # type: ignore[arg-type]
+        )
+
+
+def test_async_mode_rejects_numeric_bool_before_preparation(monkeypatch) -> None:
+    prepared = []
+    monkeypatch.setattr(
+        endpoint_eval,
+        "prepare_production",
+        lambda **_: prepared.append(True),
+    )
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval.evaluate_edacc_endpoint_integrity(
+            corpus_path=Path("/private/corpus"),
+            config_path=Path("/private/config"),
+            local_config_path=Path("/private/local"),
+            smart_turn_model=Path("/private/model"),
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=1,  # type: ignore[arg-type]
+        )
+    assert prepared == []
 
 
 @pytest.mark.parametrize(
@@ -574,7 +713,11 @@ def test_run_semantic_cells_force_hold_only_and_install_fresh_policy_per_row(
             peak_rss_mb=32.0,
         )
 
-    monkeypatch.setattr(endpoint_eval, "_replay_config", lambda config, **_: config)
+    monkeypatch.setattr(
+        endpoint_eval,
+        "_replay_config",
+        lambda config, **_: replace(config, asr_final_async=False),
+    )
     monkeypatch.setattr(endpoint_eval, "_quiet_model_output", nullcontext)
     monkeypatch.setattr(endpoint_eval, "SherpaOnnxEngine", FakeEngine)
     monkeypatch.setattr(endpoint_eval, "_attest_engine", lambda *_, **__: None)
@@ -663,7 +806,11 @@ def test_run_cell_shadow_uses_one_closed_observer_per_row(monkeypatch) -> None:
             peak_rss_mb=32.0,
         )
 
-    monkeypatch.setattr(endpoint_eval, "_replay_config", lambda config, **_: config)
+    monkeypatch.setattr(
+        endpoint_eval,
+        "_replay_config",
+        lambda config, **_: replace(config, asr_final_async=False),
+    )
     monkeypatch.setattr(endpoint_eval, "_quiet_model_output", nullcontext)
     monkeypatch.setattr(endpoint_eval, "SherpaOnnxEngine", FakeEngine)
     monkeypatch.setattr(endpoint_eval, "_attest_engine", lambda *_, **__: None)
@@ -687,6 +834,195 @@ def test_run_cell_shadow_uses_one_closed_observer_per_row(monkeypatch) -> None:
     assert evidence["parity"]["composition_matches"] == endpoint_eval.EXPECTED_CASES
     assert evidence["parity"]["evidence_sufficient"] is False
     assert evidence["parity"]["exact"] is False
+
+
+def test_run_cell_propagates_async_delivery_with_one_persistent_worker(
+    monkeypatch,
+) -> None:
+    import tools.capture_replay.async_delivery as async_helper
+
+    config_modes = []
+    workers = []
+    observers = []
+    received_workers = []
+
+    class FakeEngine:
+        def __init__(self, config):
+            self.config = config
+            self._endpoint_policy = None
+            self._streaming_decode_session = None
+
+        def _build(self):
+            return None
+
+        def warm(self):
+            return None
+
+        def _turn_evaluation(self, **kwargs):
+            return (
+                TurnObservation(
+                    acoustic_endpoint=True,
+                    vad_active=False,
+                    early_endpoint_allowed=kwargs["allow_early"],
+                    trailing_silence_sec=0.8,
+                    completion_state=CompletionScoreState.UNAVAILABLE,
+                ),
+                TurnDecision(
+                    commit=True,
+                    endpoint_reason=EndpointReason.ASR,
+                    basis=TurnDecisionBasis.ACOUSTIC,
+                ),
+            )
+
+    class FakeObserver:
+        def __init__(self):
+            observers.append(self)
+
+        @staticmethod
+        def snapshot():
+            return AsyncFinalDeliverySnapshot(
+                worker_bound=True,
+                worker_distinct_from_capture=True,
+                worker_session_completed=True,
+                clean_drain=True,
+                stage_closed=True,
+                observer_closed=True,
+                worker_items_started=1,
+                worker_items_finished=1,
+                worker_selected_finals=1,
+                inline_selected_finals=0,
+                worker_abort_reason_counts=tuple(
+                    0 for _reason in TranscriptAbortReason
+                ),
+                inline_abort_reason_counts=tuple(
+                    0 for _reason in TranscriptAbortReason
+                ),
+                pre_drain_queued=1,
+                pre_drain_in_flight=0,
+                pre_drain_finished=0,
+                final_queued=0,
+                final_in_flight=0,
+                offered=1,
+                accepted=1,
+                rejected_closed=0,
+                overflow_released=0,
+                scope_released=0,
+                scope_in_flight_cancelled=0,
+                close_released=0,
+                close_in_flight_cancelled=0,
+                finished=1,
+                close_retired_queued=0,
+                close_cancelled_in_flight=0,
+                foreign_callbacks=0,
+                late_callbacks=0,
+                duplicate_terminals=0,
+                conflicting_terminals=0,
+                missing_worker_terminals=0,
+                finish_failures=0,
+                internal_errors=0,
+                exact=True,
+            )
+
+    class FakeWorker:
+        def __init__(self, engine):
+            self.engine = engine
+            self.closed = 0
+            workers.append(self)
+
+        def close(self, *, timeout):
+            assert timeout == 120.0
+            self.closed += 1
+
+    def replay_config(config, *, async_final_delivery, **_kwargs):
+        config_modes.append(async_final_delivery)
+        return replace(config, asr_final_async=async_final_delivery)
+
+    def execute(
+        engine,
+        case,
+        *,
+        case_index,
+        repeat,
+        logical_turn_shadow,
+        async_final_delivery,
+        async_final_worker,
+    ):
+        del case
+        received_workers.append(async_final_worker)
+        assert async_final_delivery in observers
+        engine._turn_evaluation(
+            acoustic_endpoint=True,
+            partial="native final",
+            silence_sec=0.8,
+            samples=None,
+            allow_early=True,
+            vad_active=False,
+        )
+        assert logical_turn_shadow.observe_native_final(
+            native_epoch=1,
+            native_sequence=0,
+            text="native final",
+            held=False,
+        )
+        assert logical_turn_shadow.compare_legacy_composition(
+            boundary=LogicalTurnBoundary.NATIVE_FINAL,
+            legacy_text="native final",
+        )
+        token = logical_turn_shadow.claim_terminal_token()
+        assert token is not None
+        acoustic = AcousticLineage.single(
+            AcousticSpan(
+                stream_id=f"private-stream-{case_index}",
+                utterance_id=f"private-turn-{case_index}",
+                capture_epoch=1,
+                capture_generation=1,
+            )
+        )
+        assert logical_turn_shadow.bind_terminal_lineage(token, acoustic, 0)
+        assert logical_turn_shadow.observe_selected_final(acoustic, 0)
+        return ReplayRunRecord(
+            case_index=case_index,
+            repeat=repeat,
+            finals=_finals(1, case_index),
+            wall_seconds=0.01,
+            peak_rss_mb=32.0,
+        )
+
+    monkeypatch.setattr(endpoint_eval, "_replay_config", replay_config)
+    monkeypatch.setattr(endpoint_eval, "_quiet_model_output", nullcontext)
+    monkeypatch.setattr(endpoint_eval, "SherpaOnnxEngine", FakeEngine)
+    monkeypatch.setattr(endpoint_eval, "_attest_engine", lambda *_, **__: None)
+    monkeypatch.setattr(endpoint_eval, "_adapt_case", lambda case: case)
+    monkeypatch.setattr(endpoint_eval, "_execute_case", execute)
+    monkeypatch.setattr(endpoint_eval.gc, "collect", lambda: 0)
+    monkeypatch.setattr(
+        async_helper,
+        "AsyncFinalDeliveryObserver",
+        FakeObserver,
+    )
+    monkeypatch.setattr(async_helper, "AsyncFinalWorkerHarness", FakeWorker)
+
+    result = endpoint_eval._run_cell(
+        _corpus(),
+        endpoint_eval._cell_config(
+            _base_config(),
+            cell="acoustic",
+            model=_model(),
+        ),
+        cell="acoustic",
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+
+    assert config_modes == [True]
+    assert len(workers) == 1
+    assert workers[0].closed == 1
+    assert len(received_workers) == endpoint_eval.EXPECTED_CASES
+    assert all(worker is workers[0] for worker in received_workers)
+    assert len(observers) == endpoint_eval.EXPECTED_CASES
+    assert len({id(observer) for observer in observers}) == endpoint_eval.EXPECTED_CASES
+    assert result.report["logical_turn_async_terminal_delivery"]["exact"] is True
 
 
 def test_trace_rejects_fallback_errors_and_exposes_hard_boundary_counts() -> None:
@@ -945,6 +1281,112 @@ def test_opt_in_terminal_lineage_uses_new_strict_schema_four() -> None:
         assert sentinel not in serialized
 
 
+def test_opt_in_async_terminal_delivery_uses_strict_schema_five() -> None:
+    report = _valid_report(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+
+    assert report["schema_version"] == (
+        endpoint_eval.ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
+    )
+    assert report["kind"] == endpoint_eval.ASYNC_TERMINAL_DELIVERY_KIND
+    assert report["protocol"]["async_terminal_delivery_enabled"] is True
+    assert report["protocol"]["async_final_execution"] == (
+        "post-capture-dedicated-worker-drain"
+    )
+    assert report["limitations"]["async_terminal_delivery_evaluated"] is True
+    for limitation in (
+        "capture_worker_concurrency_evaluated",
+        "selected_text_parity_evaluated",
+        "runtime_stop_shutdown_evaluated",
+        "final_dispatcher_evaluated",
+        "runtime_evaluated",
+        "authority_evaluated",
+        "latency_evaluated",
+        "live_evidence",
+        "live_device_evidence",
+        "model_quality_promotion",
+    ):
+        assert report["limitations"][limitation] is False
+    assert report["bindings"]["source"]["files"] == sum(
+        len(files)
+        for files in (
+            endpoint_eval._SOURCE_FILES,
+            endpoint_eval._SHADOW_SOURCE_FILES,
+            endpoint_eval._TERMINAL_LINEAGE_SOURCE_FILES,
+            endpoint_eval._ASYNC_TERMINAL_DELIVERY_SOURCE_FILES,
+        )
+    )
+    expected_true = {
+        "accepted_handoff_to_worker_lineage",
+        "dedicated_worker_execution",
+        "same_lineage_worker_callback_delivery",
+        "successful_callbacks_off_capture_thread",
+        "clean_stage_drain_before_observer_close",
+    }
+    expected_false = {
+        "standalone_raw_to_accepted_handoff_lineage",
+        "capture_worker_concurrency",
+        "async_inline_selected_text_parity",
+        "queue_overflow_backpressure_coverage",
+        "stop_shutdown_cancellation_parity",
+        "final_dispatcher_delivery",
+        "supervisor_delivery",
+        "runtime_task_delivery",
+        "production_default_change",
+        "authority_change",
+        "device_microphone_evidence",
+        "latency_evidence",
+        "live_evidence",
+        "quality_improvement_evidence",
+    }
+    for cell in report["cells"].values():
+        async_delivery = cell["logical_turn_async_terminal_delivery"]
+        validate_async_final_delivery_report(async_delivery)
+        validate_async_final_delivery_against_sections(
+            async_delivery=async_delivery,
+            raw_shadow=cell["logical_turn_shadow"],
+            terminal_lineage=cell["logical_turn_terminal_lineage"],
+            metrics=cell,
+        )
+        assert set(async_delivery["capabilities"]) == expected_true | expected_false
+        assert all(async_delivery["capabilities"][name] for name in expected_true)
+        assert all(
+            async_delivery["capabilities"][name] is False
+            for name in expected_false
+        )
+        assert all(
+            value == endpoint_eval.EXPECTED_CASES
+            for value in async_delivery["lifecycle"].values()
+        )
+        assert async_delivery["stage"]["accepted"] == cell[
+            "turn_integrity"
+        ]["finals"]
+        assert async_delivery["stage"]["finished"] == cell[
+            "turn_integrity"
+        ]["finals"]
+        assert async_delivery["callbacks"]["worker_selected_finals"] == cell[
+            "turn_integrity"
+        ]["finals"]
+        assert async_delivery["callbacks"]["worker_typed_aborts"] == 0
+        assert async_delivery["callbacks"]["inline_typed_aborts"] == cell[
+            "transcript_aborts"
+        ]["total"]
+    serialized = json.dumps(report, sort_keys=True)
+    for sentinel in (
+        _PRIVATE_REFERENCE,
+        _PRIVATE_HYPOTHESIS,
+        "private-stream",
+        "private-turn",
+        "/private/",
+        "thread_id",
+        "acoustic_id",
+    ):
+        assert sentinel not in serialized
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -1074,6 +1516,111 @@ def test_terminal_lineage_report_mutations_fail_closed(mutation: str) -> None:
         terminal["capabilities"]["async_final_selection_parity"] = True
     else:
         terminal["lineage"]["utterance_id"] = "private-turn-id"
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validate_report(report)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "identity",
+        "missing_cell_async",
+        "protocol_mode",
+        "execution_label",
+        "source_count",
+        "lifecycle",
+        "bool_impostor",
+        "false_capability",
+        "true_capability",
+        "forbidden_key",
+    ),
+)
+def test_async_terminal_delivery_report_mutations_fail_closed(
+    mutation: str,
+) -> None:
+    report = _valid_report(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+    acoustic = report["cells"]["acoustic"]
+    async_delivery = acoustic["logical_turn_async_terminal_delivery"]
+    if mutation == "identity":
+        report["kind"] = endpoint_eval.TERMINAL_LINEAGE_KIND
+    elif mutation == "missing_cell_async":
+        acoustic.pop("logical_turn_async_terminal_delivery")
+    elif mutation == "protocol_mode":
+        report["protocol"]["async_terminal_delivery_enabled"] = False
+    elif mutation == "execution_label":
+        report["protocol"]["async_final_execution"] = "inline-deterministic-replay"
+    elif mutation == "source_count":
+        report["bindings"]["source"]["files"] -= 1
+    elif mutation == "lifecycle":
+        async_delivery["lifecycle"]["clean_drains"] -= 1
+    elif mutation == "bool_impostor":
+        async_delivery["stage"]["accepted"] = True
+    elif mutation == "false_capability":
+        async_delivery["capabilities"]["capture_worker_concurrency"] = True
+    elif mutation == "true_capability":
+        async_delivery["capabilities"]["dedicated_worker_execution"] = False
+    else:
+        async_delivery["callbacks"]["text"] = _PRIVATE_HYPOTHESIS
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validate_report(report)
+
+
+def test_async_section_presence_is_exact_for_v4_and_v5() -> None:
+    v5 = _valid_report(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+    v5["cells"]["acoustic"].pop("logical_turn_async_terminal_delivery")
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validate_report(v5)
+
+    v4 = _valid_report(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+    )
+    v4["cells"]["acoustic"]["logical_turn_async_terminal_delivery"] = (
+        _async_delivery_report(
+            ("multi", "multi", *(["single"] * 22)),
+            include_abort=False,
+        )
+    )
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validate_report(v4)
+
+
+def test_balanced_async_forgery_disagrees_with_terminal_and_cell_metrics() -> None:
+    report = _valid_report(
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+    async_delivery = report["cells"]["acoustic"][
+        "logical_turn_async_terminal_delivery"
+    ]
+    for name in (
+        "pre_drain_queued",
+        "offered",
+        "accepted",
+        "finished",
+    ):
+        async_delivery["stage"][name] -= 1
+    for name in (
+        "worker_items_started",
+        "worker_items_finished",
+        "worker_selected_finals",
+    ):
+        async_delivery["callbacks"][name] -= 1
+    async_delivery["callbacks"]["inline_typed_aborts"] += 1
+    async_delivery["callbacks"]["inline_abort_reason_counts"][
+        TranscriptAbortReason.INPUT_REJECTED.value
+    ] += 1
+
+    validate_async_final_delivery_report(async_delivery)
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
         endpoint_eval._validate_report(report)
 
@@ -1365,17 +1912,36 @@ def _guard_args(tmp_path: Path) -> list[str]:
 def _worker_success_bytes(
     report_sha256: str = "a" * 64,
     *,
+    logical_turn_shadow: bool = False,
+    logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
     hold_only_hold_rows: int = 1,
     reset_accumulate_hold_rows: int = 1,
     reset_multi_row_repairs_vs_acoustic: int = 2,
     reset_multi_row_repairs_vs_hold_only: int = 1,
 ) -> bytes:
+    if logical_turn_async_terminal_delivery:
+        schema_version = endpoint_eval.ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
+    elif logical_turn_terminal_lineage:
+        schema_version = endpoint_eval.TERMINAL_LINEAGE_SCHEMA_VERSION
+    elif logical_turn_shadow:
+        schema_version = endpoint_eval.SHADOW_SCHEMA_VERSION
+    else:
+        schema_version = endpoint_eval.SCHEMA_VERSION
     return (
         json.dumps(
             {
                 "ok": True,
                 "quality_verdict": "diagnostic_only",
                 "report_sha256": report_sha256,
+                "schema_version": schema_version,
+                "logical_turn_shadow": logical_turn_shadow,
+                "logical_turn_terminal_lineage": (
+                    logical_turn_terminal_lineage
+                ),
+                "logical_turn_async_terminal_delivery": (
+                    logical_turn_async_terminal_delivery
+                ),
                 "rows": 24,
                 "hold_only_hold_rows": hold_only_hold_rows,
                 "reset_accumulate_hold_rows": reset_accumulate_hold_rows,
@@ -1393,6 +1959,42 @@ def _worker_success_bytes(
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "schema_disagreement",
+        "mode_disagreement",
+        "bool_impostor",
+        "missing_mode",
+        "extra_mode",
+    ),
+)
+def test_worker_receipt_rejects_async_schema_and_mode_forgery(
+    mutation: str,
+) -> None:
+    value = json.loads(
+        _worker_success_bytes(
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+    )
+    if mutation == "schema_disagreement":
+        value["schema_version"] = endpoint_eval.TERMINAL_LINEAGE_SCHEMA_VERSION
+    elif mutation == "mode_disagreement":
+        value["logical_turn_terminal_lineage"] = False
+    elif mutation == "bool_impostor":
+        value["logical_turn_async_terminal_delivery"] = 1
+    elif mutation == "missing_mode":
+        value.pop("logical_turn_async_terminal_delivery")
+    else:
+        value["async_delivery"] = True
+    payload = endpoint_eval._canonical_bytes(value) + b"\n"
+
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validated_worker_receipt(payload, returncode=0)
+
+
 def test_parser_requires_explicit_absolute_config_pair(tmp_path: Path) -> None:
     args = _guard_args(tmp_path)
     parsed = endpoint_eval._parser().parse_args(args)
@@ -1403,6 +2005,7 @@ def test_parser_requires_explicit_absolute_config_pair(tmp_path: Path) -> None:
     assert parsed.report.is_absolute()
     assert parsed.logical_turn_shadow is False
     assert parsed.logical_turn_terminal_lineage is False
+    assert parsed.logical_turn_async_terminal_delivery is False
     assert endpoint_eval._parser().parse_args(
         [*args, "--logical-turn-shadow"]
     ).logical_turn_shadow is True
@@ -1415,6 +2018,18 @@ def test_parser_requires_explicit_absolute_config_pair(tmp_path: Path) -> None:
     )
     assert terminal.logical_turn_shadow is True
     assert terminal.logical_turn_terminal_lineage is True
+    assert terminal.logical_turn_async_terminal_delivery is False
+    async_delivery = endpoint_eval._parser().parse_args(
+        [
+            *args,
+            "--logical-turn-shadow",
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ]
+    )
+    assert async_delivery.logical_turn_shadow is True
+    assert async_delivery.logical_turn_terminal_lineage is True
+    assert async_delivery.logical_turn_async_terminal_delivery is True
     for flag in (
         "--corpus",
         "--config",
@@ -1456,6 +2071,86 @@ def test_worker_main_preflights_report_before_native_evaluation(
     assert json.loads(output.out) == dict(endpoint_eval._SAFE_ERROR)
 
 
+@pytest.mark.parametrize(
+    "mode_args",
+    (
+        ("--logical-turn-async-terminal-delivery",),
+        (
+            "--logical-turn-shadow",
+            "--logical-turn-async-terminal-delivery",
+        ),
+        (
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ),
+    ),
+)
+def test_worker_main_rejects_async_delivery_without_both_lineages(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    mode_args: tuple[str, ...],
+) -> None:
+    called = []
+    monkeypatch.setattr(
+        endpoint_eval,
+        "evaluate_edacc_endpoint_integrity",
+        lambda **_: called.append(True),
+    )
+
+    code = endpoint_eval.main([*_guard_args(tmp_path), *mode_args])
+    output = capsys.readouterr()
+
+    assert code == 2
+    assert called == []
+    assert json.loads(output.out) == dict(endpoint_eval._SAFE_ERROR)
+    assert output.err == ""
+
+
+def test_worker_main_propagates_async_mode_into_report_and_receipt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    tmp_path.chmod(0o700)
+    received = []
+
+    def evaluate(**kwargs):
+        received.append(kwargs)
+        return _valid_report(
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+
+    monkeypatch.setattr(
+        endpoint_eval,
+        "evaluate_edacc_endpoint_integrity",
+        evaluate,
+    )
+    code = endpoint_eval.main(
+        [
+            *_guard_args(tmp_path),
+            "--logical-turn-shadow",
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ]
+    )
+    output = capsys.readouterr()
+    receipt = json.loads(output.out)
+
+    assert code == 0
+    assert len(received) == 1
+    assert received[0]["logical_turn_async_terminal_delivery"] is True
+    assert receipt["schema_version"] == (
+        endpoint_eval.ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
+    )
+    assert receipt["logical_turn_shadow"] is True
+    assert receipt["logical_turn_terminal_lineage"] is True
+    assert receipt["logical_turn_async_terminal_delivery"] is True
+    assert output.err == ""
+
+
 def test_guarded_parent_success_is_bounded_and_validated(
     tmp_path: Path,
     monkeypatch,
@@ -1489,14 +2184,24 @@ def test_guarded_parent_success_is_bounded_and_validated(
 
 
 @pytest.mark.parametrize(
-    ("mode_args", "terminal_lineage"),
+    ("mode_args", "terminal_lineage", "async_delivery"),
     (
-        (("--logical-turn-shadow",), False),
+        (("--logical-turn-shadow",), False, False),
         (
             (
                 "--logical-turn-shadow",
                 "--logical-turn-terminal-lineage",
             ),
+            True,
+            False,
+        ),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+                "--logical-turn-async-terminal-delivery",
+            ),
+            True,
             True,
         ),
     ),
@@ -1507,6 +2212,7 @@ def test_guarded_parent_accepts_requested_lineage_report(
     capsys,
     mode_args: tuple[str, ...],
     terminal_lineage: bool,
+    async_delivery: bool,
 ) -> None:
     tmp_path.chmod(0o700)
     monkeypatch.delenv(endpoint_eval._WORKER_ENV, raising=False)
@@ -1517,17 +2223,26 @@ def test_guarded_parent_accepts_requested_lineage_report(
         assert (
             "--logical-turn-terminal-lineage" in raw_argv
         ) is terminal_lineage
+        assert (
+            "--logical-turn-async-terminal-delivery" in raw_argv
+        ) is async_delivery
         payload = endpoint_eval._canonical_bytes(
             _valid_report(
                 logical_turn_shadow=True,
                 logical_turn_terminal_lineage=terminal_lineage,
+                logical_turn_async_terminal_delivery=async_delivery,
             )
         ) + b"\n"
         digest = endpoint_eval._publish_private_report(
             tmp_path / "report.json",
             payload,
         )
-        return 0, _worker_success_bytes(digest)
+        return 0, _worker_success_bytes(
+            digest,
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=terminal_lineage,
+            logical_turn_async_terminal_delivery=async_delivery,
+        )
 
     monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", run_worker)
     code = endpoint_eval.guarded_main(
@@ -1547,15 +2262,30 @@ def test_guarded_parent_accepts_requested_lineage_report(
                 "--logical-turn-shadow",
                 "--logical-turn-terminal-lineage",
             ),
-            (True, False),
+            (True, False, False),
         ),
-        (("--logical-turn-shadow",), (True, True)),
+        (("--logical-turn-shadow",), (True, True, False)),
         (
             (
                 "--logical-turn-shadow",
                 "--logical-turn-terminal-lineage",
             ),
-            (False, False),
+            (False, False, False),
+        ),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+                "--logical-turn-async-terminal-delivery",
+            ),
+            (True, True, False),
+        ),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+            ),
+            (True, True, True),
         ),
     ),
 )
@@ -1564,7 +2294,7 @@ def test_guarded_parent_rejects_requested_lineage_mode_mismatch(
     monkeypatch,
     capsys,
     mode_args: tuple[str, ...],
-    report_mode: tuple[bool, bool],
+    report_mode: tuple[bool, bool, bool],
 ) -> None:
     tmp_path.chmod(0o700)
     monkeypatch.delenv(endpoint_eval._WORKER_ENV, raising=False)
@@ -1575,16 +2305,65 @@ def test_guarded_parent_rejects_requested_lineage_mode_mismatch(
             _valid_report(
                 logical_turn_shadow=report_mode[0],
                 logical_turn_terminal_lineage=report_mode[1],
+                logical_turn_async_terminal_delivery=report_mode[2],
             )
         ) + b"\n"
         digest = endpoint_eval._publish_private_report(
             tmp_path / "report.json",
             payload,
         )
-        return 0, _worker_success_bytes(digest)
+        return 0, _worker_success_bytes(
+            digest,
+            logical_turn_shadow=report_mode[0],
+            logical_turn_terminal_lineage=report_mode[1],
+            logical_turn_async_terminal_delivery=report_mode[2],
+        )
 
     monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", run_worker)
     code = endpoint_eval.guarded_main([*_guard_args(tmp_path), *mode_args])
+    output = capsys.readouterr()
+
+    assert code == 2
+    assert json.loads(output.out) == dict(endpoint_eval._SAFE_ERROR)
+    assert output.err == ""
+
+
+def test_guarded_parent_rejects_v4_receipt_for_retained_v5_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    tmp_path.chmod(0o700)
+    monkeypatch.delenv(endpoint_eval._WORKER_ENV, raising=False)
+
+    def run_worker(_raw_argv, *, timeout_seconds):
+        del timeout_seconds
+        payload = endpoint_eval._canonical_bytes(
+            _valid_report(
+                logical_turn_shadow=True,
+                logical_turn_terminal_lineage=True,
+                logical_turn_async_terminal_delivery=True,
+            )
+        ) + b"\n"
+        digest = endpoint_eval._publish_private_report(
+            tmp_path / "report.json",
+            payload,
+        )
+        return 0, _worker_success_bytes(
+            digest,
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+        )
+
+    monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", run_worker)
+    code = endpoint_eval.guarded_main(
+        [
+            *_guard_args(tmp_path),
+            "--logical-turn-shadow",
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ]
+    )
     output = capsys.readouterr()
 
     assert code == 2
@@ -1609,6 +2388,40 @@ def test_guarded_parent_rejects_terminal_lineage_without_raw_before_worker(
             "--logical-turn-terminal-lineage",
         ]
     )
+    output = capsys.readouterr()
+
+    assert code == 2
+    assert json.loads(output.out) == dict(endpoint_eval._SAFE_ERROR)
+    assert output.err == ""
+
+
+@pytest.mark.parametrize(
+    "mode_args",
+    (
+        ("--logical-turn-async-terminal-delivery",),
+        (
+            "--logical-turn-shadow",
+            "--logical-turn-async-terminal-delivery",
+        ),
+        (
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ),
+    ),
+)
+def test_guarded_parent_rejects_async_delivery_without_both_lineages(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    mode_args: tuple[str, ...],
+) -> None:
+    monkeypatch.delenv(endpoint_eval._WORKER_ENV, raising=False)
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("worker must not start")
+
+    monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", must_not_run)
+    code = endpoint_eval.guarded_main([*_guard_args(tmp_path), *mode_args])
     output = capsys.readouterr()
 
     assert code == 2
@@ -1773,9 +2586,14 @@ def test_evaluator_propagates_shadow_mode_through_all_cells_and_recheck(
         *,
         logical_turn_shadow=False,
         logical_turn_terminal_lineage=False,
+        logical_turn_async_terminal_delivery=False,
     ):
         source_modes.append(
-            (logical_turn_shadow, logical_turn_terminal_lineage)
+            (
+                logical_turn_shadow,
+                logical_turn_terminal_lineage,
+                logical_turn_async_terminal_delivery,
+            )
         )
         return "a" * 64
 
@@ -1797,7 +2615,7 @@ def test_evaluator_propagates_shadow_mode_through_all_cells_and_recheck(
 
     assert report["schema_version"] == endpoint_eval.SHADOW_SCHEMA_VERSION
     assert cell_modes == [(name, True) for name in endpoint_eval._CELL_NAMES]
-    assert source_modes == [(True, False), (True, False)]
+    assert source_modes == [(True, False, False), (True, False, False)]
 
 
 def test_evaluator_propagates_terminal_lineage_mode_through_all_cells(
@@ -1822,7 +2640,7 @@ def test_evaluator_propagates_terminal_lineage_mode_through_all_cells(
         for name, (candidate, reset, buckets) in cell_options.items()
     }
     cell_modes: list[tuple[str, bool, bool]] = []
-    source_modes: list[tuple[bool, bool]] = []
+    source_modes: list[tuple[bool, bool, bool]] = []
 
     def run_cell(
         _corpus,
@@ -1851,9 +2669,14 @@ def test_evaluator_propagates_terminal_lineage_mode_through_all_cells(
         *,
         logical_turn_shadow=False,
         logical_turn_terminal_lineage=False,
+        logical_turn_async_terminal_delivery=False,
     ):
         source_modes.append(
-            (logical_turn_shadow, logical_turn_terminal_lineage)
+            (
+                logical_turn_shadow,
+                logical_turn_terminal_lineage,
+                logical_turn_async_terminal_delivery,
+            )
         )
         return "a" * 64
 
@@ -1873,7 +2696,97 @@ def test_evaluator_propagates_terminal_lineage_mode_through_all_cells(
     assert cell_modes == [
         (name, True, True) for name in endpoint_eval._CELL_NAMES
     ]
-    assert source_modes == [(True, True), (True, True)]
+    assert source_modes == [(True, True, False), (True, True, False)]
+
+
+def test_evaluator_propagates_async_delivery_mode_through_all_cells(
+    monkeypatch,
+) -> None:
+    corpus = _corpus()
+    prepared = _prepared()
+    cell_options = {
+        "acoustic": (False, False, ("multi", "multi", *(["single"] * 22))),
+        "prosody_hold_only": (True, False, ("multi", *(["single"] * 23))),
+        "prosody_reset_accumulate": (True, True, ("single",) * 24),
+    }
+    cells = {
+        name: _cell_result(
+            corpus,
+            candidate=candidate,
+            reset_accumulate=reset,
+            buckets=tuple(buckets),
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+        for name, (candidate, reset, buckets) in cell_options.items()
+    }
+    cell_modes: list[tuple[str, bool, bool, bool]] = []
+    source_modes: list[tuple[bool, bool, bool]] = []
+
+    def run_cell(
+        _corpus,
+        _config,
+        *,
+        cell,
+        logical_turn_shadow=False,
+        logical_turn_terminal_lineage=False,
+        logical_turn_async_terminal_delivery=False,
+    ):
+        cell_modes.append(
+            (
+                cell,
+                logical_turn_shadow,
+                logical_turn_terminal_lineage,
+                logical_turn_async_terminal_delivery,
+            )
+        )
+        return cells[cell]
+
+    def source_binding(
+        *,
+        logical_turn_shadow=False,
+        logical_turn_terminal_lineage=False,
+        logical_turn_async_terminal_delivery=False,
+    ):
+        source_modes.append(
+            (
+                logical_turn_shadow,
+                logical_turn_terminal_lineage,
+                logical_turn_async_terminal_delivery,
+            )
+        )
+        return "a" * 64
+
+    monkeypatch.setattr(endpoint_eval, "prepare_production", lambda **_: prepared)
+    monkeypatch.setattr(endpoint_eval, "load_production_corpus", lambda _: corpus)
+    monkeypatch.setattr(endpoint_eval, "_snapshot_model", lambda path: _model(Path(path)))
+    monkeypatch.setattr(endpoint_eval, "_base_config", lambda _: _base_config())
+    monkeypatch.setattr(endpoint_eval, "_run_cell", run_cell)
+    monkeypatch.setattr(endpoint_eval, "_source_binding", source_binding)
+    monkeypatch.setattr(
+        endpoint_eval,
+        "verify_production_inputs",
+        lambda *_, **__: None,
+    )
+
+    report = endpoint_eval.evaluate_edacc_endpoint_integrity(
+        corpus_path=Path("/private/corpus"),
+        config_path=Path("/private/config"),
+        local_config_path=Path("/private/local"),
+        smart_turn_model=Path("/private/model"),
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+
+    assert report["schema_version"] == (
+        endpoint_eval.ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
+    )
+    assert cell_modes == [
+        (name, True, True, True) for name in endpoint_eval._CELL_NAMES
+    ]
+    assert source_modes == [(True, True, True), (True, True, True)]
 
 
 @pytest.mark.parametrize("drift", ("model", "source", "config"))

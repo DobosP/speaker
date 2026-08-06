@@ -72,11 +72,20 @@ configuration, fresh per-row state, typed detector execution, aggregate lexical
 and timing reduction, binding rechecks, privacy, and no-clobber publication
 without opening an audio device or invoking the agent/tool plane.
 
-The exact run result is recorded only after a clean-revision execution. A result
-that scores HOLD without reducing multi-final rows is a native-stream
-compatibility failure, not evidence to tune the probability threshold or enable
-Smart Turn. The next permissible implementation experiment is an opt-in
-reset-and-accumulate strategy that resets the native stream at a held boundary,
-retains one bounded acoustic turn, and performs final selection once. It must
-remain disabled until headless evidence is green, and any default change still
-requires owner-labelled physical A/B through `./live.sh`.
+The exact one-thread CPU run from clean revision `e538595` completed all 24 rows
+and retained one 10,343-byte mode-0600/single-link aggregate report with SHA-256
+`9561b6f11ddddeef4cba04caf777f93d0eb9a128769686e2bcecc9b1ef6e04d6`.
+The acoustic cell produced 31 finals, 19 single-final rows, five multi-final
+rows, four exact rows, WER 0.5779, CER 0.3919, and endpoint-delay p50/p95/max
+800/1,200/1,700 ms. HOLD-only Smart Turn produced the same 31 finals and exact
+same 19/5 split shape; 34 HOLD ticks affected five rows but repaired zero. Its
+four exact rows, WER 0.5729, CER 0.3896, and delay p50/p95/max
+800/1,700/1,700 ms do not offset the unchanged turn integrity.
+
+That result is a native-stream compatibility failure, not evidence to tune the
+probability threshold or enable Smart Turn. The next permissible implementation
+experiment is an opt-in reset-and-accumulate strategy that resets the native
+stream at a held boundary, retains one bounded acoustic turn, and performs final
+selection once. It must remain disabled until headless evidence is green, and
+any default change still requires owner-labelled physical A/B through
+`./live.sh`.

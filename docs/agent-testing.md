@@ -392,6 +392,19 @@ the mode-0600, single-link, 14,995-byte schema-v2 report SHA-256
 This partial repair does not promote the option; owner bare-speaker A/B remains
 required.
 
+The opt-in schema-3 run at clean source `92c2456` closed all 24 observers in
+each cell with zero health errors, mismatches, or extra/missing raw terminals.
+Acoustic and HOLD-only each matched 35 raw commits and correctly remained
+inconclusive without multi-epoch evidence. Reset matched 32 raw commits,
+including five exact multi-epoch commits from six held native finals and five
+empty successor epochs. Downstream callbacks recorded 31/31/29 selected finals
+and, separately, 4/4/3 typed input-rejection aborts. Cell-level totals equal
+35/35/32 raw commits, but no per-terminal selected-final or abort lineage is
+established. Peak process RSS was 864.781 MiB. Preserve the mode-0600,
+single-link, 18,719-byte report SHA-256
+`bcacaece6b1620520d3131054d3faef511fa5ecfe5d4a2b789a9dca5a72c6b8d`.
+No runtime, default, latency, device, or live claim follows (ADR-0153).
+
 ## Exact Parakeet Realtime EOU reference setup
 
 Start with an already-downloaded private 183-wheel closure, the exact local

@@ -89,6 +89,13 @@ _INPUT_CAL_TRANSIENT_MIN_PEAK = 0.10
 _INPUT_CAL_TRANSIENT_CREST_RATIO = 20.0
 
 
+class SherpaExecutionPurpose(str, Enum):
+    """Closed construction purpose for the local Sherpa media engine."""
+
+    FULL_ASSISTANT = "full_assistant"
+    STT_CAPTURE_ONLY = "stt_capture_only"
+
+
 @dataclass(frozen=True)
 class _ConfirmedBargeHandoff:
     """Capture-generation-bound PCM already decoded in a confirm window."""
@@ -523,7 +530,13 @@ def _independent_attested_control_repair(
     return offline_text
 
 
-def _postprocess_final_text(config, punctuation, text: str) -> str:
+def _postprocess_final_text(
+    config,
+    punctuation,
+    text: str,
+    *,
+    log_exceptions: bool = True,
+) -> str:
     """Apply the production punctuation/casing policy to one raw final.
 
     Kept transport-independent so the recorded FileReplay engine and the live
@@ -535,7 +548,8 @@ def _postprocess_final_text(config, punctuation, text: str) -> str:
         try:
             result = punctuation.add_punctuation(result)
         except Exception:  # noqa: BLE001 - never let post-proc lose a turn
-            log.exception("punctuation model failed; using raw text")
+            if log_exceptions:
+                log.exception("punctuation model failed; using raw text")
             result = text
     if config.asr_restore_casing:
         # Force lowercasing-first when a punctuation model already added
@@ -556,6 +570,7 @@ def _resolve_final_transcript(
     segment_sample_rate: Optional[int] = None,
     allow_empty_streaming: bool = False,
     attested_repair: Optional[Callable[..., str]] = None,
+    log_exceptions: bool = True,
 ) -> FinalTranscriptDecision:
     """Resolve the established final, then apply exact acoustic consensus.
 
@@ -569,7 +584,12 @@ def _resolve_final_transcript(
     offline_raw: Optional[str] = None
     offline_outcome = "unavailable"
     offline_text: Optional[str] = None
-    streaming_final = _postprocess_final_text(config, punctuation, raw_final)
+    streaming_final = _postprocess_final_text(
+        config,
+        punctuation,
+        raw_final,
+        log_exceptions=log_exceptions,
+    )
     baseline_selected = streaming_final
     # Parakeet is an independent acoustic vote, not a new single-model
     # fallback. Keep the established streaming rendering until exact verifier
@@ -632,10 +652,11 @@ def _resolve_final_transcript(
                                 speech_sec=speech_sec,
                             )
             except Exception:  # noqa: BLE001 - use the streaming final
-                log.debug(
-                    "second-pass recognizer failed; using streaming final",
-                    exc_info=True,
-                )
+                if log_exceptions:
+                    log.debug(
+                        "second-pass recognizer failed; using streaming final",
+                        exc_info=True,
+                    )
 
     verifier_raw: Optional[str] = None
     verifier_outcome = "unavailable"
@@ -706,10 +727,11 @@ def _resolve_final_transcript(
                             selected = empty_consensus.chosen
                             verifier_changed = empty_consensus.changed
             except Exception:  # noqa: BLE001 - preserve the established baseline
-                log.debug(
-                    "final verifier failed; using established ASR final",
-                    exc_info=True,
-                )
+                if log_exceptions:
+                    log.debug(
+                        "final verifier failed; using established ASR final",
+                        exc_info=True,
+                    )
 
     if not selected.strip():
         selected_source = FinalTranscriptSource.NONE
@@ -749,6 +771,7 @@ def _transcribe_final_text(
     segment_sample_rate: Optional[int] = None,
     allow_empty_streaming: bool = False,
     attested_repair: Optional[Callable[..., str]] = None,
+    log_exceptions: bool = True,
 ) -> str:
     """Resolve the LLM-facing final with the production two-pass policy."""
     return _resolve_final_transcript(
@@ -762,6 +785,7 @@ def _transcribe_final_text(
         segment_sample_rate=segment_sample_rate,
         allow_empty_streaming=allow_empty_streaming,
         attested_repair=attested_repair,
+        log_exceptions=log_exceptions,
     ).selected
 
 
@@ -1879,15 +1903,25 @@ class SherpaOnnxEngine(AudioEngine):
     plays it while watching for barge-in.
     """
 
+    # Preserve the historical full-assistant behavior for narrow test doubles
+    # and downstream subclasses that allocate the engine with ``__new__``.
+    # Every production construction still validates and writes an explicit
+    # instance value in ``__init__``.
+    execution_purpose = SherpaExecutionPurpose.FULL_ASSISTANT
+
     def __init__(
         self,
         config: SherpaConfig,
         *,
+        purpose: SherpaExecutionPurpose = SherpaExecutionPurpose.FULL_ASSISTANT,
         turn_detector=None,
         virtual_audio_binder=None,
     ):
+        if not isinstance(purpose, SherpaExecutionPurpose):
+            raise TypeError("purpose must be a SherpaExecutionPurpose")
         _validate_semantic_hold_reset_config(config)
         self.config = config
+        self.execution_purpose = purpose
         # Harness-only exact PipeWire proof. No SherpaConfig field exists, so a
         # production config or enrollment run cannot opt into this authority.
         self._virtual_audio_binder = virtual_audio_binder
@@ -1951,6 +1985,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._final_recognizer = None
         self._final_verifier = None
         self._final_verifier_lock = threading.Lock()
+        self._capture_stt_warmed = False
         self._vad = None
         self._tts = None
         self._kws = None
@@ -2408,6 +2443,11 @@ class SherpaOnnxEngine(AudioEngine):
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
         self._record_path = path
 
+    def _recognized_text_logging_enabled(self) -> bool:
+        """Return whether recognized private text may enter process logs."""
+
+        return self.execution_purpose is SherpaExecutionPurpose.FULL_ASSISTANT
+
     @staticmethod
     def _diagnostic_sidecar_path(record_path: str, suffix: str) -> str:
         root = record_path[:-4] if record_path.lower().endswith(".wav") else record_path
@@ -2829,6 +2869,8 @@ class SherpaOnnxEngine(AudioEngine):
     # --- lazy model construction ---
     def _build(self) -> None:
         c = self.config
+        capture_only = self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY
+        self._capture_stt_warmed = False
         prior_decode_owner = self._streaming_decode_owner
         if prior_decode_owner is not None:
             owner_snapshot = prior_decode_owner.snapshot()
@@ -2899,7 +2941,8 @@ class SherpaOnnxEngine(AudioEngine):
                     "coherence barge-in requested but scipy unavailable; "
                     "falling back to the level-margin gate"
                 )
-        self._tts = build_tts(c)
+        # Capture evidence must not construct any playback model.
+        self._tts = None if capture_only else build_tts(c)
         # Speech denoiser (None unless denoise_enabled AND a model path is set).
         # build_denoiser fails open (returns None) on a bad path so start() never
         # crashes; the capture-loop branch is skipped when this is None.
@@ -3018,7 +3061,9 @@ class SherpaOnnxEngine(AudioEngine):
                         round(1000 * c.final_speech_evidence_min_contiguous_sec),
                     ),
                 )
-        self._kws = build_keyword_spotter(c)
+        # KWS is command authority, not selected-final STT evidence.
+        self._kws = None if capture_only else build_keyword_spotter(c)
+        self._kws_stream = None
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
         # Optional punctuation restorer for finals (None -> casing only).
@@ -3041,7 +3086,7 @@ class SherpaOnnxEngine(AudioEngine):
             aec_enabled=c.aec_enabled,
             barge_word_cut_require_speaker=c.barge_word_cut_require_speaker,
         )
-        if speaker_identity.active and c.speaker_embedding_model:
+        if not capture_only and speaker_identity.active and c.speaker_embedding_model:
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,
@@ -3454,6 +3499,8 @@ class SherpaOnnxEngine(AudioEngine):
     # --- sink-attested playback receipts ---
     @property
     def playback_capabilities(self) -> PlaybackCapabilities:
+        if self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            return NO_PLAYBACK_CAPABILITIES
         # Preserve downstream subclasses that historically customized only the
         # legacy admission seam. Routing those around their speak() override via
         # this inherited method would silently change instrumentation/behavior.
@@ -4792,6 +4839,10 @@ class SherpaOnnxEngine(AudioEngine):
             self._virtual_route_failure = ""
             self._virtual_route_failure_in_progress = False
         self._build()
+        if self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            # Warm before the microphone or final worker exists, so ambient
+            # capture cannot race the same offline recognizer/verifier model.
+            self._warm_capture_stt_dependencies()
         if (
             self.config.endpoint_reset_on_semantic_hold
             and self._vad is None
@@ -4801,16 +4852,21 @@ class SherpaOnnxEngine(AudioEngine):
             )
         self._running.set()
         in_dev = _norm_device(self.config.input_device)
-        out_dev = _norm_device(self.config.output_device)
+        out_dev = (
+            _norm_device(self.config.output_device)
+            if self.execution_purpose is SherpaExecutionPurpose.FULL_ASSISTANT
+            else None
+        )
         try:
             log.info(
                 "input device: %s",
                 sd.query_devices(in_dev, kind="input").get("name", "?"),
             )
-            log.info(
-                "output device: %s",
-                sd.query_devices(out_dev, kind="output").get("name", "?"),
-            )
+            if self.execution_purpose is SherpaExecutionPurpose.FULL_ASSISTANT:
+                log.info(
+                    "output device: %s",
+                    sd.query_devices(out_dev, kind="output").get("name", "?"),
+                )
         except Exception as exc:  # noqa: BLE001 - diagnostics only
             log.warning("could not query audio devices: %s", exc)
         log.info(
@@ -5129,12 +5185,15 @@ class SherpaOnnxEngine(AudioEngine):
             if media_session is not None:
                 media_session.start()
 
-            self._start_receipt_dispatcher()
-            self._play_thread = threading.Thread(
-                target=self._playback_loop,
-                daemon=True,
-            )
-            self._play_thread.start()
+            if self.execution_purpose is SherpaExecutionPurpose.FULL_ASSISTANT:
+                self._start_receipt_dispatcher()
+                self._play_thread = threading.Thread(
+                    target=self._playback_loop,
+                    daemon=True,
+                )
+                self._play_thread.start()
+            else:
+                self._playback_stopping.set()
             # Bind the exact single-run final stage into its worker so a later
             # restart can never redirect an old thread into new-run work.
             final_stage = self._final_stage
@@ -5452,6 +5511,8 @@ class SherpaOnnxEngine(AudioEngine):
             self._close_recorders(log_completed=False)
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
+        if self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            raise RuntimeError("playback is unavailable for STT capture-only")
         self._submit_playback(text, on_done=on_done, ticket=None, style=None)
 
     def speak_tracked(
@@ -5461,6 +5522,8 @@ class SherpaOnnxEngine(AudioEngine):
         on_terminal: Callable[[PlaybackReceipt], None],
         on_started: Optional[Callable[[str], None]] = None,
     ) -> None:
+        if self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            raise RuntimeError("playback is unavailable for STT capture-only")
         ticket = _TrackedPlaybackCall(
             speech=speech,
             on_terminal=on_terminal,
@@ -5490,6 +5553,8 @@ class SherpaOnnxEngine(AudioEngine):
         ticket: Optional[_TrackedPlaybackCall],
         style: Optional[SpeechStyle],
     ) -> None:
+        if self.execution_purpose is SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            raise RuntimeError("playback is unavailable for STT capture-only")
         # Non-blocking: hand the utterance to the single playback worker. Keeping
         # one sink (instead of a thread per call) is what makes sentence-level
         # streaming play in order rather than on top of itself.
@@ -5679,6 +5744,40 @@ class SherpaOnnxEngine(AudioEngine):
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
 
+    def _warm_capture_stt_dependencies(self) -> None:
+        """Warm selected-final dependencies before capture workers exist."""
+
+        try:
+            if self._final_recognizer is not None:
+                sample_count = max(1, int(self.config.sample_rate * 0.3))
+                stream = self._final_recognizer.create_stream()
+                stream.accept_waveform(
+                    self.config.sample_rate,
+                    np.zeros(sample_count, dtype="float32"),
+                )
+                self._final_recognizer.decode_stream(stream)
+                # Force lazy result materialization; recognized silence is
+                # discarded and never logged, rendered, or emitted.
+                _ = stream.result
+            if self._punct is not None:
+                self._punct.add_punctuation("ok")
+            if self._final_verifier is not None:
+                verifier_warm = getattr(self._final_verifier, "warm", None)
+                if not callable(verifier_warm):
+                    raise RuntimeError("selected verifier has no warm boundary")
+                verifier_warm()
+        except Exception as exc:
+            raise RuntimeError("capture-only STT warm-up failed") from exc
+        self._capture_stt_warmed = True
+
+    def warm_stt(self) -> None:
+        """Attest that capture-purpose STT was warmed before mic open."""
+
+        if self.execution_purpose is not SherpaExecutionPurpose.STT_CAPTURE_ONLY:
+            raise RuntimeError("capture-only STT warm-up requires capture purpose")
+        if not self._capture_stt_warmed:
+            raise RuntimeError("capture-only STT warm-up is incomplete")
+
     def warm(self) -> None:
         """Pay the TTS model's cold-start cost before the first reply, off the
         hot path. Best-effort: a failure just means the first synthesis is cold,
@@ -5816,7 +5915,12 @@ class SherpaOnnxEngine(AudioEngine):
         Punctuation model first (when configured) so it sees the model's own
         spacing, then casing restoration. Punctuation failure is non-fatal --
         we degrade to casing-only rather than drop the turn."""
-        return _postprocess_final_text(self.config, self._punct, text)
+        return _postprocess_final_text(
+            self.config,
+            self._punct,
+            text,
+            log_exceptions=self._recognized_text_logging_enabled(),
+        )
 
     def _final_decision(
         self,
@@ -5837,6 +5941,7 @@ class SherpaOnnxEngine(AudioEngine):
             speech_sec=speech_sec,
             allow_empty_streaming=allow_empty_streaming,
             attested_repair=_attested_interrupt_repair,
+            log_exceptions=self._recognized_text_logging_enabled(),
         )
 
     def _disable_final_verifier_after_error(
@@ -5998,7 +6103,8 @@ class SherpaOnnxEngine(AudioEngine):
                 support=0,
                 boolean_value=False,
             )
-        log.info("asr final: %r (raw %r)", final_text, raw_final)
+        if self._recognized_text_logging_enabled():
+            log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._capture_callback_is_current(capture_epoch):
             self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
             return
@@ -6023,11 +6129,12 @@ class SherpaOnnxEngine(AudioEngine):
             # own residual echo or ambient noise transcribed into words. Drop it
             # (this is what breaks the open-speaker echo-final self-interrupt
             # cascade).
-            log.info(
-                "dropping final %r -- at/near the learned echo/quiet floor "
-                "(echo/ambient, not speech)",
-                final_text,
-            )
+            if self._recognized_text_logging_enabled():
+                log.info(
+                    "dropping final %r -- at/near the learned echo/quiet floor "
+                    "(echo/ambient, not speech)",
+                    final_text,
+                )
             if not self._capture_callback_is_current(capture_epoch):
                 self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
                 return
@@ -6061,10 +6168,11 @@ class SherpaOnnxEngine(AudioEngine):
                     capture_epoch=capture_epoch,
                 )
             if not speaker_decision.admitted:
-                log.info(
-                    "dropping final %r -- speaker is not the enrolled user",
-                    final_text,
-                )
+                if self._recognized_text_logging_enabled():
+                    log.info(
+                        "dropping final %r -- speaker is not the enrolled user",
+                        final_text,
+                    )
                 if not self._capture_callback_is_current(capture_epoch):
                     self._diagnostic_final_aborted(
                         acoustic, revision, "stale_fenced"
@@ -6178,7 +6286,12 @@ class SherpaOnnxEngine(AudioEngine):
                         reason="callback_error",
                         terminal=True,
                     )
-                log.exception("final transcript callback failed after terminal handoff")
+                if self._recognized_text_logging_enabled():
+                    log.exception(
+                        "final transcript callback failed after terminal handoff"
+                    )
+                else:
+                    log.error("final transcript callback failed after terminal handoff")
 
     def _maybe_setup_async_final(self) -> None:
         """Install one fresh final stage when endpoint finalization is async."""
@@ -6366,7 +6479,10 @@ class SherpaOnnxEngine(AudioEngine):
                     revision=work.revision,
                 )
             except Exception:  # noqa: BLE001 - one turn must not kill the worker
-                log.exception("final ASR processing failed; dropping this turn")
+                if self._recognized_text_logging_enabled():
+                    log.exception("final ASR processing failed; dropping this turn")
+                else:
+                    log.error("final ASR processing failed; dropping this turn")
                 self._emit_transcript_abort(
                     work.acoustic,
                     work.revision,
@@ -6744,11 +6860,12 @@ class SherpaOnnxEngine(AudioEngine):
             evidence.peak_periodicity,
         )
         if evidence.disposition is SpeechEvidenceDisposition.INSUFFICIENT:
-            log.info(
-                "dropping raw final %r -- no sustained calibrated pre-gain "
-                "speech evidence",
-                raw_final,
-            )
+            if self._recognized_text_logging_enabled():
+                log.info(
+                    "dropping raw final %r -- no sustained calibrated pre-gain "
+                    "speech evidence",
+                    raw_final,
+                )
             if self._capture_callback_is_current(capture_epoch):
                 self._emit_capture_callback(
                     self._cb.on_metric,
@@ -8870,24 +8987,26 @@ class SherpaOnnxEngine(AudioEngine):
                         # cancellation/continuation machinery. The first VAD
                         # onset resets this hypothesis before any fresh text
                         # can be published or finalized.
-                        log.debug(
-                            "suppressing pre-VAD ASR partial: %r", logical_text
-                        )
+                        if self._recognized_text_logging_enabled():
+                            log.debug(
+                                "suppressing pre-VAD ASR partial: %r", logical_text
+                            )
                     elif logical_text and logical_text != last_published_partial:
                         evidence_now = segment.speech_evidence_snapshot()
                         if not evidence_now.admitted:
                             # A partial cancels/supersedes work before the final.
                             # Hold it until independent pre-gain speech exists so
                             # a final we later reject cannot disrupt a valid turn.
-                            log.debug(
-                                "suppressing ASR partial without calibrated "
-                                "speech evidence: %r qualified=%d/%d run=%d/%d",
-                                logical_text,
-                                evidence_now.qualified_frames,
-                                evidence_now.required_qualified_frames,
-                                evidence_now.longest_qualified_run,
-                                evidence_now.required_consecutive_frames,
-                            )
+                            if self._recognized_text_logging_enabled():
+                                log.debug(
+                                    "suppressing ASR partial without calibrated "
+                                    "speech evidence: %r qualified=%d/%d run=%d/%d",
+                                    logical_text,
+                                    evidence_now.qualified_frames,
+                                    evidence_now.required_qualified_frames,
+                                    evidence_now.longest_qualified_run,
+                                    evidence_now.required_consecutive_frames,
+                                )
                         else:
                             # Casing only on partials (cheap, every block); the
                             # heavier punctuation model is reserved for the final.
@@ -8896,7 +9015,8 @@ class SherpaOnnxEngine(AudioEngine):
                                 if self.config.asr_restore_casing
                                 else logical_text
                             )
-                            log.debug("asr partial: %r", shown)
+                            if self._recognized_text_logging_enabled():
+                                log.debug("asr partial: %r", shown)
                             if not self._capture_epoch_is_current(capture_epoch):
                                 continue
                             emitted_now = time.perf_counter()
@@ -9330,10 +9450,11 @@ class SherpaOnnxEngine(AudioEngine):
                                 # raw/final 'AND' every ~2 s and burned addressing LLM
                                 # calls. A configured VAD observed no speech, so fail
                                 # closed at the final seam before SenseVoice/brain.
-                                log.info(
-                                    "dropping final %r -- VAD observed no speech in segment",
-                                    raw_final,
-                                )
+                                if self._recognized_text_logging_enabled():
+                                    log.info(
+                                        "dropping final %r -- VAD observed no speech in segment",
+                                        raw_final,
+                                    )
                                 if self._capture_callback_is_current(capture_epoch):
                                     self._emit_capture_callback(
                                         self._cb.on_metric,

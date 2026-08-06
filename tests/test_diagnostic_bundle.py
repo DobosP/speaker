@@ -2259,3 +2259,56 @@ def test_first_close_request_owns_shutdown_semantics(
     assert payload["clean_shutdown"] is first_clean
     assert bundle.manifest_status is expected_status
     assert validate_manifest(manifest) is first_clean
+
+
+def test_manifest_expectations_bind_count_and_artifact_names_to_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _tracks, _timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    artifact_files = frozenset(
+        path.name for role, path in bundle.paths.items() if role != "manifest"
+    )
+
+    assert validate_manifest(
+        manifest,
+        expected_final_model_input_count=0,
+        expected_artifact_files=artifact_files,
+    )
+    assert not validate_manifest(
+        manifest,
+        expected_final_model_input_count=1,
+        expected_artifact_files=artifact_files,
+    )
+    assert not validate_manifest(
+        manifest,
+        expected_final_model_input_count=0,
+        expected_artifact_files=artifact_files | {"foreign.wav"},
+    )
+
+    original_path_match = diagnostic_bundle._path_matches_identity
+    mutated = False
+
+    def mutate_before_final_identity_check(path, identity):
+        nonlocal mutated
+        if Path(path) == manifest and not mutated:
+            mutated = True
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["final_model_input"]["input_count"] = 99
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+        return original_path_match(path, identity)
+
+    monkeypatch.setattr(
+        diagnostic_bundle,
+        "_path_matches_identity",
+        mutate_before_final_identity_check,
+    )
+    assert not validate_manifest(
+        manifest,
+        expected_final_model_input_count=0,
+        expected_artifact_files=artifact_files,
+    )
+    assert mutated

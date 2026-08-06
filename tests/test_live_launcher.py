@@ -1511,6 +1511,179 @@ def test_launcher_rejects_abbreviated_options(option):
     assert exc.value.code == 2
 
 
+def _write_guided_capture_config(root: Path) -> None:
+    committed = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    (root / "config.json").write_text(
+        json.dumps(
+            {
+                "device": "safe",
+                "device_profiles": {
+                    "safe": {"sherpa": {"aec_enabled": False}},
+                },
+                "sherpa": {
+                    "aec_enabled": False,
+                    "barge_word_cut_require_speaker": False,
+                },
+                "llm": {"backend": "llamacpp"},
+                "final_stt_profiles": committed["final_stt_profiles"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_guided_capture_is_one_effect_free_profile_bound_live_entry(tmp_path, capsys):
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    assert _run_session(
+        [
+            "--guided-stt-capture",
+            "--run-label",
+            "owner-stt-control",
+            "--final-stt-profile",
+            "sense-voice",
+        ],
+        ops=ops,
+        root=tmp_path,
+    ) == 0
+
+    assert all(command != ("ollama", "serve") for command, _ in ops.popen_calls)
+    assert all(command != ("ollama", "list") for command in _commands(ops))
+    doctor = next(
+        command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor")
+    )
+    voice = _voice_command(ops)
+    for command in (doctor, voice):
+        profile_index = command.index("--final-stt-profile")
+        assert command[profile_index : profile_index + 2] == (
+            "--final-stt-profile",
+            "sense-voice",
+        )
+        assert command.count("--final-stt-profile") == 1
+        assert command.count("--no-speaker-enrollment") == 1
+    assert doctor.count("--defer-llm") == 1
+    assert doctor.count("--capture-only") == 1
+    assert "--capture-only" in voice
+    plan_index = voice.index("--capture-only-plan")
+    plan_path = Path(voice[plan_index + 1])
+    assert plan_path == (
+        tmp_path
+        / "logs/live/owner-stt-control-20260716-123456/reference-plan.json"
+    )
+    assert plan_path.is_file()
+    assert stat.S_IMODE(plan_path.stat().st_mode) == 0o600
+    contract_path = plan_path.with_name("capture-contract.json")
+    assert contract_path.is_file()
+    assert stat.S_IMODE(contract_path.stat().st_mode) == 0o600
+    contract = json.loads(contract_path.read_bytes())
+    assert contract["execution_purpose"] == "stt_capture_only"
+    assert contract["speaker_identity_policy"] == "off_for_session"
+    assert contract["final_stt_profile"]["name"] == "sense-voice"
+    assert contract["plan"]["case_count"] == 16
+    assert contract["capture_environment"]["device_profile"] == "safe"
+    assert contract["capture_environment"]["effective_input_gain"] == 1.0
+    profile_digest_index = voice.index("--capture-only-profile-sha256")
+    sherpa_digest_index = voice.index("--capture-only-sherpa-sha256")
+    assert voice[profile_digest_index + 1] == contract["final_stt_profile"]["sha256"]
+    assert (
+        voice[sherpa_digest_index + 1]
+        == contract["capture_environment"]["effective_sherpa_sha256"]
+    )
+    assert not any(
+        option in voice
+        for option in ("--llm", "--model", "--fast-model", "--mode", "--stream-tts")
+    )
+    output = capsys.readouterr().out
+    assert "effect-free" in output
+    assert "stops automatically" in output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--guided-stt-capture"],
+        [
+            "--guided-stt-capture",
+            "--final-stt-profile",
+            "sense-voice",
+            "--llm",
+            "echo",
+        ],
+        [
+            "--guided-stt-capture",
+            "--final-stt-profile",
+            "sense-voice",
+            "--model",
+            "anything",
+        ],
+        [
+            "--guided-stt-capture",
+            "--final-stt-profile",
+            "sense-voice",
+            "--mode",
+            "assistant",
+        ],
+        [
+            "--guided-stt-capture",
+            "--final-stt-profile",
+            "sense-voice",
+            "--stream-tts",
+        ],
+        [
+            "--guided-stt-capture",
+            "--guided-stt-capture",
+            "--final-stt-profile",
+            "sense-voice",
+        ],
+    ],
+)
+def test_guided_capture_rejects_missing_profile_conflicts_and_duplicates_before_host_setup(
+    arguments,
+):
+    ops = _FakeOps()
+
+    with pytest.raises(SystemExit) as exc:
+        run_live_session(arguments, ops=ops, root=Path("/unused"))
+
+    assert exc.value.code == 2
+    assert ops.calls == []
+    assert ops.popen_calls == []
+
+
+def test_guided_capture_close_time_plan_mutation_fails_and_preserves_bundle(tmp_path):
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+    run_dir = tmp_path / "logs/live/mutation-check-20260716-123456"
+
+    def mutate_plan() -> None:
+        plan_path = run_dir / "reference-plan.json"
+        plan_path.write_bytes(b"private mutation canary\n")
+        plan_path.chmod(0o600)
+
+    ops.voice_wait_callback = mutate_plan
+
+    assert _run_session(
+        [
+            "--guided-stt-capture",
+            "--run-label",
+            "mutation-check",
+            "--final-stt-profile",
+            "sense-voice",
+        ],
+        ops=ops,
+        root=tmp_path,
+    ) == 2
+
+    assert run_dir.is_dir()
+    assert (run_dir / "reference-plan.json").read_bytes() == b"private mutation canary\n"
+    assert (run_dir / "capture-contract.json").is_file()
+
+
 def test_live_shell_is_a_thin_helpable_entrypoint(tmp_path):
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ, SPEAKER_PYTHON=sys.executable)

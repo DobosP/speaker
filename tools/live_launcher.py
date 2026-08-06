@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import math
 import os
 import re
 import shlex
@@ -1051,6 +1052,13 @@ class OllamaLease:
 class _SelectedLiveConfig:
     llm_backend: str
     ollama_host: str | None
+    final_stt_profile: str | None = None
+    final_stt_profile_sha256: str | None = None
+    final_stt_profile_schema_version: int | None = None
+    effective_device: str | None = None
+    effective_input_gain: float | None = None
+    capture_config_sha256: str | None = None
+    effective_sherpa_sha256: str | None = None
 
 
 def _selected_live_config(
@@ -1058,6 +1066,9 @@ def _selected_live_config(
     requested_device: str | None,
     final_stt_profile: str | None = None,
     no_speaker_enrollment: bool = False,
+    *,
+    guided_capture: bool = False,
+    input_gain: float | None = None,
 ) -> _SelectedLiveConfig:
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
@@ -1082,10 +1093,41 @@ def _selected_live_config(
         requested = requested_device or config.get("device", "auto")
         device, _rationale = resolve_device(config, requested)
         config = apply_device_profile(config, device, strict=True)
+        capture_config_sha256 = None
+        effective_input_gain = None
+        final_stt_metadata = None
         if final_stt_profile:
-            config, _metadata = apply_final_stt_profile(config, final_stt_profile)
+            config, final_stt_metadata = apply_final_stt_profile(
+                config, final_stt_profile
+            )
         if no_speaker_enrollment:
             config = apply_no_speaker_enrollment(config)
+        effective_sherpa_sha256 = None
+        if guided_capture:
+            from core.guided_stt_plan import (
+                guided_stt_capture_config_sha256,
+                guided_stt_sherpa_config_sha256,
+            )
+
+            sherpa_for_capture = dict(config.get("sherpa", {}) or {})
+            if input_gain is not None:
+                sherpa_for_capture["input_gain"] = input_gain
+            sherpa_for_capture["record_pre_dsp_reference"] = True
+            sherpa_for_capture["record_playback_reference"] = True
+            config = dict(config)
+            config["sherpa"] = sherpa_for_capture
+            effective_input_gain = float(sherpa_for_capture.get("input_gain", 1.0))
+            if (
+                not math.isfinite(effective_input_gain)
+                or effective_input_gain <= 0.0
+            ):
+                raise ValueError("effective input gain must be finite and positive")
+            capture_config_sha256 = guided_stt_capture_config_sha256(
+                sherpa_for_capture
+            )
+            effective_sherpa_sha256 = guided_stt_sherpa_config_sha256(
+                sherpa_for_capture
+            )
     except (OSError, ValueError) as exc:
         raise LauncherError(
             f"could not resolve the selected live configuration: {exc}"
@@ -1114,7 +1156,25 @@ def _selected_live_config(
                 f"the selected sherpa.{key} bypasses the launcher-owned OS-EC "
                 f"route; use the system default or {canonical!r}"
             )
-    return _SelectedLiveConfig(backend, configured_host)
+    return _SelectedLiveConfig(
+        backend,
+        configured_host,
+        final_stt_profile=(
+            final_stt_metadata.name if final_stt_metadata is not None else None
+        ),
+        final_stt_profile_sha256=(
+            final_stt_metadata.sha256 if final_stt_metadata is not None else None
+        ),
+        final_stt_profile_schema_version=(
+            final_stt_metadata.schema_version
+            if final_stt_metadata is not None
+            else None
+        ),
+        effective_device=str(device),
+        effective_input_gain=effective_input_gain,
+        capture_config_sha256=capture_config_sha256,
+        effective_sherpa_sha256=effective_sherpa_sha256,
+    )
 
 
 def _loopback_ollama_host(configured: str | None) -> str:
@@ -1337,7 +1397,8 @@ def _live_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Supported runtime options are passed safely to `python -m core`; "
-            "for example: ./live.sh --llm echo"
+            "for example: ./live.sh --guided-stt-capture "
+            "--final-stt-profile sense-voice"
         ),
         allow_abbrev=False,
     )
@@ -1377,6 +1438,14 @@ def _live_parser() -> argparse.ArgumentParser:
             "persisted enrollment is not changed"
         ),
     )
+    parser.add_argument(
+        "--guided-stt-capture",
+        action="store_true",
+        help=(
+            "run the fixed close/far owner STT plan with no LLM, TTS, memory, "
+            "control command, or tool capability effects"
+        ),
+    )
     return parser
 
 
@@ -1386,6 +1455,7 @@ def _parse_live_arguments(
     parser = _live_parser()
     supported = {
         "--run-label",
+        "--guided-stt-capture",
         *(option for option, _destination in _VALUE_OPTIONS),
         *(option for option, _destination in _FLAG_OPTIONS),
     }
@@ -1406,6 +1476,34 @@ def _parse_live_arguments(
             "./live.sh uses the host PipeWire echo-cancel path; omit "
             "--device open_speaker (the in-app APM fallback)"
         )
+    if args.guided_stt_capture:
+        if not args.final_stt_profile:
+            parser.error(
+                "--guided-stt-capture requires one explicit --final-stt-profile"
+            )
+        conflicts = tuple(
+            option
+            for option, present in (
+                ("--llm", args.llm is not None),
+                ("--model", args.model is not None),
+                ("--fast-model", args.fast_model is not None),
+                ("--mode", args.mode is not None),
+                ("--stream-tts", bool(args.stream_tts)),
+            )
+            if present
+        )
+        if conflicts:
+            parser.error(
+                "--guided-stt-capture cannot be combined with assistant option(s): "
+                + ", ".join(conflicts)
+            )
+        if args.input_gain is not None and (
+            not math.isfinite(args.input_gain) or args.input_gain <= 0.0
+        ):
+            parser.error("--guided-stt-capture requires a finite positive --input-gain")
+        # Guided evaluation measures unenrolled owner speech and cannot grant
+        # authority.  This in-memory session choice never changes enrollment.
+        args.no_speaker_enrollment = True
 
     core_args: list[str] = []
     for option, destination in _VALUE_OPTIONS:
@@ -1435,6 +1533,7 @@ def run_live_session(
     run_dir: Path | None = None
     route: EchoRouteLease | None = None
     ollama: OllamaLease | None = None
+    guided_publication = None
     result_code = 2
     cleanup_errors: list[str] = []
     signal_state = {"signum": 0, "cleaning": False}
@@ -1481,14 +1580,59 @@ def run_live_session(
         ):
             env.pop(unsafe_audio_env, None)
 
-        llm_mode = str(args.llm or "ollama").lower()
+        llm_mode = (
+            "capture_only"
+            if args.guided_stt_capture
+            else str(args.llm or "ollama").lower()
+        )
         selected = _selected_live_config(
             root,
             args.device,
             args.final_stt_profile,
             args.no_speaker_enrollment,
+            guided_capture=bool(args.guided_stt_capture),
+            input_gain=args.input_gain,
         )
-        if llm_mode != "echo" and selected.llm_backend == "ollama":
+        if args.guided_stt_capture:
+            from tools.guided_stt_capture import (
+                GuidedCapturePublicationError,
+                publish_guided_capture_contract,
+            )
+
+            if (
+                selected.final_stt_profile is None
+                or selected.final_stt_profile_sha256 is None
+                or selected.final_stt_profile_schema_version is None
+                or selected.effective_device is None
+                or selected.effective_input_gain is None
+                or selected.capture_config_sha256 is None
+                or selected.effective_sherpa_sha256 is None
+            ):
+                raise LauncherError(
+                    "guided capture could not bind the selected final-STT profile"
+                )
+            try:
+                guided_publication = publish_guided_capture_contract(
+                    run_dir,
+                    final_stt_profile=selected.final_stt_profile,
+                    final_stt_profile_sha256=selected.final_stt_profile_sha256,
+                    final_stt_profile_schema_version=(
+                        selected.final_stt_profile_schema_version
+                    ),
+                    effective_device=selected.effective_device,
+                    effective_input_gain=selected.effective_input_gain,
+                    capture_config_sha256=selected.capture_config_sha256,
+                    effective_sherpa_sha256=selected.effective_sherpa_sha256,
+                )
+            except GuidedCapturePublicationError as exc:
+                raise LauncherError(
+                    "could not publish the private guided-capture contract"
+                ) from exc
+        if (
+            not args.guided_stt_capture
+            and llm_mode != "echo"
+            and selected.llm_backend == "ollama"
+        ):
             ollama_host = _loopback_ollama_host(selected.ollama_host)
             env["OLLAMA_HOST"] = ollama_host
             _bypass_proxies_for_ollama(env, ollama_host)
@@ -1515,7 +1659,9 @@ def run_live_session(
             doctor.extend(["--final-stt-profile", args.final_stt_profile])
         if args.no_speaker_enrollment:
             doctor.append("--no-speaker-enrollment")
-        if llm_mode == "echo":
+        if args.guided_stt_capture:
+            doctor.extend(["--defer-llm", "--capture-only"])
+        elif llm_mode == "echo":
             doctor.append(
                 "--defer-ollama"
                 if selected.llm_backend == "ollama"
@@ -1544,10 +1690,30 @@ def run_live_session(
             "--record",
             "--record-pre-dsp-reference",
             "--record-playback-reference",
+            *(
+                [
+                    "--capture-only",
+                    "--capture-only-plan",
+                    str(guided_publication.plan_path),
+                    "--capture-only-profile-sha256",
+                    selected.final_stt_profile_sha256,
+                    "--capture-only-sherpa-sha256",
+                    selected.effective_sherpa_sha256,
+                ]
+                if guided_publication is not None
+                else []
+            ),
             *core_args,
         ]
         print(f"[live] recording locally in {run_dir}")
-        print("[live] stay silent during calibration; use one Ctrl-C to finish")
+        if args.guided_stt_capture:
+            print(
+                "[live] guided STT capture is effect-free; follow the visual "
+                "close/far prompts and press Enter only when ready"
+            )
+            print("[live] it stops automatically after the fixed plan")
+        else:
+            print("[live] stay silent during calibration; use one Ctrl-C to finish")
         result_code = _run_voice_child(ops, command, env)
     except LauncherInterrupted as exc:
         print(f"[live] interrupted by signal {exc.signum}; cleaning up", file=sys.stderr)
@@ -1564,6 +1730,15 @@ def run_live_session(
         result_code = 2
     finally:
         signal_state["cleaning"] = True
+        if guided_publication is not None:
+            try:
+                from tools.guided_stt_capture import (
+                    verify_guided_capture_publication,
+                )
+
+                verify_guided_capture_publication(guided_publication)
+            except Exception:  # noqa: BLE001 - keep private paths/content private
+                cleanup_errors.append("guided capture binding recheck failed")
         if route is not None:
             cleanup_errors.extend(route.close())
         if ollama is not None:

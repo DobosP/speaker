@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from always_on_agent.logical_turn import LogicalTurnAbortReason
 from always_on_agent.logical_turn_shadow import (
     LogicalTurnCompositionShadow,
+    aggregate_logical_turn_terminal_lineage,
 )
 from core import diagnostic_bundle
 from core.contract import is_stop_command
@@ -353,6 +355,66 @@ def test_resumed_speech_composes_one_async_turn_with_whole_pcm() -> None:
     assert snapshot.multi_epoch_commits == 1
     assert snapshot.composition_matches == 1
     assert snapshot.boundary_native_final == 1
+    assert run.stage.finish(admitted)
+
+
+def test_capture_binds_raw_commit_before_async_handoff_without_claiming_delivery() -> None:
+    blocks = [
+        _captured(0.11, at=12.0, sequence=1),
+        _captured(0.0, at=12.8, sequence=2),
+        _captured(0.22, at=13.0, sequence=3),
+        _captured(0.0, at=13.8, sequence=4),
+    ]
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+
+    run = _run(blocks, logical_turn_shadow=shadow)
+    admitted = _take_one(run)
+    report = aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+
+    assert report["lineage"]["raw_commits"] == 1
+    assert report["lineage"]["claimed_raw_commits"] == 1
+    assert report["lineage"]["bound_raw_commits"] == 1
+    assert report["lineage"]["missing_downstream_terminals"] == 1
+    assert report["lineage"]["unbound_raw_commits"] == 0
+    assert report["lineage"]["exact"] is False
+    assert report["capabilities"]["async_final_selection_parity"] is False
+    assert admitted.payload.acoustic is not None
+    assert run.stage.finish(admitted)
+
+
+def test_terminal_lineage_bind_failure_cannot_change_async_handoff(
+    monkeypatch,
+) -> None:
+    blocks = [
+        _captured(0.11, at=12.0, sequence=1),
+        _captured(0.0, at=12.8, sequence=2),
+        _captured(0.22, at=13.0, sequence=3),
+        _captured(0.0, at=13.8, sequence=4),
+    ]
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE BIND FAILURE")
+
+    monkeypatch.setattr(shadow, "bind_terminal_lineage", fail)
+    run = _run(blocks, logical_turn_shadow=shadow)
+    admitted = _take_one(run)
+    report = aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+
+    assert admitted.payload.raw_final == "I WANT TO ASK ABOUT"
+    assert admitted.payload.acoustic is not None
+    assert report["lineage"]["raw_commits"] == 1
+    assert report["lineage"]["claimed_raw_commits"] == 1
+    assert report["lineage"]["bound_raw_commits"] == 0
+    assert report["lineage"]["missing_downstream_terminals"] == 1
+    assert report["lineage"]["unbound_raw_commits"] == 1
+    assert report["health"]["internal_errors"] == 1
+    assert report["lineage"]["exact"] is False
+    assert "PRIVATE BIND FAILURE" not in json.dumps(report, sort_keys=True)
     assert run.stage.finish(admitted)
 
 
@@ -702,6 +764,7 @@ def test_default_capture_never_calls_shadow_evidence_helpers(monkeypatch) -> Non
         "_logical_turn_shadow_observe",
         "_logical_turn_shadow_observe_empty",
         "_logical_turn_shadow_compare",
+        "_logical_turn_shadow_bind_terminal",
     ):
         monkeypatch.setattr(SherpaOnnxEngine, name, forbidden)
 

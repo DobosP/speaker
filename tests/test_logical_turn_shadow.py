@@ -6,6 +6,7 @@ from threading import Barrier, Thread
 
 import pytest
 
+from always_on_agent.acoustic import AcousticLineage, AcousticSpan
 from always_on_agent.logical_turn import (
     LogicalTurnAbortReason,
     LogicalTurnBoundary,
@@ -13,9 +14,13 @@ from always_on_agent.logical_turn import (
 from always_on_agent.logical_turn_shadow import (
     LogicalTurnCompositionShadow,
     LogicalTurnShadowScope,
+    LogicalTurnTerminalLineageScope,
+    aggregate_logical_turn_terminal_lineage,
     aggregate_logical_turn_shadows,
+    validate_logical_turn_terminal_lineage_report,
     validate_logical_turn_shadow_report,
 )
+from core.engine import TranscriptAbortReason
 
 
 def _observe(
@@ -525,3 +530,321 @@ def test_report_validator_requires_boolean_capabilities(value: int) -> None:
 
     with pytest.raises(ValueError, match="capabilities"):
         validate_logical_turn_shadow_report(report)
+
+
+def _terminal_lineage(
+    *,
+    stream_id: str = "stream-a",
+    utterance_id: str = "turn-a",
+    capture_epoch: int = 1,
+    capture_generation: int = 1,
+    emitted_at: float | None = None,
+) -> AcousticLineage:
+    return AcousticLineage.single(
+        AcousticSpan(
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            capture_epoch=capture_epoch,
+            capture_generation=capture_generation,
+            emitted_at=emitted_at,
+        )
+    )
+
+
+def _terminal_commit(
+    shadow: LogicalTurnCompositionShadow,
+    *,
+    text: str = "PRIVATE RAW FINAL",
+) -> int:
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text=text,
+        held=False,
+    )
+    assert shadow.compare_legacy_composition(
+        boundary=LogicalTurnBoundary.NATIVE_FINAL,
+        legacy_text=text,
+    )
+    token = shadow.claim_terminal_token()
+    assert type(token) is int
+    return token
+
+
+def _terminal_report(
+    shadow: LogicalTurnCompositionShadow,
+) -> dict[str, object]:
+    shadow.close()
+    return aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+
+
+def test_selected_final_lineage_is_identity_not_text_parity() -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    acoustic = _terminal_lineage()
+    token = _terminal_commit(shadow, text="PRIVATE RAW WORDS")
+
+    assert shadow.bind_terminal_lineage(token, acoustic, 7)
+    delivered = _terminal_lineage(emitted_at=10.0)
+    assert shadow.observe_selected_final(delivered, 7)
+    report = _terminal_report(shadow)
+
+    assert report["scope"] == (
+        LogicalTurnTerminalLineageScope.SHERPA_SELECTED_TERMINAL.value
+    )
+    assert report["outcomes"]["selected_finals"] == 1
+    assert report["lineage"]["raw_commits"] == 1
+    assert report["lineage"]["matched_selected_finals"] == 1
+    assert report["lineage"]["exact"] is True
+    assert report["capabilities"]["selected_final_text_parity"] is False
+    assert "PRIVATE RAW WORDS" not in json.dumps(report, sort_keys=True)
+
+
+@pytest.mark.parametrize("reason", tuple(TranscriptAbortReason))
+def test_every_typed_abort_reason_correlates_exactly(
+    reason: TranscriptAbortReason,
+) -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    acoustic = _terminal_lineage()
+    token = _terminal_commit(shadow)
+    assert shadow.bind_terminal_lineage(token, acoustic, 3)
+
+    assert shadow.observe_typed_abort(acoustic, 3, reason)
+    report = _terminal_report(shadow)
+
+    assert report["outcomes"]["typed_aborts"] == 1
+    assert report["outcomes"]["abort_reason_counts"][reason.value] == 1
+    assert report["lineage"]["matched_abort_reason_counts"][reason.value] == 1
+    assert report["lineage"]["exact"] is True
+    assert shadow.snapshot().idle_aborts == 0
+
+
+def test_terminal_lineage_matches_out_of_order_by_identity() -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    first = _terminal_lineage(stream_id="stream-a", utterance_id="turn-a")
+    second = _terminal_lineage(stream_id="stream-b", utterance_id="turn-b")
+    first_token = _terminal_commit(shadow, text="PRIVATE FIRST")
+    assert shadow.bind_terminal_lineage(first_token, first, 1)
+    second_token = _terminal_commit(shadow, text="PRIVATE SECOND")
+    assert shadow.bind_terminal_lineage(second_token, second, 2)
+
+    assert shadow.observe_typed_abort(
+        second,
+        2,
+        TranscriptAbortReason.INPUT_REJECTED,
+    )
+    assert shadow.observe_selected_final(first, 1)
+    report = _terminal_report(shadow)
+
+    assert report["lineage"]["matched_selected_finals"] == 1
+    assert report["lineage"]["matched_typed_aborts"] == 1
+    assert report["lineage"]["exact"] is True
+
+
+@pytest.mark.parametrize(
+    ("changed", "observed_revision"),
+    (
+        ({"stream_id": "stream-b"}, 5),
+        ({"utterance_id": "turn-b"}, 5),
+        ({"capture_epoch": 2}, 5),
+        ({"capture_generation": 2}, 5),
+        ({}, 6),
+    ),
+)
+def test_partial_lineage_key_mismatch_cannot_pair(
+    changed: dict[str, object],
+    observed_revision: int,
+) -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    expected = _terminal_lineage()
+    token = _terminal_commit(shadow)
+    assert shadow.bind_terminal_lineage(token, expected, 5)
+    observed = _terminal_lineage(**changed)
+
+    assert shadow.observe_selected_final(observed, observed_revision)
+    report = _terminal_report(shadow)
+
+    assert report["lineage"]["matched_selected_finals"] == 0
+    assert report["lineage"]["unscoped_selected_finals"] == 1
+    assert report["lineage"]["missing_downstream_terminals"] == 1
+    assert report["lineage"]["exact"] is False
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("selected", "selected"),
+        ("abort", "abort"),
+        ("selected", "abort"),
+        ("abort", "selected"),
+    ),
+)
+def test_duplicate_or_conflicting_terminal_is_not_a_second_match(
+    first: str,
+    second: str,
+) -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    acoustic = _terminal_lineage()
+    token = _terminal_commit(shadow)
+    assert shadow.bind_terminal_lineage(token, acoustic, 1)
+
+    def deliver(kind: str) -> None:
+        if kind == "selected":
+            assert shadow.observe_selected_final(acoustic, 1)
+        else:
+            assert shadow.observe_typed_abort(
+                acoustic,
+                1,
+                TranscriptAbortReason.INPUT_REJECTED,
+            )
+
+    deliver(first)
+    deliver(second)
+    report = _terminal_report(shadow)
+
+    assert (
+        report["lineage"]["matched_selected_finals"]
+        + report["lineage"]["matched_typed_aborts"]
+        == 1
+    )
+    assert (
+        report["lineage"]["duplicate_selected_finals"]
+        + report["lineage"]["duplicate_typed_aborts"]
+        == 1
+    )
+    assert report["lineage"]["exact"] is False
+
+
+def test_unbound_missing_unscoped_and_reused_keys_fail_closed() -> None:
+    unclaimed = LogicalTurnCompositionShadow(terminal_lineage=True)
+    assert unclaimed.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE UNCLAIMED",
+        held=False,
+    )
+    assert unclaimed.compare_legacy_composition(
+        boundary=LogicalTurnBoundary.NATIVE_FINAL,
+        legacy_text="PRIVATE UNCLAIMED",
+    )
+    unclaimed_report = _terminal_report(unclaimed)
+    assert unclaimed_report["lineage"]["claimed_raw_commits"] == 0
+    assert unclaimed_report["lineage"]["unbound_raw_commits"] == 1
+    assert unclaimed_report["lineage"]["exact"] is False
+
+    bound_missing = LogicalTurnCompositionShadow(terminal_lineage=True)
+    acoustic = _terminal_lineage()
+    token = _terminal_commit(bound_missing)
+    assert bound_missing.bind_terminal_lineage(token, acoustic, 1)
+    missing_report = _terminal_report(bound_missing)
+    assert missing_report["lineage"]["missing_downstream_terminals"] == 1
+    assert missing_report["lineage"]["unbound_raw_commits"] == 0
+
+    unscoped = LogicalTurnCompositionShadow(terminal_lineage=True)
+    assert unscoped.observe_selected_final(acoustic, 1)
+    unscoped_report = _terminal_report(unscoped)
+    assert unscoped_report["lineage"]["raw_commits"] == 0
+    assert unscoped_report["lineage"]["unscoped_selected_finals"] == 1
+    assert unscoped_report["lineage"]["evidence_sufficient"] is False
+
+    reused = LogicalTurnCompositionShadow(terminal_lineage=True)
+    first_token = _terminal_commit(reused, text="PRIVATE ONE")
+    assert reused.bind_terminal_lineage(first_token, acoustic, 1)
+    second_token = _terminal_commit(reused, text="PRIVATE TWO")
+    assert not reused.bind_terminal_lineage(second_token, acoustic, 1)
+    assert reused.observe_selected_final(acoustic, 1)
+    reused_report = _terminal_report(reused)
+    assert reused_report["health"]["binding_rejections"] == 1
+    assert reused_report["lineage"]["missing_downstream_terminals"] == 1
+    assert reused_report["lineage"]["exact"] is False
+
+
+def test_terminal_lineage_late_and_invalid_observations_are_aggregate_only() -> None:
+    class HostileString(str):
+        armed = False
+
+        def __hash__(self) -> int:
+            if self.armed:
+                raise AssertionError("hostile hash must not execute")
+            return super().__hash__()
+
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    token = _terminal_commit(shadow, text="PRIVATE TYPE SENTINEL")
+    hostile = _terminal_lineage(stream_id=HostileString("hostile-stream"))
+    HostileString.armed = True
+    assert not shadow.bind_terminal_lineage(token, hostile, 1)
+    assert not shadow.bind_terminal_lineage(token, _terminal_lineage(), True)
+    assert not shadow.observe_typed_abort(
+        _terminal_lineage(),
+        1,
+        "input_rejected",  # type: ignore[arg-type]
+    )
+    shadow.close()
+    assert not shadow.observe_selected_final(_terminal_lineage(), 1)
+    snapshot = shadow.terminal_lineage_snapshot()
+    report = aggregate_logical_turn_terminal_lineage((snapshot,))
+
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["health"]["binding_rejections"] == 2
+    assert report["health"]["terminal_rejections"] == 1
+    assert report["health"]["late_observations"] == 1
+    assert report["health"]["ok"] is False
+    for sentinel in (
+        "PRIVATE TYPE SENTINEL",
+        "hostile-stream",
+        "turn-a",
+    ):
+        assert sentinel not in repr(shadow)
+        assert sentinel not in repr(snapshot)
+        assert sentinel not in serialized
+
+
+def test_terminal_lineage_rejects_oversized_span_identity() -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    token = _terminal_commit(shadow)
+    oversized = AcousticLineage(
+        tuple(
+            AcousticSpan(stream_id=f"s{index}", utterance_id=f"u{index}")
+            for index in range(65)
+        )
+    )
+
+    assert not shadow.bind_terminal_lineage(token, oversized, 0)
+    report = _terminal_report(shadow)
+    assert report["health"]["binding_rejections"] == 1
+    assert report["lineage"]["unbound_raw_commits"] == 1
+    assert report["lineage"]["exact"] is False
+
+
+def test_terminal_lineage_report_validator_rejects_forged_claims() -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    acoustic = _terminal_lineage()
+    token = _terminal_commit(shadow)
+    assert shadow.bind_terminal_lineage(token, acoustic, 1)
+    assert shadow.observe_selected_final(acoustic, 1)
+    report = _terminal_report(shadow)
+    validate_logical_turn_terminal_lineage_report(report)
+
+    unknown = json.loads(json.dumps(report))
+    unknown["private_rows"] = []
+    with pytest.raises(ValueError, match="shape"):
+        validate_logical_turn_terminal_lineage_report(unknown)
+
+    authority = json.loads(json.dumps(report))
+    authority["capabilities"]["runtime_authority"] = True
+    with pytest.raises(ValueError, match="capabilities"):
+        validate_logical_turn_terminal_lineage_report(authority)
+
+    balanced = json.loads(json.dumps(report))
+    balanced["lineage"]["matched_selected_finals"] = 0
+    balanced["lineage"]["unscoped_selected_finals"] = 1
+    balanced["lineage"]["missing_downstream_terminals"] = 1
+    balanced["lineage"]["exact"] = True
+    with pytest.raises(ValueError, match="exactness"):
+        validate_logical_turn_terminal_lineage_report(balanced)
+
+    scalar_alias = json.loads(json.dumps(report))
+    scalar_alias["lineage"]["raw_commits"] = True
+    with pytest.raises(TypeError, match="integer"):
+        validate_logical_turn_terminal_lineage_report(scalar_alias)

@@ -21,6 +21,9 @@ from always_on_agent.acoustic import (
 from always_on_agent.logical_turn import LogicalTurnBoundary
 from always_on_agent.logical_turn_shadow import (
     LogicalTurnCompositionShadow,
+    aggregate_logical_turn_terminal_lineage,
+    aggregate_logical_turn_shadows,
+    validate_logical_turn_terminal_lineage_report,
     validate_logical_turn_shadow_report,
 )
 from core.engine import (
@@ -46,7 +49,11 @@ from tools.capture_replay import (
     SpeakerRole,
     WordInterval,
 )
-from tools.capture_replay.metrics import ReplayAcousticEvent, ReplayRunRecord
+from tools.capture_replay.metrics import (
+    ReplayAcousticEvent,
+    ReplayRunRecord,
+    TimedFinal,
+)
 from tools import capture_replay_eval as evaluate
 
 
@@ -667,6 +674,206 @@ def test_post_composition_rejection_cannot_retroactively_abort_commit() -> None:
     assert snapshot.idle_aborts == 1
 
 
+def test_typed_collector_correlates_selected_and_abort_by_bound_lineage() -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    collector = evaluate._CaseCollector(lambda: None, shadow)
+    selected_lineage = _lineage()
+    abort_lineage = AcousticLineage.single(
+        replace(
+            selected_lineage.spans[0],
+            utterance_id="u2",
+        )
+    )
+
+    for text, lineage, revision in (
+        ("PRIVATE RAW SELECTED", selected_lineage, 1),
+        ("PRIVATE RAW ABORT", abort_lineage, 2),
+    ):
+        assert shadow.observe_native_final(
+            native_epoch=1,
+            native_sequence=0,
+            text=text,
+            held=False,
+        )
+        assert shadow.compare_legacy_composition(
+            boundary=LogicalTurnBoundary.NATIVE_FINAL,
+            legacy_text=text,
+        )
+        token = shadow.claim_terminal_token()
+        assert token is not None
+        assert shadow.bind_terminal_lineage(token, lineage, revision)
+
+    selected_delivery = AcousticLineage.single(
+        replace(selected_lineage.spans[0], emitted_at=2.1)
+    )
+    collector.on_final(
+        FinalTranscript(
+            "DIFFERENT SELECTED WORDS",
+            acoustic=selected_delivery,
+            revision=1,
+        )
+    )
+    collector.on_abort(
+        TranscriptAbort(
+            acoustic=abort_lineage,
+            revision=2,
+            reason=TranscriptAbortReason.INPUT_REJECTED,
+        )
+    )
+    shadow.close()
+    report = aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+
+    assert report["outcomes"]["selected_finals"] == 1
+    assert report["outcomes"]["typed_aborts"] == 1
+    assert report["lineage"]["matched_selected_finals"] == 1
+    assert report["lineage"]["matched_typed_aborts"] == 1
+    assert report["lineage"]["exact"] is True
+    assert shadow.snapshot().idle_aborts == 1
+    serialized = json.dumps(report, sort_keys=True)
+    assert "PRIVATE RAW" not in serialized
+    assert "DIFFERENT SELECTED WORDS" not in serialized
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "raw",
+        "raw_bool",
+        "selected",
+        "selected_bool",
+        "abort_total",
+        "abort_reason",
+        "abort_reason_bool",
+        "abort_reason_key",
+    ),
+)
+def test_capture_terminal_lineage_cross_section_mismatch_fails_closed(
+    mutation: str,
+) -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    lineage = _lineage()
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE RAW",
+        held=False,
+    )
+    assert shadow.compare_legacy_composition(
+        boundary=LogicalTurnBoundary.NATIVE_FINAL,
+        legacy_text="PRIVATE RAW",
+    )
+    token = shadow.claim_terminal_token()
+    assert token is not None
+    assert shadow.bind_terminal_lineage(token, lineage, 1)
+    assert shadow.observe_selected_final(lineage, 1)
+    shadow.close()
+    raw = aggregate_logical_turn_shadows((shadow.snapshot(),))
+    terminal = aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+    metrics = {
+        "streaming": {
+            "final_events": 1,
+            "abort_reasons": {},
+        }
+    }
+    evaluate._validate_terminal_lineage_against_metrics(
+        raw_shadow=raw,
+        terminal_lineage=terminal,
+        metrics=metrics,
+    )
+
+    raw = json.loads(json.dumps(raw))
+    terminal = json.loads(json.dumps(terminal))
+    metrics = json.loads(json.dumps(metrics))
+    if mutation == "raw":
+        raw["parity"]["paired_terminals"] = 0
+    elif mutation == "raw_bool":
+        raw["parity"]["paired_terminals"] = True
+    elif mutation == "selected":
+        metrics["streaming"]["final_events"] = 0
+    elif mutation == "selected_bool":
+        metrics["streaming"]["final_events"] = True
+    elif mutation == "abort_total":
+        metrics["streaming"]["abort_reasons"] = {"input_rejected": 1}
+    elif mutation == "abort_reason":
+        terminal["outcomes"]["abort_reason_counts"]["abandoned"] = 1
+    elif mutation == "abort_reason_bool":
+        metrics["streaming"]["abort_reasons"] = {"input_rejected": True}
+    else:
+        metrics["streaming"]["abort_reasons"] = {"not_a_reason": 0}
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._validate_terminal_lineage_against_metrics(
+            raw_shadow=raw,
+            terminal_lineage=terminal,
+            metrics=metrics,
+        )
+
+
+@pytest.mark.parametrize("terminal_kind", ("selected", "abort"))
+def test_terminal_observer_exception_cannot_change_collector_record(
+    terminal_kind: str,
+    monkeypatch,
+) -> None:
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+    lineage = _lineage()
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE RAW",
+        held=False,
+    )
+    assert shadow.compare_legacy_composition(
+        boundary=LogicalTurnBoundary.NATIVE_FINAL,
+        legacy_text="PRIVATE RAW",
+    )
+    token = shadow.claim_terminal_token()
+    assert token is not None
+    assert shadow.bind_terminal_lineage(token, lineage, 1)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE TERMINAL FAILURE")
+
+    collector = evaluate._CaseCollector(lambda: None, shadow)
+    if terminal_kind == "selected":
+        monkeypatch.setattr(shadow, "observe_selected_final", fail)
+        collector.on_final(
+            FinalTranscript(
+                "PRIVATE SELECTED",
+                acoustic=lineage,
+                revision=1,
+            )
+        )
+    else:
+        monkeypatch.setattr(shadow, "observe_typed_abort", fail)
+        collector.on_abort(
+            TranscriptAbort(
+                acoustic=lineage,
+                revision=1,
+                reason=TranscriptAbortReason.INPUT_REJECTED,
+            )
+        )
+    record = collector.record(
+        case_index=0,
+        repeat=0,
+        wall_seconds=0.1,
+        peak_rss_mb=None,
+    )
+    shadow.close()
+    report = aggregate_logical_turn_terminal_lineage(
+        (shadow.terminal_lineage_snapshot(),)
+    )
+
+    assert len(record.finals) == int(terminal_kind == "selected")
+    assert len(record.abort_reasons) == int(terminal_kind == "abort")
+    assert report["health"]["internal_errors"] == 1
+    assert report["lineage"]["missing_downstream_terminals"] == 1
+    assert report["lineage"]["exact"] is False
+    assert "PRIVATE TERMINAL FAILURE" not in json.dumps(report, sort_keys=True)
+
+
 def test_parser_keeps_shadow_strictly_opt_in() -> None:
     base = [
         "--corpus",
@@ -674,13 +881,24 @@ def test_parser_keeps_shadow_strictly_opt_in() -> None:
         "--report",
         "private-report.json",
     ]
-    assert evaluate._parser().parse_args(base).logical_turn_shadow is False
+    parsed = evaluate._parser().parse_args(base)
+    assert parsed.logical_turn_shadow is False
+    assert parsed.logical_turn_terminal_lineage is False
     assert (
         evaluate._parser()
         .parse_args([*base, "--logical-turn-shadow"])
         .logical_turn_shadow
         is True
     )
+    terminal = evaluate._parser().parse_args(
+        [
+            *base,
+            "--logical-turn-shadow",
+            "--logical-turn-terminal-lineage",
+        ]
+    )
+    assert terminal.logical_turn_shadow is True
+    assert terminal.logical_turn_terminal_lineage is True
 
 
 def test_evaluator_default_shape_and_opt_in_shadow_schema(
@@ -715,11 +933,16 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
         def warm(self) -> None:
             return None
 
-    observed_shadow_flags: list[bool] = []
+    observed_shadow_flags: list[tuple[bool, bool]] = []
 
     def execute_case(_engine, _case_value, **kwargs):
         shadow = kwargs.get("logical_turn_shadow")
-        observed_shadow_flags.append(shadow is not None)
+        observed_shadow_flags.append(
+            (
+                shadow is not None,
+                bool(shadow and shadow.terminal_lineage_enabled),
+            )
+        )
         if shadow is not None:
             assert shadow.observe_native_final(
                 native_epoch=1,
@@ -737,9 +960,25 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
                 boundary=LogicalTurnBoundary.NATIVE_FINAL,
                 legacy_text="PRIVATE NATIVE",
             )
+            if shadow.terminal_lineage_enabled:
+                token = shadow.claim_terminal_token()
+                assert token is not None
+                lineage = _lineage()
+                assert shadow.bind_terminal_lineage(token, lineage, 1)
+                assert shadow.observe_selected_final(lineage, 1)
         return ReplayRunRecord(
             case_index=kwargs["case_index"],
             repeat=kwargs["repeat"],
+            finals=(
+                TimedFinal(
+                    "DIFFERENT SELECTED WORDS",
+                    emitted_at=2.1,
+                    speech_start_at=0.5,
+                    speech_end_at=1.5,
+                    endpoint_committed_at=2.0,
+                    utterance_id="u1",
+                ),
+            ),
             wall_seconds=0.1,
         )
 
@@ -768,6 +1007,10 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
         lambda *_args, **_kwargs: {
             "evaluations": 1,
             "coverage": {"complete": True},
+            "streaming": {
+                "final_events": 1,
+                "abort_reasons": {},
+            },
         },
     )
     monkeypatch.setattr(
@@ -788,6 +1031,18 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
         configured,
         logical_turn_shadow=True,
     )
+    terminal_lineage = evaluate.evaluate_capture_replay(
+        corpus,
+        configured,
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+    )
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate.evaluate_capture_replay(
+            corpus,
+            configured,
+            logical_turn_terminal_lineage=True,
+        )
 
     assert set(default) == {
         "execution_complete",
@@ -803,7 +1058,21 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
     assert set(shadowed) == set(default) | {"logical_turn_shadow"}
     validate_logical_turn_shadow_report(shadowed["logical_turn_shadow"])
     assert shadowed["logical_turn_shadow"]["parity"]["exact"] is True
-    assert observed_shadow_flags == [False, True]
+    assert terminal_lineage["schema_version"] == 3
+    assert set(terminal_lineage) == set(shadowed) | {
+        "logical_turn_terminal_lineage"
+    }
+    validate_logical_turn_terminal_lineage_report(
+        terminal_lineage["logical_turn_terminal_lineage"]
+    )
+    assert terminal_lineage["logical_turn_terminal_lineage"]["lineage"][
+        "exact"
+    ] is True
+    assert observed_shadow_flags == [
+        (False, False),
+        (True, False),
+        (True, True),
+    ]
     serialized = json.dumps(shadowed, sort_keys=True)
     assert "PRIVATE NATIVE" not in serialized
     assert shadowed["engine"]["evaluator_source_files"] == (
@@ -822,10 +1091,28 @@ def test_report_writer_is_private_no_overwrite(tmp_path):
     assert report.read_bytes() == b'{"execution_complete":true}\n'
 
 
+@pytest.mark.parametrize(
+    ("mode_args", "schema_version", "expected_flags"),
+    (
+        ((), 1, (False, False)),
+        (("--logical-turn-shadow",), 2, (True, False)),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+            ),
+            3,
+            (True, True),
+        ),
+    ),
+)
 def test_cli_success_and_failure_emit_only_aggregate_receipts(
     tmp_path,
     monkeypatch,
     capsys,
+    mode_args: tuple[str, ...],
+    schema_version: int,
+    expected_flags: tuple[bool, bool],
 ):
     private_phrase = "private transcript must not escape"
     private_path = str(tmp_path / "private-corpus.json")
@@ -839,16 +1126,54 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         cases=(_case(tmp_path),),
         audio_bytes=100,
     )
+    mode_sections: dict[str, object] = {}
+    metrics: dict[str, object] = {
+        "evaluations": 1,
+        "coverage": {"complete": True},
+        "streaming": {
+            "final_events": 0,
+            "abort_reasons": {},
+        },
+    }
+    if schema_version >= 2:
+        shadow = LogicalTurnCompositionShadow(
+            terminal_lineage=schema_version == 3
+        )
+        lineage = _lineage()
+        assert shadow.observe_native_final(
+            native_epoch=1,
+            native_sequence=0,
+            text="PRIVATE RAW",
+            held=False,
+        )
+        assert shadow.compare_legacy_composition(
+            boundary=LogicalTurnBoundary.NATIVE_FINAL,
+            legacy_text="PRIVATE RAW",
+        )
+        if schema_version == 3:
+            token = shadow.claim_terminal_token()
+            assert token is not None
+            assert shadow.bind_terminal_lineage(token, lineage, 1)
+            assert shadow.observe_selected_final(lineage, 1)
+            metrics["streaming"]["final_events"] = 1
+        shadow.close()
+        mode_sections["logical_turn_shadow"] = aggregate_logical_turn_shadows(
+            (shadow.snapshot(),)
+        )
+        if schema_version == 3:
+            mode_sections["logical_turn_terminal_lineage"] = (
+                aggregate_logical_turn_terminal_lineage(
+                    (shadow.terminal_lineage_snapshot(),)
+                )
+            )
     report = {
         "execution_complete": True,
         "quality_verdict": "diagnostic_only",
-        "schema_version": 1,
+        "schema_version": schema_version,
         "corpus": {"manifest_sha256": corpus.digest},
         "engine": {"provider": "cpu"},
-        "metrics": {
-            "evaluations": 1,
-            "coverage": {"complete": True},
-        },
+        "metrics": metrics,
+        **mode_sections,
     }
     monkeypatch.setattr(evaluate, "load_corpus", lambda _path: corpus)
     monkeypatch.setattr(evaluate, "load_config", lambda *_args, **_kwargs: {})
@@ -857,10 +1182,15 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         "apply_device_profile",
         lambda config, _device, **_kwargs: config,
     )
-    shadow_flags: list[bool] = []
+    shadow_flags: list[tuple[bool, bool]] = []
 
     def evaluate_replay(*_args, **kwargs):
-        shadow_flags.append(kwargs["logical_turn_shadow"])
+        shadow_flags.append(
+            (
+                kwargs["logical_turn_shadow"],
+                kwargs["logical_turn_terminal_lineage"],
+            )
+        )
         return report
 
     monkeypatch.setattr(evaluate, "evaluate_capture_replay", evaluate_replay)
@@ -870,7 +1200,7 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         [
             "--corpus",
             private_path,
-            "--logical-turn-shadow",
+            *mode_args,
             "--report",
             str(output),
         ]
@@ -886,12 +1216,15 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         "corpus_sha256": "a" * 64,
         "evaluations": 1,
         "coverage_complete": True,
+        "schema_version": schema_version,
+        "logical_turn_shadow": expected_flags[0],
+        "logical_turn_terminal_lineage": expected_flags[1],
     }
     assert captured.err == ""
     assert private_phrase not in captured.out
     assert private_path not in captured.out
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
-    assert shadow_flags == [True]
+    assert shadow_flags == [expected_flags]
 
     monkeypatch.setattr(
         evaluate,
@@ -917,6 +1250,149 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
     assert private_path not in captured.out
 
 
+def test_cli_rejects_report_schema_mismatch_before_publication(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    corpus = LoadedReplayCorpus(
+        path=tmp_path / "private-corpus.json",
+        digest="a" * 64,
+        schema_version=1,
+        purpose="PRIVATE PURPOSE",
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        frame_samples=FRAME_SAMPLES,
+        cases=(_case(tmp_path),),
+        audio_bytes=100,
+    )
+    report = {
+        "execution_complete": True,
+        "quality_verdict": "diagnostic_only",
+        "schema_version": 1,
+        "corpus": {"manifest_sha256": corpus.digest},
+        "engine": {"provider": "cpu"},
+        "metrics": {
+            "evaluations": 1,
+            "coverage": {"complete": True},
+        },
+    }
+    monkeypatch.setattr(evaluate, "load_corpus", lambda _path: corpus)
+    monkeypatch.setattr(evaluate, "load_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        evaluate,
+        "apply_device_profile",
+        lambda config, _device, **_kwargs: config,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "evaluate_capture_replay",
+        lambda *_args, **_kwargs: report,
+    )
+    output = tmp_path / "must-not-exist.json"
+
+    code = evaluate.main(
+        [
+            "--corpus",
+            str(corpus.path),
+            "--logical-turn-shadow",
+            "--report",
+            str(output),
+        ]
+    )
+
+    assert code == 2
+    assert not output.exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "execution_complete": False,
+        "error": "capture_replay_evaluation_unavailable",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode_args", "schema_version", "mode_sections"),
+    (
+        ((), 1, {"logical_turn_shadow": {}}),
+        (("--logical-turn-shadow",), 2, {}),
+        (
+            ("--logical-turn-shadow",),
+            2,
+            {
+                "logical_turn_shadow": {},
+                "logical_turn_terminal_lineage": {},
+            },
+        ),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+            ),
+            3,
+            {"logical_turn_shadow": {}},
+        ),
+    ),
+)
+def test_cli_rejects_report_mode_section_mismatch_before_publication(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    mode_args: tuple[str, ...],
+    schema_version: int,
+    mode_sections: dict[str, object],
+) -> None:
+    corpus = LoadedReplayCorpus(
+        path=tmp_path / "private-corpus.json",
+        digest="a" * 64,
+        schema_version=1,
+        purpose="PRIVATE PURPOSE",
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        frame_samples=FRAME_SAMPLES,
+        cases=(_case(tmp_path),),
+        audio_bytes=100,
+    )
+    report = {
+        "execution_complete": True,
+        "quality_verdict": "diagnostic_only",
+        "schema_version": schema_version,
+        "corpus": {"manifest_sha256": corpus.digest},
+        "engine": {"provider": "cpu"},
+        "metrics": {
+            "evaluations": 1,
+            "coverage": {"complete": True},
+        },
+        **mode_sections,
+    }
+    monkeypatch.setattr(evaluate, "load_corpus", lambda _path: corpus)
+    monkeypatch.setattr(evaluate, "load_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        evaluate,
+        "apply_device_profile",
+        lambda config, _device, **_kwargs: config,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "evaluate_capture_replay",
+        lambda *_args, **_kwargs: report,
+    )
+    output = tmp_path / "must-not-exist.json"
+
+    code = evaluate.main(
+        [
+            "--corpus",
+            str(corpus.path),
+            *mode_args,
+            "--report",
+            str(output),
+        ]
+    )
+
+    assert code == 2
+    assert not output.exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "execution_complete": False,
+        "error": "capture_replay_evaluation_unavailable",
+    }
+
+
 def test_guarded_cli_uses_killable_bounded_worker(
     tmp_path,
     monkeypatch,
@@ -929,6 +1405,9 @@ def test_guarded_cli_uses_killable_bounded_worker(
         "corpus_sha256": "b" * 64,
         "evaluations": 4,
         "coverage_complete": True,
+        "schema_version": 2,
+        "logical_turn_shadow": True,
+        "logical_turn_terminal_lineage": False,
     }
     observed: dict[str, object] = {}
 
@@ -966,6 +1445,138 @@ def test_guarded_cli_uses_killable_bounded_worker(
     ]
     assert "--logical-turn-shadow" in observed["command"]
     assert json.loads(capsys.readouterr().out) == receipt
+
+
+@pytest.mark.parametrize(
+    ("mode_args", "worker_mode"),
+    (
+        ((), (2, True, False)),
+        (("--logical-turn-shadow",), (1, False, False)),
+        (
+            (
+                "--logical-turn-shadow",
+                "--logical-turn-terminal-lineage",
+            ),
+            (2, True, False),
+        ),
+    ),
+)
+def test_guarded_cli_rejects_worker_mode_mismatch(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    mode_args: tuple[str, ...],
+    worker_mode: tuple[int, bool, bool],
+) -> None:
+    receipt = {
+        "execution_complete": True,
+        "quality_verdict": "diagnostic_only",
+        "report_sha256": "a" * 64,
+        "corpus_sha256": "b" * 64,
+        "evaluations": 1,
+        "coverage_complete": True,
+        "schema_version": worker_mode[0],
+        "logical_turn_shadow": worker_mode[1],
+        "logical_turn_terminal_lineage": worker_mode[2],
+    }
+
+    def run(_command, **kwargs):
+        kwargs["stdout"].write(
+            json.dumps(receipt, separators=(",", ":")).encode("utf-8")
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(evaluate.subprocess, "run", run)
+
+    code = evaluate.guarded_main(
+        [
+            "--corpus",
+            str(tmp_path / "private-corpus.json"),
+            *mode_args,
+            "--report",
+            str(tmp_path / "private-report.json"),
+        ]
+    )
+
+    assert code == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "execution_complete": False,
+        "error": "capture_replay_evaluation_unavailable",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "schema_bool",
+        "raw_not_bool",
+        "terminal_not_bool",
+        "terminal_without_raw",
+        "missing",
+        "extra",
+    ),
+)
+def test_worker_receipt_rejects_invalid_mode_binding(mutation: str) -> None:
+    receipt = {
+        "execution_complete": True,
+        "quality_verdict": "diagnostic_only",
+        "report_sha256": "a" * 64,
+        "corpus_sha256": "b" * 64,
+        "evaluations": 1,
+        "coverage_complete": True,
+        "schema_version": 2,
+        "logical_turn_shadow": True,
+        "logical_turn_terminal_lineage": False,
+    }
+    if mutation == "schema_bool":
+        receipt["schema_version"] = True
+    elif mutation == "raw_not_bool":
+        receipt["logical_turn_shadow"] = 1
+    elif mutation == "terminal_not_bool":
+        receipt["logical_turn_terminal_lineage"] = 0
+    elif mutation == "terminal_without_raw":
+        receipt["schema_version"] = 3
+        receipt["logical_turn_shadow"] = False
+        receipt["logical_turn_terminal_lineage"] = True
+    elif mutation == "missing":
+        del receipt["logical_turn_shadow"]
+    else:
+        receipt["unexpected"] = False
+
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._validated_worker_receipt(
+            json.dumps(receipt, separators=(",", ":")).encode("utf-8"),
+            returncode=0,
+            logical_turn_shadow=True,
+            logical_turn_terminal_lineage=False,
+        )
+
+
+def test_guarded_cli_rejects_terminal_lineage_without_raw_before_spawning(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("worker must not start")
+
+    monkeypatch.setattr(evaluate.subprocess, "run", must_not_run)
+
+    code = evaluate.guarded_main(
+        [
+            "--corpus",
+            str(tmp_path / "private-corpus.json"),
+            "--logical-turn-terminal-lineage",
+            "--report",
+            str(tmp_path / "private-report.json"),
+        ]
+    )
+
+    assert code == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "execution_complete": False,
+        "error": "capture_replay_evaluation_unavailable",
+    }
 
 
 def test_guarded_cli_timeout_is_detail_free(tmp_path, monkeypatch, capsys):

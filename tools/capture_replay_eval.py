@@ -89,6 +89,7 @@ _MODEL_PATH_FIELDS = (
     "asr_final_verifier_model",
     "denoise_model",
     "punct_model",
+    "endpoint_prosody_model",
 )
 _SAFE_PROVIDERS = frozenset({"cpu", "cuda"})
 _SAFE_FINAL_BACKENDS = frozenset(
@@ -102,12 +103,14 @@ _WORKER_ENV = "SPEAKER_CAPTURE_REPLAY_WORKER"
 _LOWER_HEX = frozenset("0123456789abcdef")
 _MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
 _MAX_BPE_VOCAB_BYTES = 4 * 1024 * 1024
+_MAX_ENDPOINT_PROSODY_MODEL_BYTES = 16 * 1024 * 1024
 _EVALUATOR_SOURCE_FILES = (
     "always_on_agent/acoustic.py",
     "core/asr_verifier.py",
     "core/audio_frontend.py",
     "core/config.py",
     "core/engine.py",
+    "core/endpointing.py",
     "core/engines/_acoustic_turn.py",
     "core/engines/_aec.py",
     "core/engines/_asr_segment.py",
@@ -493,6 +496,14 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
                 and unit in {"bpe", "cjkchar+bpe"}
             ):
                 continue
+        if field_name == "endpoint_prosody_model" and not (
+            bool(getattr(config, "endpoint_enabled", False))
+            and str(getattr(config, "endpoint_detector", "") or "")
+            .strip()
+            .lower()
+            == "prosody"
+        ):
+            continue
         raw = getattr(config, field_name, "")
         if not isinstance(raw, str) or not raw:
             continue
@@ -501,10 +512,17 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
             if root.is_file():
                 metadata = root.stat()
                 content_sha256 = ""
-                if field_name == "asr_bpe_vocab":
+                if field_name in {
+                    "asr_bpe_vocab",
+                    "endpoint_prosody_model",
+                }:
                     snapshot = read_regular_bounded(
                         root,
-                        maximum_bytes=_MAX_BPE_VOCAB_BYTES,
+                        maximum_bytes=(
+                            _MAX_BPE_VOCAB_BYTES
+                            if field_name == "asr_bpe_vocab"
+                            else _MAX_ENDPOINT_PROSODY_MODEL_BYTES
+                        ),
                     )
                     content_sha256 = hashlib.sha256(snapshot.data).hexdigest()
                 rows.append(

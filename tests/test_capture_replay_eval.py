@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -50,6 +51,7 @@ def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
     assert "core/engines/_sherpa_streaming_decode_owner.py" in (
         evaluate._EVALUATOR_SOURCE_FILES
     )
+    assert "core/endpointing.py" in evaluate._EVALUATOR_SOURCE_FILES
     digest = evaluate._evaluator_source_digest()
     assert len(digest) == 64
     assert set(digest) <= set("0123456789abcdef")
@@ -104,6 +106,35 @@ def test_artifact_metadata_binds_only_active_bpe_hotword_vocab(tmp_path) -> None
         )
         assert evaluate._artifact_metadata_digest(inert) == (
             evaluate._artifact_metadata_digest(without_vocab)
+        )
+
+
+def test_artifact_metadata_content_binds_only_active_prosody_model(tmp_path) -> None:
+    encoder = tmp_path / "encoder.onnx"
+    model = tmp_path / "smart-turn.onnx"
+    encoder.write_bytes(b"encoder")
+    model.write_bytes(b"first")
+    active = SherpaConfig(
+        asr_encoder=str(encoder),
+        endpoint_enabled=True,
+        endpoint_detector="prosody",
+        endpoint_prosody_model=str(model),
+    )
+
+    first = evaluate._artifact_metadata_digest(active)
+    original = model.stat()
+    model.write_bytes(b"other")
+    os.utime(model, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert evaluate._artifact_metadata_digest(active) != first
+
+    for inert in (
+        replace(active, endpoint_enabled=False),
+        replace(active, endpoint_detector="lexical"),
+    ):
+        assert evaluate._artifact_metadata_digest(inert) == (
+            evaluate._artifact_metadata_digest(
+                replace(inert, endpoint_prosody_model="")
+            )
         )
 
 

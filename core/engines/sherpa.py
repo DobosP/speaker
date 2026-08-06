@@ -14,7 +14,7 @@ from collections import deque
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 from always_on_agent.acoustic import (
@@ -22,6 +22,10 @@ from always_on_agent.acoustic import (
     AcousticSource,
 )
 from always_on_agent.speech_analyzer import exact_control_class
+
+if TYPE_CHECKING:
+    from always_on_agent.logical_turn import LogicalTurnBoundary
+    from always_on_agent.logical_turn_shadow import LogicalTurnCompositionShadow
 
 log = logging.getLogger("speaker.sherpa")
 
@@ -33,6 +37,31 @@ def _log_turn_detector_error(_error: Exception) -> None:
         "turn-completion detector failed; using acoustic endpoint",
         exc_info=True,
     )
+
+
+def _logical_turn_shadow_boundary(
+    endpoint_boundary,
+    decision_basis,
+    *,
+    native_acoustic_endpoint: bool,
+) -> Optional["LogicalTurnBoundary"]:
+    """Map only closed endpoint evidence; return None instead of guessing."""
+
+    from always_on_agent.logical_turn import LogicalTurnBoundary
+    from ..endpointing import TurnDecisionBasis
+
+    if (
+        endpoint_boundary is not None and endpoint_boundary.hard_boundary
+    ) or decision_basis is TurnDecisionBasis.MAX_WAIT:
+        return LogicalTurnBoundary.HARD_LIMIT
+    if endpoint_boundary is not None and endpoint_boundary.max_silence_backstop:
+        return LogicalTurnBoundary.SILENCE_LIMIT
+    if decision_basis is TurnDecisionBasis.SEMANTIC_EARLY:
+        return LogicalTurnBoundary.SEMANTIC_COMPLETE
+    if native_acoustic_endpoint:
+        return LogicalTurnBoundary.NATIVE_FINAL
+    return None
+
 
 # How long a just-played block may keep the barge watch armed while the next
 # queued sentence is still waiting for its own first audio. Past this, a stale
@@ -4086,6 +4115,87 @@ class SherpaOnnxEngine(AudioEngine):
             capture_epoch=capture_epoch,
         )
 
+    def _logical_turn_shadow_observer(
+        self,
+    ) -> Optional["LogicalTurnCompositionShadow"]:
+        return getattr(
+            self._capture_callback_context,
+            "logical_turn_shadow",
+            None,
+        )
+
+    @staticmethod
+    def _logical_turn_shadow_failure(
+        observer: "LogicalTurnCompositionShadow",
+    ) -> None:
+        try:
+            observer.note_internal_error()
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            pass
+
+    def _logical_turn_shadow_observe(
+        self,
+        *,
+        native_epoch: int,
+        text: str,
+        held: bool,
+    ) -> None:
+        observer = self._logical_turn_shadow_observer()
+        if observer is None:
+            return
+        try:
+            observer.observe_native_final(
+                native_epoch=native_epoch,
+                native_sequence=0,
+                text=text,
+                held=held,
+            )
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            self._logical_turn_shadow_failure(observer)
+
+    def _logical_turn_shadow_observe_empty(
+        self,
+        *,
+        native_epoch: int,
+        held: bool,
+    ) -> None:
+        observer = self._logical_turn_shadow_observer()
+        if observer is None:
+            return
+        try:
+            observer.observe_empty_native_epoch(
+                native_epoch=native_epoch,
+                held=held,
+            )
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            self._logical_turn_shadow_failure(observer)
+
+    def _logical_turn_shadow_compare(
+        self,
+        *,
+        boundary: "LogicalTurnBoundary",
+        legacy_text: str,
+    ) -> None:
+        observer = self._logical_turn_shadow_observer()
+        if observer is None:
+            return
+        try:
+            observer.compare_legacy_composition(
+                boundary=boundary,
+                legacy_text=legacy_text,
+            )
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            self._logical_turn_shadow_failure(observer)
+
+    def _logical_turn_shadow_close(self) -> None:
+        observer = self._logical_turn_shadow_observer()
+        if observer is None:
+            return
+        try:
+            observer.close()
+        except Exception:  # noqa: BLE001 - shadow evidence cannot alter capture
+            self._logical_turn_shadow_failure(observer)
+
     def _enter_capture_effects(self, epoch: int) -> bool:
         """Admit one capture block's external effects for ``epoch``.
 
@@ -7098,7 +7208,28 @@ class SherpaOnnxEngine(AudioEngine):
         decode_session: Optional[SherpaStreamingDecodeSession] = None,
         *,
         close_decode_session: bool = True,
+        logical_turn_shadow: Optional["LogicalTurnCompositionShadow"] = None,
     ) -> None:
+        if logical_turn_shadow is not None:
+            from always_on_agent.logical_turn_shadow import (
+                LogicalTurnCompositionShadow,
+            )
+
+            if not isinstance(logical_turn_shadow, LogicalTurnCompositionShadow):
+                raise TypeError(
+                    "logical-turn shadow must be a LogicalTurnCompositionShadow"
+                )
+        if (
+            getattr(
+                self._capture_callback_context,
+                "logical_turn_shadow",
+                None,
+            )
+            is not None
+        ):
+            raise RuntimeError("logical-turn shadow is already bound")
+        if logical_turn_shadow is not None:
+            self._capture_callback_context.logical_turn_shadow = logical_turn_shadow
         owns_decode_session = False
         try:
             if decode_session is None:
@@ -7115,6 +7246,11 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             self._running.clear()
         finally:
+            self._logical_turn_shadow_close()
+            try:
+                del self._capture_callback_context.logical_turn_shadow
+            except AttributeError:
+                pass
             if (
                 owns_decode_session
                 and close_decode_session
@@ -8867,6 +9003,25 @@ class SherpaOnnxEngine(AudioEngine):
                             capture_epoch=capture_epoch,
                             capture_generation=capture_generation,
                         )
+                        observer = self._logical_turn_shadow_observer()
+                        if observer is not None:
+                            if type(native_held) is str and native_held.strip():
+                                self._logical_turn_shadow_observe(
+                                    native_epoch=reset_ordinal,
+                                    text=native_held,
+                                    held=True,
+                                )
+                            elif type(native_held) is str:
+                                self._logical_turn_shadow_observe_empty(
+                                    native_epoch=reset_ordinal,
+                                    held=True,
+                                )
+                            else:
+                                self._logical_turn_shadow_observe(
+                                    native_epoch=reset_ordinal,
+                                    text=native_held,
+                                    held=True,
+                                )
                         recognizer.reset(stream)
                         self._confirm_handoff_stream_live = False
                         last_partial = ""
@@ -8888,11 +9043,54 @@ class SherpaOnnxEngine(AudioEngine):
                                 outcome="reset",
                             )
                     elif turn_decision.commit:
+                        current_native_final = recognizer.get_result(stream)
+                        observer = self._logical_turn_shadow_observer()
+                        if observer is not None:
+                            native_epoch = segment.semantic_hold_reset_count + 1
                         raw_final = segment.consume_logical_final(
-                            recognizer.get_result(stream),
+                            current_native_final,
                             capture_epoch=capture_epoch,
                             capture_generation=capture_generation,
                         )
+                        if (
+                            observer is not None
+                            and type(raw_final) is str
+                            and raw_final.strip()
+                        ):
+                            if (
+                                type(current_native_final) is str
+                                and current_native_final.strip()
+                            ):
+                                self._logical_turn_shadow_observe(
+                                    native_epoch=native_epoch,
+                                    text=current_native_final,
+                                    held=False,
+                                )
+                            elif native_epoch > 1:
+                                self._logical_turn_shadow_observe_empty(
+                                    native_epoch=native_epoch,
+                                    held=False,
+                                )
+                            elif type(current_native_final) is not str:
+                                self._logical_turn_shadow_observe(
+                                    native_epoch=native_epoch,
+                                    text=current_native_final,
+                                    held=False,
+                                )
+                            shadow_boundary = _logical_turn_shadow_boundary(
+                                endpoint_boundary,
+                                turn_decision.basis,
+                                native_acoustic_endpoint=(native_acoustic_endpoint),
+                            )
+                            if shadow_boundary is None:
+                                self._logical_turn_shadow_failure(observer)
+                            else:
+                                self._logical_turn_shadow_compare(
+                                    boundary=shadow_boundary,
+                                    legacy_text=raw_final,
+                                )
+                        elif observer is not None and type(raw_final) is not str:
+                            self._logical_turn_shadow_failure(observer)
                         recognizer.reset(stream)
                         self._confirm_handoff_stream_live = False
                         last_partial = ""
@@ -9184,6 +9382,7 @@ class SherpaOnnxEngine(AudioEngine):
                     TranscriptAbortReason.SHUTDOWN,
                     capture_epoch=capture_epoch,
                 )
+            self._logical_turn_shadow_close()
             segment.reset()
             try:
                 del self._capture_callback_context.epoch

@@ -1,4 +1,5 @@
 """Deterministic capture-loop tests for semantic HOLD stream resets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +7,12 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
+from always_on_agent.logical_turn import LogicalTurnAbortReason
+from always_on_agent.logical_turn_shadow import (
+    LogicalTurnCompositionShadow,
+)
 from core import diagnostic_bundle
+from core.contract import is_stop_command
 from core.diagnostic_bundle import (
     BundleAudioSpan,
     DiagnosticStage,
@@ -198,6 +204,7 @@ class _Run:
     partials: list
     aborts: list
     commands: list
+    logical_turn_shadow: LogicalTurnCompositionShadow | None
 
 
 def _run(
@@ -209,9 +216,11 @@ def _run(
     reset_on_hold: bool = True,
     command_value: float | None = None,
     detector_scores: dict[str, float] | None = None,
+    logical_turn_shadow: LogicalTurnCompositionShadow | None = None,
 ) -> _Run:
     detector = ScriptedTurnCompletionDetector(
-        detector_scores or {
+        detector_scores
+        or {
             "I WANT TO": 0.05,
             "I WANT TO ASK ABOUT": 0.9,
             "AND THEN": 0.05,
@@ -245,12 +254,32 @@ def _run(
     )
     engine._final_stage = stage
     engine._diagnostic_bundle = diagnostic
+
+    def on_abort(result) -> None:
+        aborts.append(result)
+        if logical_turn_shadow is not None:
+            logical_turn_shadow.abort(
+                LogicalTurnAbortReason.SHUTDOWN
+                if result.reason is TranscriptAbortReason.SHUTDOWN
+                else LogicalTurnAbortReason.TRANSCRIPT_ABORT
+            )
+
+    def on_command(result) -> None:
+        commands.append(result)
+        if logical_turn_shadow is not None:
+            logical_turn_shadow.abort(
+                LogicalTurnAbortReason.STOP
+                if is_stop_command(result.text)
+                else LogicalTurnAbortReason.CONTROL
+            )
+
     engine._cb = EngineCallbacks(
         on_partial_result=partials.append,
-        on_transcript_abort=aborts.append,
-        on_command_result=commands.append,
+        on_transcript_abort=on_abort,
+        on_command_result=on_command,
     )
     if command_value is not None:
+
         def poll_keywords(samples, **kwargs) -> bool:
             if not np.isclose(float(np.mean(samples)), command_value):
                 return False
@@ -262,7 +291,10 @@ def _run(
         engine._poll_keywords = poll_keywords
     engine._running.set()
 
-    engine._capture_loop()
+    capture_options = {}
+    if logical_turn_shadow is not None:
+        capture_options["logical_turn_shadow"] = logical_turn_shadow
+    engine._capture_loop(**capture_options)
 
     return _Run(
         engine,
@@ -273,6 +305,7 @@ def _run(
         partials,
         aborts,
         commands,
+        logical_turn_shadow,
     )
 
 
@@ -291,7 +324,8 @@ def test_resumed_speech_composes_one_async_turn_with_whole_pcm() -> None:
         _captured(0.0, at=11.8, sequence=4),
     ]
 
-    run = _run(blocks)
+    shadow = LogicalTurnCompositionShadow()
+    run = _run(blocks, logical_turn_shadow=shadow)
     admitted = _take_one(run)
     item = admitted.payload
 
@@ -312,6 +346,13 @@ def test_resumed_speech_composes_one_async_turn_with_whole_pcm() -> None:
     assert partial_keys[0] == partial_keys[1] == item.acoustic.spans[0].key
     assert [partial.revision for partial in run.partials] == [0, 1]
     assert item.revision == 2
+    snapshot = shadow.snapshot()
+    assert snapshot.closed
+    assert snapshot.native_epochs == snapshot.native_finals == 2
+    assert snapshot.held_native_finals == 1
+    assert snapshot.multi_epoch_commits == 1
+    assert snapshot.composition_matches == 1
+    assert snapshot.boundary_native_final == 1
     assert run.stage.finish(admitted)
 
 
@@ -322,13 +363,20 @@ def test_held_prefix_commits_once_at_total_silence_when_reset_stream_is_empty() 
         _captured(0.0, at=21.6, sequence=3),
     ]
 
-    run = _run(blocks)
+    shadow = LogicalTurnCompositionShadow()
+    run = _run(blocks, logical_turn_shadow=shadow)
     admitted = _take_one(run)
 
     assert [partial.text for partial in run.partials] == ["And then"]
     assert admitted.payload.raw_final == "AND THEN"
     assert admitted.payload.acoustic.spans[0].endpoint_reason.value == "asr"
     assert run.recognizer.resets == 3
+    snapshot = shadow.snapshot()
+    assert snapshot.native_epochs == 2
+    assert snapshot.native_finals == 1
+    assert snapshot.empty_native_epochs == 1
+    assert snapshot.composition_matches == 1
+    assert snapshot.boundary_silence_limit == 1
     assert run.stage.finish(admitted)
 
 
@@ -340,13 +388,22 @@ def test_logical_rule3_survives_reset_while_resumed_vad_is_active() -> None:
         _captured(0.23, at=31.1, sequence=4),
     ]
 
-    run = _run(blocks, rule3=1.15)
+    shadow = LogicalTurnCompositionShadow()
+    run = _run(
+        blocks,
+        rule3=1.15,
+        logical_turn_shadow=shadow,
+    )
     admitted = _take_one(run)
 
     assert admitted.payload.raw_final == "I WANT TO ASK ABOUT"
     assert admitted.payload.acoustic.spans[0].endpoint_reason.value == "max_wait"
     assert run.detector.calls == ["I WANT TO"]
     assert run.recognizer.resets == 3
+    snapshot = shadow.snapshot()
+    assert snapshot.composition_matches == 1
+    assert snapshot.multi_epoch_commits == 1
+    assert snapshot.boundary_hard_limit == 1
     assert run.stage.finish(admitted)
 
 
@@ -402,9 +459,11 @@ def test_two_consecutive_holds_reset_in_order_and_commit_once() -> None:
         _captured(0.0, at=39.8, sequence=6),
     ]
     bundle = _CollectingDiagnosticBundle()
+    shadow = LogicalTurnCompositionShadow()
     run = _run(
         blocks,
         diagnostic=bundle,
+        logical_turn_shadow=shadow,
         detector_scores={
             "I WANT TO": 0.05,
             "I WANT TO ASK ABOUT": 0.05,
@@ -424,6 +483,11 @@ def test_two_consecutive_holds_reset_in_order_and_commit_once() -> None:
     assert [record["ordinal"] for record in resets] == [1, 2]
     assert admitted.payload.raw_final == "I WANT TO ASK ABOUT ONE MORE"
     assert run.recognizer.resets == 4
+    snapshot = shadow.snapshot()
+    assert snapshot.native_epochs == snapshot.native_finals == 3
+    assert snapshot.held_native_finals == 2
+    assert snapshot.committed == snapshot.multi_epoch_commits == 1
+    assert snapshot.composition_matches == 1
     assert diagnostic_bundle._validate_endpoint_replay(
         observations,
         EndpointReplayConfig(
@@ -463,7 +527,8 @@ def test_capture_gap_aborts_held_turn_and_cannot_leak_prefix() -> None:
         _captured(0.0, at=41.8, sequence=4, capture_generation=2),
     ]
 
-    run = _run(blocks)
+    shadow = LogicalTurnCompositionShadow()
+    run = _run(blocks, logical_turn_shadow=shadow)
     admitted = _take_one(run)
 
     assert [partial.text for partial in run.partials] == [
@@ -477,6 +542,11 @@ def test_capture_gap_aborts_held_turn_and_cannot_leak_prefix() -> None:
     assert run.partials[0].acoustic.spans[0].key != (
         run.partials[1].acoustic.spans[0].key
     )
+    snapshot = shadow.snapshot()
+    assert snapshot.started == 2
+    assert snapshot.aborted == snapshot.abort_transcript == 1
+    assert snapshot.committed == snapshot.composition_matches == 1
+    assert snapshot.missing_legacy_terminals == 0
     assert run.stage.finish(admitted)
 
 
@@ -488,7 +558,13 @@ def test_kws_command_terminal_closes_held_endpoint_replay() -> None:
     ]
     bundle = _CollectingDiagnosticBundle()
 
-    run = _run(blocks, diagnostic=bundle, command_value=0.44)
+    shadow = LogicalTurnCompositionShadow()
+    run = _run(
+        blocks,
+        diagnostic=bundle,
+        command_value=0.44,
+        logical_turn_shadow=shadow,
+    )
 
     observations = [
         record for record in bundle.records if record.get("kind") == "observation"
@@ -497,6 +573,11 @@ def test_kws_command_terminal_closes_held_endpoint_replay() -> None:
     assert run.commands[0].text == "stop"
     assert run.aborts == []
     assert run.stage.take(timeout=0.0) is None
+    snapshot = shadow.snapshot()
+    assert snapshot.started == snapshot.aborted == 1
+    assert snapshot.abort_stop == 1
+    assert snapshot.committed == 0
+    assert snapshot.missing_legacy_terminals == 0
     terminal = next(
         record
         for record in observations
@@ -564,6 +645,103 @@ def test_flag_off_preserves_non_reset_semantic_hold_path() -> None:
     assert [partial.text for partial in run.partials] == ["I want to"]
     assert run.detector.calls == ["I WANT TO"]
     assert run.recognizer.resets == 1  # first-VAD rebase only
+    assert run.logical_turn_shadow is None
     assert run.stage.take(timeout=0.0) is None
     assert len(run.aborts) == 1
     assert run.aborts[0].reason is TranscriptAbortReason.SHUTDOWN
+
+
+def test_shadow_failure_cannot_change_capture_callbacks(monkeypatch) -> None:
+    blocks = [
+        _captured(0.11, at=60.0, sequence=1),
+        _captured(0.0, at=60.8, sequence=2),
+        _captured(0.22, at=61.0, sequence=3),
+        _captured(0.0, at=61.8, sequence=4),
+    ]
+    baseline = _run(blocks)
+    failing_shadow = LogicalTurnCompositionShadow()
+
+    def fail_observation(**_kwargs):
+        raise RuntimeError("fixed shadow failure")
+
+    monkeypatch.setattr(
+        failing_shadow,
+        "observe_native_final",
+        fail_observation,
+    )
+    observed = _run(blocks, logical_turn_shadow=failing_shadow)
+    baseline_final = _take_one(baseline)
+    observed_final = _take_one(observed)
+
+    assert observed_final.payload.raw_final == baseline_final.payload.raw_final
+    assert [item.text for item in observed.partials] == [
+        item.text for item in baseline.partials
+    ]
+    assert len(observed.aborts) == len(baseline.aborts)
+    snapshot = failing_shadow.snapshot()
+    assert snapshot.closed
+    assert snapshot.internal_errors == 2
+    assert snapshot.extra_legacy_terminals == 1
+    assert baseline.stage.finish(baseline_final)
+    assert observed.stage.finish(observed_final)
+
+
+def test_default_capture_never_calls_shadow_evidence_helpers(monkeypatch) -> None:
+    blocks = [
+        _captured(0.11, at=70.0, sequence=1),
+        _captured(0.0, at=70.8, sequence=2),
+        _captured(0.22, at=71.0, sequence=3),
+        _captured(0.0, at=71.8, sequence=4),
+    ]
+
+    def forbidden(*_args, **_kwargs) -> None:
+        raise AssertionError("default capture called a shadow evidence helper")
+
+    for name in (
+        "_logical_turn_shadow_failure",
+        "_logical_turn_shadow_observe",
+        "_logical_turn_shadow_observe_empty",
+        "_logical_turn_shadow_compare",
+    ):
+        monkeypatch.setattr(SherpaOnnxEngine, name, forbidden)
+
+    run = _run(blocks)
+    admitted = _take_one(run)
+    assert admitted.payload.raw_final == "I WANT TO ASK ABOUT"
+    assert run.logical_turn_shadow is None
+    assert run.stage.finish(admitted)
+
+
+def test_shadow_binding_cleans_up_after_initialization_failure(monkeypatch) -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    shadow = LogicalTurnCompositionShadow()
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE",
+        held=True,
+    )
+    monkeypatch.setattr(engine, "_claim_streaming_decode_session", lambda: None)
+
+    def fail_body(_decode_session) -> None:
+        raise RuntimeError("fixed initialization failure")
+
+    monkeypatch.setattr(engine, "_capture_loop_body", fail_body)
+    engine._running.set()
+    engine._capture_loop(logical_turn_shadow=shadow)
+
+    snapshot = shadow.snapshot()
+    assert snapshot.closed
+    assert snapshot.started == snapshot.aborted == snapshot.abort_shutdown == 1
+    assert engine._logical_turn_shadow_observer() is None
+
+    observed = []
+
+    def clean_body(_decode_session) -> None:
+        observed.append(engine._logical_turn_shadow_observer())
+
+    monkeypatch.setattr(engine, "_capture_loop_body", clean_body)
+    engine._running.set()
+    engine._capture_loop()
+    assert observed == [None]
+    assert engine._logical_turn_shadow_observer() is None

@@ -27,7 +27,7 @@ import tempfile
 import threading
 import time
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -41,6 +41,7 @@ from core.engine import (
     FinalTranscript,
     PartialTranscript,
     TranscriptAbort,
+    TranscriptAbortReason,
 )
 from core.engines.sherpa import (
     SherpaConfig,
@@ -71,6 +72,13 @@ from tools.streaming_stt.bounded_io import (
     opened_directory_nofollow,
     read_regular_bounded,
 )
+
+if TYPE_CHECKING:
+    from always_on_agent.logical_turn import LogicalTurnAbortReason
+    from always_on_agent.logical_turn_shadow import (
+        LogicalTurnCompositionShadow,
+        LogicalTurnShadowSnapshot,
+    )
 
 
 _SAFE_ERROR: Mapping[str, object] = {
@@ -118,6 +126,7 @@ _EVALUATOR_SOURCE_FILES = (
     "core/engines/_dtd.py",
     "core/engines/_faster_whisper.py",
     "core/engines/_sherpa_models.py",
+    "core/engines/_semantic_hold.py",
     "core/engines/_sherpa_streaming_decode.py",
     "core/engines/_sherpa_streaming_decode_owner.py",
     "core/engines/_speech_evidence.py",
@@ -131,6 +140,11 @@ _EVALUATOR_SOURCE_FILES = (
     "tools/capture_replay/metrics.py",
     "tools/capture_replay/replay.py",
     "tools/capture_replay_eval.py",
+)
+_LOGICAL_TURN_SHADOW_SOURCE_FILES = (
+    "always_on_agent/logical_turn.py",
+    "always_on_agent/logical_turn_shadow.py",
+    "core/contract.py",
 )
 
 
@@ -211,8 +225,13 @@ def _single_span(lineage: AcousticLineage | None):
 class _CaseCollector:
     """Thread-safe typed callback collector with no persistent text output."""
 
-    def __init__(self, stop: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        stop: Callable[[], None],
+        logical_turn_shadow: "LogicalTurnCompositionShadow | None" = None,
+    ) -> None:
         self._stop = stop
+        self._logical_turn_shadow = logical_turn_shadow
         self._lock = threading.Lock()
         self._error = False
         self.partials: list[TimedHypothesis] = []
@@ -220,6 +239,24 @@ class _CaseCollector:
         self.commands: list[str] = []
         self.acoustic_events: list[ReplayAcousticEvent] = []
         self.abort_reasons = []
+
+    def _shadow_failure(self) -> None:
+        observer = self._logical_turn_shadow
+        if observer is None:
+            return
+        try:
+            observer.note_internal_error()
+        except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
+            pass
+
+    def _shadow_abort(self, reason: "LogicalTurnAbortReason") -> None:
+        observer = self._logical_turn_shadow
+        if observer is None:
+            return
+        try:
+            observer.abort(reason)
+        except Exception:  # noqa: BLE001 - shadow cannot alter callbacks
+            self._shadow_failure()
 
     @property
     def failed(self) -> bool:
@@ -278,6 +315,21 @@ class _CaseCollector:
             return
         with self._lock:
             self.commands.append(text)
+        if self._logical_turn_shadow is not None:
+            try:
+                from always_on_agent.logical_turn import (
+                    LogicalTurnAbortReason,
+                )
+                from core.contract import is_stop_command
+
+                shadow_reason = (
+                    LogicalTurnAbortReason.STOP
+                    if is_stop_command(text)
+                    else LogicalTurnAbortReason.CONTROL
+                )
+                self._shadow_abort(shadow_reason)
+            except Exception:  # noqa: BLE001 - baseline callback already succeeded
+                self._shadow_failure()
 
     def on_barge(self, result: AcousticSignal) -> None:
         try:
@@ -296,6 +348,20 @@ class _CaseCollector:
             return
         with self._lock:
             self.abort_reasons.append(result.reason)
+        if self._logical_turn_shadow is not None:
+            try:
+                from always_on_agent.logical_turn import (
+                    LogicalTurnAbortReason,
+                )
+
+                shadow_reason = (
+                    LogicalTurnAbortReason.SHUTDOWN
+                    if result.reason is TranscriptAbortReason.SHUTDOWN
+                    else LogicalTurnAbortReason.TRANSCRIPT_ABORT
+                )
+                self._shadow_abort(shadow_reason)
+            except Exception:  # noqa: BLE001 - baseline callback already succeeded
+                self._shadow_failure()
 
     def callbacks(self) -> EngineCallbacks:
         return EngineCallbacks(
@@ -461,11 +527,27 @@ def _json_digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _evaluator_source_digest() -> str:
+def _evaluator_source_files(
+    *,
+    logical_turn_shadow: bool = False,
+) -> tuple[str, ...]:
+    if type(logical_turn_shadow) is not bool:
+        raise CaptureReplayEvaluationError()
+    if logical_turn_shadow:
+        return _EVALUATOR_SOURCE_FILES + _LOGICAL_TURN_SHADOW_SOURCE_FILES
+    return _EVALUATOR_SOURCE_FILES
+
+
+def _evaluator_source_digest(
+    *,
+    logical_turn_shadow: bool = False,
+) -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
     try:
-        for relative in _EVALUATOR_SOURCE_FILES:
+        for relative in _evaluator_source_files(
+            logical_turn_shadow=logical_turn_shadow
+        ):
             snapshot = read_regular_bounded(
                 root / relative,
                 maximum_bytes=_MAX_SOURCE_FILE_BYTES,
@@ -783,7 +865,18 @@ def _execute_case(
     *,
     case_index: int,
     repeat: int,
+    logical_turn_shadow: "LogicalTurnCompositionShadow | None" = None,
 ) -> ReplayRunRecord:
+    if logical_turn_shadow is not None:
+        from always_on_agent.logical_turn_shadow import (
+            LogicalTurnCompositionShadow,
+        )
+
+        if not isinstance(
+            logical_turn_shadow,
+            LogicalTurnCompositionShadow,
+        ):
+            raise CaptureReplayEvaluationError()
     started = time.perf_counter()
     session: ReplayCaptureSession | None = None
     control_lane: CaptureControlLane | None = None
@@ -804,7 +897,10 @@ def _execute_case(
         engine._acoustic_turn_tracker = None
         engine._capture_authority_source_generation = source.generation
         engine._capture_authority_source_device = source.actual_device
-        collector = _CaseCollector(engine._running.clear)
+        collector = _CaseCollector(
+            engine._running.clear,
+            logical_turn_shadow,
+        )
         engine._cb = collector.callbacks()
 
         has_reference = replay_case.track("far_reference_zero") is not None
@@ -832,7 +928,12 @@ def _execute_case(
         # released only after every case/repeat completes on this same thread.
         # Production's dedicated decode-owner thread is source-bound above but
         # deliberately not claimed as replay execution evidence here.
-        engine._capture_loop(close_decode_session=False)
+        capture_options: dict[str, object] = {
+            "close_decode_session": False,
+        }
+        if logical_turn_shadow is not None:
+            capture_options["logical_turn_shadow"] = logical_turn_shadow
+        engine._capture_loop(**capture_options)
         wall_seconds = time.perf_counter() - started
         if not session.naturally_exhausted or session.error is not None:
             raise CaptureReplayEvaluationError()
@@ -843,6 +944,14 @@ def _execute_case(
             peak_rss_mb=_rss_mb(),
         )
     finally:
+        if logical_turn_shadow is not None:
+            try:
+                logical_turn_shadow.close()
+            except Exception:  # noqa: BLE001 - replay cleanup remains private
+                try:
+                    logical_turn_shadow.note_internal_error()
+                except Exception:  # noqa: BLE001 - legacy cleanup must continue
+                    pass
         engine._running.clear()
         engine._speaking.clear()
         if session is not None:
@@ -863,9 +972,12 @@ def evaluate_capture_replay(
     repeats: int = 1,
     provider: str | None = None,
     asr_threads: int | None = None,
+    logical_turn_shadow: bool = False,
 ) -> Mapping[str, object]:
     """Run the configured production capture stack and return aggregate evidence."""
 
+    if type(logical_turn_shadow) is not bool:
+        raise CaptureReplayEvaluationError()
     if (
         isinstance(repeats, bool)
         or not isinstance(repeats, int)
@@ -882,7 +994,8 @@ def evaluate_capture_replay(
     configured_digest = _json_digest(asdict(configured))
     executed_digest = _json_digest(asdict(executed))
     artifact_digest = _artifact_metadata_digest(executed)
-    source_digest = _evaluator_source_digest()
+    source_files = _evaluator_source_files(logical_turn_shadow=logical_turn_shadow)
+    source_digest = _evaluator_source_digest(logical_turn_shadow=logical_turn_shadow)
 
     build_started = time.perf_counter()
     with _quiet_model_output():
@@ -900,18 +1013,28 @@ def evaluate_capture_replay(
     model_load_ms = (time.perf_counter() - build_started) * 1000.0
 
     records: list[ReplayRunRecord] = []
+    shadow_snapshots: list["LogicalTurnShadowSnapshot"] = []
     try:
         with _quiet_model_output():
             for repeat in range(repeats):
                 for case_index, case in enumerate(corpus.cases):
-                    records.append(
-                        _execute_case(
-                            engine,
-                            case,
-                            case_index=case_index,
-                            repeat=repeat,
+                    shadow = None
+                    if logical_turn_shadow:
+                        from always_on_agent.logical_turn_shadow import (
+                            LogicalTurnCompositionShadow,
                         )
-                    )
+
+                        shadow = LogicalTurnCompositionShadow()
+                    case_options: dict[str, object] = {
+                        "case_index": case_index,
+                        "repeat": repeat,
+                    }
+                    if shadow is not None:
+                        case_options["logical_turn_shadow"] = shadow
+                    records.append(_execute_case(engine, case, **case_options))
+                    if shadow is not None:
+                        shadow.close()
+                        shadow_snapshots.append(shadow.snapshot())
     finally:
         decode_session = engine._streaming_decode_session
         if decode_session is not None and not decode_session.closed:
@@ -920,7 +1043,10 @@ def evaluate_capture_replay(
             except Exception:
                 raise CaptureReplayEvaluationError() from None
     verify_corpus_snapshot(corpus)
-    if _evaluator_source_digest() != source_digest:
+    if (
+        _evaluator_source_digest(logical_turn_shadow=logical_turn_shadow)
+        != source_digest
+    ):
         raise CaptureReplayEvaluationError()
     metrics = aggregate_metrics(corpus, records, repeats=repeats)
     if metrics["coverage"]["complete"] is not True:
@@ -952,7 +1078,7 @@ def evaluate_capture_replay(
             "executed_config_sha256": executed_digest,
             "artifact_metadata_sha256": artifact_digest,
             "evaluator_source_sha256": source_digest,
-            "evaluator_source_files": len(_EVALUATOR_SOURCE_FILES),
+            "evaluator_source_files": len(source_files),
             "provider": _safe_label(executed.provider, _SAFE_PROVIDERS),
             "asr_final_backend_configured": _safe_label(
                 executed.asr_final_backend,
@@ -971,6 +1097,15 @@ def evaluate_capture_replay(
         },
         "metrics": metrics,
     }
+    if logical_turn_shadow:
+        from always_on_agent.logical_turn_shadow import (
+            aggregate_logical_turn_shadows,
+        )
+
+        if len(shadow_snapshots) != len(corpus.cases) * repeats:
+            raise CaptureReplayEvaluationError()
+        result["schema_version"] = 2
+        result["logical_turn_shadow"] = aggregate_logical_turn_shadows(shadow_snapshots)
     # Final serialization is also the aggregate/privacy type gate.
     _json_digest(result)
     return result
@@ -1050,6 +1185,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--asr-threads", type=_positive_int)
     parser.add_argument("--repeats", type=_positive_int, default=1)
     parser.add_argument(
+        "--logical-turn-shadow",
+        action="store_true",
+        help=(
+            "add transcript-free raw native-composition shadow evidence; "
+            "does not transfer runtime authority"
+        ),
+    )
+    parser.add_argument(
         "--watchdog-seconds",
         type=_positive_int,
         default=1_800,
@@ -1081,6 +1224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repeats=args.repeats,
             provider=args.provider,
             asr_threads=args.asr_threads,
+            logical_turn_shadow=args.logical_turn_shadow,
         )
         payload = (
             json.dumps(

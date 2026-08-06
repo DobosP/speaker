@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -16,6 +17,11 @@ from always_on_agent.acoustic import (
     AcousticSource,
     AcousticSpan,
     EndpointReason,
+)
+from always_on_agent.logical_turn import LogicalTurnBoundary
+from always_on_agent.logical_turn_shadow import (
+    LogicalTurnCompositionShadow,
+    validate_logical_turn_shadow_report,
 )
 from core.engine import (
     AcousticSignal,
@@ -40,7 +46,7 @@ from tools.capture_replay import (
     SpeakerRole,
     WordInterval,
 )
-from tools.capture_replay.metrics import ReplayAcousticEvent
+from tools.capture_replay.metrics import ReplayAcousticEvent, ReplayRunRecord
 from tools import capture_replay_eval as evaluate
 
 
@@ -52,9 +58,19 @@ def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
         evaluate._EVALUATOR_SOURCE_FILES
     )
     assert "core/endpointing.py" in evaluate._EVALUATOR_SOURCE_FILES
+    assert "core/engines/_semantic_hold.py" in (evaluate._EVALUATOR_SOURCE_FILES)
+    default_files = evaluate._evaluator_source_files()
+    shadow_files = evaluate._evaluator_source_files(logical_turn_shadow=True)
+    assert "always_on_agent/logical_turn.py" not in default_files
+    assert "always_on_agent/logical_turn.py" in shadow_files
+    assert "always_on_agent/logical_turn_shadow.py" in shadow_files
+    assert "core/contract.py" in shadow_files
+    assert "core/contract.py" not in default_files
+    assert len(shadow_files) == len(default_files) + 3
     digest = evaluate._evaluator_source_digest()
     assert len(digest) == 64
     assert set(digest) <= set("0123456789abcdef")
+    assert evaluate._evaluator_source_digest(logical_turn_shadow=True) != digest
 
 
 def test_artifact_metadata_binds_only_active_bpe_hotword_vocab(tmp_path) -> None:
@@ -568,6 +584,233 @@ def test_typed_collector_retains_only_closed_events_and_lineage():
     assert record.abort_reasons == (TranscriptAbortReason.INPUT_REJECTED,)
 
 
+def test_typed_collector_pairs_replay_abort_and_stop_without_text_rows() -> None:
+    lineage = _lineage()
+    transcript_shadow = LogicalTurnCompositionShadow()
+    assert transcript_shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE PREFIX",
+        held=True,
+    )
+    transcript_collector = evaluate._CaseCollector(
+        lambda: None,
+        transcript_shadow,
+    )
+    transcript_collector.on_abort(
+        TranscriptAbort(
+            acoustic=lineage,
+            revision=1,
+            reason=TranscriptAbortReason.INPUT_REJECTED,
+        )
+    )
+    transcript_shadow.close()
+    transcript_snapshot = transcript_shadow.snapshot()
+    assert transcript_snapshot.abort_transcript == 1
+    assert transcript_snapshot.missing_legacy_terminals == 0
+
+    stop_shadow = LogicalTurnCompositionShadow()
+    assert stop_shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE PREFIX",
+        held=True,
+    )
+    stop_collector = evaluate._CaseCollector(lambda: None, stop_shadow)
+    stop_collector.on_command(
+        CommandDetection(
+            "stop speaking",
+            acoustic=lineage,
+            revision=1,
+        )
+    )
+    stop_shadow.close()
+    stop_snapshot = stop_shadow.snapshot()
+    assert stop_snapshot.abort_stop == 1
+    assert stop_snapshot.abort_control == 0
+    assert stop_snapshot.missing_legacy_terminals == 0
+    assert "PRIVATE PREFIX" not in repr(stop_snapshot)
+
+
+def test_post_composition_rejection_cannot_retroactively_abort_commit() -> None:
+    shadow = LogicalTurnCompositionShadow()
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE PREFIX",
+        held=True,
+    )
+    assert shadow.observe_native_final(
+        native_epoch=2,
+        native_sequence=0,
+        text="PRIVATE FINAL",
+        held=False,
+    )
+    assert shadow.compare_legacy_composition(
+        boundary=LogicalTurnBoundary.NATIVE_FINAL,
+        legacy_text="PRIVATE PREFIX PRIVATE FINAL",
+    )
+    collector = evaluate._CaseCollector(lambda: None, shadow)
+
+    collector.on_abort(
+        TranscriptAbort(
+            acoustic=_lineage(),
+            revision=1,
+            reason=TranscriptAbortReason.INPUT_REJECTED,
+        )
+    )
+    shadow.close()
+
+    snapshot = shadow.snapshot()
+    assert snapshot.committed == snapshot.composition_matches == 1
+    assert snapshot.aborted == snapshot.abort_transcript == 0
+    assert snapshot.idle_aborts == 1
+
+
+def test_parser_keeps_shadow_strictly_opt_in() -> None:
+    base = [
+        "--corpus",
+        "private-corpus.json",
+        "--report",
+        "private-report.json",
+    ]
+    assert evaluate._parser().parse_args(base).logical_turn_shadow is False
+    assert (
+        evaluate._parser()
+        .parse_args([*base, "--logical-turn-shadow"])
+        .logical_turn_shadow
+        is True
+    )
+
+
+def test_evaluator_default_shape_and_opt_in_shadow_schema(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    replay_case = _case(tmp_path)
+    corpus = LoadedReplayCorpus(
+        path=tmp_path / "private-corpus.json",
+        digest="c" * 64,
+        schema_version=1,
+        purpose="private purpose",
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        frame_samples=FRAME_SAMPLES,
+        cases=(replay_case,),
+        audio_bytes=len(replay_case.mic.pcm_bytes),
+    )
+
+    class FakeEngine:
+        def __init__(self, config):
+            self.config = config
+            self._recognizer = None
+            self._final_recognizer = None
+            self._final_verifier = None
+            self._streaming_decode_session = None
+
+        def _build(self) -> None:
+            self._recognizer = object()
+            if self.config.asr_final_backend:
+                self._final_recognizer = object()
+
+        def warm(self) -> None:
+            return None
+
+    observed_shadow_flags: list[bool] = []
+
+    def execute_case(_engine, _case_value, **kwargs):
+        shadow = kwargs.get("logical_turn_shadow")
+        observed_shadow_flags.append(shadow is not None)
+        if shadow is not None:
+            assert shadow.observe_native_final(
+                native_epoch=1,
+                native_sequence=0,
+                text="PRIVATE",
+                held=True,
+            )
+            assert shadow.observe_native_final(
+                native_epoch=2,
+                native_sequence=0,
+                text="NATIVE",
+                held=False,
+            )
+            assert shadow.compare_legacy_composition(
+                boundary=LogicalTurnBoundary.NATIVE_FINAL,
+                legacy_text="PRIVATE NATIVE",
+            )
+        return ReplayRunRecord(
+            case_index=kwargs["case_index"],
+            repeat=kwargs["repeat"],
+            wall_seconds=0.1,
+        )
+
+    monkeypatch.setattr(evaluate, "verify_corpus_snapshot", lambda _value: None)
+    monkeypatch.setattr(
+        evaluate,
+        "_replay_config",
+        lambda configured, **_kwargs: configured,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_artifact_metadata_digest",
+        lambda _configured: "a" * 64,
+    )
+    monkeypatch.setattr(evaluate, "SherpaOnnxEngine", FakeEngine)
+    monkeypatch.setattr(evaluate, "_quiet_model_output", nullcontext)
+    monkeypatch.setattr(
+        evaluate,
+        "_install_verifier_probe",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(evaluate, "_execute_case", execute_case)
+    monkeypatch.setattr(
+        evaluate,
+        "aggregate_metrics",
+        lambda *_args, **_kwargs: {
+            "evaluations": 1,
+            "coverage": {"complete": True},
+        },
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_attest_verifier_execution",
+        lambda *_args, **_kwargs: "not-configured",
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_attest_streaming_decode_execution",
+        lambda *_args, **_kwargs: "synchronous-replay-test",
+    )
+    configured = SherpaConfig()
+
+    default = evaluate.evaluate_capture_replay(corpus, configured)
+    shadowed = evaluate.evaluate_capture_replay(
+        corpus,
+        configured,
+        logical_turn_shadow=True,
+    )
+
+    assert set(default) == {
+        "execution_complete",
+        "quality_verdict",
+        "schema_version",
+        "corpus",
+        "engine",
+        "metrics",
+    }
+    assert default["schema_version"] == 1
+    assert "logical_turn_shadow" not in default
+    assert shadowed["schema_version"] == 2
+    assert set(shadowed) == set(default) | {"logical_turn_shadow"}
+    validate_logical_turn_shadow_report(shadowed["logical_turn_shadow"])
+    assert shadowed["logical_turn_shadow"]["parity"]["exact"] is True
+    assert observed_shadow_flags == [False, True]
+    serialized = json.dumps(shadowed, sort_keys=True)
+    assert "PRIVATE NATIVE" not in serialized
+    assert shadowed["engine"]["evaluator_source_files"] == (
+        default["engine"]["evaluator_source_files"] + 3
+    )
+
+
 def test_report_writer_is_private_no_overwrite(tmp_path):
     report = tmp_path / "report.json"
     evaluate._write_new_private(report, b'{"execution_complete":true}\n')
@@ -614,17 +857,20 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         "apply_device_profile",
         lambda config, _device, **_kwargs: config,
     )
-    monkeypatch.setattr(
-        evaluate,
-        "evaluate_capture_replay",
-        lambda *_args, **_kwargs: report,
-    )
+    shadow_flags: list[bool] = []
+
+    def evaluate_replay(*_args, **kwargs):
+        shadow_flags.append(kwargs["logical_turn_shadow"])
+        return report
+
+    monkeypatch.setattr(evaluate, "evaluate_capture_replay", evaluate_replay)
     output = tmp_path / "aggregate-report.json"
 
     code = evaluate.main(
         [
             "--corpus",
             private_path,
+            "--logical-turn-shadow",
             "--report",
             str(output),
         ]
@@ -645,6 +891,7 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
     assert private_phrase not in captured.out
     assert private_path not in captured.out
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert shadow_flags == [True]
 
     monkeypatch.setattr(
         evaluate,
@@ -700,6 +947,7 @@ def test_guarded_cli_uses_killable_bounded_worker(
         [
             "--corpus",
             str(tmp_path / "private-corpus.json"),
+            "--logical-turn-shadow",
             "--report",
             str(tmp_path / "private-report.json"),
             "--watchdog-seconds",
@@ -716,6 +964,7 @@ def test_guarded_cli_uses_killable_bounded_worker(
         "-m",
         "tools.capture_replay_eval",
     ]
+    assert "--logical-turn-shadow" in observed["command"]
     assert json.loads(capsys.readouterr().out) == receipt
 
 

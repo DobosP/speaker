@@ -267,8 +267,28 @@ class RealtimeMediaStage(Generic[PayloadT]):
                 return False
             del self._in_flight[item.sequence]
             self._finished += 1
+            self._condition.notify_all()
 
         return True
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Wait until no queued or in-flight ownership remains.
+
+        This is an observation barrier, not an admission fence.  A caller that
+        needs a stable drain must first prove that every producer has quiesced;
+        a later offer may make an already-returned idle observation stale.
+        ``finish`` runs after consumer-owned payload work, so a successful wait
+        also observes completion of that work.
+        """
+
+        timeout = _bounded_timeout(timeout)
+        with self._condition:
+            return bool(
+                self._condition.wait_for(
+                    lambda: not self._queue and not self._in_flight,
+                    timeout=timeout,
+                )
+            )
 
     def retire_scope(self, scope: CaptureScope) -> StageRetirement[PayloadT]:
         """Fence and retire items with one exact scope.
@@ -302,6 +322,7 @@ class RealtimeMediaStage(Generic[PayloadT]):
 
             self._scope_released += len(queued)
             self._scope_in_flight_cancelled += in_flight_cancelled
+            self._condition.notify_all()
 
         return StageRetirement(
             queued_released=len(queued),

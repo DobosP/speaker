@@ -219,6 +219,7 @@ def _run(
     command_value: float | None = None,
     detector_scores: dict[str, float] | None = None,
     logical_turn_shadow: LogicalTurnCompositionShadow | None = None,
+    close_logical_turn_shadow: bool = True,
 ) -> _Run:
     detector = ScriptedTurnCompletionDetector(
         detector_scores
@@ -296,6 +297,8 @@ def _run(
     capture_options = {}
     if logical_turn_shadow is not None:
         capture_options["logical_turn_shadow"] = logical_turn_shadow
+    if not close_logical_turn_shadow:
+        capture_options["close_logical_turn_shadow"] = False
     engine._capture_loop(**capture_options)
 
     return _Run(
@@ -748,6 +751,34 @@ def test_shadow_failure_cannot_change_capture_callbacks(monkeypatch) -> None:
     assert observed.stage.finish(observed_final)
 
 
+def test_capture_can_defer_both_shadow_closes_until_async_delivery_drains() -> None:
+    blocks = [
+        _captured(0.11, at=65.0, sequence=1),
+        _captured(0.0, at=65.8, sequence=2),
+        _captured(0.22, at=66.0, sequence=3),
+        _captured(0.0, at=66.8, sequence=4),
+    ]
+    shadow = LogicalTurnCompositionShadow(terminal_lineage=True)
+
+    run = _run(
+        blocks,
+        logical_turn_shadow=shadow,
+        close_logical_turn_shadow=False,
+    )
+
+    open_snapshot = shadow.snapshot()
+    assert not open_snapshot.closed
+    assert open_snapshot.committed == 1
+    assert not shadow.terminal_lineage_snapshot().closed
+    assert run.engine._logical_turn_shadow_observer() is None
+    admitted = _take_one(run)
+    assert run.stage.finish(admitted)
+
+    shadow.close()
+    assert shadow.snapshot().closed
+    assert shadow.terminal_lineage_snapshot().closed
+
+
 def test_default_capture_never_calls_shadow_evidence_helpers(monkeypatch) -> None:
     blocks = [
         _captured(0.11, at=70.0, sequence=1),
@@ -786,7 +817,12 @@ def test_shadow_binding_cleans_up_after_initialization_failure(monkeypatch) -> N
     )
     monkeypatch.setattr(engine, "_claim_streaming_decode_session", lambda: None)
 
-    def fail_body(_decode_session) -> None:
+    def fail_body(
+        _decode_session,
+        *,
+        close_logical_turn_shadow: bool = True,
+    ) -> None:
+        assert close_logical_turn_shadow
         raise RuntimeError("fixed initialization failure")
 
     monkeypatch.setattr(engine, "_capture_loop_body", fail_body)
@@ -800,7 +836,12 @@ def test_shadow_binding_cleans_up_after_initialization_failure(monkeypatch) -> N
 
     observed = []
 
-    def clean_body(_decode_session) -> None:
+    def clean_body(
+        _decode_session,
+        *,
+        close_logical_turn_shadow: bool = True,
+    ) -> None:
+        assert close_logical_turn_shadow
         observed.append(engine._logical_turn_shadow_observer())
 
     monkeypatch.setattr(engine, "_capture_loop_body", clean_body)
@@ -808,3 +849,52 @@ def test_shadow_binding_cleans_up_after_initialization_failure(monkeypatch) -> N
     engine._capture_loop()
     assert observed == [None]
     assert engine._logical_turn_shadow_observer() is None
+
+
+def test_deferred_shadow_remains_caller_owned_after_capture_error(monkeypatch) -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    shadow = LogicalTurnCompositionShadow()
+    assert shadow.observe_native_final(
+        native_epoch=1,
+        native_sequence=0,
+        text="PRIVATE",
+        held=True,
+    )
+    monkeypatch.setattr(engine, "_claim_streaming_decode_session", lambda: None)
+
+    def fail_body(
+        _decode_session,
+        *,
+        close_logical_turn_shadow: bool = True,
+    ) -> None:
+        assert close_logical_turn_shadow is False
+        raise RuntimeError("fixed deferred initialization failure")
+
+    monkeypatch.setattr(engine, "_capture_loop_body", fail_body)
+    engine._running.set()
+    engine._capture_loop(
+        logical_turn_shadow=shadow,
+        close_logical_turn_shadow=False,
+    )
+
+    snapshot = shadow.snapshot()
+    assert not snapshot.closed
+    assert snapshot.active
+    assert engine._logical_turn_shadow_observer() is None
+
+    shadow.close()
+    closed = shadow.snapshot()
+    assert closed.closed
+    assert closed.started == closed.aborted == closed.abort_shutdown == 1
+
+
+def test_shadow_close_ownership_flags_are_strict_booleans() -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+
+    with pytest.raises(TypeError, match="close_logical_turn_shadow"):
+        engine._capture_loop(close_logical_turn_shadow=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="close_logical_turn_shadow"):
+        engine._capture_loop_body(
+            None,
+            close_logical_turn_shadow=0,  # type: ignore[arg-type]
+        )

@@ -350,6 +350,97 @@ def test_worker_dispatches_in_capture_order_off_thread():
     )
 
 
+def test_final_delivery_observer_brackets_terminal_work_and_finished_ownership():
+    events = []
+    observer_finished = threading.Event()
+    eng = _engine()
+    stage = _install_stage(eng)
+    acoustic = _acoustic(4)
+
+    class _Observer:
+        def begin_worker_item(self, sequence, observed_acoustic, revision):
+            assert stage.snapshot().in_flight == 1
+            assert observed_acoustic is acoustic
+            events.append(("begin", sequence, revision))
+
+        def finish_worker_item(self, sequence, finish_succeeded):
+            snapshot = stage.snapshot()
+            assert snapshot.in_flight == 0
+            assert snapshot.finished == 1
+            events.append(("finish", sequence, finish_succeeded))
+            observer_finished.set()
+
+    eng._cb = EngineCallbacks(
+        on_final=lambda text: events.append(("callback", text)),
+    )
+    eng._running.set()
+    worker = threading.Thread(
+        target=eng._final_worker,
+        args=(stage,),
+        kwargs={"final_delivery_observer": _Observer()},
+        daemon=True,
+    )
+    worker.start()
+    eng._enqueue_final(
+        np.ones(16000, dtype="float32"),
+        "observed final",
+        0.0,
+        acoustic=acoustic,
+        revision=3,
+    )
+
+    assert observer_finished.wait(timeout=1.0)
+    stage.close()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert events == [
+        ("begin", 1, 3),
+        ("callback", "Observed final"),
+        ("finish", 1, True),
+    ]
+
+
+def test_final_delivery_observer_failures_do_not_change_default_worker_delivery(
+    caplog,
+):
+    rec = _Rec()
+    eng = _engine(rec)
+    stage = _install_stage(eng)
+
+    class _FailingObserver:
+        def begin_worker_item(self, *_args):
+            raise RuntimeError("fixed begin failure")
+
+        def finish_worker_item(self, *_args):
+            raise RuntimeError("fixed finish failure")
+
+    eng._running.set()
+    worker = threading.Thread(
+        target=eng._final_worker,
+        args=(stage,),
+        kwargs={"final_delivery_observer": _FailingObserver()},
+        daemon=True,
+    )
+    worker.start()
+    for raw in ("one", "two"):
+        eng._enqueue_final(np.ones(16000, dtype="float32"), raw, 0.0)
+
+    assert _wait_for(lambda: stage.snapshot().finished == 2)
+    stage.close()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert rec.finals == ["One", "Two"]
+    assert rec.aborts == []
+    assert caplog.messages.count(
+        "final-delivery observer begin_worker_item failed"
+    ) == 2
+    assert caplog.messages.count(
+        "final-delivery observer finish_worker_item failed"
+    ) == 2
+
+
 def test_worker_survives_a_finalize_exception():
     rec = _Rec()
     eng = _engine(rec)

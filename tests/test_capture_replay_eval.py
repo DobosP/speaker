@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from threading import Event
 from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
@@ -36,6 +37,7 @@ from core.engine import (
     TranscriptAbortReason,
 )
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.realtime_media_stage import CaptureScope, RealtimeMediaStage
 from tools.capture_replay import (
     FRAME_SAMPLES,
     SAMPLE_RATE_HZ,
@@ -68,16 +70,28 @@ def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
     assert "core/engines/_semantic_hold.py" in (evaluate._EVALUATOR_SOURCE_FILES)
     default_files = evaluate._evaluator_source_files()
     shadow_files = evaluate._evaluator_source_files(logical_turn_shadow=True)
+    async_files = evaluate._evaluator_source_files(
+        logical_turn_shadow=True,
+        logical_turn_async_terminal_delivery=True,
+    )
     assert "always_on_agent/logical_turn.py" not in default_files
     assert "always_on_agent/logical_turn.py" in shadow_files
     assert "always_on_agent/logical_turn_shadow.py" in shadow_files
     assert "core/contract.py" in shadow_files
     assert "core/contract.py" not in default_files
     assert len(shadow_files) == len(default_files) + 3
+    assert "core/realtime_media_stage.py" not in shadow_files
+    assert "core/realtime_media_stage.py" in async_files
+    assert "tools/capture_replay/async_delivery.py" in async_files
+    assert len(async_files) == len(shadow_files) + 2
     digest = evaluate._evaluator_source_digest()
     assert len(digest) == 64
     assert set(digest) <= set("0123456789abcdef")
     assert evaluate._evaluator_source_digest(logical_turn_shadow=True) != digest
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._evaluator_source_files(
+            logical_turn_async_terminal_delivery=True,
+        )
 
 
 def test_artifact_metadata_binds_only_active_bpe_hotword_vocab(tmp_path) -> None:
@@ -364,6 +378,21 @@ def test_replay_config_preserves_capture_models_but_omits_output_and_identity(
     assert replay.speaker_gate_input is False
     assert configured.tts_model == "/private/tts.onnx"
     assert configured.asr_final_async is True
+
+    async_replay = evaluate._replay_config(
+        configured,
+        provider="cpu",
+        asr_threads=1,
+        async_final_delivery=True,
+    )
+    assert async_replay.asr_final_async is True
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._replay_config(
+            configured,
+            provider="cpu",
+            asr_threads=1,
+            async_final_delivery=1,  # type: ignore[arg-type]
+        )
 
 
 def test_cuda_override_fails_instead_of_silently_falling_back_to_cpu(
@@ -884,6 +913,7 @@ def test_parser_keeps_shadow_strictly_opt_in() -> None:
     parsed = evaluate._parser().parse_args(base)
     assert parsed.logical_turn_shadow is False
     assert parsed.logical_turn_terminal_lineage is False
+    assert parsed.logical_turn_async_terminal_delivery is False
     assert (
         evaluate._parser()
         .parse_args([*base, "--logical-turn-shadow"])
@@ -899,6 +929,18 @@ def test_parser_keeps_shadow_strictly_opt_in() -> None:
     )
     assert terminal.logical_turn_shadow is True
     assert terminal.logical_turn_terminal_lineage is True
+    assert terminal.logical_turn_async_terminal_delivery is False
+    async_delivery = evaluate._parser().parse_args(
+        [
+            *base,
+            "--logical-turn-shadow",
+            "--logical-turn-terminal-lineage",
+            "--logical-turn-async-terminal-delivery",
+        ]
+    )
+    assert async_delivery.logical_turn_shadow is True
+    assert async_delivery.logical_turn_terminal_lineage is True
+    assert async_delivery.logical_turn_async_terminal_delivery is True
 
 
 def test_evaluator_default_shape_and_opt_in_shadow_schema(
@@ -1080,6 +1122,202 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
     )
 
 
+def test_evaluator_async_mode_uses_schema_four_and_real_worker_harness(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    replay_case = _case(tmp_path)
+    corpus = LoadedReplayCorpus(
+        path=tmp_path / "private-corpus.json",
+        digest="c" * 64,
+        schema_version=1,
+        purpose="private purpose",
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        frame_samples=FRAME_SAMPLES,
+        cases=(replay_case,),
+        audio_bytes=len(replay_case.mic.pcm_bytes),
+    )
+    lineage = _lineage()
+
+    class FakeEngine:
+        def __init__(self, config):
+            self.config = config
+            self._recognizer = None
+            self._final_recognizer = None
+            self._final_verifier = None
+            self._final_stage = None
+            self._streaming_decode_session = None
+            self._running = Event()
+
+        def _build(self) -> None:
+            self._recognizer = object()
+            self._final_recognizer = object()
+            self._maybe_setup_async_final()
+
+        def _maybe_setup_async_final(self) -> None:
+            if self._final_stage is not None:
+                self._final_stage.close()
+            self._final_stage = RealtimeMediaStage(8)
+
+        def _final_worker(self, stage, *, final_delivery_observer=None) -> None:
+            assert final_delivery_observer is not None
+            while self._running.is_set():
+                item = stage.take(timeout=0.01)
+                if item is None:
+                    if stage.snapshot().closed:
+                        return
+                    continue
+                work = item.payload
+                final_delivery_observer.begin_worker_item(
+                    item.sequence,
+                    work.acoustic,
+                    work.revision,
+                )
+                assert work.shadow.observe_selected_final(
+                    work.acoustic,
+                    work.revision,
+                )
+                final_delivery_observer.observe_selected(
+                    FinalTranscript(
+                        "PRIVATE SELECTED WORDS",
+                        acoustic=work.acoustic,
+                        revision=work.revision,
+                    )
+                )
+                succeeded = stage.finish(item)
+                final_delivery_observer.finish_worker_item(
+                    item.sequence,
+                    succeeded,
+                )
+
+        def warm(self) -> None:
+            return None
+
+    def execute_case(engine, _case_value, **kwargs):
+        shadow = kwargs["logical_turn_shadow"]
+        observer = kwargs["async_final_delivery"]
+        worker = kwargs["async_final_worker"]
+        assert shadow.observe_native_final(
+            native_epoch=1,
+            native_sequence=0,
+            text="PRIVATE RAW WORDS",
+            held=False,
+        )
+        assert shadow.compare_legacy_composition(
+            boundary=LogicalTurnBoundary.NATIVE_FINAL,
+            legacy_text="PRIVATE RAW WORDS",
+        )
+        token = shadow.claim_terminal_token()
+        assert token is not None
+        assert shadow.bind_terminal_lineage(token, lineage, 1)
+        engine._maybe_setup_async_final()
+        stage = engine._final_stage
+        assert stage is not None
+        work = SimpleNamespace(acoustic=lineage, revision=1, shadow=shadow)
+        assert stage.offer_nowait(CaptureScope(1, 1), work).accepted
+        worker.drain(stage, observer, timeout=2.0)
+        observer.close()
+        return ReplayRunRecord(
+            case_index=kwargs["case_index"],
+            repeat=kwargs["repeat"],
+            finals=(
+                TimedFinal(
+                    "PRIVATE SELECTED WORDS",
+                    emitted_at=2.1,
+                    speech_start_at=0.5,
+                    speech_end_at=1.5,
+                    endpoint_committed_at=2.0,
+                    utterance_id="u1",
+                ),
+            ),
+            wall_seconds=0.1,
+        )
+
+    monkeypatch.setattr(evaluate, "verify_corpus_snapshot", lambda _value: None)
+    monkeypatch.setattr(
+        evaluate,
+        "_replay_config",
+        lambda configured, **_kwargs: configured,
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_artifact_metadata_digest",
+        lambda _configured: "a" * 64,
+    )
+    monkeypatch.setattr(evaluate, "SherpaOnnxEngine", FakeEngine)
+    monkeypatch.setattr(evaluate, "_quiet_model_output", nullcontext)
+    monkeypatch.setattr(
+        evaluate,
+        "_install_verifier_probe",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(evaluate, "_execute_case", execute_case)
+    monkeypatch.setattr(
+        evaluate,
+        "aggregate_metrics",
+        lambda *_args, **_kwargs: {
+            "evaluations": 1,
+            "coverage": {"complete": True},
+            "streaming": {"final_events": 1, "abort_reasons": {}},
+        },
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_attest_verifier_execution",
+        lambda *_args, **_kwargs: "not-configured",
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "_attest_streaming_decode_execution",
+        lambda *_args, **_kwargs: "synchronous-replay-test",
+    )
+
+    report = evaluate.evaluate_capture_replay(
+        corpus,
+        SherpaConfig(
+            asr_final_backend="sense_voice",
+            asr_final_async=True,
+        ),
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+
+    assert report["schema_version"] == 4
+    evidence = report["logical_turn_async_terminal_delivery"]
+    assert evidence["exact"] is True
+    assert evidence["callbacks"]["worker_selected_finals"] == 1
+    assert report["engine"]["final_execution"] == (
+        "post-capture-dedicated-worker-drain"
+    )
+    assert report["engine"]["evaluator_source_files"] == 32
+    assert "PRIVATE" not in json.dumps(evidence, sort_keys=True)
+    payload = (
+        json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+    )
+    retained = tmp_path / "async-report.json"
+    evaluate._write_new_private(retained, payload)
+    receipt = {
+        "report_sha256": hashlib.sha256(payload).hexdigest(),
+        "corpus_sha256": corpus.digest,
+        "evaluations": 1,
+        "coverage_complete": True,
+    }
+    evaluate._reopen_async_report(retained, receipt)
+    forged_receipt = dict(receipt)
+    forged_receipt["report_sha256"] = "0" * 64
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._reopen_async_report(retained, forged_receipt)
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate.evaluate_capture_replay(
+            corpus,
+            SherpaConfig(),
+            logical_turn_shadow=True,
+            logical_turn_async_terminal_delivery=True,
+        )
+
+
 def test_report_writer_is_private_no_overwrite(tmp_path):
     report = tmp_path / "report.json"
     evaluate._write_new_private(report, b'{"execution_complete":true}\n')
@@ -1094,15 +1332,15 @@ def test_report_writer_is_private_no_overwrite(tmp_path):
 @pytest.mark.parametrize(
     ("mode_args", "schema_version", "expected_flags"),
     (
-        ((), 1, (False, False)),
-        (("--logical-turn-shadow",), 2, (True, False)),
+        ((), 1, (False, False, False)),
+        (("--logical-turn-shadow",), 2, (True, False, False)),
         (
             (
                 "--logical-turn-shadow",
                 "--logical-turn-terminal-lineage",
             ),
             3,
-            (True, True),
+            (True, True, False),
         ),
     ),
 )
@@ -1112,7 +1350,7 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
     capsys,
     mode_args: tuple[str, ...],
     schema_version: int,
-    expected_flags: tuple[bool, bool],
+    expected_flags: tuple[bool, bool, bool],
 ):
     private_phrase = "private transcript must not escape"
     private_path = str(tmp_path / "private-corpus.json")
@@ -1182,13 +1420,14 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         "apply_device_profile",
         lambda config, _device, **_kwargs: config,
     )
-    shadow_flags: list[tuple[bool, bool]] = []
+    shadow_flags: list[tuple[bool, bool, bool]] = []
 
     def evaluate_replay(*_args, **kwargs):
         shadow_flags.append(
             (
                 kwargs["logical_turn_shadow"],
                 kwargs["logical_turn_terminal_lineage"],
+                kwargs["logical_turn_async_terminal_delivery"],
             )
         )
         return report
@@ -1219,6 +1458,7 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         "schema_version": schema_version,
         "logical_turn_shadow": expected_flags[0],
         "logical_turn_terminal_lineage": expected_flags[1],
+        "logical_turn_async_terminal_delivery": expected_flags[2],
     }
     assert captured.err == ""
     assert private_phrase not in captured.out
@@ -1408,6 +1648,7 @@ def test_guarded_cli_uses_killable_bounded_worker(
         "schema_version": 2,
         "logical_turn_shadow": True,
         "logical_turn_terminal_lineage": False,
+        "logical_turn_async_terminal_delivery": False,
     }
     observed: dict[str, object] = {}
 
@@ -1450,14 +1691,14 @@ def test_guarded_cli_uses_killable_bounded_worker(
 @pytest.mark.parametrize(
     ("mode_args", "worker_mode"),
     (
-        ((), (2, True, False)),
-        (("--logical-turn-shadow",), (1, False, False)),
+        ((), (2, True, False, False)),
+        (("--logical-turn-shadow",), (1, False, False, False)),
         (
             (
                 "--logical-turn-shadow",
                 "--logical-turn-terminal-lineage",
             ),
-            (2, True, False),
+            (2, True, False, False),
         ),
     ),
 )
@@ -1466,7 +1707,7 @@ def test_guarded_cli_rejects_worker_mode_mismatch(
     monkeypatch,
     capsys,
     mode_args: tuple[str, ...],
-    worker_mode: tuple[int, bool, bool],
+    worker_mode: tuple[int, bool, bool, bool],
 ) -> None:
     receipt = {
         "execution_complete": True,
@@ -1478,6 +1719,7 @@ def test_guarded_cli_rejects_worker_mode_mismatch(
         "schema_version": worker_mode[0],
         "logical_turn_shadow": worker_mode[1],
         "logical_turn_terminal_lineage": worker_mode[2],
+        "logical_turn_async_terminal_delivery": worker_mode[3],
     }
 
     def run(_command, **kwargs):
@@ -1511,7 +1753,9 @@ def test_guarded_cli_rejects_worker_mode_mismatch(
         "schema_bool",
         "raw_not_bool",
         "terminal_not_bool",
+        "async_not_bool",
         "terminal_without_raw",
+        "async_without_terminal",
         "missing",
         "extra",
     ),
@@ -1527,6 +1771,7 @@ def test_worker_receipt_rejects_invalid_mode_binding(mutation: str) -> None:
         "schema_version": 2,
         "logical_turn_shadow": True,
         "logical_turn_terminal_lineage": False,
+        "logical_turn_async_terminal_delivery": False,
     }
     if mutation == "schema_bool":
         receipt["schema_version"] = True
@@ -1534,10 +1779,15 @@ def test_worker_receipt_rejects_invalid_mode_binding(mutation: str) -> None:
         receipt["logical_turn_shadow"] = 1
     elif mutation == "terminal_not_bool":
         receipt["logical_turn_terminal_lineage"] = 0
+    elif mutation == "async_not_bool":
+        receipt["logical_turn_async_terminal_delivery"] = 0
     elif mutation == "terminal_without_raw":
         receipt["schema_version"] = 3
         receipt["logical_turn_shadow"] = False
         receipt["logical_turn_terminal_lineage"] = True
+    elif mutation == "async_without_terminal":
+        receipt["schema_version"] = 4
+        receipt["logical_turn_async_terminal_delivery"] = True
     elif mutation == "missing":
         del receipt["logical_turn_shadow"]
     else:
@@ -1549,6 +1799,7 @@ def test_worker_receipt_rejects_invalid_mode_binding(mutation: str) -> None:
             returncode=0,
             logical_turn_shadow=True,
             logical_turn_terminal_lineage=False,
+            logical_turn_async_terminal_delivery=False,
         )
 
 

@@ -94,6 +94,8 @@ SHADOW_SCHEMA_VERSION = 3
 SHADOW_KIND = "edacc-endpoint-integrity-v3"
 TERMINAL_LINEAGE_SCHEMA_VERSION = 4
 TERMINAL_LINEAGE_KIND = "edacc-endpoint-integrity-v4"
+ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION = 5
+ASYNC_TERMINAL_DELIVERY_KIND = "edacc-endpoint-integrity-v5"
 EXPECTED_CORPUS_SHA256 = (
     "4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772"
 )
@@ -150,6 +152,10 @@ _TERMINAL_LINEAGE_SOURCE_FILES = (
     "always_on_agent/acoustic.py",
     "core/engines/_acoustic_turn.py",
 )
+_ASYNC_TERMINAL_DELIVERY_SOURCE_FILES = (
+    "core/realtime_media_stage.py",
+    "tools/capture_replay/async_delivery.py",
+)
 _CELL_NAMES = (
     "acoustic",
     "prosody_hold_only",
@@ -186,11 +192,13 @@ _SAFE_STATIC_STRINGS = frozenset(
         KIND,
         SHADOW_KIND,
         TERMINAL_LINEAGE_KIND,
+        ASYNC_TERMINAL_DELIVERY_KIND,
         "sherpa_raw_composition_v1",
         "sherpa_selected_terminal_lineage_v1",
         "diagnostic_only",
         "capture-loop-counterfactual",
         "production-sherpa-capture-loop",
+        "post-capture-dedicated-worker-drain",
         "in-memory-f32le",
         "fresh-per-row",
         "CPUExecutionProvider",
@@ -262,11 +270,17 @@ def _source_files(
     *,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> tuple[str, ...]:
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise EdaccEndpointIntegrityError()
     files = _SOURCE_FILES
@@ -274,6 +288,8 @@ def _source_files(
         files = (*files, *_SHADOW_SOURCE_FILES)
     if logical_turn_terminal_lineage:
         files = (*files, *_TERMINAL_LINEAGE_SOURCE_FILES)
+    if logical_turn_async_terminal_delivery:
+        files = (*files, *_ASYNC_TERMINAL_DELIVERY_SOURCE_FILES)
     return files
 
 
@@ -281,6 +297,7 @@ def _source_binding(
     *,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
@@ -288,6 +305,9 @@ def _source_binding(
         for relative in _source_files(
             logical_turn_shadow=logical_turn_shadow,
             logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
         ):
             snapshot = read_regular_bounded(
                 root / relative,
@@ -789,12 +809,18 @@ def _run_cell(
     cell: str,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> _CellResult:
     if (
         cell not in _CELL_NAMES
         or type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise EdaccEndpointIntegrityError()
     candidate = cell in _SEMANTIC_CELL_NAMES
@@ -803,13 +829,20 @@ def _run_cell(
             configured,
             provider=ASR_PROVIDER,
             asr_threads=ASR_THREADS,
+            async_final_delivery=logical_turn_async_terminal_delivery,
         )
+        if (
+            executed.asr_final_async
+            is not logical_turn_async_terminal_delivery
+        ):
+            raise EdaccEndpointIntegrityError()
         trace = _TraceAccumulator(candidate=candidate)
         aggregate = _CellAccumulator()
         shadow_snapshots: list[LogicalTurnShadowSnapshot] = []
         terminal_lineage_snapshots: list[
             LogicalTurnTerminalLineageSnapshot
         ] = []
+        async_delivery_snapshots: list[object] = []
         build_started = time.perf_counter()
         with _quiet_model_output():
             engine = SherpaOnnxEngine(executed)
@@ -818,6 +851,13 @@ def _run_cell(
         model_load_ms = (time.perf_counter() - build_started) * 1_000.0
         _attest_engine(engine, cell=cell)
         _install_hold_only_trace(engine, trace)
+        async_final_worker = None
+        if logical_turn_async_terminal_delivery:
+            from tools.capture_replay.async_delivery import (
+                AsyncFinalWorkerHarness,
+            )
+
+            async_final_worker = AsyncFinalWorkerHarness(engine)
         try:
             with _quiet_model_output():
                 for ordinal, source_case in enumerate(corpus.cases):
@@ -838,7 +878,20 @@ def _run_cell(
                             terminal_lineage=logical_turn_terminal_lineage,
                         )
                         case_options["logical_turn_shadow"] = shadow
+                    async_delivery = None
+                    if logical_turn_async_terminal_delivery:
+                        from tools.capture_replay.async_delivery import (
+                            AsyncFinalDeliveryObserver,
+                        )
+
+                        async_delivery = AsyncFinalDeliveryObserver()
+                        case_options["async_final_delivery"] = async_delivery
+                        case_options["async_final_worker"] = async_final_worker
                     record = _execute_case(engine, replay_case, **case_options)
+                    if async_delivery is not None:
+                        async_delivery_snapshots.append(
+                            async_delivery.snapshot()
+                        )
                     if shadow is not None:
                         shadow.close()
                         shadow_snapshots.append(shadow.snapshot())
@@ -851,9 +904,13 @@ def _run_cell(
                     del replay_case
                     del record
         finally:
-            session = engine._streaming_decode_session
-            if session is not None and not session.closed:
-                session.close()
+            try:
+                if async_final_worker is not None:
+                    async_final_worker.close(timeout=120.0)
+            finally:
+                session = engine._streaming_decode_session
+                if session is not None and not session.closed:
+                    session.close()
         report = aggregate.report()
         report["config_sha256"] = _canonical_sha256(asdict(executed))
         report["provider"] = executed.provider
@@ -884,6 +941,16 @@ def _run_cell(
                 aggregate_logical_turn_terminal_lineage(
                     terminal_lineage_snapshots
                 )
+            )
+        if logical_turn_async_terminal_delivery:
+            from tools.capture_replay.async_delivery import (
+                aggregate_async_final_delivery,
+            )
+
+            if len(async_delivery_snapshots) != EXPECTED_CASES:
+                raise EdaccEndpointIntegrityError()
+            report["logical_turn_async_terminal_delivery"] = (
+                aggregate_async_final_delivery(async_delivery_snapshots)
             )
         buckets = tuple(aggregate.row_final_buckets)
         del engine
@@ -939,11 +1006,17 @@ def _report(
     cells: Mapping[str, _CellResult],
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> dict[str, object]:
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise EdaccEndpointIntegrityError()
     control_buckets = cells["acoustic"].row_final_buckets
@@ -1002,8 +1075,30 @@ def _report(
     if logical_turn_terminal_lineage:
         protocol["selected_terminal_lineage_enabled"] = True
         limitations["selected_terminal_lineage_evaluated"] = True
-        limitations["async_terminal_delivery_evaluated"] = False
-    if logical_turn_terminal_lineage:
+        limitations["async_terminal_delivery_evaluated"] = bool(
+            logical_turn_async_terminal_delivery
+        )
+    if logical_turn_async_terminal_delivery:
+        protocol["async_terminal_delivery_enabled"] = True
+        protocol["async_final_execution"] = (
+            "post-capture-dedicated-worker-drain"
+        )
+        limitations.update(
+            {
+                "capture_worker_concurrency_evaluated": False,
+                "selected_text_parity_evaluated": False,
+                "runtime_stop_shutdown_evaluated": False,
+                "final_dispatcher_evaluated": False,
+                "runtime_evaluated": False,
+                "authority_evaluated": False,
+                "latency_evaluated": False,
+                "live_evidence": False,
+            }
+        )
+    if logical_turn_async_terminal_delivery:
+        schema_version = ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
+        kind = ASYNC_TERMINAL_DELIVERY_KIND
+    elif logical_turn_terminal_lineage:
         schema_version = TERMINAL_LINEAGE_SCHEMA_VERSION
         kind = TERMINAL_LINEAGE_KIND
     elif logical_turn_shadow:
@@ -1061,6 +1156,9 @@ def _report(
                         logical_turn_shadow=logical_turn_shadow,
                         logical_turn_terminal_lineage=(
                             logical_turn_terminal_lineage
+                        ),
+                        logical_turn_async_terminal_delivery=(
+                            logical_turn_async_terminal_delivery
                         ),
                     )
                 ),
@@ -1151,11 +1249,17 @@ def _validate_cell_report(
     reset_accumulate: bool,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> None:
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
+        or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
+        or (
+            logical_turn_async_terminal_delivery
+            and not logical_turn_terminal_lineage
+        )
     ):
         raise EdaccEndpointIntegrityError()
     expected_keys = {
@@ -1176,6 +1280,8 @@ def _validate_cell_report(
         expected_keys.add("logical_turn_shadow")
     if logical_turn_terminal_lineage:
         expected_keys.add("logical_turn_terminal_lineage")
+    if logical_turn_async_terminal_delivery:
+        expected_keys.add("logical_turn_async_terminal_delivery")
     cell = _require_keys(
         value,
         expected_keys,
@@ -1454,6 +1560,15 @@ def _validate_cell_report(
             abort_total=abort_total,
             abort_counts=abort_counts,
         )
+    if logical_turn_async_terminal_delivery:
+        _validate_async_terminal_delivery_cell_report(
+            cell["logical_turn_async_terminal_delivery"],
+            raw_shadow=cell["logical_turn_shadow"],
+            terminal_lineage=cell["logical_turn_terminal_lineage"],
+            finals=finals,
+            abort_total=abort_total,
+            abort_counts=abort_counts,
+        )
 
 
 def _validate_shadow_cell_report(
@@ -1609,6 +1724,61 @@ def _validate_terminal_lineage_cell_report(
         raise EdaccEndpointIntegrityError() from None
 
 
+def _validate_async_terminal_delivery_cell_report(
+    value: object,
+    *,
+    raw_shadow: object,
+    terminal_lineage: object,
+    finals: int,
+    abort_total: int,
+    abort_counts: Mapping[str, object],
+) -> None:
+    try:
+        from tools.capture_replay.async_delivery import (
+            validate_async_final_delivery_against_sections,
+            validate_async_final_delivery_report,
+        )
+
+        validate_async_final_delivery_report(value)
+        validate_async_final_delivery_against_sections(
+            async_delivery=value,
+            raw_shadow=raw_shadow,
+            terminal_lineage=terminal_lineage,
+            metrics={
+                "turn_integrity": {"finals": _nonnegative_int(finals)},
+                "transcript_aborts": {
+                    "total": _nonnegative_int(abort_total),
+                    "terminal_events": (
+                        _nonnegative_int(finals)
+                        + _nonnegative_int(abort_total)
+                    ),
+                    "reason_counts": {
+                        reason.value: _nonnegative_int(
+                            abort_counts[reason.value]
+                        )
+                        for reason in TranscriptAbortReason
+                    },
+                },
+            },
+        )
+        if not isinstance(value, Mapping):
+            raise EdaccEndpointIntegrityError()
+        lifecycle = value["lifecycle"]
+        if (
+            not isinstance(lifecycle, Mapping)
+            or _nonnegative_int(lifecycle["rows"]) != EXPECTED_CASES
+        ):
+            raise EdaccEndpointIntegrityError()
+    except (
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        EdaccEndpointIntegrityError,
+    ):
+        raise EdaccEndpointIntegrityError() from None
+
+
 def _validate_comparison_report(
     value: object,
     *,
@@ -1699,19 +1869,31 @@ def _validate_report(value: object) -> None:
             "limitations",
         },
     )
+    if type(report["schema_version"]) is not int:
+        raise EdaccEndpointIntegrityError()
     identity = (report["schema_version"], report["kind"])
     if identity == (SCHEMA_VERSION, KIND):
         logical_turn_shadow = False
         logical_turn_terminal_lineage = False
+        logical_turn_async_terminal_delivery = False
     elif identity == (SHADOW_SCHEMA_VERSION, SHADOW_KIND):
         logical_turn_shadow = True
         logical_turn_terminal_lineage = False
+        logical_turn_async_terminal_delivery = False
     elif identity == (
         TERMINAL_LINEAGE_SCHEMA_VERSION,
         TERMINAL_LINEAGE_KIND,
     ):
         logical_turn_shadow = True
         logical_turn_terminal_lineage = True
+        logical_turn_async_terminal_delivery = False
+    elif identity == (
+        ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION,
+        ASYNC_TERMINAL_DELIVERY_KIND,
+    ):
+        logical_turn_shadow = True
+        logical_turn_terminal_lineage = True
+        logical_turn_async_terminal_delivery = True
     else:
         raise EdaccEndpointIntegrityError()
     bindings = _require_keys(
@@ -1769,6 +1951,10 @@ def _validate_report(value: object) -> None:
         protocol_keys.add("raw_composition_shadow_enabled")
     if logical_turn_terminal_lineage:
         protocol_keys.add("selected_terminal_lineage_enabled")
+    if logical_turn_async_terminal_delivery:
+        protocol_keys.update(
+            {"async_terminal_delivery_enabled", "async_final_execution"}
+        )
     protocol = _require_keys(report["protocol"], protocol_keys)
     cells = _require_keys(report["cells"], set(_CELL_NAMES))
     comparisons = _require_keys(report["comparison"], set(_COMPARISON_NAMES))
@@ -1794,6 +1980,19 @@ def _validate_report(value: object) -> None:
                 "async_terminal_delivery_evaluated",
             }
         )
+    if logical_turn_async_terminal_delivery:
+        limitation_keys.update(
+            {
+                "capture_worker_concurrency_evaluated",
+                "selected_text_parity_evaluated",
+                "runtime_stop_shutdown_evaluated",
+                "final_dispatcher_evaluated",
+                "runtime_evaluated",
+                "authority_evaluated",
+                "latency_evaluated",
+                "live_evidence",
+            }
+        )
     limitations = _require_keys(report["limitations"], limitation_keys)
     _validate_cell_report(
         cells["acoustic"],
@@ -1801,6 +2000,9 @@ def _validate_report(value: object) -> None:
         reset_accumulate=False,
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
     _validate_cell_report(
         cells["prosody_hold_only"],
@@ -1808,6 +2010,9 @@ def _validate_report(value: object) -> None:
         reset_accumulate=False,
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
     _validate_cell_report(
         cells["prosody_reset_accumulate"],
@@ -1815,6 +2020,9 @@ def _validate_report(value: object) -> None:
         reset_accumulate=True,
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(
+            logical_turn_async_terminal_delivery
+        ),
     )
     _validate_comparison_report(
         comparisons["prosody_hold_only_vs_acoustic"],
@@ -1872,6 +2080,9 @@ def _validate_report(value: object) -> None:
             _source_files(
                 logical_turn_shadow=logical_turn_shadow,
                 logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+                logical_turn_async_terminal_delivery=(
+                    logical_turn_async_terminal_delivery
+                ),
             )
         )
         or protocol
@@ -1906,6 +2117,16 @@ def _validate_report(value: object) -> None:
                 if logical_turn_terminal_lineage
                 else {}
             ),
+            **(
+                {
+                    "async_terminal_delivery_enabled": True,
+                    "async_final_execution": (
+                        "post-capture-dedicated-worker-drain"
+                    ),
+                }
+                if logical_turn_async_terminal_delivery
+                else {}
+            ),
         }
         or limitations
         != {
@@ -1928,9 +2149,25 @@ def _validate_report(value: object) -> None:
             **(
                 {
                     "selected_terminal_lineage_evaluated": True,
-                    "async_terminal_delivery_evaluated": False,
+                    "async_terminal_delivery_evaluated": bool(
+                        logical_turn_async_terminal_delivery
+                    ),
                 }
                 if logical_turn_terminal_lineage
+                else {}
+            ),
+            **(
+                {
+                    "capture_worker_concurrency_evaluated": False,
+                    "selected_text_parity_evaluated": False,
+                    "runtime_stop_shutdown_evaluated": False,
+                    "final_dispatcher_evaluated": False,
+                    "runtime_evaluated": False,
+                    "authority_evaluated": False,
+                    "latency_evaluated": False,
+                    "live_evidence": False,
+                }
+                if logical_turn_async_terminal_delivery
                 else {}
             ),
         }
@@ -1962,6 +2199,7 @@ def evaluate_edacc_endpoint_integrity(
     smart_turn_model: Path | str,
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
 ) -> Mapping[str, object]:
     """Execute all three fixed cells and return one validated aggregate report."""
 
@@ -1969,7 +2207,12 @@ def evaluate_edacc_endpoint_integrity(
         if (
             type(logical_turn_shadow) is not bool
             or type(logical_turn_terminal_lineage) is not bool
+            or type(logical_turn_async_terminal_delivery) is not bool
             or (logical_turn_terminal_lineage and not logical_turn_shadow)
+            or (
+                logical_turn_async_terminal_delivery
+                and not logical_turn_terminal_lineage
+            )
         ):
             raise EdaccEndpointIntegrityError()
         prepared = prepare_production(
@@ -1984,6 +2227,9 @@ def evaluate_edacc_endpoint_integrity(
         source_sha256 = _source_binding(
             logical_turn_shadow=logical_turn_shadow,
             logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
         )
         prepared_sha256 = _prepared_binding(prepared)
         base = _base_config(prepared)
@@ -1994,6 +2240,8 @@ def evaluate_edacc_endpoint_integrity(
                 cell_options["logical_turn_shadow"] = True
             if logical_turn_terminal_lineage:
                 cell_options["logical_turn_terminal_lineage"] = True
+            if logical_turn_async_terminal_delivery:
+                cell_options["logical_turn_async_terminal_delivery"] = True
             cells[name] = _run_cell(
                 corpus,
                 _cell_config(base, cell=name, model=model),
@@ -2013,6 +2261,9 @@ def evaluate_edacc_endpoint_integrity(
         rebound_source_sha256 = _source_binding(
             logical_turn_shadow=logical_turn_shadow,
             logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
         )
         if (
             rebound_source_sha256 != source_sha256
@@ -2026,6 +2277,9 @@ def evaluate_edacc_endpoint_integrity(
             cells=cells,
             logical_turn_shadow=logical_turn_shadow,
             logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+            logical_turn_async_terminal_delivery=(
+                logical_turn_async_terminal_delivery
+            ),
         )
     except (
         BoundedReadError,
@@ -2526,6 +2780,16 @@ def _parser() -> argparse.ArgumentParser:
             "requires --logical-turn-shadow and does not cover async delivery"
         ),
     )
+    parser.add_argument(
+        "--logical-turn-async-terminal-delivery",
+        action="store_true",
+        help=(
+            "add transcript-free post-capture dedicated-worker delivery "
+            "evidence; requires both --logical-turn-shadow and "
+            "--logical-turn-terminal-lineage and does not cover live "
+            "capture-worker concurrency"
+        ),
+    )
     parser.add_argument("--report", type=_absolute_path, required=True)
     parser.add_argument(
         "--watchdog-seconds",
@@ -2541,6 +2805,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if (
             args.logical_turn_terminal_lineage
             and not args.logical_turn_shadow
+        ) or (
+            args.logical_turn_async_terminal_delivery
+            and (
+                not args.logical_turn_shadow
+                or not args.logical_turn_terminal_lineage
+            )
         ):
             raise EdaccEndpointIntegrityError()
         _preflight_report_destination(args.report)
@@ -2553,6 +2823,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             logical_turn_terminal_lineage=(
                 args.logical_turn_terminal_lineage
             ),
+            logical_turn_async_terminal_delivery=(
+                args.logical_turn_async_terminal_delivery
+            ),
         )
         payload = _canonical_bytes(report) + b"\n"
         published_sha256 = _publish_private_report(args.report, payload)
@@ -2564,6 +2837,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "ok": True,
             "quality_verdict": "diagnostic_only",
             "report_sha256": published_sha256,
+            "schema_version": report["schema_version"],
+            "logical_turn_shadow": args.logical_turn_shadow,
+            "logical_turn_terminal_lineage": (
+                args.logical_turn_terminal_lineage
+            ),
+            "logical_turn_async_terminal_delivery": (
+                args.logical_turn_async_terminal_delivery
+            ),
             "rows": EXPECTED_CASES,
             "hold_only_hold_rows": hold_only["endpoint_trace"]["hold_rows"],
             "reset_accumulate_hold_rows": reset_accumulate["endpoint_trace"][
@@ -2613,6 +2894,10 @@ def _validated_worker_receipt(
                 "ok",
                 "quality_verdict",
                 "report_sha256",
+                "schema_version",
+                "logical_turn_shadow",
+                "logical_turn_terminal_lineage",
+                "logical_turn_async_terminal_delivery",
                 "rows",
                 "hold_only_hold_rows",
                 "reset_accumulate_hold_rows",
@@ -2622,6 +2907,28 @@ def _validated_worker_receipt(
             or value.get("ok") is not True
             or value.get("quality_verdict") != "diagnostic_only"
             or not _is_sha256(value.get("report_sha256"))
+            or type(value.get("schema_version")) is not int
+            or type(value.get("logical_turn_shadow")) is not bool
+            or type(value.get("logical_turn_terminal_lineage")) is not bool
+            or type(value.get("logical_turn_async_terminal_delivery"))
+            is not bool
+            or (
+                value.get("schema_version"),
+                value.get("logical_turn_shadow"),
+                value.get("logical_turn_terminal_lineage"),
+                value.get("logical_turn_async_terminal_delivery"),
+            )
+            not in {
+                (SCHEMA_VERSION, False, False, False),
+                (SHADOW_SCHEMA_VERSION, True, False, False),
+                (TERMINAL_LINEAGE_SCHEMA_VERSION, True, True, False),
+                (
+                    ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION,
+                    True,
+                    True,
+                    True,
+                ),
+            }
             or value.get("rows") != EXPECTED_CASES
             or _nonnegative_int(value.get("hold_only_hold_rows"))
             > EXPECTED_CASES
@@ -2745,6 +3052,12 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         if (
             args.logical_turn_terminal_lineage
             and not args.logical_turn_shadow
+        ) or (
+            args.logical_turn_async_terminal_delivery
+            and (
+                not args.logical_turn_shadow
+                or not args.logical_turn_terminal_lineage
+            )
         ):
             raise EdaccEndpointIntegrityError()
         if args.watchdog_seconds > _MAX_WATCHDOG_SECONDS:
@@ -2770,16 +3083,34 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
                 in {
                     SHADOW_SCHEMA_VERSION,
                     TERMINAL_LINEAGE_SCHEMA_VERSION,
+                    ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION,
                 }
             )
             retained_terminal_lineage_enabled = (
                 retained_report["schema_version"]
-                == TERMINAL_LINEAGE_SCHEMA_VERSION
+                in {
+                    TERMINAL_LINEAGE_SCHEMA_VERSION,
+                    ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION,
+                }
+            )
+            retained_async_terminal_delivery_enabled = (
+                retained_report["schema_version"]
+                == ASYNC_TERMINAL_DELIVERY_SCHEMA_VERSION
             )
             if (
                 retained_shadow_enabled is not args.logical_turn_shadow
                 or retained_terminal_lineage_enabled
                 is not args.logical_turn_terminal_lineage
+                or retained_async_terminal_delivery_enabled
+                is not args.logical_turn_async_terminal_delivery
+                or receipt["schema_version"]
+                != retained_report["schema_version"]
+                or receipt["logical_turn_shadow"]
+                is not args.logical_turn_shadow
+                or receipt["logical_turn_terminal_lineage"]
+                is not args.logical_turn_terminal_lineage
+                or receipt["logical_turn_async_terminal_delivery"]
+                is not args.logical_turn_async_terminal_delivery
                 or receipt["rows"] != retained_control["coverage"]["rows"]
                 or receipt["rows"] != retained_hold_only["coverage"]["rows"]
                 or receipt["rows"] != retained_reset["coverage"]["rows"]

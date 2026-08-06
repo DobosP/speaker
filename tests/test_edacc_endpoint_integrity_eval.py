@@ -13,6 +13,12 @@ from types import SimpleNamespace
 import pytest
 
 from always_on_agent.acoustic import EndpointReason
+from always_on_agent.logical_turn import LogicalTurnBoundary
+from always_on_agent.logical_turn_shadow import (
+    LogicalTurnCompositionShadow,
+    aggregate_logical_turn_shadows,
+    validate_logical_turn_shadow_report,
+)
 from core.endpointing import (
     CompletionScoreState,
     LexicalTurnCompletionDetector,
@@ -130,6 +136,7 @@ def _cell_result(
     candidate: bool,
     reset_accumulate: bool = False,
     buckets: tuple[str, ...],
+    logical_turn_shadow: bool = False,
 ) -> endpoint_eval._CellResult:
     aggregate = endpoint_eval._CellAccumulator()
     trace = endpoint_eval._TraceAccumulator(candidate=candidate)
@@ -197,13 +204,59 @@ def _cell_result(
     report["semantic_hold_reset_enabled"] = reset_accumulate
     report["model_load_ms"] = 1.0
     report["endpoint_trace"] = trace.report()
+    if logical_turn_shadow:
+        report["logical_turn_shadow"] = _logical_turn_shadow_report(
+            buckets,
+            multi_epoch=reset_accumulate,
+        )
     return endpoint_eval._CellResult(
         report=report,
         row_final_buckets=tuple(aggregate.row_final_buckets),
     )
 
 
-def _valid_report() -> dict[str, object]:
+def _logical_turn_shadow_report(
+    buckets: tuple[str, ...],
+    *,
+    multi_epoch: bool,
+) -> dict[str, object]:
+    snapshots = []
+    for ordinal, bucket in enumerate(buckets):
+        shadow = LogicalTurnCompositionShadow()
+        finals = {"zero": 0, "single": 1, "multi": 2}[bucket]
+        for final_index in range(finals):
+            if multi_epoch and ordinal == 0 and final_index == 0:
+                assert shadow.observe_native_final(
+                    native_epoch=1,
+                    native_sequence=0,
+                    text="first native final",
+                    held=True,
+                )
+                assert shadow.observe_native_final(
+                    native_epoch=2,
+                    native_sequence=0,
+                    text="second native final",
+                    held=False,
+                )
+                legacy_text = "first native final second native final"
+            else:
+                legacy_text = f"native final {ordinal} {final_index}"
+                assert shadow.observe_native_final(
+                    native_epoch=1,
+                    native_sequence=0,
+                    text=legacy_text,
+                    held=False,
+                )
+            assert shadow.compare_legacy_composition(
+                boundary=LogicalTurnBoundary.NATIVE_FINAL,
+                legacy_text=legacy_text,
+            )
+        shadow.close()
+        snapshots.append(shadow.snapshot())
+    return aggregate_logical_turn_shadows(snapshots)
+
+
+def _valid_report(*, logical_turn_shadow: bool = False) -> dict[str, object]:
     corpus = _corpus()
     control = ("multi", "multi") + ("single",) * 22
     hold_only = ("multi",) + ("single",) * 23
@@ -213,19 +266,27 @@ def _valid_report() -> dict[str, object]:
         model=_model(),
         source_sha256="8" * 64,
         cells={
-            "acoustic": _cell_result(corpus, candidate=False, buckets=control),
+            "acoustic": _cell_result(
+                corpus,
+                candidate=False,
+                buckets=control,
+                logical_turn_shadow=logical_turn_shadow,
+            ),
             "prosody_hold_only": _cell_result(
                 corpus,
                 candidate=True,
                 buckets=hold_only,
+                logical_turn_shadow=logical_turn_shadow,
             ),
             "prosody_reset_accumulate": _cell_result(
                 corpus,
                 candidate=True,
                 reset_accumulate=True,
                 buckets=reset_accumulate,
+                logical_turn_shadow=logical_turn_shadow,
             ),
         },
+        logical_turn_shadow=logical_turn_shadow,
     )
 
 
@@ -241,6 +302,23 @@ def test_exact_private_source_and_smart_turn_pins_are_fixed() -> None:
     assert endpoint_eval.SMART_TURN_MODEL_SHA256 == (
         "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
     )
+
+
+def test_shadow_source_binding_is_strictly_conditional() -> None:
+    default_files = endpoint_eval._source_files()
+    shadow_files = endpoint_eval._source_files(logical_turn_shadow=True)
+    assert default_files == endpoint_eval._SOURCE_FILES
+    assert shadow_files == (
+        *default_files,
+        "always_on_agent/logical_turn.py",
+        "always_on_agent/logical_turn_shadow.py",
+        "core/contract.py",
+    )
+    assert endpoint_eval._source_binding() != endpoint_eval._source_binding(
+        logical_turn_shadow=True
+    )
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._source_files(logical_turn_shadow=1)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -400,6 +478,99 @@ def test_run_semantic_cells_force_hold_only_and_install_fresh_policy_per_row(
     assert len({id(policy) for policy in policies}) == 24
 
 
+def test_run_cell_shadow_uses_one_closed_observer_per_row(monkeypatch) -> None:
+    observers = []
+
+    class FakeEngine:
+        def __init__(self, config):
+            self.config = config
+            self._endpoint_policy = None
+            self._streaming_decode_session = None
+
+        def _build(self):
+            return None
+
+        def warm(self):
+            return None
+
+        def _turn_evaluation(self, **kwargs):
+            return (
+                TurnObservation(
+                    acoustic_endpoint=True,
+                    vad_active=False,
+                    early_endpoint_allowed=kwargs["allow_early"],
+                    trailing_silence_sec=0.8,
+                    completion_state=CompletionScoreState.UNAVAILABLE,
+                ),
+                TurnDecision(
+                    commit=True,
+                    endpoint_reason=EndpointReason.ASR,
+                    basis=TurnDecisionBasis.ACOUSTIC,
+                ),
+            )
+
+    def execute(
+        engine,
+        case,
+        *,
+        case_index,
+        repeat,
+        logical_turn_shadow,
+    ):
+        del case
+        observers.append(logical_turn_shadow)
+        engine._turn_evaluation(
+            acoustic_endpoint=True,
+            partial="native final",
+            silence_sec=0.8,
+            samples=None,
+            allow_early=True,
+            vad_active=False,
+        )
+        assert logical_turn_shadow.observe_native_final(
+            native_epoch=1,
+            native_sequence=0,
+            text="native final",
+            held=False,
+        )
+        assert logical_turn_shadow.compare_legacy_composition(
+            boundary=LogicalTurnBoundary.NATIVE_FINAL,
+            legacy_text="native final",
+        )
+        return ReplayRunRecord(
+            case_index=case_index,
+            repeat=repeat,
+            finals=_finals(1, case_index),
+            wall_seconds=0.01,
+            peak_rss_mb=32.0,
+        )
+
+    monkeypatch.setattr(endpoint_eval, "_replay_config", lambda config, **_: config)
+    monkeypatch.setattr(endpoint_eval, "_quiet_model_output", nullcontext)
+    monkeypatch.setattr(endpoint_eval, "SherpaOnnxEngine", FakeEngine)
+    monkeypatch.setattr(endpoint_eval, "_attest_engine", lambda *_, **__: None)
+    monkeypatch.setattr(endpoint_eval, "_adapt_case", lambda case: case)
+    monkeypatch.setattr(endpoint_eval, "_execute_case", execute)
+    monkeypatch.setattr(endpoint_eval.gc, "collect", lambda: 0)
+
+    result = endpoint_eval._run_cell(
+        _corpus(),
+        endpoint_eval._cell_config(
+            _base_config(), cell="acoustic", model=_model()
+        ),
+        cell="acoustic",
+        logical_turn_shadow=True,
+    )
+    evidence = result.report["logical_turn_shadow"]
+    assert len(observers) == endpoint_eval.EXPECTED_CASES
+    assert len({id(observer) for observer in observers}) == endpoint_eval.EXPECTED_CASES
+    assert all(observer.snapshot().closed for observer in observers)
+    assert evidence["coverage"]["closed_runs"] == endpoint_eval.EXPECTED_CASES
+    assert evidence["parity"]["composition_matches"] == endpoint_eval.EXPECTED_CASES
+    assert evidence["parity"]["evidence_sufficient"] is False
+    assert evidence["parity"]["exact"] is False
+
+
 def test_trace_rejects_fallback_errors_and_exposes_hard_boundary_counts() -> None:
     trace = endpoint_eval._TraceAccumulator(candidate=True)
     trace.begin_row()
@@ -554,6 +725,109 @@ def test_aggregate_report_has_split_transitions_without_private_values() -> None
     ] is True
     assert report["limitations"]["native_reset_accumulate_evaluated"] is True
     assert report["limitations"]["model_quality_promotion"] is False
+
+
+def test_opt_in_shadow_uses_schema_three_without_changing_default_shape() -> None:
+    default = _valid_report()
+    shadowed = _valid_report(logical_turn_shadow=True)
+
+    assert default["schema_version"] == endpoint_eval.SCHEMA_VERSION
+    assert default["kind"] == endpoint_eval.KIND
+    assert default["bindings"]["source"]["files"] == len(
+        endpoint_eval._SOURCE_FILES
+    )
+    assert "raw_composition_shadow_enabled" not in default["protocol"]
+    assert "raw_composition_shadow_evaluated" not in default["limitations"]
+    assert all(
+        "logical_turn_shadow" not in cell for cell in default["cells"].values()
+    )
+
+    assert shadowed["schema_version"] == endpoint_eval.SHADOW_SCHEMA_VERSION
+    assert shadowed["kind"] == endpoint_eval.SHADOW_KIND
+    assert shadowed["bindings"]["source"]["files"] == len(
+        endpoint_eval._SOURCE_FILES
+    ) + len(endpoint_eval._SHADOW_SOURCE_FILES)
+    assert shadowed["protocol"]["raw_composition_shadow_enabled"] is True
+    assert shadowed["limitations"]["raw_composition_shadow_evaluated"] is True
+    for name, cell in shadowed["cells"].items():
+        evidence = cell["logical_turn_shadow"]
+        validate_logical_turn_shadow_report(evidence)
+        assert evidence["coverage"] == {
+            "runs": 24,
+            "closed_runs": 24,
+            "active_at_report": 0,
+            "complete": True,
+        }
+        assert evidence["health"]["ok"] is True
+        assert evidence["parity"]["composition_mismatches"] == 0
+        assert evidence["parity"]["extra_legacy_terminals"] == 0
+        assert evidence["parity"]["missing_legacy_terminals"] == 0
+        if name == "prosody_reset_accumulate":
+            assert evidence["parity"]["multi_epoch_commits"] > 0
+            assert evidence["parity"]["evidence_sufficient"] is True
+            assert evidence["parity"]["exact"] is True
+        else:
+            assert evidence["parity"]["multi_epoch_commits"] == 0
+            assert evidence["parity"]["evidence_sufficient"] is False
+            assert evidence["parity"]["exact"] is False
+    encoded = json.dumps(shadowed, sort_keys=True)
+    assert _PRIVATE_REFERENCE not in encoded
+    assert _PRIVATE_HYPOTHESIS not in encoded
+    assert "/private/" not in encoded
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "identity",
+        "missing_cell_shadow",
+        "protocol_mode",
+        "source_count",
+        "coverage",
+        "health",
+        "composition",
+        "reset_evidence",
+        "vacuous_control",
+        "sparse_control",
+        "capability",
+        "forbidden_key",
+    ),
+)
+def test_shadow_report_mutations_fail_closed(mutation: str) -> None:
+    report = _valid_report(logical_turn_shadow=True)
+    reset = report["cells"]["prosody_reset_accumulate"]["logical_turn_shadow"]
+    if mutation == "identity":
+        report["kind"] = endpoint_eval.KIND
+    elif mutation == "missing_cell_shadow":
+        report["cells"]["acoustic"].pop("logical_turn_shadow")
+    elif mutation == "protocol_mode":
+        report["protocol"]["raw_composition_shadow_enabled"] = False
+    elif mutation == "source_count":
+        report["bindings"]["source"]["files"] -= 1
+    elif mutation == "coverage":
+        reset["coverage"]["closed_runs"] -= 1
+    elif mutation == "health":
+        reset["health"]["internal_errors"] += 1
+    elif mutation == "composition":
+        reset["parity"]["composition_mismatches"] += 1
+    elif mutation == "reset_evidence":
+        report["cells"]["prosody_reset_accumulate"][
+            "logical_turn_shadow"
+        ] = report["cells"]["acoustic"]["logical_turn_shadow"]
+    elif mutation == "vacuous_control":
+        report["cells"]["acoustic"][
+            "logical_turn_shadow"
+        ] = _logical_turn_shadow_report(("zero",) * 24, multi_epoch=False)
+    elif mutation == "sparse_control":
+        report["cells"]["prosody_hold_only"][
+            "logical_turn_shadow"
+        ] = _logical_turn_shadow_report(("single",) * 24, multi_epoch=False)
+    elif mutation == "capability":
+        reset["capabilities"]["selected_final_parity"] = True
+    else:
+        reset["parity"]["text"] = _PRIVATE_HYPOTHESIS
+    with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError):
+        endpoint_eval._validate_report(report)
 
 
 def test_untyped_abort_reason_is_rejected_before_aggregation() -> None:
@@ -879,6 +1153,10 @@ def test_parser_requires_explicit_absolute_config_pair(tmp_path: Path) -> None:
     assert parsed.local_config.is_absolute()
     assert parsed.smart_turn_model.is_absolute()
     assert parsed.report.is_absolute()
+    assert parsed.logical_turn_shadow is False
+    assert endpoint_eval._parser().parse_args(
+        [*args, "--logical-turn-shadow"]
+    ).logical_turn_shadow is True
     for flag in (
         "--corpus",
         "--config",
@@ -952,6 +1230,36 @@ def test_guarded_parent_success_is_bounded_and_validated(
     assert output.err == ""
 
 
+def test_guarded_parent_accepts_requested_shadow_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    tmp_path.chmod(0o700)
+    monkeypatch.delenv(endpoint_eval._WORKER_ENV, raising=False)
+
+    def run_worker(raw_argv, *, timeout_seconds):
+        del timeout_seconds
+        assert "--logical-turn-shadow" in raw_argv
+        payload = endpoint_eval._canonical_bytes(
+            _valid_report(logical_turn_shadow=True)
+        ) + b"\n"
+        digest = endpoint_eval._publish_private_report(
+            tmp_path / "report.json",
+            payload,
+        )
+        return 0, _worker_success_bytes(digest)
+
+    monkeypatch.setattr(endpoint_eval, "_run_guarded_worker", run_worker)
+    code = endpoint_eval.guarded_main(
+        [*_guard_args(tmp_path), "--logical-turn-shadow"]
+    )
+    output = capsys.readouterr()
+    assert code == 0
+    assert json.loads(output.out)["quality_verdict"] == "diagnostic_only"
+    assert output.err == ""
+
+
 @pytest.mark.parametrize(
     "failure",
     (
@@ -962,6 +1270,7 @@ def test_guarded_parent_success_is_bounded_and_validated(
         "wrong_reset_hold_summary",
         "wrong_acoustic_repair_summary",
         "wrong_hold_only_repair_summary",
+        "worker_report_mode_mismatch",
     ),
 )
 def test_guarded_parent_rejects_unverified_retained_report(
@@ -977,11 +1286,16 @@ def test_guarded_parent_rejects_unverified_retained_report(
         del timeout_seconds
         if failure == "missing":
             return 0, _worker_success_bytes()
-        payload = (
-            endpoint_eval._canonical_bytes(_valid_report()) + b"\n"
-            if failure != "invalid_report"
-            else b'{"schema_version":1}\n'
-        )
+        if failure == "invalid_report":
+            payload = b'{"schema_version":1}\n'
+        else:
+            payload = endpoint_eval._canonical_bytes(
+                _valid_report(
+                    logical_turn_shadow=(
+                        failure == "worker_report_mode_mismatch"
+                    )
+                )
+            ) + b"\n"
         digest = endpoint_eval._publish_private_report(
             tmp_path / "report.json",
             payload,
@@ -1064,6 +1378,64 @@ def test_guarded_worker_rejects_overflow_without_retaining_it(monkeypatch) -> No
     with pytest.raises(endpoint_eval.EdaccEndpointIntegrityError) as error:
         endpoint_eval._run_guarded_worker([], timeout_seconds=1)
     assert str(error.value) == ""
+
+
+def test_evaluator_propagates_shadow_mode_through_all_cells_and_recheck(
+    monkeypatch,
+) -> None:
+    corpus = _corpus()
+    prepared = _prepared()
+    cells = {
+        "acoustic": _cell_result(
+            corpus,
+            candidate=False,
+            buckets=("multi", "multi", *("single",) * 22),
+            logical_turn_shadow=True,
+        ),
+        "prosody_hold_only": _cell_result(
+            corpus,
+            candidate=True,
+            buckets=("multi", *("single",) * 23),
+            logical_turn_shadow=True,
+        ),
+        "prosody_reset_accumulate": _cell_result(
+            corpus,
+            candidate=True,
+            reset_accumulate=True,
+            buckets=("single",) * 24,
+            logical_turn_shadow=True,
+        ),
+    }
+    cell_modes = []
+    source_modes = []
+
+    def run_cell(_corpus, _config, *, cell, logical_turn_shadow=False):
+        cell_modes.append((cell, logical_turn_shadow))
+        return cells[cell]
+
+    def source_binding(*, logical_turn_shadow=False):
+        source_modes.append(logical_turn_shadow)
+        return "a" * 64
+
+    monkeypatch.setattr(endpoint_eval, "prepare_production", lambda **_: prepared)
+    monkeypatch.setattr(endpoint_eval, "load_production_corpus", lambda _: corpus)
+    monkeypatch.setattr(endpoint_eval, "_snapshot_model", lambda path: _model(Path(path)))
+    monkeypatch.setattr(endpoint_eval, "_base_config", lambda _: _base_config())
+    monkeypatch.setattr(endpoint_eval, "_run_cell", run_cell)
+    monkeypatch.setattr(endpoint_eval, "_source_binding", source_binding)
+    monkeypatch.setattr(endpoint_eval, "verify_production_inputs", lambda *_, **__: None)
+
+    report = endpoint_eval.evaluate_edacc_endpoint_integrity(
+        corpus_path=Path("/private/corpus"),
+        config_path=Path("/private/config"),
+        local_config_path=Path("/private/local"),
+        smart_turn_model=Path("/private/model"),
+        logical_turn_shadow=True,
+    )
+
+    assert report["schema_version"] == endpoint_eval.SHADOW_SCHEMA_VERSION
+    assert cell_modes == [(name, True) for name in endpoint_eval._CELL_NAMES]
+    assert source_modes == [True, True]
 
 
 @pytest.mark.parametrize("drift", ("model", "source", "config"))

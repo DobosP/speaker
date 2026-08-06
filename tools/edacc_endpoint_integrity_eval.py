@@ -31,7 +31,13 @@ import sys
 import threading
 import time
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from always_on_agent.logical_turn_shadow import (
+        LogicalTurnCompositionShadow,
+        LogicalTurnShadowSnapshot,
+    )
 
 from core.endpointing import (
     AdaptiveEndpointPolicy,
@@ -83,6 +89,8 @@ from tools.streaming_stt.corpus import CorpusCase, LoadedCorpus
 
 SCHEMA_VERSION = 2
 KIND = "edacc-endpoint-integrity-v2"
+SHADOW_SCHEMA_VERSION = 3
+SHADOW_KIND = "edacc-endpoint-integrity-v3"
 EXPECTED_CORPUS_SHA256 = (
     "4da392c39a0b6bd18057f63c96b4f67c0dfdaf4c14e1d2d76176cdbee0920772"
 )
@@ -130,6 +138,11 @@ _SOURCE_FILES = (
     "tools/setup_models.py",
     "tools/streaming_stt/bounded_io.py",
 )
+_SHADOW_SOURCE_FILES = (
+    "always_on_agent/logical_turn.py",
+    "always_on_agent/logical_turn_shadow.py",
+    "core/contract.py",
+)
 _CELL_NAMES = (
     "acoustic",
     "prosody_hold_only",
@@ -164,6 +177,8 @@ _FORBIDDEN_REPORT_KEYS = frozenset(
 _SAFE_STATIC_STRINGS = frozenset(
     {
         KIND,
+        SHADOW_KIND,
+        "sherpa_raw_composition_v1",
         "diagnostic_only",
         "capture-loop-counterfactual",
         "production-sherpa-capture-loop",
@@ -234,11 +249,19 @@ def _is_source_revision(value: object) -> bool:
     )
 
 
-def _source_binding() -> str:
+def _source_files(*, logical_turn_shadow: bool = False) -> tuple[str, ...]:
+    if type(logical_turn_shadow) is not bool:
+        raise EdaccEndpointIntegrityError()
+    if logical_turn_shadow:
+        return (*_SOURCE_FILES, *_SHADOW_SOURCE_FILES)
+    return _SOURCE_FILES
+
+
+def _source_binding(*, logical_turn_shadow: bool = False) -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
     try:
-        for relative in _SOURCE_FILES:
+        for relative in _source_files(logical_turn_shadow=logical_turn_shadow):
             snapshot = read_regular_bounded(
                 root / relative,
                 maximum_bytes=_MAX_SOURCE_FILE_BYTES,
@@ -737,8 +760,9 @@ def _run_cell(
     configured: SherpaConfig,
     *,
     cell: str,
+    logical_turn_shadow: bool = False,
 ) -> _CellResult:
-    if cell not in _CELL_NAMES:
+    if cell not in _CELL_NAMES or type(logical_turn_shadow) is not bool:
         raise EdaccEndpointIntegrityError()
     candidate = cell in _SEMANTIC_CELL_NAMES
     try:
@@ -749,6 +773,7 @@ def _run_cell(
         )
         trace = _TraceAccumulator(candidate=candidate)
         aggregate = _CellAccumulator()
+        shadow_snapshots: list[LogicalTurnShadowSnapshot] = []
         build_started = time.perf_counter()
         with _quiet_model_output():
             engine = SherpaOnnxEngine(executed)
@@ -763,12 +788,22 @@ def _run_cell(
                     _fresh_policy(engine, candidate=candidate)
                     trace.begin_row()
                     replay_case = _adapt_case(source_case)
-                    record = _execute_case(
-                        engine,
-                        replay_case,
-                        case_index=ordinal,
-                        repeat=0,
-                    )
+                    shadow: LogicalTurnCompositionShadow | None = None
+                    case_options: dict[str, object] = {
+                        "case_index": ordinal,
+                        "repeat": 0,
+                    }
+                    if logical_turn_shadow:
+                        from always_on_agent.logical_turn_shadow import (
+                            LogicalTurnCompositionShadow,
+                        )
+
+                        shadow = LogicalTurnCompositionShadow()
+                        case_options["logical_turn_shadow"] = shadow
+                    record = _execute_case(engine, replay_case, **case_options)
+                    if shadow is not None:
+                        shadow.close()
+                        shadow_snapshots.append(shadow.snapshot())
                     trace.finish_row()
                     aggregate.add(source_case, record, ordinal=ordinal)
                     del replay_case
@@ -786,6 +821,16 @@ def _run_cell(
         )
         report["model_load_ms"] = round(model_load_ms, 3)
         report["endpoint_trace"] = trace.report()
+        if logical_turn_shadow:
+            from always_on_agent.logical_turn_shadow import (
+                aggregate_logical_turn_shadows,
+            )
+
+            if len(shadow_snapshots) != EXPECTED_CASES:
+                raise EdaccEndpointIntegrityError()
+            report["logical_turn_shadow"] = aggregate_logical_turn_shadows(
+                shadow_snapshots
+            )
         buckets = tuple(aggregate.row_final_buckets)
         del engine
         gc.collect()
@@ -838,7 +883,10 @@ def _report(
     model: _ModelBinding,
     source_sha256: str,
     cells: Mapping[str, _CellResult],
+    logical_turn_shadow: bool = False,
 ) -> dict[str, object]:
+    if type(logical_turn_shadow) is not bool:
+        raise EdaccEndpointIntegrityError()
     control_buckets = cells["acoustic"].row_final_buckets
     comparisons = {
         "prosody_hold_only_vs_acoustic": _comparison_report(
@@ -854,9 +902,49 @@ def _report(
             cells["prosody_reset_accumulate"].row_final_buckets,
         ),
     }
+    protocol: dict[str, object] = {
+        "capture_loop": "production-sherpa-capture-loop",
+        "transport": "in-memory-f32le",
+        "sample_rate_hz": SAMPLE_RATE_HZ,
+        "frame_samples": FRAME_SAMPLES,
+        "zero_tail_samples": ZERO_TAIL_SAMPLES,
+        "zero_tail_ms": ZERO_TAIL_MS,
+        "source_alignment_padding_max_samples": FRAME_SAMPLES - 1,
+        "input_calibration_enabled": False,
+        "word_timing_supplied": False,
+        "ground_truth_speech_timing_supplied": False,
+        "allow_early": False,
+        "adaptive_floor": False,
+        "policy_state": "fresh-per-row",
+        "acoustic_rule2_ms": round(ACOUSTIC_RULE2_SEC * 1_000),
+        "semantic_max_wait_ms": round(ENDPOINT_MAX_SILENCE_SEC * 1_000),
+        "logical_rule3_ms": round(LOGICAL_RULE3_SEC * 1_000),
+        "complete_threshold": COMPLETE_THRESHOLD,
+        "incomplete_threshold": INCOMPLETE_THRESHOLD,
+        "asr_provider": ASR_PROVIDER,
+        "asr_threads": ASR_THREADS,
+    }
+    limitations: dict[str, object] = {
+        "diagnostic_only": True,
+        "capture_loop_counterfactual": True,
+        "hold_only_control_included": True,
+        "native_reset_accumulate_evaluated": True,
+        "early_commit_evaluated": False,
+        "posthoc_turn_join_evaluated": False,
+        "live_device_evidence": False,
+        "model_quality_promotion": False,
+        "runtime_default_authority": False,
+        "wall_time_includes_paced_replay": True,
+        "peak_rss_is_process_high_water": True,
+    }
+    if logical_turn_shadow:
+        protocol["raw_composition_shadow_enabled"] = True
+        limitations["raw_composition_shadow_evaluated"] = True
     report: dict[str, object] = {
-        "schema_version": SCHEMA_VERSION,
-        "kind": KIND,
+        "schema_version": (
+            SHADOW_SCHEMA_VERSION if logical_turn_shadow else SCHEMA_VERSION
+        ),
+        "kind": SHADOW_KIND if logical_turn_shadow else KIND,
         "execution_complete": True,
         "quality_verdict": "diagnostic_only",
         "evidence_scope": "capture-loop-counterfactual",
@@ -898,46 +986,15 @@ def _report(
             },
             "source": {
                 "sha256": source_sha256,
-                "files": len(_SOURCE_FILES),
+                "files": len(
+                    _source_files(logical_turn_shadow=logical_turn_shadow)
+                ),
             },
         },
-        "protocol": {
-            "capture_loop": "production-sherpa-capture-loop",
-            "transport": "in-memory-f32le",
-            "sample_rate_hz": SAMPLE_RATE_HZ,
-            "frame_samples": FRAME_SAMPLES,
-            "zero_tail_samples": ZERO_TAIL_SAMPLES,
-            "zero_tail_ms": ZERO_TAIL_MS,
-            "source_alignment_padding_max_samples": FRAME_SAMPLES - 1,
-            "input_calibration_enabled": False,
-            "word_timing_supplied": False,
-            "ground_truth_speech_timing_supplied": False,
-            "allow_early": False,
-            "adaptive_floor": False,
-            "policy_state": "fresh-per-row",
-            "acoustic_rule2_ms": round(ACOUSTIC_RULE2_SEC * 1_000),
-            "semantic_max_wait_ms": round(ENDPOINT_MAX_SILENCE_SEC * 1_000),
-            "logical_rule3_ms": round(LOGICAL_RULE3_SEC * 1_000),
-            "complete_threshold": COMPLETE_THRESHOLD,
-            "incomplete_threshold": INCOMPLETE_THRESHOLD,
-            "asr_provider": ASR_PROVIDER,
-            "asr_threads": ASR_THREADS,
-        },
+        "protocol": protocol,
         "cells": {name: dict(cells[name].report) for name in _CELL_NAMES},
         "comparison": comparisons,
-        "limitations": {
-            "diagnostic_only": True,
-            "capture_loop_counterfactual": True,
-            "hold_only_control_included": True,
-            "native_reset_accumulate_evaluated": True,
-            "early_commit_evaluated": False,
-            "posthoc_turn_join_evaluated": False,
-            "live_device_evidence": False,
-            "model_quality_promotion": False,
-            "runtime_default_authority": False,
-            "wall_time_includes_paced_replay": True,
-            "peak_rss_is_process_high_water": True,
-        },
+        "limitations": limitations,
     }
     _validate_report(report)
     return report
@@ -1017,23 +1074,29 @@ def _validate_cell_report(
     *,
     candidate: bool,
     reset_accumulate: bool,
+    logical_turn_shadow: bool = False,
 ) -> None:
+    if type(logical_turn_shadow) is not bool:
+        raise EdaccEndpointIntegrityError()
+    expected_keys = {
+        "coverage",
+        "turn_integrity",
+        "joined_selected_final_accuracy",
+        "vad_speech_end_to_endpoint_ms",
+        "transcript_aborts",
+        "resources",
+        "config_sha256",
+        "provider",
+        "asr_threads",
+        "semantic_hold_reset_enabled",
+        "model_load_ms",
+        "endpoint_trace",
+    }
+    if logical_turn_shadow:
+        expected_keys.add("logical_turn_shadow")
     cell = _require_keys(
         value,
-        {
-            "coverage",
-            "turn_integrity",
-            "joined_selected_final_accuracy",
-            "vad_speech_end_to_endpoint_ms",
-            "transcript_aborts",
-            "resources",
-            "config_sha256",
-            "provider",
-            "asr_threads",
-            "semantic_hold_reset_enabled",
-            "model_load_ms",
-            "endpoint_trace",
-        },
+        expected_keys,
     )
     coverage = _require_keys(cell["coverage"], {"rows", "complete"})
     integrity = _require_keys(
@@ -1295,6 +1358,87 @@ def _validate_cell_report(
         )
     ):
         raise EdaccEndpointIntegrityError()
+    if logical_turn_shadow:
+        _validate_shadow_cell_report(
+            cell["logical_turn_shadow"],
+            reset_accumulate=reset_accumulate,
+            minimum_paired_terminals=finals,
+        )
+
+
+def _validate_shadow_cell_report(
+    value: object,
+    *,
+    reset_accumulate: bool,
+    minimum_paired_terminals: int,
+) -> None:
+    try:
+        from always_on_agent.logical_turn_shadow import (
+            validate_logical_turn_shadow_report,
+        )
+
+        validate_logical_turn_shadow_report(value)
+        if not isinstance(value, Mapping):
+            raise EdaccEndpointIntegrityError()
+        coverage = value["coverage"]
+        lifecycle = value["lifecycle"]
+        parity = value["parity"]
+        health = value["health"]
+        minimum_paired = _nonnegative_int(minimum_paired_terminals)
+        if not all(
+            isinstance(section, Mapping)
+            for section in (coverage, lifecycle, parity, health)
+        ):
+            raise EdaccEndpointIntegrityError()
+        multi_epoch_commits = _nonnegative_int(parity["multi_epoch_commits"])
+        if (
+            coverage["runs"] != EXPECTED_CASES
+            or coverage["closed_runs"] != EXPECTED_CASES
+            or coverage["active_at_report"] != 0
+            or coverage["complete"] is not True
+            or health["ok"] is not True
+            or any(
+                _nonnegative_int(health[name]) != 0
+                for name in (
+                    "coordinator_rejections",
+                    "bounds_overflows",
+                    "internal_errors",
+                    "late_observations",
+                )
+            )
+            or any(
+                _nonnegative_int(parity[name]) != 0
+                for name in (
+                    "composition_mismatches",
+                    "extra_legacy_terminals",
+                    "missing_legacy_terminals",
+                )
+            )
+            or parity["legacy_terminals"] != parity["paired_terminals"]
+            or parity["paired_terminals"] != parity["composition_matches"]
+            or _nonnegative_int(parity["paired_terminals"])
+            < minimum_paired
+            or (
+                reset_accumulate
+                and (
+                    multi_epoch_commits <= 0
+                    or _nonnegative_int(lifecycle["held_native_finals"]) <= 0
+                    or parity["evidence_sufficient"] is not True
+                    or parity["exact"] is not True
+                )
+            )
+            or (
+                not reset_accumulate
+                and (
+                    multi_epoch_commits != 0
+                    or parity["evidence_sufficient"] is not False
+                    or parity["exact"] is not False
+                )
+            )
+        ):
+            raise EdaccEndpointIntegrityError()
+    except (KeyError, TypeError, ValueError, EdaccEndpointIntegrityError):
+        raise EdaccEndpointIntegrityError() from None
 
 
 def _validate_comparison_report(
@@ -1387,6 +1531,13 @@ def _validate_report(value: object) -> None:
             "limitations",
         },
     )
+    identity = (report["schema_version"], report["kind"])
+    if identity == (SCHEMA_VERSION, KIND):
+        logical_turn_shadow = False
+    elif identity == (SHADOW_SCHEMA_VERSION, SHADOW_KIND):
+        logical_turn_shadow = True
+    else:
+        raise EdaccEndpointIntegrityError()
     bindings = _require_keys(
         report["bindings"], {"corpus", "production", "smart_turn", "source"}
     )
@@ -1416,59 +1567,66 @@ def _validate_report(value: object) -> None:
         bindings["smart_turn"], {"sha256", "size_bytes", "provider", "threads"}
     )
     source = _require_keys(bindings["source"], {"sha256", "files"})
-    protocol = _require_keys(
-        report["protocol"],
-        {
-            "capture_loop",
-            "transport",
-            "sample_rate_hz",
-            "frame_samples",
-            "zero_tail_samples",
-            "zero_tail_ms",
-            "source_alignment_padding_max_samples",
-            "input_calibration_enabled",
-            "word_timing_supplied",
-            "ground_truth_speech_timing_supplied",
-            "allow_early",
-            "adaptive_floor",
-            "policy_state",
-            "acoustic_rule2_ms",
-            "semantic_max_wait_ms",
-            "logical_rule3_ms",
-            "complete_threshold",
-            "incomplete_threshold",
-            "asr_provider",
-            "asr_threads",
-        },
-    )
+    protocol_keys = {
+        "capture_loop",
+        "transport",
+        "sample_rate_hz",
+        "frame_samples",
+        "zero_tail_samples",
+        "zero_tail_ms",
+        "source_alignment_padding_max_samples",
+        "input_calibration_enabled",
+        "word_timing_supplied",
+        "ground_truth_speech_timing_supplied",
+        "allow_early",
+        "adaptive_floor",
+        "policy_state",
+        "acoustic_rule2_ms",
+        "semantic_max_wait_ms",
+        "logical_rule3_ms",
+        "complete_threshold",
+        "incomplete_threshold",
+        "asr_provider",
+        "asr_threads",
+    }
+    if logical_turn_shadow:
+        protocol_keys.add("raw_composition_shadow_enabled")
+    protocol = _require_keys(report["protocol"], protocol_keys)
     cells = _require_keys(report["cells"], set(_CELL_NAMES))
     comparisons = _require_keys(report["comparison"], set(_COMPARISON_NAMES))
-    limitations = _require_keys(
-        report["limitations"],
-        {
-            "diagnostic_only",
-            "capture_loop_counterfactual",
-            "hold_only_control_included",
-            "native_reset_accumulate_evaluated",
-            "early_commit_evaluated",
-            "posthoc_turn_join_evaluated",
-            "live_device_evidence",
-            "model_quality_promotion",
-            "runtime_default_authority",
-            "wall_time_includes_paced_replay",
-            "peak_rss_is_process_high_water",
-        },
+    limitation_keys = {
+        "diagnostic_only",
+        "capture_loop_counterfactual",
+        "hold_only_control_included",
+        "native_reset_accumulate_evaluated",
+        "early_commit_evaluated",
+        "posthoc_turn_join_evaluated",
+        "live_device_evidence",
+        "model_quality_promotion",
+        "runtime_default_authority",
+        "wall_time_includes_paced_replay",
+        "peak_rss_is_process_high_water",
+    }
+    if logical_turn_shadow:
+        limitation_keys.add("raw_composition_shadow_evaluated")
+    limitations = _require_keys(report["limitations"], limitation_keys)
+    _validate_cell_report(
+        cells["acoustic"],
+        candidate=False,
+        reset_accumulate=False,
+        logical_turn_shadow=logical_turn_shadow,
     )
     _validate_cell_report(
-        cells["acoustic"], candidate=False, reset_accumulate=False
-    )
-    _validate_cell_report(
-        cells["prosody_hold_only"], candidate=True, reset_accumulate=False
+        cells["prosody_hold_only"],
+        candidate=True,
+        reset_accumulate=False,
+        logical_turn_shadow=logical_turn_shadow,
     )
     _validate_cell_report(
         cells["prosody_reset_accumulate"],
         candidate=True,
         reset_accumulate=True,
+        logical_turn_shadow=logical_turn_shadow,
     )
     _validate_comparison_report(
         comparisons["prosody_hold_only_vs_acoustic"],
@@ -1486,9 +1644,7 @@ def _validate_report(value: object) -> None:
         candidate_cell=cells["prosody_reset_accumulate"],
     )
     if (
-        report["schema_version"] != SCHEMA_VERSION
-        or report["kind"] != KIND
-        or report["execution_complete"] is not True
+        report["execution_complete"] is not True
         or report["quality_verdict"] != "diagnostic_only"
         or report["evidence_scope"] != "capture-loop-counterfactual"
         or corpus["schema_version"] != 2
@@ -1523,7 +1679,8 @@ def _validate_report(value: object) -> None:
         or smart_turn["provider"] != "CPUExecutionProvider"
         or smart_turn["threads"] != 1
         or not _is_sha256(source["sha256"])
-        or source["files"] != len(_SOURCE_FILES)
+        or source["files"]
+        != len(_source_files(logical_turn_shadow=logical_turn_shadow))
         or protocol
         != {
             "capture_loop": "production-sherpa-capture-loop",
@@ -1546,6 +1703,11 @@ def _validate_report(value: object) -> None:
             "incomplete_threshold": INCOMPLETE_THRESHOLD,
             "asr_provider": ASR_PROVIDER,
             "asr_threads": ASR_THREADS,
+            **(
+                {"raw_composition_shadow_enabled": True}
+                if logical_turn_shadow
+                else {}
+            ),
         }
         or limitations
         != {
@@ -1560,6 +1722,11 @@ def _validate_report(value: object) -> None:
             "runtime_default_authority": False,
             "wall_time_includes_paced_replay": True,
             "peak_rss_is_process_high_water": True,
+            **(
+                {"raw_composition_shadow_evaluated": True}
+                if logical_turn_shadow
+                else {}
+            ),
         }
     ):
         raise EdaccEndpointIntegrityError()
@@ -1578,10 +1745,13 @@ def evaluate_edacc_endpoint_integrity(
     config_path: Path | str,
     local_config_path: Path | str,
     smart_turn_model: Path | str,
+    logical_turn_shadow: bool = False,
 ) -> Mapping[str, object]:
     """Execute all three fixed cells and return one validated aggregate report."""
 
     try:
+        if type(logical_turn_shadow) is not bool:
+            raise EdaccEndpointIntegrityError()
         prepared = prepare_production(
             config_path=config_path,
             local_config_path=local_config_path,
@@ -1591,15 +1761,22 @@ def evaluate_edacc_endpoint_integrity(
         corpus = load_production_corpus(corpus_path)
         _validate_exact_corpus(corpus)
         model = _snapshot_model(smart_turn_model)
-        source_sha256 = _source_binding()
+        source_sha256 = (
+            _source_binding(logical_turn_shadow=True)
+            if logical_turn_shadow
+            else _source_binding()
+        )
         prepared_sha256 = _prepared_binding(prepared)
         base = _base_config(prepared)
         cells: dict[str, _CellResult] = {}
         for name in _CELL_NAMES:
+            cell_options: dict[str, object] = {"cell": name}
+            if logical_turn_shadow:
+                cell_options["logical_turn_shadow"] = True
             cells[name] = _run_cell(
                 corpus,
                 _cell_config(base, cell=name, model=model),
-                cell=name,
+                **cell_options,
             )
 
         verify_production_inputs(
@@ -1612,13 +1789,22 @@ def evaluate_edacc_endpoint_integrity(
         rebound_model = _snapshot_model(model.path)
         if rebound_model != model:
             raise EdaccEndpointIntegrityError()
-        if _source_binding() != source_sha256 or _prepared_binding(prepared) != prepared_sha256:
+        rebound_source_sha256 = (
+            _source_binding(logical_turn_shadow=True)
+            if logical_turn_shadow
+            else _source_binding()
+        )
+        if (
+            rebound_source_sha256 != source_sha256
+            or _prepared_binding(prepared) != prepared_sha256
+        ):
             raise EdaccEndpointIntegrityError()
         return _report(
             prepared=prepared,
             model=model,
             source_sha256=source_sha256,
             cells=cells,
+            logical_turn_shadow=logical_turn_shadow,
         )
     except (
         BoundedReadError,
@@ -2103,6 +2289,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=_absolute_path, required=True)
     parser.add_argument("--local-config", type=_absolute_path, required=True)
     parser.add_argument("--smart-turn-model", type=_absolute_path, required=True)
+    parser.add_argument(
+        "--logical-turn-shadow",
+        action="store_true",
+        help=(
+            "add transcript-free raw native-composition shadow evidence; "
+            "does not transfer runtime authority"
+        ),
+    )
     parser.add_argument("--report", type=_absolute_path, required=True)
     parser.add_argument(
         "--watchdog-seconds",
@@ -2121,6 +2315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path=args.config,
             local_config_path=args.local_config,
             smart_turn_model=args.smart_turn_model,
+            logical_turn_shadow=args.logical_turn_shadow,
         )
         payload = _canonical_bytes(report) + b"\n"
         published_sha256 = _publish_private_report(args.report, payload)
@@ -2328,8 +2523,12 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             retained_hold_only = retained_cells["prosody_hold_only"]
             retained_reset = retained_cells["prosody_reset_accumulate"]
             retained_comparisons = retained_report["comparison"]
+            retained_shadow_enabled = (
+                retained_report["schema_version"] == SHADOW_SCHEMA_VERSION
+            )
             if (
-                receipt["rows"] != retained_control["coverage"]["rows"]
+                retained_shadow_enabled is not args.logical_turn_shadow
+                or receipt["rows"] != retained_control["coverage"]["rows"]
                 or receipt["rows"] != retained_hold_only["coverage"]["rows"]
                 or receipt["rows"] != retained_reset["coverage"]["rows"]
                 or receipt["hold_only_hold_rows"]

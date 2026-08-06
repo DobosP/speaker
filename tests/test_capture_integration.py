@@ -133,6 +133,148 @@ def test_app_final_stt_profile_is_session_scoped_and_digest_bound(
     )
 
 
+def test_app_no_speaker_enrollment_is_session_scoped_and_runtime_bound(
+    tmp_path, monkeypatch, capsys
+):
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config["sherpa"].update(
+        speaker_embedding_model="/private/speaker.onnx",
+        speaker_enroll_embedding="/private/enrollment.json",
+        speaker_enroll_wav="/private/enrollment.wav",
+        speaker_gate_input=True,
+        barge_word_cut_require_speaker=False,
+    )
+    before = json.loads(json.dumps(config))
+    observed = {}
+
+    def ready(effective, *_args, **_kwargs):
+        observed["readiness"] = dict(effective["sherpa"])
+
+    def build_engine(_args, effective, **_kwargs):
+        observed["engine"] = dict(effective["sherpa"])
+        return ScriptedEngine()
+
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "_load_config", lambda: config)
+    monkeypatch.setattr(app, "_require_sherpa_runtime_ready", ready)
+    monkeypatch.setattr(app, "_build_engine", build_engine)
+    monkeypatch.setattr(app, "_run_live", lambda _runtime: None)
+
+    rc = app.main([
+        "--session",
+        "local",
+        "--llm",
+        "echo",
+        "--device",
+        "desktop",
+        "--final-stt-profile",
+        "sense-voice",
+        "--no-speaker-enrollment",
+    ])
+
+    assert rc == 0
+    assert config == before
+    assert observed["readiness"] == observed["engine"]
+    assert observed["engine"]["speaker_enroll_embedding"] == ""
+    assert observed["engine"]["speaker_enroll_wav"] == ""
+    assert observed["engine"]["speaker_embedding_model"] == (
+        "/private/speaker.onnx"
+    )
+    assert observed["engine"]["speaker_gate_input"] is True
+    data = json.loads(next(tmp_path.glob("run-*.summary.json")).read_text())
+    assert data["meta"]["speaker_identity_policy"] == "off_for_session"
+    assert "speaker_enroll" not in json.dumps(data["meta"])
+    notice = capsys.readouterr().err
+    assert "speaker identity is OFF for this session" in notice
+    assert "other audible speakers" in notice
+
+    observed.clear()
+    assert app.main([
+        "--session",
+        "local",
+        "--llm",
+        "echo",
+        "--device",
+        "desktop",
+        "--final-stt-profile",
+        "sense-voice",
+    ]) == 0
+    assert observed["readiness"]["speaker_enroll_embedding"] == (
+        "/private/enrollment.json"
+    )
+    assert observed["readiness"]["speaker_enroll_wav"] == (
+        "/private/enrollment.wav"
+    )
+    assert observed["readiness"] == observed["engine"]
+
+
+def test_app_no_speaker_enrollment_conflict_stops_before_runtime_build(
+    tmp_path, monkeypatch, capsys
+):
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config["sherpa"].update(
+        speaker_enroll_embedding="/private/enrollment.json",
+        barge_in_enabled=True,
+        barge_word_cut_enabled=True,
+        barge_word_cut_require_speaker=True,
+        aec_enabled=False,
+    )
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "_load_config", lambda: config)
+    monkeypatch.setattr(
+        app,
+        "_require_sherpa_runtime_ready",
+        lambda *_args, **_kwargs: pytest.fail("readiness ran after policy conflict"),
+    )
+    monkeypatch.setattr(
+        app,
+        "_build_llms",
+        lambda *_args, **_kwargs: pytest.fail("LLMs built after policy conflict"),
+    )
+    monkeypatch.setattr(
+        app,
+        "_build_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine built after policy conflict"),
+    )
+
+    assert app.main([
+        "--session",
+        "local",
+        "--llm",
+        "echo",
+        "--device",
+        "desktop",
+        "--no-speaker-enrollment",
+    ]) == 2
+
+    assert "identity-required multi-voice" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "session_args",
+    [
+        ["--session", "console"],
+        ["--session", "replay"],
+        ["--session", "trusted-lan"],
+        ["--session", "local", "--enroll"],
+    ],
+)
+def test_app_no_speaker_enrollment_rejects_nonlocal_or_enrollment_session(
+    session_args,
+):
+    with pytest.raises(SystemExit) as exc:
+        app.main([*session_args, "--no-speaker-enrollment"])
+    assert exc.value.code == 2
+
+
 @pytest.mark.parametrize(
     "session_args",
     [

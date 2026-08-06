@@ -129,6 +129,44 @@ def test_existing_wav_enrollment_allocates_speaker_gate(monkeypatch, tmp_path):
     assert engine._speaker_gate is allocated_gate
 
 
+def test_session_mask_preserves_files_and_prevents_speaker_gate_allocation(
+    monkeypatch, tmp_path
+):
+    from core.config import apply_no_speaker_enrollment
+
+    model = tmp_path / "spk.onnx"
+    model.write_bytes(b"model-sentinel")
+    embedding = tmp_path / "enroll.json"
+    embedding.write_bytes(b"embedding-sentinel")
+    wav = tmp_path / "enroll.wav"
+    wav.write_bytes(b"wav-sentinel")
+    effective = apply_no_speaker_enrollment(
+        {
+            "sherpa": {
+                "speaker_embedding_model": str(model),
+                "speaker_enroll_embedding": str(embedding),
+                "speaker_enroll_wav": str(wav),
+                "barge_in_enabled": True,
+                "barge_word_cut_enabled": True,
+                "barge_word_cut_require_speaker": False,
+                "aec_enabled": False,
+                "coherence_barge_in_enabled": False,
+            }
+        }
+    )
+
+    engine, _allocated_gate, calls = _build_with_observed_speaker_allocation(
+        monkeypatch,
+        SherpaConfig(**effective["sherpa"]),
+    )
+
+    assert calls == []
+    assert engine._speaker_gate is None
+    assert model.read_bytes() == b"model-sentinel"
+    assert embedding.read_bytes() == b"embedding-sentinel"
+    assert wav.read_bytes() == b"wav-sentinel"
+
+
 def test_active_os_word_cut_speaker_filter_allocates_gate_without_enrollment(
     monkeypatch, tmp_path
 ):

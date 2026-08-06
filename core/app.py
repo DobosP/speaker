@@ -19,6 +19,7 @@ from .config import (
     _apply_device_profile,
     _load_config,
     apply_final_stt_profile,
+    apply_no_speaker_enrollment,
     apply_device_profile,
     load_config,
     resolve_device,
@@ -913,6 +914,15 @@ def main(argv: list[str] | None = None) -> int:
         "normal input speaker gate; generic sherpa startup does not require it.",
     )
     parser.add_argument(
+        "--no-speaker-enrollment",
+        action="store_true",
+        help=(
+            "for this local session only, ignore configured speaker-enrollment "
+            "references without changing files; explicit identity-required "
+            "multi-voice policy remains strict"
+        ),
+    )
+    parser.add_argument(
         "--enroll-seconds",
         dest="enroll_seconds",
         type=float,
@@ -949,6 +959,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.final_stt_profile and (requested_engine not in {"sherpa", "replay"} or args.enroll):
         parser.error(
             "--final-stt-profile requires a non-enrollment local or replay STT session"
+        )
+    if args.no_speaker_enrollment and (
+        requested_engine != "sherpa" or args.enroll
+    ):
+        parser.error(
+            "--no-speaker-enrollment requires a non-enrollment local session"
         )
     if args.record_playback_reference or args.record_pre_dsp_reference:
         args.record = True
@@ -1054,6 +1070,29 @@ def main(argv: list[str] | None = None) -> int:
             final_stt_profile_sha256=final_stt_metadata.sha256,
             final_stt_profile_schema_version=final_stt_metadata.schema_version,
         )
+    if args.no_speaker_enrollment:
+        try:
+            config = apply_no_speaker_enrollment(config)
+        except ValueError as exc:
+            try:
+                monitor.stop()
+            except Exception:  # noqa: BLE001 - preserve the policy error
+                pass
+            try:
+                runlog.finalize(None)
+            except Exception:  # noqa: BLE001 - preserve the policy error
+                pass
+            print(f"[speaker-identity] {exc}", file=sys.stderr)
+            return 2
+        runlog.summary.note(speaker_identity_policy="off_for_session")
+        identity_notice = (
+            "speaker identity is OFF for this session; configured references "
+            "and files are unchanged; speaker verification is unavailable, "
+            "so other audible speakers may converse and use read or "
+            "direct-live-confirmed tools"
+        )
+        runlog.logger.info(identity_notice)
+        print(f"[speaker-identity] {identity_notice}", file=sys.stderr)
     # CLI audio overrides win over config.json's sherpa block.
     sherpa_overrides = {
         "input_device": args.input_device,

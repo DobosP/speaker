@@ -1057,6 +1057,7 @@ def _selected_live_config(
     root: Path,
     requested_device: str | None,
     final_stt_profile: str | None = None,
+    no_speaker_enrollment: bool = False,
 ) -> _SelectedLiveConfig:
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
@@ -1070,6 +1071,7 @@ def _selected_live_config(
         from core.config import (
             apply_device_profile,
             apply_final_stt_profile,
+            apply_no_speaker_enrollment,
             load_config,
             resolve_device,
         )
@@ -1082,6 +1084,8 @@ def _selected_live_config(
         config = apply_device_profile(config, device, strict=True)
         if final_stt_profile:
             config, _metadata = apply_final_stt_profile(config, final_stt_profile)
+        if no_speaker_enrollment:
+            config = apply_no_speaker_enrollment(config)
     except (OSError, ValueError) as exc:
         raise LauncherError(
             f"could not resolve the selected live configuration: {exc}"
@@ -1318,6 +1322,7 @@ _VALUE_OPTIONS = (
 )
 _FLAG_OPTIONS = (
     ("--stream-tts", "stream_tts"),
+    ("--no-speaker-enrollment", "no_speaker_enrollment"),
 )
 
 
@@ -1363,6 +1368,15 @@ def _live_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=[mode.value for mode in Mode], default=None)
     parser.add_argument("--input-gain", dest="input_gain", type=float, default=None)
     parser.add_argument("--stream-tts", dest="stream_tts", action="store_true")
+    parser.add_argument(
+        "--no-speaker-enrollment",
+        dest="no_speaker_enrollment",
+        action="store_true",
+        help=(
+            "ignore configured speaker enrollment for this recorded session; "
+            "persisted enrollment is not changed"
+        ),
+    )
     return parser
 
 
@@ -1472,6 +1486,7 @@ def run_live_session(
             root,
             args.device,
             args.final_stt_profile,
+            args.no_speaker_enrollment,
         )
         if llm_mode != "echo" and selected.llm_backend == "ollama":
             ollama_host = _loopback_ollama_host(selected.ollama_host)
@@ -1498,6 +1513,8 @@ def run_live_session(
             doctor.extend(["--device", args.device])
         if args.final_stt_profile:
             doctor.extend(["--final-stt-profile", args.final_stt_profile])
+        if args.no_speaker_enrollment:
+            doctor.append("--no-speaker-enrollment")
         if llm_mode == "echo":
             doctor.append(
                 "--defer-ollama"

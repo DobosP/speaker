@@ -13,7 +13,12 @@ import os
 import sys
 from typing import Callable, Iterable, Optional
 
-from core.config import FINAL_STT_PROFILE_NAMES, apply_final_stt_profile
+from core.config import (
+    FINAL_STT_PROFILE_NAMES,
+    SpeakerIdentityPolicyError,
+    apply_final_stt_profile,
+    apply_no_speaker_enrollment,
+)
 from core.readiness import (
     DEFAULT_OLLAMA_MODELS,
     SHERPA_REQUIRED,
@@ -78,6 +83,7 @@ def run_all(
     models_needed: Optional[Iterable[str]] = None,
     device=None,
     final_stt_profile: str | None = None,
+    no_speaker_enrollment: bool = False,
     llm_mode: str = "configured",
     platform: str = sys.platform,
     pipewire_state: Optional[PipeWireState] = None,
@@ -93,7 +99,16 @@ def run_all(
             True,
             f"{metadata.name}; sha256={metadata.sha256}",
         ))
-    return prefix + run_runtime_checks(
+    if no_speaker_enrollment:
+        merged = apply_no_speaker_enrollment(merged)
+        prefix.append(Check(
+            "speaker identity policy",
+            True,
+            "off for this process only; configured references and files are "
+            "unchanged; speaker verification is unavailable; other audible "
+            "speakers may converse and use read or direct-live-confirmed tools",
+        ))
+    runtime_checks = run_runtime_checks(
         merged,
         resolved=True,
         llm_mode=llm_mode,
@@ -107,6 +122,16 @@ def run_all(
         pipewire_state=pipewire_state,
         pipewire_probe=pipewire_probe,
     )
+    if no_speaker_enrollment:
+        # Avoid the normal "run --enroll" nudge when references are
+        # intentionally masked.  Keep a failing speaker-ID check: it is the
+        # fail-closed signal for an explicit identity-required word-cut policy.
+        runtime_checks = [
+            check
+            for check in runtime_checks
+            if check.name != "speaker-ID" or not check.ok
+        ]
+    return prefix + runtime_checks
 
 
 def summarize(checks: Iterable[Check]) -> tuple[bool, str]:
@@ -143,6 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--no-speaker-enrollment",
+        action="store_true",
+        help=(
+            "check the same process-local enrollment-free configuration used "
+            "by core; persisted enrollment remains unchanged"
+        ),
+    )
+    parser.add_argument(
         "--defer-ollama",
         action="store_true",
         help=(
@@ -173,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                 config,
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
+                no_speaker_enrollment=args.no_speaker_enrollment,
                 llm_mode="echo",
             )
         elif args.defer_ollama:
@@ -192,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     device=args.device,
                     final_stt_profile=args.final_stt_profile,
+                    no_speaker_enrollment=args.no_speaker_enrollment,
                     llm_mode="echo",
                 )
         else:
@@ -199,7 +234,16 @@ def main(argv: list[str] | None = None) -> int:
                 config,
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
+                no_speaker_enrollment=args.no_speaker_enrollment,
             )
+    except SpeakerIdentityPolicyError as exc:
+        checks = [Check(
+            "speaker identity policy",
+            False,
+            str(exc),
+            "select an identity-free word-cut profile or omit "
+            "--no-speaker-enrollment",
+        )]
     except ValueError as exc:
         label = "final STT profile" if args.final_stt_profile else "device profile"
         checks = [Check(

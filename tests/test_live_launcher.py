@@ -534,6 +534,79 @@ def test_final_stt_profile_is_forwarded_identically_to_doctor_and_core(tmp_path)
     assert "--asr-final" not in voice
 
 
+def test_no_speaker_enrollment_is_forwarded_once_without_persisting(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "device": "safe",
+                "device_profiles": {
+                    "safe": {"sherpa": {"sample_rate": 16000}},
+                },
+                "sherpa": {
+                    "aec_enabled": False,
+                    "barge_in_enabled": True,
+                    "barge_word_cut_enabled": True,
+                    "barge_word_cut_require_speaker": False,
+                    "speaker_enroll_embedding": "/private/enrollment.json",
+                    "speaker_enroll_wav": "/private/enrollment.wav",
+                },
+                "llm": {"backend": "llamacpp"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    assert _run_session(
+        ["--llm", "echo", "--no-speaker-enrollment"],
+        ops=ops,
+        root=tmp_path,
+    ) == 0
+
+    doctor = next(
+        command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor")
+    )
+    voice = _voice_command(ops)
+    assert doctor.count("--no-speaker-enrollment") == 1
+    assert voice.count("--no-speaker-enrollment") == 1
+    assert "--record" in voice
+    assert "--record-pre-dsp-reference" in voice
+    assert "--record-playback-reference" in voice
+    assert config_path.read_bytes() == before
+
+
+def test_no_speaker_enrollment_conflict_fails_before_host_setup(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "device": "safe",
+                "device_profiles": {
+                    "safe": {"sherpa": {"sample_rate": 16000}},
+                },
+                "sherpa": {
+                    "aec_enabled": False,
+                    "barge_in_enabled": True,
+                    "barge_word_cut_enabled": True,
+                    "barge_word_cut_require_speaker": True,
+                    "speaker_enroll_embedding": "/private/enrollment.json",
+                },
+                "llm": {"backend": "llamacpp"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    ops = _FakeOps()
+
+    assert _run_session(
+        ["--no-speaker-enrollment"], ops=ops, root=tmp_path
+    ) == 2
+
+    assert ops.calls == []
+    assert ops.popen_calls == []
+
+
 def test_invalid_final_stt_profile_map_fails_before_host_setup(tmp_path):
     committed = json.loads(
         (Path(__file__).resolve().parents[1] / "config.json").read_text(
@@ -1420,6 +1493,7 @@ def test_launcher_rejects_mixed_atomic_and_legacy_final_stt_options():
         ["--model=first", "--model=second"],
         ["--model", "first", "--model=second"],
         ["--run-label", "first", "--run-label=second"],
+        ["--no-speaker-enrollment", "--no-speaker-enrollment"],
     ],
 )
 def test_launcher_rejects_duplicate_runtime_options(arguments):
@@ -1428,7 +1502,9 @@ def test_launcher_rejects_duplicate_runtime_options(arguments):
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize("option", ["--dev", "--mod", "--run-lab"])
+@pytest.mark.parametrize(
+    "option", ["--dev", "--mod", "--run-lab", "--no-speaker-enroll"]
+)
 def test_launcher_rejects_abbreviated_options(option):
     with pytest.raises(SystemExit) as exc:
         run_live_session([option, "value"], ops=_FakeOps(), root=Path("/unused"))

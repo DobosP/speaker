@@ -36,7 +36,9 @@ __all__ = [
     "apply_device_profile",
     "FINAL_STT_PROFILE_NAMES",
     "FinalSttProfileMetadata",
+    "SpeakerIdentityPolicyError",
     "apply_final_stt_profile",
+    "apply_no_speaker_enrollment",
     "_load_config",
     "_apply_device_profile",
 ]
@@ -91,6 +93,10 @@ class FinalSttProfileMetadata:
     name: str
     sha256: str
     schema_version: int
+
+
+class SpeakerIdentityPolicyError(ValueError):
+    """A process-local speaker-identity selection conflicts with policy."""
 
 
 def _canonical_profile_sha256(profile: dict) -> str:
@@ -263,6 +269,52 @@ def apply_final_stt_profile(
         schema_version=1,
     )
     return effective, metadata
+
+
+def apply_no_speaker_enrollment(config: dict) -> dict:
+    """Ignore persisted speaker enrollment for one effective configuration.
+
+    Only the two enrollment references are masked, and the input mapping is
+    never mutated.  The configured embedding model and all policy switches are
+    preserved: in particular, an explicit identity-required word-cut policy is
+    rejected when this transform makes enrollment unavailable.
+    Callers apply this after device and final-STT profiles so neither can
+    reintroduce a reference during the selected process.
+    """
+
+    if not isinstance(config, dict):
+        raise ValueError("config must be an object")
+    effective = deep_merge(
+        config,
+        {
+            "sherpa": {
+                "speaker_enroll_embedding": "",
+                "speaker_enroll_wav": "",
+            }
+        },
+    )
+    from .engines.speaker_gate import resolve_speaker_identity_activation
+
+    sherpa = effective.get("sherpa", {}) or {}
+    activation = resolve_speaker_identity_activation(
+        speaker_enroll_embedding=sherpa.get("speaker_enroll_embedding", ""),
+        speaker_enroll_wav=sherpa.get("speaker_enroll_wav", ""),
+        barge_in_enabled=sherpa.get("barge_in_enabled", True),
+        barge_word_cut_enabled=sherpa.get("barge_word_cut_enabled", False),
+        aec_enabled=sherpa.get("aec_enabled", False),
+        barge_word_cut_require_speaker=sherpa.get(
+            "barge_word_cut_require_speaker", False
+        ),
+        # Both references were masked above.  Avoid probing any configured
+        # enrollment path while resolving this process-local policy.
+        exists=lambda _path: False,
+    )
+    if activation.word_cut_requires_speaker:
+        raise SpeakerIdentityPolicyError(
+            "speaker identity off conflicts with the active "
+            "identity-required multi-voice word-cut policy"
+        )
+    return effective
 
 
 def deep_merge(base: dict, overrides: dict, *, opaque_keys: frozenset = _OPAQUE_KEYS) -> dict:

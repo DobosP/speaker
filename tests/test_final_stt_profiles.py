@@ -14,6 +14,7 @@ from core.config import (
     FINAL_STT_PROFILE_NAMES,
     apply_device_profile,
     apply_final_stt_profile,
+    apply_no_speaker_enrollment,
     deep_merge,
 )
 from core.engines import _faster_whisper
@@ -105,6 +106,58 @@ def test_profile_applied_after_device_profile_wins_every_final_field():
     assert effective["sherpa"]["asr_final_model"].endswith(
         "sense_voice/model.int8.onnx"
     )
+
+
+def test_no_speaker_enrollment_is_pure_and_preserves_identity_policy():
+    config = {
+        "sherpa": {
+            "speaker_embedding_model": "/models/speaker.onnx",
+            "speaker_enroll_embedding": "/private/enrollment.json",
+            "speaker_enroll_wav": "/private/enrollment.wav",
+            "speaker_gate_input": True,
+            "barge_in_enabled": True,
+            "barge_word_cut_enabled": True,
+            "barge_word_cut_require_speaker": False,
+            "aec_enabled": False,
+        },
+        "tools": {"kept": True},
+    }
+    before = copy.deepcopy(config)
+
+    effective = apply_no_speaker_enrollment(config)
+
+    assert config == before
+    assert effective is not config
+    assert effective["sherpa"] is not config["sherpa"]
+    assert effective["sherpa"]["speaker_enroll_embedding"] == ""
+    assert effective["sherpa"]["speaker_enroll_wav"] == ""
+    assert effective["sherpa"]["speaker_embedding_model"] == (
+        "/models/speaker.onnx"
+    )
+    assert effective["sherpa"]["speaker_gate_input"] is True
+    assert effective["sherpa"]["barge_word_cut_require_speaker"] is False
+    assert effective["tools"] == {"kept": True}
+
+
+def test_no_speaker_enrollment_rejects_only_active_multi_voice_policy():
+    base = {
+        "sherpa": {
+            "speaker_enroll_embedding": "/private/enrollment.json",
+            "barge_in_enabled": True,
+            "barge_word_cut_enabled": True,
+            "barge_word_cut_require_speaker": True,
+            "aec_enabled": False,
+        }
+    }
+
+    with pytest.raises(ValueError, match="identity-required multi-voice"):
+        apply_no_speaker_enrollment(base)
+
+    inert = copy.deepcopy(base)
+    inert["sherpa"]["aec_enabled"] = True
+    effective = apply_no_speaker_enrollment(inert)
+    assert effective["sherpa"]["speaker_enroll_embedding"] == ""
+    assert effective["sherpa"]["barge_word_cut_require_speaker"] is True
 
 
 @pytest.mark.parametrize(
@@ -286,6 +339,82 @@ def test_doctor_applies_profile_before_readiness_and_reports_safe_digest(monkeyp
     identity = next(check for check in checks if check.name == "final STT profile")
     assert "parakeet-faster-whisper; sha256=" in identity.detail
     assert "pretrained_models" not in identity.detail
+
+
+@pytest.mark.parametrize("profile", FINAL_STT_PROFILE_NAMES)
+def test_doctor_applies_identity_off_after_each_final_profile(
+    monkeypatch, profile
+):
+    import tools.doctor as doctor
+
+    config = _config()
+    config["sherpa"].update(
+        speaker_embedding_model="/private/speaker.onnx",
+        speaker_enroll_embedding="/private/enrollment.json",
+        speaker_enroll_wav="/private/enrollment.wav",
+        barge_word_cut_require_speaker=False,
+    )
+    before = copy.deepcopy(config)
+    observed = []
+
+    def fake_runtime_checks(effective, **kwargs):
+        observed.append((effective, kwargs))
+        return [
+            doctor.Check(
+                "speaker-ID",
+                True,
+                "model configured; run --enroll",
+            ),
+            doctor.Check("runtime", True, "ready"),
+        ]
+
+    monkeypatch.setattr(doctor, "run_runtime_checks", fake_runtime_checks)
+
+    checks = doctor.run_all(
+        config,
+        device="desktop",
+        final_stt_profile=profile,
+        no_speaker_enrollment=True,
+    )
+
+    effective = observed[0][0]
+    assert config == before
+    assert effective["sherpa"]["speaker_enroll_embedding"] == ""
+    assert effective["sherpa"]["speaker_enroll_wav"] == ""
+    assert effective["sherpa"]["speaker_embedding_model"] == (
+        "/private/speaker.onnx"
+    )
+    assert observed[0][1]["resolved"] is True
+    policy = next(
+        check for check in checks if check.name == "speaker identity policy"
+    )
+    assert "files are unchanged" in policy.detail
+    assert "speaker verification is unavailable" in policy.detail
+    assert "other audible speakers" in policy.detail
+    assert all(check.name != "speaker-ID" for check in checks)
+
+
+def test_doctor_combined_invalid_profile_keeps_profile_error_label(
+    monkeypatch, capsys
+):
+    import core.app as app
+    import tools.doctor as doctor
+
+    config = _config()
+    config["final_stt_profiles"]["sense-voice"]["sherpa"].pop(
+        "asr_final_rule_fsts"
+    )
+    monkeypatch.setattr(app, "_load_config", lambda *_args, **_kwargs: config)
+
+    assert doctor.main([
+        "--final-stt-profile",
+        "sense-voice",
+        "--no-speaker-enrollment",
+    ]) == 1
+
+    output = capsys.readouterr().out
+    assert "[FAIL] final STT profile" in output
+    assert "[FAIL] speaker identity policy" not in output
 
 
 def test_readiness_warm_probe_uses_same_explicit_cpu_bound(monkeypatch):

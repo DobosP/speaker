@@ -409,6 +409,17 @@ single-link, 18,719-byte report SHA-256
 `bcacaece6b1620520d3131054d3faef511fa5ecfe5d4a2b789a9dca5a72c6b8d`.
 No runtime, default, latency, device, or live claim follows (ADR-0153).
 
+The opt-in schema-4 run at clean source `dac50c9` bound all 35/35/32 raw
+commits to 31/31/29 inline selected finals plus 4/4/3 typed input-rejection
+aborts. All three cells were exact, every raw commit was acoustically bound,
+and binding, terminal, late-observation, and internal-error counters were zero.
+The guarded pre/post binding covered 19 source files. Preserve the mode-0600,
+single-link, 23,350-byte report SHA-256
+`1c03d64295fe9443d057c854b034fbc73723420641088f918f242a79cb1f5230`.
+It proves transcript-free inline terminal identity and typed outcome only;
+selected-text, async worker, dispatcher, supervisor, production authority,
+device, latency, and live parity remain false (ADR-0155).
+
 ## Exact Parakeet Realtime EOU reference setup
 
 Start with an already-downloaded private 183-wheel closure, the exact local

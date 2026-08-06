@@ -86,6 +86,10 @@ invalidates evidence without changing capture behavior. Default construction,
 production entry points, models, thresholds, tools, speaker policy, task
 authority, and live behavior are unchanged. The capture success-receipt shape
 adds only three transcript/path/identity-free scalars; strict consumers must
-accept that expanded contract. A clean, retained exact EdAcc v4 replay is
-required before landing, and a later branch must build an explicitly drained
-deterministic async-worker harness before making any async terminal claim.
+accept that expanded contract. The clean `dac50c9` exact EdAcc v4 replay bound
+all 35/35/32 raw commits across its three cells to 31/31/29 selected finals plus
+4/4/3 typed input-rejection aborts, with exact lineage and zero health errors.
+Its aggregate-only report is mode 0600, single-link, 23,350 bytes, and SHA-256
+`1c03d64295fe9443d057c854b034fbc73723420641088f918f242a79cb1f5230`.
+A later branch must build an explicitly drained deterministic async-worker
+harness before making any async terminal claim.

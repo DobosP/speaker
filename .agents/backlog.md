@@ -239,6 +239,14 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         in `tests/test_diagnose_run.py`. Adversarial-review hardening: anchored
         `_BARGE_DETECTED_PAT` to end-of-message so a confirm line whose transcript
         contains "barge-in detected" isn't miscounted (dead path, now robust).
+      - [x] define the inactive `semantic-interruption-policy-v1` typed score
+        contract with never-reused candidate-token freshness, closed take-floor/
+        non-interrupting/abstain decisions, a representable uncertainty band,
+        and exhaustive device-free tests (ADR-0168). It has no detector or
+        runtime effect and cannot weaken exact STOP.
+      - [ ] admit a version-pinned local semantic detector in shadow mode before
+        any post-cut recovery or reversible pre-cut hold. Require aggregate
+        assistant-playback evidence and owner bare-speaker A/B before effects.
       - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default

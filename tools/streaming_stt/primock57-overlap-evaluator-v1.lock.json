@@ -1,0 +1,31 @@
+{
+  "bundle": {
+    "cases": 3,
+    "manifest_file": "primock57-two-role-overlap-diagnostic-v1.json",
+    "manifest_sha256": "e69c85356a77cd87b0c7f4c100614dccbf1484e16532a5a2239a768162e443b4",
+    "pcm_inputs": 9,
+    "receipt_file": "preparation-receipt.json",
+    "receipt_sha256": "69ec7df35591a2b1a7203109c58077540540c32deec99dc933a5ddef0840f507"
+  },
+  "evidence_scope": {
+    "diagnostic_only": true,
+    "endpoint_evidence": false,
+    "latency_evidence": false,
+    "promotion_authority": false,
+    "qualification_authority": false
+  },
+  "execution": {
+    "input_order": [
+      "role_a",
+      "role_b",
+      "mix"
+    ],
+    "metric": "two-utterance-min-order-wer-v1",
+    "repeats": 3
+  },
+  "fixture_id": "primock57-consultation01-v1",
+  "kind": "primock57-overlap-evaluator-lock-v1",
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "0697956f0671fb77e101f40b67f4a46bfb5a6da9cd0962d2cde4eec4577f261e",
+  "schema_version": 1
+}

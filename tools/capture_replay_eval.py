@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import io
 import json
@@ -102,9 +102,7 @@ _MODEL_PATH_FIELDS = (
     "endpoint_prosody_model",
 )
 _SAFE_PROVIDERS = frozenset({"cpu", "cuda"})
-_SAFE_FINAL_BACKENDS = frozenset(
-    {"", "sense_voice", "whisper", "nemo_transducer"}
-)
+_SAFE_FINAL_BACKENDS = frozenset({"", "sense_voice", "whisper", "nemo_transducer"})
 _SAFE_VERIFIER_BACKENDS = frozenset({"", "faster_whisper"})
 _MAX_REPEATS = 8
 _MAX_WATCHDOG_SECONDS = 7_200
@@ -158,6 +156,14 @@ _ASYNC_TERMINAL_DELIVERY_SOURCE_FILES = (
 
 class CaptureReplayEvaluationError(RuntimeError):
     """A detail-free configuration, model, replay, or output failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CaptureReplayEvaluationOutcome:
+    """Aggregate report plus private, short-lived observations for wrappers."""
+
+    report: Mapping[str, object]
+    records: tuple[ReplayRunRecord, ...] = field(repr=False)
 
 
 class _DiscardText(io.TextIOBase):
@@ -612,9 +618,7 @@ def _evaluator_source_digest(
     try:
         for relative in _evaluator_source_files(
             logical_turn_shadow=logical_turn_shadow,
-            logical_turn_async_terminal_delivery=(
-                logical_turn_async_terminal_delivery
-            ),
+            logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
         ):
             snapshot = read_regular_bounded(
                 root / relative,
@@ -636,21 +640,16 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
     rows: list[tuple[str, str, int, int, int, str]] = []
     for field_name in _MODEL_PATH_FIELDS:
         if field_name == "asr_bpe_vocab":
-            unit = str(
-                getattr(config, "asr_modeling_unit", "") or ""
-            ).strip().lower()
+            unit = str(getattr(config, "asr_modeling_unit", "") or "").strip().lower()
             if not (
                 bool(str(getattr(config, "asr_hotwords", "") or "").strip())
-                and getattr(config, "asr_decoding_method", "")
-                == "modified_beam_search"
+                and getattr(config, "asr_decoding_method", "") == "modified_beam_search"
                 and unit in {"bpe", "cjkchar+bpe"}
             ):
                 continue
         if field_name == "endpoint_prosody_model" and not (
             bool(getattr(config, "endpoint_enabled", False))
-            and str(getattr(config, "endpoint_detector", "") or "")
-            .strip()
-            .lower()
+            and str(getattr(config, "endpoint_detector", "") or "").strip().lower()
             == "prosody"
         ):
             continue
@@ -702,9 +701,7 @@ def _artifact_metadata_digest(config: SherpaConfig) -> str:
                     latest = max(latest, int(metadata.st_mtime_ns))
                 if count <= 0:
                     raise CaptureReplayEvaluationError()
-                rows.append(
-                    (field_name, "directory", total, latest, count, "")
-                )
+                rows.append((field_name, "directory", total, latest, count, ""))
             else:
                 raise CaptureReplayEvaluationError()
         except (BoundedReadError, OSError, RuntimeError, ValueError):
@@ -1140,8 +1137,7 @@ def _validate_terminal_lineage_against_metrics(
         ):
             raise CaptureReplayEvaluationError()
         expected_reasons = {
-            reason: count(streaming_reasons.get(reason, 0))
-            for reason in reason_names
+            reason: count(streaming_reasons.get(reason, 0)) for reason in reason_names
         }
         selected = count(streaming["final_events"])
         aborted = sum(expected_reasons.values())
@@ -1159,7 +1155,7 @@ def _validate_terminal_lineage_against_metrics(
         raise CaptureReplayEvaluationError() from None
 
 
-def evaluate_capture_replay(
+def _evaluate_capture_replay_outcome(
     corpus: LoadedReplayCorpus,
     configured: SherpaConfig,
     *,
@@ -1169,18 +1165,15 @@ def evaluate_capture_replay(
     logical_turn_shadow: bool = False,
     logical_turn_terminal_lineage: bool = False,
     logical_turn_async_terminal_delivery: bool = False,
-) -> Mapping[str, object]:
-    """Run the configured production capture stack and return aggregate evidence."""
+) -> _CaptureReplayEvaluationOutcome:
+    """Run capture replay while retaining private observations for fixed wrappers."""
 
     if (
         type(logical_turn_shadow) is not bool
         or type(logical_turn_terminal_lineage) is not bool
         or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
-        or (
-            logical_turn_async_terminal_delivery
-            and not logical_turn_terminal_lineage
-        )
+        or (logical_turn_async_terminal_delivery and not logical_turn_terminal_lineage)
     ):
         raise CaptureReplayEvaluationError()
     if (
@@ -1202,15 +1195,11 @@ def evaluate_capture_replay(
     artifact_digest = _artifact_metadata_digest(executed)
     source_files = _evaluator_source_files(
         logical_turn_shadow=logical_turn_shadow,
-        logical_turn_async_terminal_delivery=(
-            logical_turn_async_terminal_delivery
-        ),
+        logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
     )
     source_digest = _evaluator_source_digest(
         logical_turn_shadow=logical_turn_shadow,
-        logical_turn_async_terminal_delivery=(
-            logical_turn_async_terminal_delivery
-        ),
+        logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
     )
 
     build_started = time.perf_counter()
@@ -1220,15 +1209,10 @@ def evaluate_capture_replay(
         engine._build()
         if engine._recognizer is None:
             raise CaptureReplayEvaluationError()
-        if bool(executed.asr_final_backend) != (
-            engine._final_recognizer is not None
-        ):
+        if bool(executed.asr_final_backend) != (engine._final_recognizer is not None):
             raise CaptureReplayEvaluationError()
         if logical_turn_async_terminal_delivery and (
-            (
-                engine._final_recognizer is None
-                and engine._final_verifier is None
-            )
+            (engine._final_recognizer is None and engine._final_verifier is None)
             or engine._final_stage is None
         ):
             raise CaptureReplayEvaluationError()
@@ -1238,9 +1222,7 @@ def evaluate_capture_replay(
 
     records: list[ReplayRunRecord] = []
     shadow_snapshots: list["LogicalTurnShadowSnapshot"] = []
-    terminal_lineage_snapshots: list[
-        "LogicalTurnTerminalLineageSnapshot"
-    ] = []
+    terminal_lineage_snapshots: list["LogicalTurnTerminalLineageSnapshot"] = []
     async_delivery_snapshots: list[object] = []
     async_final_worker = None
     if logical_turn_async_terminal_delivery:
@@ -1304,9 +1286,7 @@ def evaluate_capture_replay(
     if (
         _evaluator_source_digest(
             logical_turn_shadow=logical_turn_shadow,
-            logical_turn_async_terminal_delivery=(
-                logical_turn_async_terminal_delivery
-            ),
+            logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
         )
         != source_digest
     ):
@@ -1372,9 +1352,7 @@ def evaluate_capture_replay(
         if len(shadow_snapshots) != len(corpus.cases) * repeats:
             raise CaptureReplayEvaluationError()
         result["schema_version"] = 2
-        result["logical_turn_shadow"] = aggregate_logical_turn_shadows(
-            shadow_snapshots
-        )
+        result["logical_turn_shadow"] = aggregate_logical_turn_shadows(shadow_snapshots)
     if logical_turn_terminal_lineage:
         from always_on_agent.logical_turn_shadow import (
             aggregate_logical_turn_terminal_lineage,
@@ -1411,7 +1389,35 @@ def evaluate_capture_replay(
         result["logical_turn_async_terminal_delivery"] = async_report
     # Final serialization is also the aggregate/privacy type gate.
     _json_digest(result)
-    return result
+    return _CaptureReplayEvaluationOutcome(
+        report=result,
+        records=tuple(records),
+    )
+
+
+def evaluate_capture_replay(
+    corpus: LoadedReplayCorpus,
+    configured: SherpaConfig,
+    *,
+    repeats: int = 1,
+    provider: str | None = None,
+    asr_threads: int | None = None,
+    logical_turn_shadow: bool = False,
+    logical_turn_terminal_lineage: bool = False,
+    logical_turn_async_terminal_delivery: bool = False,
+) -> Mapping[str, object]:
+    """Run the configured production capture stack and return aggregate evidence."""
+
+    return _evaluate_capture_replay_outcome(
+        corpus,
+        configured,
+        repeats=repeats,
+        provider=provider,
+        asr_threads=asr_threads,
+        logical_turn_shadow=logical_turn_shadow,
+        logical_turn_terminal_lineage=logical_turn_terminal_lineage,
+        logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
+    ).report
 
 
 def _write_new_private(path: Path | str, payload: bytes) -> None:
@@ -1532,10 +1538,7 @@ def _mode_schema_version(
         or type(logical_turn_terminal_lineage) is not bool
         or type(logical_turn_async_terminal_delivery) is not bool
         or (logical_turn_terminal_lineage and not logical_turn_shadow)
-        or (
-            logical_turn_async_terminal_delivery
-            and not logical_turn_terminal_lineage
-        )
+        or (logical_turn_async_terminal_delivery and not logical_turn_terminal_lineage)
     ):
         raise CaptureReplayEvaluationError()
     if logical_turn_async_terminal_delivery:
@@ -1557,9 +1560,7 @@ def _validate_report_mode(
     expected_schema = _mode_schema_version(
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
-        logical_turn_async_terminal_delivery=(
-            logical_turn_async_terminal_delivery
-        ),
+        logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
     )
     if (
         not isinstance(report, Mapping)
@@ -1614,9 +1615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         expected_schema = _mode_schema_version(
             logical_turn_shadow=args.logical_turn_shadow,
-            logical_turn_terminal_lineage=(
-                args.logical_turn_terminal_lineage
-            ),
+            logical_turn_terminal_lineage=(args.logical_turn_terminal_lineage),
             logical_turn_async_terminal_delivery=(
                 args.logical_turn_async_terminal_delivery
             ),
@@ -1642,9 +1641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider=args.provider,
             asr_threads=args.asr_threads,
             logical_turn_shadow=args.logical_turn_shadow,
-            logical_turn_terminal_lineage=(
-                args.logical_turn_terminal_lineage
-            ),
+            logical_turn_terminal_lineage=(args.logical_turn_terminal_lineage),
             logical_turn_async_terminal_delivery=(
                 args.logical_turn_async_terminal_delivery
             ),
@@ -1652,9 +1649,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _validate_report_mode(
             report,
             logical_turn_shadow=args.logical_turn_shadow,
-            logical_turn_terminal_lineage=(
-                args.logical_turn_terminal_lineage
-            ),
+            logical_turn_terminal_lineage=(args.logical_turn_terminal_lineage),
             logical_turn_async_terminal_delivery=(
                 args.logical_turn_async_terminal_delivery
             ),
@@ -1679,9 +1674,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "coverage_complete": report["metrics"]["coverage"]["complete"],
             "schema_version": expected_schema,
             "logical_turn_shadow": args.logical_turn_shadow,
-            "logical_turn_terminal_lineage": (
-                args.logical_turn_terminal_lineage
-            ),
+            "logical_turn_terminal_lineage": (args.logical_turn_terminal_lineage),
             "logical_turn_async_terminal_delivery": (
                 args.logical_turn_async_terminal_delivery
             ),
@@ -1713,9 +1706,7 @@ def _validated_worker_receipt(
     expected_schema = _mode_schema_version(
         logical_turn_shadow=logical_turn_shadow,
         logical_turn_terminal_lineage=logical_turn_terminal_lineage,
-        logical_turn_async_terminal_delivery=(
-            logical_turn_async_terminal_delivery
-        ),
+        logical_turn_async_terminal_delivery=(logical_turn_async_terminal_delivery),
     )
     if not payload or len(payload) > _MAX_RECEIPT_BYTES:
         raise CaptureReplayEvaluationError()
@@ -1745,8 +1736,12 @@ def _validated_worker_receipt(
             or not isinstance(decoded.get("corpus_sha256"), str)
             or len(decoded["report_sha256"]) != 64
             or len(decoded["corpus_sha256"]) != 64
-            or any(character not in _LOWER_HEX for character in decoded["report_sha256"])
-            or any(character not in _LOWER_HEX for character in decoded["corpus_sha256"])
+            or any(
+                character not in _LOWER_HEX for character in decoded["report_sha256"]
+            )
+            or any(
+                character not in _LOWER_HEX for character in decoded["corpus_sha256"]
+            )
             or isinstance(decoded.get("evaluations"), bool)
             or not isinstance(decoded.get("evaluations"), int)
             or decoded["evaluations"] <= 0
@@ -1758,8 +1753,7 @@ def _validated_worker_receipt(
             or type(decoded.get("logical_turn_terminal_lineage")) is not bool
             or decoded["logical_turn_terminal_lineage"]
             is not logical_turn_terminal_lineage
-            or type(decoded.get("logical_turn_async_terminal_delivery"))
-            is not bool
+            or type(decoded.get("logical_turn_async_terminal_delivery")) is not bool
             or decoded["logical_turn_async_terminal_delivery"]
             is not logical_turn_async_terminal_delivery
         ):
@@ -1828,9 +1822,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(raw_argv)
         _mode_schema_version(
             logical_turn_shadow=args.logical_turn_shadow,
-            logical_turn_terminal_lineage=(
-                args.logical_turn_terminal_lineage
-            ),
+            logical_turn_terminal_lineage=(args.logical_turn_terminal_lineage),
             logical_turn_async_terminal_delivery=(
                 args.logical_turn_async_terminal_delivery
             ),
@@ -1862,9 +1854,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             payload,
             returncode=completed.returncode,
             logical_turn_shadow=args.logical_turn_shadow,
-            logical_turn_terminal_lineage=(
-                args.logical_turn_terminal_lineage
-            ),
+            logical_turn_terminal_lineage=(args.logical_turn_terminal_lineage),
             logical_turn_async_terminal_delivery=(
                 args.logical_turn_async_terminal_delivery
             ),

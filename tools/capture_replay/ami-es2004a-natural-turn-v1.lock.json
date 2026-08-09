@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "kind": "ami-es2004a-natural-turn-fixture-lock-v1",
+  "fixture_id": "ami-es2004a-natural-turn-v1",
+  "production_evidence": true,
+  "self_digest": {
+    "algorithm": "sha256",
+    "canonicalization": "UTF-8 JSON with sort_keys=true, separators=(',', ':'), ensure_ascii=false, allow_nan=false",
+    "excluded_json_pointer": "/self_digest/value",
+    "value": "9fe99f0b4483f99755ddc5a16d96cf567d852e9f5cfb9fe4dd539d6e1370fa81"
+  },
+  "license": {
+    "gate_id": "CC-BY-4.0",
+    "acceptance_ids": [
+      "CC-BY-4.0"
+    ],
+    "redistribution": "private-derived-material-only",
+    "attribution": "AMI Meeting Corpus, meeting ES2004a, synchronized Mix-Headset and Array1-01 audio with AMI manual annotations.",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/"
+  },
+  "sources": {
+    "annotation_archive": {
+      "filename": "ami_public_manual_1.6.2.zip",
+      "url": "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip",
+      "size_bytes": 22887865,
+      "sha256": "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d",
+      "integrity_provenance": "local-freeze",
+      "artifact_label": "manual-annotations-1.6.2",
+      "embedded_readme_release": "1.7"
+    },
+    "audio": [
+      {
+        "channel": "close",
+        "filename": "ES2004a.Mix-Headset.wav",
+        "url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav",
+        "size_bytes": 33579394,
+        "sha256": "3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f",
+        "integrity_provenance": "local-sha256-receipt",
+        "samples": 16789675,
+        "roomtone_pcm16_sha256": "c5881ba784357cc30b144c3cd90a3d5f132743973a22c9bd0380e0ef56e55b8f",
+        "roomtone_f32_sha256": "0bba82b6663cd2e5acebc74ccea3e86af34c605699c686ce78dd73e7d8ba5010"
+      },
+      {
+        "channel": "far",
+        "filename": "ES2004a.Array1-01.wav",
+        "url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Array1-01.wav",
+        "size_bytes": 33579394,
+        "sha256": "6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150",
+        "integrity_provenance": "local-freeze",
+        "samples": 16789675,
+        "roomtone_pcm16_sha256": "ed42e8c332c5c1ae909af08116d54921f1c93c69ce89cc4f20e644557f905cf6",
+        "roomtone_f32_sha256": "ffd4fe825bf6780aa42209042d2c0e952f32c7f81cc07ab4757d830a483042b9"
+      }
+    ]
+  },
+  "archive_contract": {
+    "member_count": 5183,
+    "expanded_bytes": 205293665,
+    "compressed_payload_bytes": 21886077,
+    "archive_comment_bytes": 0,
+    "encrypted_members": 0,
+    "zip64_sized_members": 0,
+    "maximum_members": 8192,
+    "maximum_expanded_bytes": 268435456,
+    "maximum_member_bytes": 16777216,
+    "required_members": [
+      {"path": "00README_MANUAL.txt", "role": "release", "size_bytes": 2394, "sha256": "001292e9082f0f403a155dd5e7e4a8d5ac6542dbf37b19a12c7b6030fabdd350"},
+      {"path": "LICENCE.txt", "role": "license", "size_bytes": 13197, "sha256": "d52fd9c7c19eec9f0bec3107554c10937203e261259d73b01637a61501fec7f7"},
+      {"path": "MANIFEST_MANUAL.txt", "role": "manifest", "size_bytes": 13480, "sha256": "8cd111124993b52a718fe0c081dcd03f8a032669a752f372883ea55e48e078da"},
+      {"path": "dialogueActs/ES2004a.A.dialog-act.xml", "role": "dialogue-acts", "size_bytes": 16435, "sha256": "cfac83a0fb9f7af510baa6a59b231b5af7a6834036c2f130cac4ec63c8683af0"},
+      {"path": "dialogueActs/ES2004a.B.dialog-act.xml", "role": "dialogue-acts", "size_bytes": 43939, "sha256": "1e72fad9cac244d7e58542e3b9f11ecba1cf605ac50397b0bf2cff4b28761821"},
+      {"path": "dialogueActs/ES2004a.C.dialog-act.xml", "role": "dialogue-acts", "size_bytes": 18464, "sha256": "62e4d55aae4b83666823bdcd1efe828a8ceb2b891881806a245d5444dd11a2b5"},
+      {"path": "dialogueActs/ES2004a.D.dialog-act.xml", "role": "dialogue-acts", "size_bytes": 35330, "sha256": "3db08118d372e85fb9687c786cb0029de7f311100b0f4b7f5c46ddc94082d055"},
+      {"path": "dialogueActs/ES2004a.adjacency-pairs.xml", "role": "adjacency-pairs", "size_bytes": 18747, "sha256": "d4f56095ed9974f946a40928b6ce6e92e31f311c4af7b85f0c66dbd2de23514b"},
+      {"path": "ontologies/ap-types.xml", "role": "adjacency-types", "size_bytes": 555, "sha256": "3f8d5bb8b158bc81814dba44880e5a0e026d20f4e59059da8bce1d47eb1a8d33"},
+      {"path": "ontologies/da-types.xml", "role": "dialogue-act-types", "size_bytes": 1625, "sha256": "6bef44fd7f929156e8aeec4ead766146f547bd00db41d4e0df5e504b907d51fe"},
+      {"path": "segments/ES2004a.A.segments.xml", "role": "segments", "size_bytes": 10232, "sha256": "fdba87577fb6f36139a0f62d5c249921635b53bec92ed127cdfee959f6a8cb2c"},
+      {"path": "segments/ES2004a.B.segments.xml", "role": "segments", "size_bytes": 19951, "sha256": "130b464da1979e2b269c6b860eb046ac26e2d13b7482752d9befe3146bfc17f4"},
+      {"path": "segments/ES2004a.C.segments.xml", "role": "segments", "size_bytes": 11557, "sha256": "fc1cdb6c1fd673d35caa84190a85c827db08da60bdcb2a856eca785f4a3b8bde"},
+      {"path": "segments/ES2004a.D.segments.xml", "role": "segments", "size_bytes": 18503, "sha256": "1ecca19454d5c92b92c8c1825935b24262a355778c7138492dbacf10db9aa83d"},
+      {"path": "words/ES2004a.A.words.xml", "role": "words", "size_bytes": 32225, "sha256": "3b91765c8985e7c2652f1004832c00840e88bad4c3213296192b9fd741d675cc"},
+      {"path": "words/ES2004a.B.words.xml", "role": "words", "size_bytes": 107451, "sha256": "0e24646b84f2772bb3ca28e666df5f7ba48cde647589f7ae8f85e2724ff5cbc3"},
+      {"path": "words/ES2004a.C.words.xml", "role": "words", "size_bytes": 45192, "sha256": "07c25c4831fdc91cdff736ebf27c1380d0a7ef98e9835e33b15d44797fed7fd1"},
+      {"path": "words/ES2004a.D.words.xml", "role": "words", "size_bytes": 82827, "sha256": "e085188b2f4855808911934c309ba965c283e54371044c9086185f27913d44f8"}
+    ]
+  },
+  "selection": {
+    "meeting_id": "ES2004a",
+    "algorithm": "fixed-manual-dialogue-act-envelopes-v1",
+    "selected_windows_sha256": "67ed6b3966f790531480ecf09e8eb1bec4c9030a8c050d7e8c0f8a59f8541ffe",
+    "windows": [
+      {
+        "window_id": "nested_backchannel",
+        "start_sample": 8719200,
+        "end_sample": 8736800,
+        "linearized_reference_sha256": "8d10b08120975e054984ba0cb222b21364253814a7198d5833e7f934e2a8bc8d",
+        "dialogue_acts": [
+          {"id": "ES2004a.D.dialog-act.s9553330.59", "speaker": "D", "type_href": "da-types.xml#id(ami_da_16)", "words_href": "ES2004a.D.words.xml#id(ES2004a.D.words338)..id(ES2004a.D.words340)", "start_sample": 8719200, "end_sample": 8736800, "reference_sha256": "1dbc04a5fec4842dafecd2de520345c0c17edf539faf85c804dee9968428443d"},
+          {"id": "ES2004a.B.dialog-act.s9553330.83", "speaker": "B", "type_href": "da-types.xml#id(ami_da_1)", "words_href": "ES2004a.B.words.xml#id(ES2004a.B.words488)..id(ES2004a.B.words489)", "start_sample": 8724960, "end_sample": 8730240, "reference_sha256": "463b404b81778af93648f049ffa799c14c8c5987503790dfbc0547a4fffdc263"}
+        ],
+        "segments": [
+          {"id": "ES2004a.sync.459", "speaker": "D", "words_href": "ES2004a.D.words.xml#id(ES2004a.D.words329)..id(ES2004a.D.words348)", "start_sample": 8657920, "end_sample": 8794624},
+          {"id": "ES2004a.sync.185", "speaker": "B", "words_href": "ES2004a.B.words.xml#id(ES2004a.B.words488)..id(ES2004a.B.words489)", "start_sample": 8721248, "end_sample": 8730880}
+        ],
+        "adjacency_pair": null,
+        "relation": {"kind": "nested-overlap", "start_sample": 8724960, "end_sample": 8730240},
+        "timed_words": [
+          {"id": "ES2004a.D.words338", "speaker": "D", "start_sample": 8719200, "end_sample": 8720960, "punctuation": false},
+          {"id": "ES2004a.D.words339", "speaker": "D", "start_sample": 8720960, "end_sample": 8736800, "punctuation": false},
+          {"id": "ES2004a.D.words340", "speaker": "D", "start_sample": 8736800, "end_sample": 8736800, "punctuation": true},
+          {"id": "ES2004a.B.words488", "speaker": "B", "start_sample": 8724960, "end_sample": 8730240, "punctuation": false},
+          {"id": "ES2004a.B.words489", "speaker": "B", "start_sample": 8730240, "end_sample": 8730240, "punctuation": true}
+        ],
+        "external_positive_duration_annotations": 0,
+        "edge_complete_turn": false
+      },
+      {
+        "window_id": "adjacent_exchange",
+        "start_sample": 10085920,
+        "end_sample": 10121760,
+        "linearized_reference_sha256": "2ec4d37cc4683711005f8a7e4653904a70c1ede513f9f40b28ca7dc3f4b68b4c",
+        "dialogue_acts": [
+          {"id": "ES2004a.D.dialog-act.s9553330.77", "speaker": "D", "type_href": "da-types.xml#id(ami_da_5)", "words_href": "ES2004a.D.words.xml#id(ES2004a.D.words428)..id(ES2004a.D.words432)", "start_sample": 10085920, "end_sample": 10099200, "reference_sha256": "caefc5c2dccccc570c5ff263290db3c4f0bbe3ca5e1694e6c6f982ffe7da6cc0"},
+          {"id": "ES2004a.B.dialog-act.s9553330.107", "speaker": "B", "type_href": "da-types.xml#id(ami_da_4)", "words_href": "ES2004a.B.words.xml#id(ES2004a.B.words615)..id(ES2004a.B.words617)", "start_sample": 10100640, "end_sample": 10121760, "reference_sha256": "362764dea5b2f52af9ded83c88b6f0f155639907fa653c134f04511f357c7257"}
+        ],
+        "segments": [
+          {"id": "ES2004a.sync.483", "speaker": "D", "words_href": "ES2004a.D.words.xml#id(ES2004a.D.words428)..id(ES2004a.D.words432)", "start_sample": 10085632, "end_sample": 10099968},
+          {"id": "ES2004a.sync.211", "speaker": "B", "words_href": "ES2004a.B.words.xml#id(ES2004a.B.words615)..id(ES2004a.B.words626)", "start_sample": 10094336, "end_sample": 10195120}
+        ],
+        "adjacency_pair": {"id": "ES2004a.adjacency-pairs.s9553330.23", "type_href": "ap-types.xml#id(apt_1)", "source_href": "ES2004a.D.dialog-act.xml#id(ES2004a.D.dialog-act.s9553330.77)", "target_href": "ES2004a.B.dialog-act.xml#id(ES2004a.B.dialog-act.s9553330.107)"},
+        "relation": {"kind": "adjacent-gap", "start_sample": 10099200, "end_sample": 10100640},
+        "timed_words": [
+          {"id": "ES2004a.D.words428", "speaker": "D", "start_sample": 10085920, "end_sample": 10088480, "punctuation": false},
+          {"id": "ES2004a.D.words429", "speaker": "D", "start_sample": 10088480, "end_sample": 10089600, "punctuation": false},
+          {"id": "ES2004a.D.words430", "speaker": "D", "start_sample": 10089600, "end_sample": 10094720, "punctuation": false},
+          {"id": "ES2004a.D.words431", "speaker": "D", "start_sample": 10094720, "end_sample": 10099200, "punctuation": false},
+          {"id": "ES2004a.D.words432", "speaker": "D", "start_sample": 10099200, "end_sample": 10099200, "punctuation": true},
+          {"id": "ES2004a.B.words615", "speaker": "B", "start_sample": 10100640, "end_sample": 10107360, "punctuation": false},
+          {"id": "ES2004a.B.words616", "speaker": "B", "start_sample": 10107360, "end_sample": 10121760, "punctuation": false},
+          {"id": "ES2004a.B.words617", "speaker": "B", "start_sample": 10121760, "end_sample": 10121760, "punctuation": true}
+        ],
+        "external_positive_duration_annotations": 0,
+        "edge_complete_turn": false
+      }
+    ]
+  },
+  "transform": {
+    "sample_rate_hz": 16000,
+    "frame_samples": 1600,
+    "case_samples": 128000,
+    "source_start_rounding": "decimal-floor",
+    "source_end_rounding": "decimal-ceiling",
+    "input_encoding": "riff-pcm-s16le-mono",
+    "output_encoding": "f32le",
+    "float_conversion": "astype(float32)*float32(1.0/32768.0)",
+    "silence_window_start_sample": 3553520,
+    "silence_window_end_sample": 3729520,
+    "roomtone_start_sample": 3625520,
+    "roomtone_end_sample": 3657520,
+    "prefix_samples": 32000,
+    "postroll": "np.resize(same-channel-roomtone,remaining-samples)",
+    "source_splice": "untouched-contiguous-envelope"
+  },
+  "layout": {
+    "window_count": 2,
+    "channel_count": 2,
+    "case_count": 4,
+    "artifact_count": 4,
+    "case_order": [
+      "ami-es2004a-nested-backchannel-close",
+      "ami-es2004a-nested-backchannel-far",
+      "ami-es2004a-adjacent-exchange-close",
+      "ami-es2004a-adjacent-exchange-far"
+    ]
+  },
+  "outputs": {
+    "cases": [
+      {"case_id": "ami-es2004a-nested-backchannel-close", "window_id": "nested_backchannel", "channel": "close", "file": "ami-es2004a-nested-backchannel-close.f32le", "samples": 128000, "size_bytes": 512000, "source_pcm16_sha256": "68768d6c6142f4a1a779a54b3224b63ab986aca813f7cc9f50f3c9a7414ea10c", "source_f32_sha256": "950c61e958627fd4c0071648242a58bb027123382e97cd42450a7ff187e14e4b", "sha256": "ee335d0b804764f01ef56ec8a45a70632cb532ea59d2bbdff9036cd4f7d11b0f"},
+      {"case_id": "ami-es2004a-nested-backchannel-far", "window_id": "nested_backchannel", "channel": "far", "file": "ami-es2004a-nested-backchannel-far.f32le", "samples": 128000, "size_bytes": 512000, "source_pcm16_sha256": "451fa9124a7bb5400325b20d82b8962b81fbaef84885a153d4c192f881ec29f8", "source_f32_sha256": "66ffd80e2fdf36ef0ae3950dfe14e591fb61d0321089f663478522431dc66c46", "sha256": "d425511de8a60c113f09a7f19a023ffef8ffe366bcb355f58f202021120340fa"},
+      {"case_id": "ami-es2004a-adjacent-exchange-close", "window_id": "adjacent_exchange", "channel": "close", "file": "ami-es2004a-adjacent-exchange-close.f32le", "samples": 128000, "size_bytes": 512000, "source_pcm16_sha256": "4ba36a10dfd9d79c6fea94f582fccdf8cd934f5d9ae6bf0a0983a5b14756651f", "source_f32_sha256": "6df38a7f6141884277470375c59f5b4eec43e1e2b67a1bcb9a6de7f77e031eb0", "sha256": "7d3f339a1cddb3b5066451f82a9da69fb75ce7c41122dea21e46e4dc28ddfacb"},
+      {"case_id": "ami-es2004a-adjacent-exchange-far", "window_id": "adjacent_exchange", "channel": "far", "file": "ami-es2004a-adjacent-exchange-far.f32le", "samples": 128000, "size_bytes": 512000, "source_pcm16_sha256": "40d2071852fe69170d76eaeba678ebbc3a1106c65c7b8a0fa6e3addfbd7aa2b1", "source_f32_sha256": "06132570aab9a6164433831a9e1e07d05c0ce7ccf28250b5fe49fbd0ed3c0108", "sha256": "0b6f3258c8d887a5e5b006098eddb5a89daa301ff76627f70fae171fd9b742b8"}
+    ]
+  },
+  "evidence_scope": {
+    "diagnostic_only": true,
+    "complete_selected_envelope": true,
+    "complete_acoustic_turn": false,
+    "endpoint_evidence": false,
+    "vad_evidence": false,
+    "latency_evidence": false,
+    "wer_authority": false,
+    "capture_device_evidence": false,
+    "aec_evidence": false,
+    "barge_in_evidence": false,
+    "promotion_authority": false
+  }
+}

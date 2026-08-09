@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from contextlib import nullcontext
 import hashlib
 import json
@@ -241,10 +241,13 @@ def test_multi_case_replay_reuses_one_synchronous_session_then_closes_it(
 
     assert first.case_index == 0
     assert second.case_index == 1
-    assert evaluate._attest_streaming_decode_execution(
-        engine,
-        expected_capture_runs=2,
-    ) == "single-session-synchronous-replay"
+    assert (
+        evaluate._attest_streaming_decode_execution(
+            engine,
+            expected_capture_runs=2,
+        )
+        == "single-session-synchronous-replay"
+    )
 
     engine._streaming_decode_owner = object()
     with pytest.raises(evaluate.CaptureReplayEvaluationError):
@@ -589,15 +592,11 @@ def test_typed_collector_retains_only_closed_events_and_lineage():
     collector.on_partial(
         PartialTranscript("private partial", acoustic=lineage, revision=0)
     )
-    collector.on_final(
-        FinalTranscript("private final", acoustic=lineage, revision=1)
-    )
+    collector.on_final(FinalTranscript("private final", acoustic=lineage, revision=1))
     collector.on_command(
         CommandDetection("stop speaking", acoustic=lineage, revision=2)
     )
-    collector.on_barge(
-        AcousticSignal(acoustic=lineage, revision=3, detected_at=2.1)
-    )
+    collector.on_barge(AcousticSignal(acoustic=lineage, revision=3, detected_at=2.1))
     collector.on_abort(
         TranscriptAbort(
             acoustic=lineage,
@@ -1101,15 +1100,11 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
     validate_logical_turn_shadow_report(shadowed["logical_turn_shadow"])
     assert shadowed["logical_turn_shadow"]["parity"]["exact"] is True
     assert terminal_lineage["schema_version"] == 3
-    assert set(terminal_lineage) == set(shadowed) | {
-        "logical_turn_terminal_lineage"
-    }
+    assert set(terminal_lineage) == set(shadowed) | {"logical_turn_terminal_lineage"}
     validate_logical_turn_terminal_lineage_report(
         terminal_lineage["logical_turn_terminal_lineage"]
     )
-    assert terminal_lineage["logical_turn_terminal_lineage"]["lineage"][
-        "exact"
-    ] is True
+    assert terminal_lineage["logical_turn_terminal_lineage"]["lineage"]["exact"] is True
     assert observed_shadow_flags == [
         (False, False),
         (True, False),
@@ -1120,6 +1115,101 @@ def test_evaluator_default_shape_and_opt_in_shadow_schema(
     assert shadowed["engine"]["evaluator_source_files"] == (
         default["engine"]["evaluator_source_files"] + 3
     )
+
+    second_case = replace(replay_case, case_id="second-case")
+    ordered_corpus = replace(
+        corpus,
+        cases=(replay_case, second_case),
+        audio_bytes=2 * len(replay_case.mic.pcm_bytes),
+    )
+    outcome = evaluate._evaluate_capture_replay_outcome(
+        ordered_corpus,
+        configured,
+        repeats=2,
+    )
+
+    assert tuple((record.repeat, record.case_index) for record in outcome.records) == (
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    )
+    assert not hasattr(outcome, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        outcome.records = ()
+    rendered = repr(outcome)
+    assert "ReplayRunRecord" not in rendered
+    assert "DIFFERENT SELECTED WORDS" not in rendered
+
+
+def test_public_evaluator_returns_exact_private_outcome_report(monkeypatch) -> None:
+    report = MappingProxyType(
+        {
+            "execution_complete": True,
+            "schema_version": 1,
+        }
+    )
+    records = (
+        ReplayRunRecord(
+            case_index=0,
+            repeat=0,
+            finals=(
+                TimedFinal(
+                    "PRIVATE EPHEMERAL FINAL",
+                    emitted_at=2.1,
+                    speech_start_at=0.5,
+                    speech_end_at=1.5,
+                    endpoint_committed_at=2.0,
+                    utterance_id="u1",
+                ),
+            ),
+        ),
+    )
+    outcome = evaluate._CaptureReplayEvaluationOutcome(
+        report=report,
+        records=records,
+    )
+    observed: dict[str, object] = {}
+
+    def private_outcome(corpus, configured, **kwargs):
+        observed["corpus"] = corpus
+        observed["configured"] = configured
+        observed["kwargs"] = kwargs
+        return outcome
+
+    monkeypatch.setattr(
+        evaluate,
+        "_evaluate_capture_replay_outcome",
+        private_outcome,
+    )
+    corpus = object()
+    configured = object()
+
+    returned = evaluate.evaluate_capture_replay(
+        corpus,
+        configured,
+        repeats=2,
+        provider="cpu",
+        asr_threads=1,
+        logical_turn_shadow=True,
+        logical_turn_terminal_lineage=True,
+        logical_turn_async_terminal_delivery=True,
+    )
+
+    assert returned is report
+    assert observed == {
+        "corpus": corpus,
+        "configured": configured,
+        "kwargs": {
+            "repeats": 2,
+            "provider": "cpu",
+            "asr_threads": 1,
+            "logical_turn_shadow": True,
+            "logical_turn_terminal_lineage": True,
+            "logical_turn_async_terminal_delivery": True,
+        },
+    }
+    assert "PRIVATE EPHEMERAL FINAL" not in repr(outcome)
 
 
 def test_evaluator_async_mode_uses_schema_four_and_real_worker_harness(
@@ -1374,9 +1464,7 @@ def test_cli_success_and_failure_emit_only_aggregate_receipts(
         },
     }
     if schema_version >= 2:
-        shadow = LogicalTurnCompositionShadow(
-            terminal_lineage=schema_version == 3
-        )
+        shadow = LogicalTurnCompositionShadow(terminal_lineage=schema_version == 3)
         lineage = _lineage()
         assert shadow.observe_native_final(
             native_epoch=1,

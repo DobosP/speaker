@@ -47,15 +47,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       With ADR-0082's native comm route verified on the Windows box, the
       discard branch is no longer operative there — revisit only for
       route-less platforms/devices.
-- [ ] **P2 cleanups from the ADR-0082 review (2026-07-17).** (a) Three
-      near-identical tar-extraction loops now live in tools/setup_models.py
-      (extract_member, fetch_kokoro_package, fetch_kws_package) — the
-      path-traversal guard is security-relevant; consolidate into one
-      `_extract_tar_members` helper so a future hardening fix cannot miss a
-      copy. (b) preserve_existing_kokoro_selection protects only Kokoro; the
-      generic invariant belongs in wire_sherpa_paths (never downgrade ANY
-      existing valid on-disk backend selection unless that family was
-      explicitly requested) — closes the whole downgrade-to-hybrid bug class.
+- [x] **P2 archive-extraction cleanup from the ADR-0082 review (2026-07-17;
+      shipped 2026-08-09, ADR-0165).** Punctuation, SenseVoice, Parakeet, Kokoro, and KWS
+      tar writes now share one bounded exact-size helper with descriptor-relative
+      no-follow publication on POSIX, stable-link rejection everywhere, and
+      atomic leaf replacement/rollback instead of symlink/hardlink write-through.
+- [ ] **P2 model-selection cleanup from the ADR-0082 review (2026-07-17).**
+      `preserve_existing_kokoro_selection` protects only Kokoro; the generic
+      invariant belongs in `wire_sherpa_paths` (never downgrade ANY existing
+      valid on-disk backend selection unless that family was explicitly
+      requested) — closes the whole downgrade-to-hybrid bug class.
 - [x] **Repeat-guard clock race (found 2026-07-17, Windows; shipped 2026-08-04,
       ADR-0123).** The ADR-0051
       controller repeat handler treats a pre-session `assistant_output` as

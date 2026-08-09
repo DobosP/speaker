@@ -34,10 +34,12 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import sys
+import tarfile
 import tempfile
-from typing import Callable
+from typing import Callable, Iterable, Literal
 
 DEST = os.path.join("pretrained_models", "sherpa")
 # On-device LLM weights (llamacpp backend) live here; the phone/phone_lite device
@@ -169,6 +171,28 @@ SMART_TURN_MODEL_URL = (
     "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/"
     f"{SMART_TURN_MODEL_REVISION}/{SMART_TURN_MODEL_FILENAME}"
 )
+
+# Model release archives are streamed to disk, but their declared extraction
+# geometry still needs a finite contract. These ceilings are deliberately well
+# above every selected sherpa package while preventing an untrusted archive from
+# creating an unbounded number of files or expanding without limit.
+_MAX_TAR_MEMBERS = 20_000
+_MAX_TAR_MEMBER_BYTES = 4 * 1024**3
+_MAX_TAR_TOTAL_BYTES = 16 * 1024**3
+_WINDOWS_RESERVED_PATH_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CLOCK$",
+        "CONIN$",
+        "CONOUT$",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
+)
+_WINDOWS_FORBIDDEN_PATH_CHARS = frozenset('<>:"|?*')
 
 # Optional OFFLINE second-pass ASR for the FINAL transcript (SenseVoice). A
 # tar.bz2 GitHub release asset; we extract model.int8.onnx + tokens.txt. Robust on
@@ -873,32 +897,368 @@ def fetch_smart_turn_model(
                 pass
 
 
+def _unsafe_extract_destination(path: str) -> ValueError:
+    return ValueError(f"unsafe symlink or non-directory extraction destination: {path}")
+
+
+def _directory_binding(metadata: os.stat_result) -> tuple[int, int, int]:
+    return metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode)
+
+
+def _descriptor_extract_available() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    )
+
+
+def _is_linklike_directory(path: str, metadata: os.stat_result) -> bool:
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    return (
+        stat.S_ISLNK(metadata.st_mode)
+        or bool(getattr(metadata, "st_reparse_tag", 0))
+        or bool(is_junction(path))
+    )
+
+
+def _safe_extract_component(component: str) -> bool:
+    if not component or component in {".", ".."}:
+        return False
+    if component[-1] in {" ", "."}:
+        return False
+    if any(
+        ord(character) < 32 or character in _WINDOWS_FORBIDDEN_PATH_CHARS
+        for character in component
+    ):
+        return False
+    stem = component.split(".", 1)[0].upper()
+    return stem not in _WINDOWS_RESERVED_PATH_STEMS
+
+
+def _open_extract_root(path: str, *, create: bool = True) -> tuple[str, int | None]:
+    """Open one destination without following directory symlinks.
+
+    POSIX gets a descriptor-relative component walk. The cross-platform
+    fallback still lstats every component; leaf publication remains atomic on
+    both paths, so a pre-existing symlink or hardlink is replaced rather than
+    written through.
+    """
+
+    absolute = os.path.abspath(path)
+    if _descriptor_extract_available():
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(os.path.sep, flags)
+        try:
+            for component in absolute.split(os.path.sep)[1:]:
+                if not component:
+                    continue
+                try:
+                    before = os.stat(
+                        component,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    if not create:
+                        raise
+                    os.mkdir(component, mode=0o777, dir_fd=descriptor)
+                    before = os.stat(
+                        component,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                if not stat.S_ISDIR(before.st_mode):
+                    raise _unsafe_extract_destination(absolute)
+                child = os.open(component, flags, dir_fd=descriptor)
+                opened = os.fstat(child)
+                if _directory_binding(opened) != _directory_binding(before):
+                    os.close(child)
+                    raise _unsafe_extract_destination(absolute)
+                os.close(descriptor)
+                descriptor = child
+            return absolute, descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    drive, tail = os.path.splitdrive(absolute)
+    current = drive + os.path.sep
+    for component in tail.replace("\\", "/").split("/"):
+        if not component:
+            continue
+        current = os.path.join(current, component)
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            if not create:
+                raise
+            os.mkdir(current)
+            metadata = os.lstat(current)
+        if _is_linklike_directory(current, metadata) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            raise _unsafe_extract_destination(absolute)
+    return absolute, None
+
+
+def _ensure_extract_destination(path: str) -> str:
+    absolute, descriptor = _open_extract_root(path)
+    if descriptor is not None:
+        os.close(descriptor)
+    return absolute
+
+
+def _open_extract_parent(
+    root_descriptor: int,
+    components: tuple[str, ...],
+    *,
+    destination: str,
+) -> int:
+    descriptor = os.dup(root_descriptor)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        for component in components:
+            try:
+                before = os.stat(
+                    component,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o777, dir_fd=descriptor)
+                before = os.stat(
+                    component,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            if not stat.S_ISDIR(before.st_mode):
+                raise _unsafe_extract_destination(destination)
+            child = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if _directory_binding(opened) != _directory_binding(before):
+                os.close(child)
+                raise _unsafe_extract_destination(destination)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _fallback_extract_parent(root: str, components: tuple[str, ...]) -> str:
+    parent = root
+    for component in components:
+        candidate = os.path.join(parent, component)
+        try:
+            metadata = os.lstat(candidate)
+        except FileNotFoundError:
+            os.mkdir(candidate)
+            metadata = os.lstat(candidate)
+        if _is_linklike_directory(candidate, metadata) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            raise _unsafe_extract_destination(candidate)
+        parent = candidate
+    return parent
+
+
+def _copy_tar_source_exact(source: object, output: object, size: int) -> None:
+    remaining = size
+    while remaining:
+        chunk = source.read(min(1024 * 1024, remaining))  # type: ignore[attr-defined]
+        if not isinstance(chunk, bytes) or not chunk:
+            raise ValueError("archive member ended before its declared size")
+        output.write(chunk)  # type: ignore[attr-defined]
+        remaining -= len(chunk)
+    extra = source.read(1)  # type: ignore[attr-defined]
+    if extra:
+        raise ValueError("archive member exceeded its declared size")
+
+
+def _write_tar_member_atomic(
+    tar: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    *,
+    archive: str,
+    destination: str,
+    root_descriptor: int | None,
+    relative: tuple[str, ...],
+    unreadable_is_error: bool,
+) -> str | None:
+    source = tar.extractfile(member)
+    if source is None:
+        if unreadable_is_error:
+            raise FileNotFoundError(f"could not read {member.name} from {archive}")
+        return None
+
+    leaf = relative[-1]
+    temporary = f".{leaf}.extract-{secrets.token_hex(12)}.part"
+    descriptor = -1
+    parent_descriptor = -1
+    temporary_path = ""
+    published = False
+    try:
+        if root_descriptor is not None:
+            parent_descriptor = _open_extract_parent(
+                root_descriptor,
+                relative[:-1],
+                destination=destination,
+            )
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(
+                temporary,
+                flags,
+                0o666,
+                dir_fd=parent_descriptor,
+            )
+        else:
+            parent = _fallback_extract_parent(destination, relative[:-1])
+            temporary_path = os.path.join(parent, temporary)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_BINARY", 0)
+            descriptor = os.open(temporary_path, flags, 0o666)
+
+        with source, os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            _copy_tar_source_exact(source, output, member.size)
+            output.flush()
+            os.fsync(output.fileno())
+
+        if parent_descriptor >= 0:
+            metadata = os.stat(
+                temporary,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        else:
+            metadata = os.lstat(temporary_path)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise _unsafe_extract_destination(os.path.join(destination, *relative))
+        if parent_descriptor >= 0:
+            os.replace(
+                temporary,
+                leaf,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        else:
+            os.replace(temporary_path, os.path.join(destination, *relative))
+        published = True
+        return os.path.join(destination, *relative)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if not published:
+            try:
+                if parent_descriptor >= 0:
+                    os.unlink(temporary, dir_fd=parent_descriptor)
+                elif temporary_path:
+                    os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+
+
+def _extract_tar_members(
+    archive: str,
+    dest_dir: str,
+    *,
+    select: Callable[[tuple[tarfile.TarInfo, ...]], Iterable[tarfile.TarInfo]],
+    path_mode: Literal["flatten", "strip_top_level"],
+    reject_parent_parts: bool,
+    unreadable_is_error: bool,
+) -> list[str]:
+    """Extract selected regular members through one bounded, atomic writer."""
+
+    if path_mode not in {"flatten", "strip_top_level"}:
+        raise ValueError("unsupported archive path mode")
+    destination, root_descriptor = _open_extract_root(dest_dir)
+    extracted: list[str] = []
+    try:
+        with tarfile.open(archive, "r:*") as tar:
+            inventory: list[tarfile.TarInfo] = []
+            for member in tar:
+                inventory.append(member)
+                if len(inventory) > _MAX_TAR_MEMBERS:
+                    raise ValueError("archive member count exceeds extraction limit")
+            members = tuple(inventory)
+            regular = tuple(member for member in members if member.isfile())
+            regular_ids = {id(member) for member in regular}
+            selected = tuple(select(regular))
+            total_size = 0
+            planned: list[tuple[tarfile.TarInfo, tuple[str, ...]]] = []
+            for member in selected:
+                if id(member) not in regular_ids:
+                    raise ValueError("archive selector returned an invalid member")
+                if member.size < 0 or member.size > _MAX_TAR_MEMBER_BYTES:
+                    raise ValueError("archive member size exceeds extraction limit")
+                total_size += member.size
+                if total_size > _MAX_TAR_TOTAL_BYTES:
+                    raise ValueError("archive extraction size exceeds total limit")
+                parts = tuple(
+                    part
+                    for part in member.name.replace("\\", "/").split("/")
+                    if part and part != "."
+                )
+                if reject_parent_parts and ".." in parts:
+                    raise ValueError(f"unsafe member path in {archive}: {member.name}")
+                if path_mode == "flatten":
+                    relative = parts[-1:] if parts else ()
+                else:
+                    relative = parts[1:] if len(parts) > 1 else parts
+                if not relative:
+                    continue
+                if any(not _safe_extract_component(part) for part in relative):
+                    raise ValueError(f"unsafe member path in {archive}: {member.name}")
+                planned.append((member, relative))
+
+            for member, relative in planned:
+                output = _write_tar_member_atomic(
+                    tar,
+                    member,
+                    archive=archive,
+                    destination=destination,
+                    root_descriptor=root_descriptor,
+                    relative=relative,
+                    unreadable_is_error=unreadable_is_error,
+                )
+                if output is not None:
+                    # Preserve the caller's relative/absolute destination form.
+                    extracted.append(os.path.join(dest_dir, *relative))
+    finally:
+        if root_descriptor is not None:
+            os.close(root_descriptor)
+    return extracted
+
+
 def extract_member(archive: str, suffix: str, dest_dir: str) -> str:
-    """Extract the first member of a ``.tar.bz2`` whose name ends with ``suffix``.
+    """Extract the first suffix match, flattened safely into ``dest_dir``."""
 
-    Returns the extracted file's path (flattened into ``dest_dir``). Used for the
-    punctuation release asset, which bundles ``model.onnx`` inside a directory.
-    Guards against path-traversal members (a tar entry escaping ``dest_dir``)."""
-    import tarfile
-
-    os.makedirs(dest_dir, exist_ok=True)
-    with tarfile.open(archive, "r:*") as tar:
-        member = next(
-            (m for m in tar.getmembers() if m.isfile() and m.name.endswith(suffix)), None
-        )
+    def select(
+        members: tuple[tarfile.TarInfo, ...],
+    ) -> Iterable[tarfile.TarInfo]:
+        member = next((item for item in members if item.name.endswith(suffix)), None)
         if member is None:
             raise FileNotFoundError(f"no '*{suffix}' member in {archive}")
-        out_path = os.path.join(dest_dir, os.path.basename(member.name))
-        # Flatten: read the member and write it directly, so a malicious or
-        # nested path can't place the file outside dest_dir.
-        src = tar.extractfile(member)
-        if src is None:
-            raise FileNotFoundError(f"could not read {member.name} from {archive}")
-        with src, open(out_path, "wb") as out:
-            import shutil
+        return (member,)
 
-            shutil.copyfileobj(src, out)
-    return out_path
+    extracted = _extract_tar_members(
+        archive,
+        dest_dir,
+        select=select,
+        path_mode="flatten",
+        reject_parent_parts=False,
+        unreadable_is_error=True,
+    )
+    if not extracted:
+        raise FileNotFoundError(f"no readable '*{suffix}' member in {archive}")
+    return extracted[0]
 
 
 def fetch_parakeet_final(
@@ -920,7 +1280,7 @@ def fetch_parakeet_final(
         character not in "0123456789abcdef" for character in expected_sha256
     ):
         raise ValueError("Parakeet SHA-256 must be 64 lowercase hex characters")
-    os.makedirs(dest_root, exist_ok=True)
+    _ensure_extract_destination(dest_root)
     destination = os.path.join(dest_root, PARAKEET_FINAL_DIR)
 
     def resolved(path: str) -> dict[str, str]:
@@ -1031,7 +1391,7 @@ def fetch_punct_model(dest_dir: str, url: str, *, force: bool = False) -> str:
 
     Downloads the .tar.bz2 release asset and extracts its ``model.onnx``. Skips
     work when the extracted model already exists (unless ``force``)."""
-    os.makedirs(dest_dir, exist_ok=True)
+    _ensure_extract_destination(dest_dir)
     model_path = os.path.join(dest_dir, "model.onnx")
     if os.path.exists(model_path) and not force:
         return model_path
@@ -1054,15 +1414,11 @@ def fetch_kokoro_package(dest_dir: str, url: str, *, force: bool = False) -> dic
     Returns ``{tts_model, tts_voices, tts_tokens, tts_data_dir, tts_lexicon}``
     (``tts_data_dir``/``tts_lexicon`` empty when the package ships none). The
     release .tar.bz2 nests everything under one top-level dir; members are
-    re-rooted past that prefix into ``dest_dir`` with the same path-traversal
-    guard as ``extract_member`` (each file is written via ``extractfile``,
-    never ``tar.extract``). Idempotent: when the model + voices already exist
-    the download and unpack are skipped (unless ``force``). The archive is
-    removed after a successful unpack."""
-    import shutil
-    import tarfile
-
-    os.makedirs(dest_dir, exist_ok=True)
+    re-rooted past that prefix into ``dest_dir`` through the shared bounded,
+    no-follow, atomic member writer. Idempotent: when the model + voices already
+    exist the download and unpack are skipped (unless ``force``). The archive
+    is removed after a successful unpack."""
+    _ensure_extract_destination(dest_dir)
 
     def _resolve() -> dict:
         model = ""
@@ -1077,7 +1433,8 @@ def fetch_kokoro_package(dest_dir: str, url: str, *, force: bool = False) -> dic
         lexicon = os.path.join(dest_dir, "lexicon-us-en.txt")
         if not os.path.exists(lexicon):
             others = sorted(
-                f for f in os.listdir(dest_dir)
+                f
+                for f in os.listdir(dest_dir)
                 if f.startswith("lexicon") and f.endswith(".txt")
             )
             lexicon = os.path.join(dest_dir, others[0]) if others else ""
@@ -1097,29 +1454,26 @@ def fetch_kokoro_package(dest_dir: str, url: str, *, force: bool = False) -> dic
         return have
 
     archive = fetch_speaker_model(dest_dir, url, force=force)
-    dest_root = os.path.realpath(dest_dir)
-    with tarfile.open(archive, "r:*") as tar:
-        for member in tar.getmembers():
-            if not member.isfile():
-                continue
+
+    def select(
+        members: tuple[tarfile.TarInfo, ...],
+    ) -> Iterable[tarfile.TarInfo]:
+        for member in members:
             parts = [
                 p for p in member.name.replace("\\", "/").split("/") if p and p != "."
             ]
             if any(p == ".." for p in parts):
                 raise ValueError(f"unsafe member path in {archive}: {member.name}")
-            # Strip the package's top-level dir; tolerate root-level members.
-            rel = parts[1:] if len(parts) > 1 else parts
-            if not rel:
-                continue
-            out_path = os.path.join(dest_dir, *rel)
-            if not os.path.realpath(out_path).startswith(dest_root + os.sep):
-                raise ValueError(f"unsafe member path in {archive}: {member.name}")
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            src = tar.extractfile(member)
-            if src is None:
-                continue
-            with src, open(out_path, "wb") as out:
-                shutil.copyfileobj(src, out)
+            yield member
+
+    _extract_tar_members(
+        archive,
+        dest_dir,
+        select=select,
+        path_mode="strip_top_level",
+        reject_parent_parts=True,
+        unreadable_is_error=False,
+    )
     try:
         os.remove(archive)  # the .tar.bz2 is no longer needed once unpacked
     except OSError:
@@ -1203,16 +1557,12 @@ def fetch_kws_package(dest_dir: str, url: str, *, force: bool = False) -> dict:
     Returns ``{kws_tokens, kws_encoder, kws_decoder, kws_joiner,
     kws_keywords_file}`` -- exactly the config keys build_keyword_spotter reads.
     Only the chunk-16 members actually needed are extracted (int8 encoder/joiner
-    when present) plus tokens.txt + en.phone, flattened into ``dest_dir`` with the
-    same path-traversal guard as fetch_kokoro_package (each file written via
-    ``extractfile``, never ``tar.extract``). The barge keywords file is generated
-    from en.phone. Idempotent: when every model file + the keywords file already
-    exist the download/unpack are skipped (unless ``force``). The archive and the
-    intermediate lexicon are removed after a successful unpack."""
-    import shutil
-    import tarfile
-
-    os.makedirs(dest_dir, exist_ok=True)
+    when present) plus tokens.txt + en.phone, flattened into ``dest_dir`` through
+    the shared bounded, no-follow, atomic member writer. The barge keywords file
+    is generated from en.phone. Idempotent: when every model file + the keywords
+    file already exist the download/unpack are skipped (unless ``force``). The
+    archive and intermediate lexicon are removed after a successful unpack."""
+    _ensure_extract_destination(dest_dir)
     keywords_path = os.path.join(dest_dir, KWS_KEYWORDS_FILE)
 
     def _resolve() -> dict:
@@ -1239,9 +1589,10 @@ def fetch_kws_package(dest_dir: str, url: str, *, force: bool = False) -> dict:
         return have
 
     archive = fetch_speaker_model(dest_dir, url, force=force)
-    dest_root = os.path.realpath(dest_dir)
-    with tarfile.open(archive, "r:*") as tar:
-        members = [m for m in tar.getmembers() if m.isfile()]
+
+    def select(
+        members: tuple[tarfile.TarInfo, ...],
+    ) -> Iterable[tarfile.TarInfo]:
         names = [os.path.basename(m.name) for m in members]
         wanted = set(_select_kws_members(names).values())
         for member in members:
@@ -1253,14 +1604,16 @@ def fetch_kws_package(dest_dir: str, url: str, *, force: bool = False) -> dict:
             ]
             if any(p == ".." for p in parts):
                 raise ValueError(f"unsafe member path in {archive}: {member.name}")
-            out_path = os.path.join(dest_dir, base)
-            if not os.path.realpath(out_path).startswith(dest_root + os.sep):
-                raise ValueError(f"unsafe member path in {archive}: {member.name}")
-            src = tar.extractfile(member)
-            if src is None:
-                continue
-            with src, open(out_path, "wb") as out:
-                shutil.copyfileobj(src, out)
+            yield member
+
+    _extract_tar_members(
+        archive,
+        dest_dir,
+        select=select,
+        path_mode="flatten",
+        reject_parent_parts=True,
+        unreadable_is_error=False,
+    )
 
     lexicon_path = os.path.join(dest_dir, KWS_LEXICON)
     if not os.path.exists(lexicon_path):

@@ -97,9 +97,8 @@ noise floor until it is fixed. Nothing below Track A1 is trustworthy before it.
   releases, decide bump/hold, record in backlog. First pass due 2026-08-15.
 - **D2.** Enable grouped monthly Dependabot for pip as the advisory signal
   (config-only; pins stay authoritative — owner approves bumps).
-- **D3.** The two P2 review cleanups when touching `tools/setup_models.py`
-  next: consolidate the three tar-extraction loops (traversal guard is
-  security-relevant), generalize selection-preservation into
+- **D3.** The archive-extraction cleanup is complete in ADR-0165. The remaining
+  P2 review cleanup is to generalize selection preservation into
   `wire_sherpa_paths`.
 
 ## Explicitly deferred (tracked, not lost)

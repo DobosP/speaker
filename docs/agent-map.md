@@ -23,6 +23,7 @@
 | Task type | Start here | Verify with |
 |---|---|---|
 | APM/DTD/barge-in bug | `core/engines/`, `tests/test_apm_double_talk.py` | targeted pytest |
+| Model archive setup | `tools/setup_models.py`, ADR-0165 | shared punctuation/SenseVoice/Parakeet/Kokoro/KWS extraction contracts plus setup tests; no download or model run |
 | Native capture latency/gaps | `core/media_session.py`, `core/engines/sherpa.py`, ADR-0088 | reader-time playback/source context + control-lane tests, then APM gate |
 | Post-ASR mailbox/order | `always_on_agent/event_bus.py`, ADR-0093 | `tests/test_event_bus.py` plus supervisor/playback/preprocessing race tests |
 | Session/task/tool/TTS ownership | `always_on_agent/session_actor.py`, `always_on_agent/tasks.py`, `always_on_agent/supervisor.py`, ADR-0086 | `tests/test_session_actor.py` plus focused cancellation/playback tests |

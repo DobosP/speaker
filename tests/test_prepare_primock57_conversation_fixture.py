@@ -1303,13 +1303,17 @@ from pathlib import Path
 import sys
 import tools.prepare_primock57_conversation_fixture
 root = Path.cwd().resolve()
-rows = sorted({
-    Path(module.__file__).resolve().relative_to(root).as_posix()
-    for module in sys.modules.values()
-    if getattr(module, "__file__", None)
-    and Path(module.__file__).resolve().is_relative_to(root)
-    and Path(module.__file__).suffix == ".py"
-})
+rows = []
+for module in sys.modules.values():
+    if not getattr(module, "__file__", None):
+        continue
+    path = Path(module.__file__).resolve()
+    if not path.is_relative_to(root):
+        continue
+    relative = path.relative_to(root)
+    if relative.suffix == ".py" and relative.parts[0] in {"core", "tools"}:
+        rows.append(relative.as_posix())
+rows.sort()
 print(json.dumps(rows, separators=(",", ":")))
 """
     environment = dict(os.environ)

@@ -1,0 +1,1682 @@
+{
+  "schema_version": 1,
+  "fixture_id": "microsoft_aec_challenge_synthetic_hash32_v1",
+  "self_digest": {
+    "algorithm": "sha256",
+    "canonicalization": "UTF-8 JSON with sort_keys=true, separators=(',', ':'), ensure_ascii=false, allow_nan=false",
+    "excluded_json_pointer": "/self_digest/value",
+    "value": "a1c6c65f8d40dd147bb7ba13fc0e389bfe33adecf411b3200031215ba65cf198"
+  },
+  "source": {
+    "repository_url": "https://github.com/microsoft/AEC-Challenge",
+    "commit": "6c633d0a9d2a143a0e364899b91b06f127315b18",
+    "root_tree_sha1": "0febaaae06af9ac70a7f21d16b9ec4719b8fbfe7"
+  },
+  "license": {
+    "gate_id": "LicenseRef-Microsoft-AEC-Challenge-Mixed:LibriVox-PD+VCTK-terms+AudioSet-CC-BY-4.0+Freesound-CC0-1.0+DEMAND-CC-BY-SA-3.0",
+    "acceptance_ids": [
+      "LIBRIVOX-PUBLIC-DOMAIN",
+      "EDINBURGH-VCTK-DATA-TERMS",
+      "AUDIOSET-CC-BY-4.0",
+      "FREESOUND-SELECTED-CC0-1.0",
+      "DEMAND-CC-BY-SA-3.0"
+    ],
+    "redistribution": "cache-only"
+  },
+  "usage_constraints": [
+    "evaluation_only",
+    "private_cache_only"
+  ],
+  "selection": {
+    "algorithm": "sha256_top_k_v1",
+    "description": "Rank synthetic/meta.csv rows by SHA-256(UTF8(seed) || 0x00 || compact canonical JSON([fileid])), sort by (rank, identity), take 32, and bind all four LFS WAVs per selected row.",
+    "split": "all-metadata-rows",
+    "identity_fields": [
+      "fileid"
+    ],
+    "strata_fields": [],
+    "seed": "speaker-public-eval-v1-2026-08-01",
+    "expected_examples": 32,
+    "speaker_disjoint": false,
+    "speaker_field": null,
+    "fixed_ids": [],
+    "policy_sha256": "abd006fe51ba980bdabc197a0ac40a47a5c5728b964badf26b43a5aa9e1e10bd",
+    "selected_rows_sha256": "542d6d102cad3f47c7c5aad96bbf04c7796654ba13573068bc930232b38ba331",
+    "source_row_domain": "all_metadata_rows",
+    "selected_upstream_split_counts": {
+      "train": 31,
+      "test": 1
+    }
+  },
+  "layout": {
+    "case_count": 32,
+    "signal_roles": [
+      "echo_signal",
+      "farend_speech",
+      "nearend_mic_signal",
+      "nearend_speech"
+    ],
+    "artifact_count": 128,
+    "audio_bytes": 40965456,
+    "metadata_bytes": 3243688,
+    "total_pinned_bytes": 44209144
+  },
+  "metadata": {
+    "relative_path": "datasets/synthetic/meta.csv",
+    "git_blob_sha1": "1a02a5b41ef43420bd24b1b8386d1df0cba2e6d8",
+    "sha256": "6b867aa68f510e4bafc9ffa05202930ffc1bb54bb0cffe66aa1ec3bcc606f3e5",
+    "size_bytes": 3243688,
+    "row_count": 10000,
+    "columns": [
+      "nearend_speaker",
+      "nearend_wav_path",
+      "nearend_wav_path_noisy",
+      "farend_speaker",
+      "farend_wav_path",
+      "farend_wav_path_noisy",
+      "ser",
+      "is_farend_nonlinear",
+      "is_farend_noisy",
+      "is_nearend_noisy",
+      "split",
+      "fileid",
+      "nearend_scale"
+    ]
+  },
+  "metric_evidence": {
+    "track_id": "aec-double-talk",
+    "declared_metrics": [
+      "erle_db",
+      "aecmos",
+      "near_end_attenuation_db",
+      "barge_miss_rate",
+      "barge_false_rate",
+      "barge_cut_latency_ms"
+    ],
+    "forbidden_metrics": [
+      "wer",
+      "cer",
+      "intent_accuracy",
+      "tool_selection_accuracy",
+      "tool_result_accuracy"
+    ],
+    "limitations": {
+      "target_scaling": "Multiply each case's nearend_speech signal by that case's metadata.nearend_scale before target-scale comparisons.",
+      "erle_db": "Report only on separately pinned far-end-single-talk intervals; this lock provides no interval annotations.",
+      "aecmos": "Requires a separately pinned compatible scorer and model; neither is evidence-bound by this lock.",
+      "near_end_attenuation_db": "Requires the scaled clean near-end target and a separately pinned alignment, activity-mask, and scoring protocol.",
+      "barge_metrics": "Require a separately pinned deterministic speech-onset, decision, and latency protocol; this corpus provides no command transcript or barge-event labels.",
+      "evidence_scope": "A passing replay is offline fixture evidence only, not live microphone, loudspeaker, room, route, wall-clock latency, or device-generalization evidence."
+    }
+  },
+  "cases": [
+    {
+      "ordinal": 1,
+      "fileid": "3960",
+      "metadata": {
+        "nearend_speaker": "reader_06863",
+        "nearend_wav_path": "clean_fileid_603.wav",
+        "nearend_wav_path_noisy": "book_08046_chp_0006_reader_06863_36_fan_Freesound_validated_336387_2-FO4Dck0ZCD8-4vI7dH_rPy0_snr28_fileid_603.wav",
+        "farend_speaker": "reader_04361",
+        "farend_wav_path": "clean_fileid_5662.wav",
+        "farend_wav_path_noisy": "book_05614_chp_0001_reader_04361_18_u_TFv_hPc_M-Al5zDf_4oWU-5nx9xUVXASM_snr10_fileid_5662.wav",
+        "ser": "7",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "3960",
+        "nearend_scale": "0.77647281239786"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_3960.wav",
+          "git_pointer_blob_sha1": "49417c2949399fd517b27a4574c29eba89198e91",
+          "lfs_oid_sha256": "27dc7d44a01280df136cee878e176d326a9e1444cbfec5cd4d0abeeff6f290dd",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_3960.wav",
+          "git_pointer_blob_sha1": "409104971015f61a84a197aa0651ec7f69d7b564",
+          "lfs_oid_sha256": "fbe7ec8be25cd14415d0ba477f922c7fb0f0061746d55c724ab70dbb27d76f6c",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_3960.wav",
+          "git_pointer_blob_sha1": "93caffecc431977f449796cdf9c059f7ccbc3240",
+          "lfs_oid_sha256": "7086b65011a9bb19f410ab2a164b91a648828bdb937025ca494fa075ff442ca7",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_3960.wav",
+          "git_pointer_blob_sha1": "54cb1c0a1e591ea42a8f37e1c4d3e8f4b5ebd275",
+          "lfs_oid_sha256": "5c9e9770b428df4f5aac0cc31d4e86b1f3a767c787811df2e95b76b4a185b7af",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 2,
+      "fileid": "5234",
+      "metadata": {
+        "nearend_speaker": "reader_00304",
+        "nearend_wav_path": "clean_fileid_3897.wav",
+        "nearend_wav_path_noisy": "book_06674_chp_0020_reader_00304_6_r_uSIMqaZpg-0F6IVPQHlCQ-door_Freesound_validated_79705_0_snr31_fileid_3897.wav",
+        "farend_speaker": "reader_08260",
+        "farend_wav_path": "clean_fileid_3391.wav",
+        "farend_wav_path_noisy": "book_02397_chp_0011_reader_08260_36_4AwcY_IoE1U-u-oxLds6JvI--E_RSthVa-A_snr17_fileid_3391.wav",
+        "ser": "-3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "5234",
+        "nearend_scale": "0.810918326387165"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_5234.wav",
+          "git_pointer_blob_sha1": "937915ce1292002b8d547e1d2c2a883bee36aeca",
+          "lfs_oid_sha256": "e0dd4b9ab3ecbf913900144655070351d350ac956fa254df01ce35c46bbefb23",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_5234.wav",
+          "git_pointer_blob_sha1": "c4e8754f4760be0bcb0fb934056b91ae8c8e7908",
+          "lfs_oid_sha256": "00d1bcaafa481e92cf34ef218ca2762f3c729b877b06ef695212f02a560c9c25",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_5234.wav",
+          "git_pointer_blob_sha1": "720962ea04d098fc3cd3215ddd40cd77cf358cdb",
+          "lfs_oid_sha256": "abf1a207cf64dd08f8399e497c5c66605ab55336e14850d637f8417c13a7c5f4",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_5234.wav",
+          "git_pointer_blob_sha1": "e604c9cbc17b4d2f7c7b601a79c4d49e292580d3",
+          "lfs_oid_sha256": "19f806246aec0403cfe04ac6f08e16aaf203031198cfcd0f1b1546801f2e8efe",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 3,
+      "fileid": "6147",
+      "metadata": {
+        "nearend_speaker": "reader_06730",
+        "nearend_wav_path": "clean_fileid_10641.wav",
+        "nearend_wav_path_noisy": "book_01257_chp_0018_reader_06730_26_KnApiT9R3_c-3cLTYDkxHWg-squeak_squeakyChair_Freesound_validated_352932_0_snr31_fileid_10641.wav",
+        "farend_speaker": "reader_07242",
+        "farend_wav_path": "clean_fileid_10063.wav",
+        "farend_wav_path_noisy": "book_02908_chp_0019_reader_07242_8_m1flwHFs48I-TxCJsj37nwQ-door_Freesound_validated_338711_4_snr3_fileid_10063.wav",
+        "ser": "-4",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "6147",
+        "nearend_scale": "0.7315319064878676"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6147.wav",
+          "git_pointer_blob_sha1": "8e2cd73b1c9b339aa31b808d9455ea22d64d9f7f",
+          "lfs_oid_sha256": "16f7f2c0ab28bdcdc77cc51810cc89562c764b457302ea71754f4e3577f26866",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6147.wav",
+          "git_pointer_blob_sha1": "a153045886542be079d80a675f5bba14630f2015",
+          "lfs_oid_sha256": "330d1339bafd1908b4ac5e13f3f50419e63c1e633a7c978164d0f4e94ae2f2f6",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6147.wav",
+          "git_pointer_blob_sha1": "f7d3bd73766bf693ef4445b3c3dff5059c813d8f",
+          "lfs_oid_sha256": "c98fc38ad30efbcb28e832afc30fd5539193ce86bfa755760cd753d4264ebed7",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6147.wav",
+          "git_pointer_blob_sha1": "f21f0076c90ebe5a5b9541208db1d40e8b4c832b",
+          "lfs_oid_sha256": "3439a45858a23de98672d4c2730248aaf91706be9a59f2bb23d01fff08ab310f",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 4,
+      "fileid": "9489",
+      "metadata": {
+        "nearend_speaker": "reader_06339",
+        "nearend_wav_path": "clean_fileid_11128.wav",
+        "nearend_wav_path_noisy": "book_08134_chp_0010_reader_06339_33_3gjF-cVb_m4-oH_Wr8Upi-A-F-VVOcxD7VM_snr23_fileid_11128.wav",
+        "farend_speaker": "reader_05620",
+        "farend_wav_path": "clean_fileid_542.wav",
+        "farend_wav_path_noisy": "book_00431_chp_0011_reader_05620_18_SUTOf4oOJRE-door_Freesound_validated_407212_9-tsIHb6r14RA_snr1_fileid_542.wav",
+        "ser": "-3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "9489",
+        "nearend_scale": "0.7872008149420391"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_9489.wav",
+          "git_pointer_blob_sha1": "1c4792ba73369b7afbf9d01cbb72a2616cbab281",
+          "lfs_oid_sha256": "9938496793d2160447c0801f622d7dc84ad4ed256efffd5afbb1c592343d67a4",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_9489.wav",
+          "git_pointer_blob_sha1": "a74c1c31b09033a63b8646ecb7b0f9003ccecf06",
+          "lfs_oid_sha256": "d539200c3c80822cd8824fcb5d4452c10edfa554a5c186063948fd29ac5f924d",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_9489.wav",
+          "git_pointer_blob_sha1": "38bf30a90f73c7613b28831dd8c700ca8542b47b",
+          "lfs_oid_sha256": "0d272b622bcfa10ae7b30a77b378d1515abd95b7b3db01bb8550d0706f51195b",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_9489.wav",
+          "git_pointer_blob_sha1": "84ec0ebcbf351f6c43d863c5e1f73ef7448872f5",
+          "lfs_oid_sha256": "191727ae7a6c694ff70396e6651e3894f0d3b53fc234374046fddc8102f6992b",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 5,
+      "fileid": "2250",
+      "metadata": {
+        "nearend_speaker": "reader_08077",
+        "nearend_wav_path": "clean_fileid_9791.wav",
+        "nearend_wav_path_noisy": "book_08749_chp_0020_reader_08077_25_dragging_Freesound_validated_410556_2-eSpDRJ2ppeM-0hEtsX1Jw7k_snr32_fileid_9791.wav",
+        "farend_speaker": "reader_00077",
+        "farend_wav_path": "clean_fileid_8313.wav",
+        "farend_wav_path_noisy": "book_11176_chp_0061_reader_00077_3_fan_Freesound_validated_31571_0-door_Freesound_validated_348006_0-typing_Freesound_validated_381229__snr12_fileid_8313.wav",
+        "ser": "-3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "2250",
+        "nearend_scale": "0.6011525762532879"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_2250.wav",
+          "git_pointer_blob_sha1": "33edf041ceaa9a746c3d6fe369da35bed5c703e9",
+          "lfs_oid_sha256": "3b056d117f8f4070753a0ac910d9ea71597a2359504e56f358f2cc2dbd648396",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_2250.wav",
+          "git_pointer_blob_sha1": "cb5373ac5a449baa3e0c02035318ca30f82934b9",
+          "lfs_oid_sha256": "ce622d80660c7b4a0bc87192a2775f0c516170ce166326414548964314735668",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_2250.wav",
+          "git_pointer_blob_sha1": "07bf9512a0fe7765df087af5401b71ca6fd2108c",
+          "lfs_oid_sha256": "f18a11d91e89db5a988c395aca4018d3692b72c9b625823f970b03699ee5aea2",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_2250.wav",
+          "git_pointer_blob_sha1": "63793bbb9c54330bd2145faf9bbd73df84971c21",
+          "lfs_oid_sha256": "f1e70d9335bfd08b067b6634e46e870bc2d7c8bdf44d3abb24ead7ddd816916c",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 6,
+      "fileid": "1872",
+      "metadata": {
+        "nearend_speaker": "reader_09230",
+        "nearend_wav_path": "clean_fileid_10421.wav",
+        "nearend_wav_path_noisy": "book_01106_chp_0002_reader_09230_21_uIR8oUvCU0g-door_Freesound_validated_380149_3-door_Freesound_validated_171705_0_snr0_fileid_10421.wav",
+        "farend_speaker": "reader_09593",
+        "farend_wav_path": "clean_fileid_2482.wav",
+        "farend_wav_path_noisy": "book_10254_chp_0006_reader_09593_14_zKkJ8csm22k-IQbMYkGYmos-8rqmLRpM0bY_snr27_fileid_2482.wav",
+        "ser": "-4",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "1872",
+        "nearend_scale": "0.5917640098605053"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_1872.wav",
+          "git_pointer_blob_sha1": "66b67f6a733e2fbe88a6ec70ee6ae85f0a154a71",
+          "lfs_oid_sha256": "9c47ffec9e92f03c2cf2b656f5fe779115916183098cf79d89d86c98308aa02c",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_1872.wav",
+          "git_pointer_blob_sha1": "f5700bbded8a88a9e4b93e7ba16c85750a6220b1",
+          "lfs_oid_sha256": "84e7b984209be4c3b516e36564b02354a8e157b512ff68c7ad5cbef9eb082237",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_1872.wav",
+          "git_pointer_blob_sha1": "05979b050eb88724dc9e4a8e6601c8d582d0b1e6",
+          "lfs_oid_sha256": "fa3d92fb761d4c60aaa0b272d727331e7e05bb97b360d1401c75ca66f35bc1eb",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_1872.wav",
+          "git_pointer_blob_sha1": "525839a09e106c9427edef83df5d5885d28bbdd7",
+          "lfs_oid_sha256": "042f181afb8dd5b97b97d1e9a3eb92942720fe8225d0ffd349069adf4ff8d0e7",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 7,
+      "fileid": "565",
+      "metadata": {
+        "nearend_speaker": "reader_05348",
+        "nearend_wav_path": "clean_fileid_9859.wav",
+        "nearend_wav_path_noisy": "book_06176_chp_0092_reader_05348_38_lJ3nvJrCPVc-door_Freesound_validated_452594_1-gaWRhmynvEg_snr12_fileid_9859.wav",
+        "farend_speaker": "reader_04597",
+        "farend_wav_path": "clean_fileid_4328.wav",
+        "farend_wav_path_noisy": "book_10187_chp_0008_reader_04597_16_squeak_squeakyChair_Freesound_validated_171856_3-ERjtCDLt4sQ-10Ebq7HBVxk_snr34_fileid_4328.wav",
+        "ser": "1",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "565",
+        "nearend_scale": "0.8344372969889189"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_565.wav",
+          "git_pointer_blob_sha1": "b0647c54ff67cd3af59046f8bea1b76ceba4daae",
+          "lfs_oid_sha256": "6202d980c69287ff82855e1650bcbbb548bc814385adece0dcece040dfd7cc52",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_565.wav",
+          "git_pointer_blob_sha1": "9ad13616f0047ea96a0421c2bc2a4ded030568cc",
+          "lfs_oid_sha256": "07d31b63be2ab08dd8344248028232cedc15c44a4f2ec65f4a02f34900e485f3",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_565.wav",
+          "git_pointer_blob_sha1": "ab28685f3e28a83dcdb7561f7eec25b957bb8356",
+          "lfs_oid_sha256": "8e1f3af9ea7691e9869b35e5807c425d24e6e345d6a202a5cd1a945fe64c09a2",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_565.wav",
+          "git_pointer_blob_sha1": "b900e5e87747c1810b2ddda7a953bfc3eab5c982",
+          "lfs_oid_sha256": "0a3f9c92a8204489e8b603b88ed2d87d3017dbd3cf9fa1e8e3ee5c7845eea8f5",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 8,
+      "fileid": "710",
+      "metadata": {
+        "nearend_speaker": "reader_07695",
+        "nearend_wav_path": "clean_fileid_231.wav",
+        "nearend_wav_path_noisy": "book_08293_chp_0014_reader_07695_4_ndOx2XR_jD8-peQ8YdzsC-s-8vk4DAYc7_I_snr11_fileid_231.wav",
+        "farend_speaker": "reader_06618",
+        "farend_wav_path": "clean_fileid_6812.wav",
+        "farend_wav_path_noisy": "book_04474_chp_0009_reader_06618_3_cNTFVLjx8Wo-KM_eac8TyOs-B0sturUJedQ_snr19_fileid_6812.wav",
+        "ser": "8",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "710",
+        "nearend_scale": "0.6338049872619587"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_710.wav",
+          "git_pointer_blob_sha1": "498fbb3907194b9dff805114523595410b962d3e",
+          "lfs_oid_sha256": "08a9e3d9e6abafa42df09c472b62e9288c77e3017754d5ff53699f2ae9846451",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_710.wav",
+          "git_pointer_blob_sha1": "52b631eab74cb2f70dd17841a92cc0c515c356a7",
+          "lfs_oid_sha256": "23b86ba13d48e329a69014749070925bebfd5dc2957cfdfd43c8348bf91731c4",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_710.wav",
+          "git_pointer_blob_sha1": "6967ad665be0f8e7ed116f0b214ce35669351ceb",
+          "lfs_oid_sha256": "095bd651c25b4315fbea6329e5b9396412ff81208cee49e69ea17cdd8dcd96e7",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_710.wav",
+          "git_pointer_blob_sha1": "15c53c3ac45d3b76c59caa346f2cb0cdffe33dc6",
+          "lfs_oid_sha256": "a6a66e3151ed28b608c0bea564392065d8699caa389361ce221532004c7bf66c",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 9,
+      "fileid": "4223",
+      "metadata": {
+        "nearend_speaker": "reader_11077",
+        "nearend_wav_path": "clean_fileid_2250.wav",
+        "nearend_wav_path_noisy": "book_01398_chp_0038_reader_11077_56_JROvoinFEYQ-_K-rV64u7Co-LHhpWHRvKsI_snr8_fileid_2250.wav",
+        "farend_speaker": "reader_10272",
+        "farend_wav_path": "clean_fileid_3426.wav",
+        "farend_wav_path_noisy": "book_03257_chp_0005_reader_10272_6_fan_Freesound_validated_369662_15-Acm5syrkZR0-MKcZ8d-lHG0_snr22_fileid_3426.wav",
+        "ser": "-6",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "4223",
+        "nearend_scale": "0.5796657713981127"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_4223.wav",
+          "git_pointer_blob_sha1": "6fc30a5eb07afa3932af7f58eb679030f2e608bd",
+          "lfs_oid_sha256": "758e2f339052e5672f1021d52ffa97f35aae2fbae7c6e64f8ac8aeda1809cd35",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_4223.wav",
+          "git_pointer_blob_sha1": "53ccd413f7256c99c5391814f1b4445134aad402",
+          "lfs_oid_sha256": "1ba191aeb820741490be779d686adf325e73424bb48b185f34fa0b38cc41d00c",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_4223.wav",
+          "git_pointer_blob_sha1": "8cd1ede43a7e922bfd3818992432f7d541fbe00e",
+          "lfs_oid_sha256": "b5b874d1ff53b5786b781d10a2a06bda11d9a5053bf9d4292d4d3c7cbb0b0406",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_4223.wav",
+          "git_pointer_blob_sha1": "58c0f8b56f7fc2bb87823d7855868523f7565407",
+          "lfs_oid_sha256": "3ba7eef79f049158abe30319b017fb6f30b7b2c0fbcf35265a093f560ab2949d",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 10,
+      "fileid": "8756",
+      "metadata": {
+        "nearend_speaker": "reader_02964",
+        "nearend_wav_path": "clean_fileid_6250.wav",
+        "nearend_wav_path_noisy": "book_01265_chp_0062_reader_02964_28_dJcw5JL5-o8-copy-machine_Freesound_validated_402463_4-1mStTrIVLRc_snr17_fileid_6250.wav",
+        "farend_speaker": "reader_09728",
+        "farend_wav_path": "clean_fileid_1801.wav",
+        "farend_wav_path_noisy": "book_09391_chp_0002_reader_09728_44_mXdo0-Ocvpg-IAbe9xDZrHI-lgAf0uIk7iw_snr6_fileid_1801.wav",
+        "ser": "5",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "8756",
+        "nearend_scale": "0.7456569914528453"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_8756.wav",
+          "git_pointer_blob_sha1": "ae54921b859624158d70418cdbae7d18e530597d",
+          "lfs_oid_sha256": "eaa31747a3e8a9226330251c49b4fff727be82544fef40e8afa3458932e8aa31",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_8756.wav",
+          "git_pointer_blob_sha1": "eaf353235c3802ea472d273f8b31a2fc1888a5cb",
+          "lfs_oid_sha256": "da25da8e954ffc12bc8bb3c01485b10a72bf61cc95f6a5ea076b0bdebaa4c4d3",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_8756.wav",
+          "git_pointer_blob_sha1": "5e5b2643cab6a3e44de4010401391333f75fb1c2",
+          "lfs_oid_sha256": "8a748e5c2b8a6c4874c26347042de8bd3767d080a3314f657ececd81e41b2228",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_8756.wav",
+          "git_pointer_blob_sha1": "741baa8373cfaf64fd590cb4f6d7997692f50718",
+          "lfs_oid_sha256": "95ceaac9bfec7df9112cbe46a64405c83fcdb3cf308aeb943e99005687745c60",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 11,
+      "fileid": "620",
+      "metadata": {
+        "nearend_speaker": "reader_07881",
+        "nearend_wav_path": "clean_fileid_1437.wav",
+        "nearend_wav_path_noisy": "book_06135_chp_0003_reader_07881_6_rLuaWuMA-eI-WhD4DlgzIjY-door_Freesound_validated_451255_3_snr28_fileid_1437.wav",
+        "farend_speaker": "reader_06957",
+        "farend_wav_path": "clean_fileid_6130.wav",
+        "farend_wav_path_noisy": "book_01476_chp_0008_reader_06957_55_8fvB9oUIbKs-HQXLMOlTJJw-2xd-w73FEho_snr17_fileid_6130.wav",
+        "ser": "9",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "620",
+        "nearend_scale": "0.7495796356289686"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_620.wav",
+          "git_pointer_blob_sha1": "b76762e51e20a026735e834628bd7dba3f0e8822",
+          "lfs_oid_sha256": "87ed325b77ac1944db1382830921c8fdabd294d12c2a17e52120b466e9c5f35c",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_620.wav",
+          "git_pointer_blob_sha1": "9aad91f4d80b661f36c151e7733920aca7ee6ea0",
+          "lfs_oid_sha256": "3c039af20f2041e123de31fc6f388ccd04ead969d0328a84cb528c189f0c3ef0",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_620.wav",
+          "git_pointer_blob_sha1": "2aa476c55509bc4e7d1ad837aa1e012ddac559ea",
+          "lfs_oid_sha256": "2d9b6f21ec971fa0ec6969e3650bb2adcd98544ca738f09e86429f1d25b1f823",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_620.wav",
+          "git_pointer_blob_sha1": "df65baaa26e0fb116a45fc7efc34524ec82586d9",
+          "lfs_oid_sha256": "aad5e1a2474d6ff8bf12eaa79589666f8739e0f36cc5210e5f51ad74a6c5df5f",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 12,
+      "fileid": "4673",
+      "metadata": {
+        "nearend_speaker": "reader_06379",
+        "nearend_wav_path": "clean_fileid_7450.wav",
+        "nearend_wav_path_noisy": "book_01337_chp_0002_reader_06379_5_door_Freesound_validated_457358_0-door_Freesound_validated_171084_24-ep17moNGnNI_snr38_fileid_7450.wav",
+        "farend_speaker": "reader_08878",
+        "farend_wav_path": "clean_fileid_322.wav",
+        "farend_wav_path_noisy": "book_02580_chp_0011_reader_08878_6_OSU2mCAFN44-zcVtGAq9gTM-qPaGlfgKdwA_snr6_fileid_322.wav",
+        "ser": "9",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "4673",
+        "nearend_scale": "0.729187526527476"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_4673.wav",
+          "git_pointer_blob_sha1": "b4a3ff3b8362bf3f7d61e3bb69a0ac4094fe1a4c",
+          "lfs_oid_sha256": "e77207ec5e1e9dd7db7da1f6382f4769a8688f3203132c25d45503132f1d00cb",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_4673.wav",
+          "git_pointer_blob_sha1": "9fcb0aaa7ad2755f427004ac03ad6aa707a89b42",
+          "lfs_oid_sha256": "3125cc843663a6335b7c422357d25776f1c70153e01e2ba9a35527a236c24b09",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_4673.wav",
+          "git_pointer_blob_sha1": "2675b5d67689a7970a3bb6ef269d9f1a90b7537b",
+          "lfs_oid_sha256": "78e5fdae681d1a635bf5dca18682e7122aad6d30b1f061e9fb397a01b72efe00",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_4673.wav",
+          "git_pointer_blob_sha1": "e6c44c8ca8429d28ef6ef3b714159107749b790a",
+          "lfs_oid_sha256": "f0247d0040b28bc1ae52722b9d38144cad688e9fa47de5c8474d8793526e7b21",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 13,
+      "fileid": "7082",
+      "metadata": {
+        "nearend_speaker": "reader_02310",
+        "nearend_wav_path": "clean_fileid_4612.wav",
+        "nearend_wav_path_noisy": "book_07862_chp_0013_reader_02310_18_H8hkekh2YCw-EYYSkd1Dox8-1FOLZG2yNqA_snr7_fileid_4612.wav",
+        "farend_speaker": "reader_06177",
+        "farend_wav_path": "clean_fileid_5460.wav",
+        "farend_wav_path_noisy": "book_03815_chp_0007_reader_06177_5_CI5WVB7XxQE-DVhccM-JifI-rZ9c7IilqYg_snr25_fileid_5460.wav",
+        "ser": "-3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "7082",
+        "nearend_scale": "0.60648336647981"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_7082.wav",
+          "git_pointer_blob_sha1": "2b57582798167c49a4d1c9bdb99b008742436453",
+          "lfs_oid_sha256": "7732e265a9b43b8b147504d8eb43e1cf5acf0e937712ff1e7ebd53045c644e49",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_7082.wav",
+          "git_pointer_blob_sha1": "cfbb24732ec6dd5f5718d04329ff83e0acf033d4",
+          "lfs_oid_sha256": "0164240075671f4f04a921737f2ecf088673b23cde80c67605865a4d698ec630",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_7082.wav",
+          "git_pointer_blob_sha1": "22ff4fc61e86914190b6a933ae7dbc3908d15356",
+          "lfs_oid_sha256": "4d7505e1e736edab0525e34f4efda5b2e853fffb362b00379e4aa4317508f4c6",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_7082.wav",
+          "git_pointer_blob_sha1": "59d6d8392cc7fa90336da069c721ae4576c23bf8",
+          "lfs_oid_sha256": "5b36f097fb8ff1a3835519b290e3ecdb6540c0712b41dd03a3578a237037a73b",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 14,
+      "fileid": "3946",
+      "metadata": {
+        "nearend_speaker": "reader_03330",
+        "nearend_wav_path": "clean_fileid_2120.wav",
+        "nearend_wav_path_noisy": "book_10952_chp_0002_reader_03330_9_bftuQDik_Ak-MxLHR_-efKY-IO618dFhfuE_snr13_fileid_2120.wav",
+        "farend_speaker": "reader_05618",
+        "farend_wav_path": "clean_fileid_2082.wav",
+        "farend_wav_path_noisy": "book_03280_chp_0012_reader_05618_13_lDYctXHSBC0-pdcKzriedwE-a1ryGxKk8As-BPVgpwhx7RY_snr13_fileid_2082.wav",
+        "ser": "-4",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "3946",
+        "nearend_scale": "0.7010215759919878"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_3946.wav",
+          "git_pointer_blob_sha1": "7350a52493000565d1b09a5c3c62caf04b8d28e8",
+          "lfs_oid_sha256": "e71846ef85ed62eaf50641b9d0645314232ed67f2f38595a710ac64dc2da367e",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_3946.wav",
+          "git_pointer_blob_sha1": "fd74f6cac2a27730b71727e6adba61d26e8fcc9a",
+          "lfs_oid_sha256": "8270db60827db7322c571a88791c44fe063bd6b150397655d34c25e0222374d2",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_3946.wav",
+          "git_pointer_blob_sha1": "ed0fb822e94285067ecb16716890e14598e27c74",
+          "lfs_oid_sha256": "b144d64a6be828f051ec907b9cc9e110ac8b2b18968c896f69986dbf2d1276e4",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_3946.wav",
+          "git_pointer_blob_sha1": "2cd08dba03882c7e573399064f908c0d8cb2c850",
+          "lfs_oid_sha256": "f5a0f1fbde774a13fdaccad89ed28962513a240aa80dab73a9a9cd0931eaaa14",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 15,
+      "fileid": "3835",
+      "metadata": {
+        "nearend_speaker": "reader_10103",
+        "nearend_wav_path": "clean_fileid_3151.wav",
+        "nearend_wav_path_noisy": "book_02324_chp_0008_reader_10103_17_bMI8OG44BlM-ZXIxRW83BL0-door_Freesound_validated_93781_1_snr2_fileid_3151.wav",
+        "farend_speaker": "reader_11332",
+        "farend_wav_path": "clean_fileid_6084.wav",
+        "farend_wav_path_noisy": "book_06037_chp_0054_reader_11332_8_J5wRr75UKjE-BYNaHde9tXI-AlVM1KtzLWE_snr11_fileid_6084.wav",
+        "ser": "-10",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "3835",
+        "nearend_scale": "0.644534722732981"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_3835.wav",
+          "git_pointer_blob_sha1": "2bb7c4a97d109fe8ef9cd220aa7281179f8a63d4",
+          "lfs_oid_sha256": "1001cf338a842a7d2b467daf35aad3626ffe26b808fd237972b078169e2214ff",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_3835.wav",
+          "git_pointer_blob_sha1": "7de8c83916bbe69ebd94a5b957c1363fd403ee6b",
+          "lfs_oid_sha256": "93bd28b64e1bbb1782564f455e400529ba0d9fe087119cf55b09e6d07a6e19e7",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_3835.wav",
+          "git_pointer_blob_sha1": "4f35987c1ce5074409f7d95ed79c4278ddf54187",
+          "lfs_oid_sha256": "4a55397e2a7edd2a836bb1d3bbe69331aeb92614fef89e3f2754a4cce35c1782",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_3835.wav",
+          "git_pointer_blob_sha1": "a7013390b1181359af58bbb9e58c6360b3ebe90c",
+          "lfs_oid_sha256": "aa02964ce364a074198432a091a168aa3ab0b46cb2bfaaac5d42c906ec4bf6fa",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 16,
+      "fileid": "5685",
+      "metadata": {
+        "nearend_speaker": "reader_03396",
+        "nearend_wav_path": "clean_fileid_10549.wav",
+        "nearend_wav_path_noisy": "book_10646_chp_0007_reader_03396_62_typing_Freesound_validated_221398_0-squeak_squeakyChair_Freesound_validated_463911_0-xGb2xHJEzyo_snr24_fileid_10549.wav",
+        "farend_speaker": "reader_01967",
+        "farend_wav_path": "clean_fileid_6537.wav",
+        "farend_wav_path_noisy": "book_04004_chp_0016_reader_01967_29_EOIBEhNLumo-TreENlHy6PI-CLn5EXnodaE_snr13_fileid_6537.wav",
+        "ser": "9",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "5685",
+        "nearend_scale": "0.8280200444282684"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_5685.wav",
+          "git_pointer_blob_sha1": "f306e7f3b60e82336030e93c409770352fa952c6",
+          "lfs_oid_sha256": "1800990b6320d872dbb5d1b681760f9f1455b97bb6bcf45d12fa861a315dbd64",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_5685.wav",
+          "git_pointer_blob_sha1": "13b35741b405e22c6f27f8705c32cf52b73c4b41",
+          "lfs_oid_sha256": "89c906887ed76bf7e5fe1c5e1c867f4feab089a7db4d44913e295cb7c31c4763",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_5685.wav",
+          "git_pointer_blob_sha1": "bcf11c9455473171b38cc8f3e8c3a992025e20ab",
+          "lfs_oid_sha256": "821cb8deca8f1a4f327c04ac858e75878530f0e32eca7495da5116accdbe806b",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_5685.wav",
+          "git_pointer_blob_sha1": "f67c8db183b445b34aeede697e42f33a53627961",
+          "lfs_oid_sha256": "b62b2e9dbe9171ae105e37c6c614ebadf384f1d4fdc50e29e814d7e930f86d9e",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 17,
+      "fileid": "9956",
+      "metadata": {
+        "nearend_speaker": "reader_07883",
+        "nearend_wav_path": "clean_fileid_2741.wav",
+        "nearend_wav_path_noisy": "book_02329_chp_0028_reader_07883_1_gjyp-WpxyqM-YP6H3sDVrVE-door_Freesound_validated_342681_0_snr33_fileid_2741.wav",
+        "farend_speaker": "reader_02711",
+        "farend_wav_path": "clean_fileid_2465.wav",
+        "farend_wav_path_noisy": "book_09715_chp_0004_reader_02711_14_door_Freesound_validated_448374_5-fan_Freesound_validated_263504_3-870Uz_3NfVw_snr19_fileid_2465.wav",
+        "ser": "8",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "9956",
+        "nearend_scale": "0.5820760259688801"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_9956.wav",
+          "git_pointer_blob_sha1": "fa0ac61d82c12511de6338c4710797e46fedbf95",
+          "lfs_oid_sha256": "d0b5f7f4b00df7edf377524278d6c9a36ef5663a2b1f683261c22856763d5072",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_9956.wav",
+          "git_pointer_blob_sha1": "c861a0ed0b2448fd9fa8da68c6361cbf290a5623",
+          "lfs_oid_sha256": "1cb752db55395d52857650df86bd711b532350e2bba17799a70c861b286036d9",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_9956.wav",
+          "git_pointer_blob_sha1": "257c1d69c84daab735ed0724d587adfd84021495",
+          "lfs_oid_sha256": "ba01bfbe5047f3231250d748751d268552b231f8ae93fad4460dcfd02c920de0",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_9956.wav",
+          "git_pointer_blob_sha1": "7637c99a148b82d318ccc5103205529980a4ce33",
+          "lfs_oid_sha256": "10bf29fa93d6f1eea9a380e389b964ed93c75b14751ff21b87bd6f84d04674d8",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 18,
+      "fileid": "9864",
+      "metadata": {
+        "nearend_speaker": "reader_03718",
+        "nearend_wav_path": "clean_fileid_383.wav",
+        "nearend_wav_path_noisy": "book_05084_chp_0007_reader_03718_7_JuhjeMGlz9A-typing_Freesound_validated_395584_1-door_Freesound_validated_238332_21_snr2_fileid_383.wav",
+        "farend_speaker": "reader_03198",
+        "farend_wav_path": "clean_fileid_11943.wav",
+        "farend_wav_path_noisy": "book_09158_chp_0004_reader_03198_12_5EkXgQ-mUDc-EaommuWxIuU-r1beNtvYaac_snr35_fileid_11943.wav",
+        "ser": "-7",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "9864",
+        "nearend_scale": "0.6499086800443714"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_9864.wav",
+          "git_pointer_blob_sha1": "43b1ea45312ac4b7042bd722ec8f910c07d858db",
+          "lfs_oid_sha256": "b25d2a92e479833bae82b6565a7f34b49849e4f2e84a76e3a84337a6fd7b93cb",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_9864.wav",
+          "git_pointer_blob_sha1": "384d273df0eecdf560a25d8713e1859339eca13a",
+          "lfs_oid_sha256": "38d05b99ea675e844d9f42a9a4a03ddd442e44db09ee13ad2804294f31314fc9",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_9864.wav",
+          "git_pointer_blob_sha1": "1df1a5dbd191dacb9fe97646b016929034a451f8",
+          "lfs_oid_sha256": "cc383afd1d39b064d346e8e68ecd34e9eb8198a5d2f7511cf9204bb269a0d48c",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_9864.wav",
+          "git_pointer_blob_sha1": "33f98132d54299474266c25306f85a998179c171",
+          "lfs_oid_sha256": "09ba258d40eb665e9cb3bc1fc229b4a0247aec3c238bd3fbda110e4259bce61b",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 19,
+      "fileid": "3970",
+      "metadata": {
+        "nearend_speaker": "reader_05727",
+        "nearend_wav_path": "clean_fileid_3471.wav",
+        "nearend_wav_path_noisy": "book_04366_chp_0011_reader_05727_108_0lsf6jybC0M-door_Freesound_validated_342709_1-UwGjXDU0n5w_snr36_fileid_3471.wav",
+        "farend_speaker": "reader_07345",
+        "farend_wav_path": "clean_fileid_3644.wav",
+        "farend_wav_path_noisy": "book_09143_chp_0009_reader_07345_7_door_Freesound_validated_379185_0-90273uapdG0-qJKbnWCQ7CY_snr11_fileid_3644.wav",
+        "ser": "-8",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "3970",
+        "nearend_scale": "0.7978783183692187"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_3970.wav",
+          "git_pointer_blob_sha1": "33654fc189e528a38cc6e5684aae767b10b62b51",
+          "lfs_oid_sha256": "d9c045bc8fc64555c0a5b1dfa14e698e3bf607e186a8c3a4ed2077391f0e4fec",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_3970.wav",
+          "git_pointer_blob_sha1": "70210c57fdf5510de35309d41409ec69471fa98f",
+          "lfs_oid_sha256": "df985c77080284d4cdec4b68204390585d1db9916cb263eebb7fc3c13fbd15bc",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_3970.wav",
+          "git_pointer_blob_sha1": "9454d372283f03f1d5020f8f4bacdc81739cec20",
+          "lfs_oid_sha256": "aeff26d6b58ee21609e6f879448f39fdd8589c207e052c794f2dd3517d8f88b1",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_3970.wav",
+          "git_pointer_blob_sha1": "06a0ef23c2f64e5db9ba5fb43a39f9e1e6e9563f",
+          "lfs_oid_sha256": "08972781749accb7fdb610a88b8deb2b4a34c9439cc4e9e1a3d88954dc1bdda4",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 20,
+      "fileid": "6444",
+      "metadata": {
+        "nearend_speaker": "reader_00226",
+        "nearend_wav_path": "clean_fileid_2716.wav",
+        "nearend_wav_path_noisy": "book_03811_chp_0008_reader_00226_0_FK9oTEg-Qms-hDfTDAKmq_w-typing_Freesound_validated_328653_3_snr14_fileid_2716.wav",
+        "farend_speaker": "reader_06052",
+        "farend_wav_path": "clean_fileid_2469.wav",
+        "farend_wav_path_noisy": "book_09918_chp_0015_reader_06052_65_fan_Freesound_validated_349685_0-J8_t-vD1Xik-m4la3kM6jzE_snr26_fileid_2469.wav",
+        "ser": "0",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "6444",
+        "nearend_scale": "0.7023519013869935"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6444.wav",
+          "git_pointer_blob_sha1": "01542ed9d6c47ec2703e2cde4a39e70006ee0b63",
+          "lfs_oid_sha256": "c48d86b070767ed097f5bd93cb0b773976baf107c2485647e086fca213c2359b",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6444.wav",
+          "git_pointer_blob_sha1": "5fbe84160ea237527a7fe6b37097d255c7b67922",
+          "lfs_oid_sha256": "3b647dbd056ad3ba6a153bf1e99a0e86eb3c4f8ed19c6f52e27ea9792fa1708c",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6444.wav",
+          "git_pointer_blob_sha1": "0b597b59cf29fc6ee6426b6c776730850d5ee6fc",
+          "lfs_oid_sha256": "7bf288c20fc9c5f3ba7ca6d18f549c894205dfa2573243672392d21d9acb7db0",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6444.wav",
+          "git_pointer_blob_sha1": "49c02d490f779e46017ef2653fdee60551099a7a",
+          "lfs_oid_sha256": "38cca12e38e480ff0f0e3041506328fdde2b4414cab97e852161c911ccd02b58",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 21,
+      "fileid": "4049",
+      "metadata": {
+        "nearend_speaker": "reader_03444",
+        "nearend_wav_path": "clean_fileid_8146.wav",
+        "nearend_wav_path_noisy": "book_09528_chp_0032_reader_03444_7_phkoogC3R4k-QoEIzEgLFLk-_xhwRJlAdtc_snr7_fileid_8146.wav",
+        "farend_speaker": "reader_11384",
+        "farend_wav_path": "clean_fileid_8676.wav",
+        "farend_wav_path_noisy": "book_10900_chp_0024_reader_11384_2_z-7fBZEh040-door_Freesound_validated_212077_7-door_Freesound_validated_394118_0_snr38_fileid_8676.wav",
+        "ser": "3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "4049",
+        "nearend_scale": "0.8290808163511116"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_4049.wav",
+          "git_pointer_blob_sha1": "716e53f7228a4a5b059a66af2317a60ceffb4960",
+          "lfs_oid_sha256": "e56d8b7d218b4930208c7df53ab1aa493aded0788bb532b3653ea33ac58c106c",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_4049.wav",
+          "git_pointer_blob_sha1": "261168eaa3710246243bb1cf65ec1d868cfe9dcc",
+          "lfs_oid_sha256": "9d51ef2d894eee64f3457b1c70519f0245e6179a5f5b0a08274608f228916621",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_4049.wav",
+          "git_pointer_blob_sha1": "33d1f04634f9c3dec34e9cdc5adeb98050899320",
+          "lfs_oid_sha256": "adfe690059a0f545ae4959c2164c514053a44c4ed91cb87f58f1b4e69253e587",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_4049.wav",
+          "git_pointer_blob_sha1": "95234cedadceef7dd21ffbeb7157090fd4d718bd",
+          "lfs_oid_sha256": "52e7bb784c7466632eb90e1273547f68520e562f083f10b1b071ae401e9debb5",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 22,
+      "fileid": "6411",
+      "metadata": {
+        "nearend_speaker": "reader_05316",
+        "nearend_wav_path": "clean_fileid_4511.wav",
+        "nearend_wav_path_noisy": "book_09283_chp_0051_reader_05316_7_gyhxmVaxup0-4Evnf7lcb_0-typing_Freesound_validated_341833_8_snr10_fileid_4511.wav",
+        "farend_speaker": "reader_05333",
+        "farend_wav_path": "clean_fileid_4434.wav",
+        "farend_wav_path_noisy": "book_10434_chp_0009_reader_05333_21_door_Freesound_validated_402441_3-nJGsmE9F6O8-A9LUxJC-nkg_snr18_fileid_4434.wav",
+        "ser": "-6",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "6411",
+        "nearend_scale": "0.6797267997864538"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6411.wav",
+          "git_pointer_blob_sha1": "531af69ffda96c1b049093e029c56d0656b8eb01",
+          "lfs_oid_sha256": "9c5740fd79dfe6cce78db50f91e3be9e33d3b2fe44f33e2802b66a585b816d16",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6411.wav",
+          "git_pointer_blob_sha1": "a81a0e64c403233e4fa4058ffaf845d2f87b6200",
+          "lfs_oid_sha256": "3c2e97d56f967cf38bf599ce9e484805ebd6d73926c1a2345d7aeb8fd0dc5ed0",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6411.wav",
+          "git_pointer_blob_sha1": "6fb6cc3ccd7747c63db45faa71e0c9bbf792d421",
+          "lfs_oid_sha256": "603bcc61131fb2d51dd2656d89c5d8bfaaae19c98b360ab969914840d53d285c",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6411.wav",
+          "git_pointer_blob_sha1": "bd7d3f3b02ff417ea15a01630a30321ed06b7a1c",
+          "lfs_oid_sha256": "7ebdc02dcee62dcbb4d58276c68eb31ac7e8da938ecf98403daef07285bc2c90",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 23,
+      "fileid": "8566",
+      "metadata": {
+        "nearend_speaker": "reader_02990",
+        "nearend_wav_path": "clean_fileid_7833.wav",
+        "nearend_wav_path_noisy": "book_02588_chp_0004_reader_02990_49_pG2iKfNUyMg-RL-tJCE1sLk-7ZNMWS0_Cd4_snr20_fileid_7833.wav",
+        "farend_speaker": "reader_11377",
+        "farend_wav_path": "clean_fileid_7714.wav",
+        "farend_wav_path_noisy": "book_06222_chp_0018_reader_11377_7_M_8Gs7st3qg-nHxAj2ejY0w-fan_Freesound_validated_391471_6_snr26_fileid_7714.wav",
+        "ser": "-1",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "8566",
+        "nearend_scale": "0.7765372595691615"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_8566.wav",
+          "git_pointer_blob_sha1": "785bf6d8e9784fa27f21f6aacf1f286d1447aa63",
+          "lfs_oid_sha256": "7e713731cb52b641a747b2bb8deb1ff5e7204f1059237d249acc5fa51098570a",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_8566.wav",
+          "git_pointer_blob_sha1": "467ce0f1d5a4c338f614d91a381c41b46bae692c",
+          "lfs_oid_sha256": "30b84f0ff9a8dd0620e8f859e3b233120d5c49a00e43e44253b7f5ee45e197a9",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_8566.wav",
+          "git_pointer_blob_sha1": "c849e78b0bc1b14d3a7155de39f26d44558506c6",
+          "lfs_oid_sha256": "8f92013fbb7fe35f99df054515cb36bdaebaef97bd01d131bd635ba47088881f",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_8566.wav",
+          "git_pointer_blob_sha1": "db5762ad104522fc9bda4287eecb3b44bb260e8c",
+          "lfs_oid_sha256": "1c4ec0b3361790de0a725704a04c30fc55dab01e1a80a158262ea38543dfa5af",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 24,
+      "fileid": "4427",
+      "metadata": {
+        "nearend_speaker": "reader_04260",
+        "nearend_wav_path": "clean_fileid_1871.wav",
+        "nearend_wav_path_noisy": "book_03149_chp_0027_reader_04260_12_Z4xDb1jWF1M-LjmLSMpieuo-jHAaIiVXpR8_snr29_fileid_1871.wav",
+        "farend_speaker": "reader_08200",
+        "farend_wav_path": "clean_fileid_7991.wav",
+        "farend_wav_path_noisy": "book_11069_chp_0022_reader_08200_30_XFDPiRAHpXY-AbnaYYV081A-FhK4-LsHNqs_snr4_fileid_7991.wav",
+        "ser": "6",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "4427",
+        "nearend_scale": "0.5625298901746405"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_4427.wav",
+          "git_pointer_blob_sha1": "94d0e1afcc3adee9562572638e2609d43900f4f9",
+          "lfs_oid_sha256": "eb30d33c9344cb263728b0788f27e026e51f99506ccf6f13b3a1f98bc1378d3a",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_4427.wav",
+          "git_pointer_blob_sha1": "ea8f58f0f195d50acaa2af67907d164e5ed23374",
+          "lfs_oid_sha256": "adf11206676c5f90e2a1cc0fdace47c06af7f12d6e5a58571182300f6ff6a497",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_4427.wav",
+          "git_pointer_blob_sha1": "6073bf99c63d95a0308b52f7df521ee06d8c1e42",
+          "lfs_oid_sha256": "e94c5526900ec414d6f9b95152c20342fc70cf36454c6fe16646fd557793fb82",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_4427.wav",
+          "git_pointer_blob_sha1": "10555aed20b505cc2b0a6680b83fedcf534e6cec",
+          "lfs_oid_sha256": "c10797583272a83644c0155ac1f6c31aba908387fd1ced390fd3e4c619b8503e",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 25,
+      "fileid": "6622",
+      "metadata": {
+        "nearend_speaker": "reader_03061",
+        "nearend_wav_path": "clean_fileid_3589.wav",
+        "nearend_wav_path_noisy": "book_07842_chp_0011_reader_03061_10_UudfzQRN3GQ-door_Freesound_validated_223981_0-IWa4cVQHfpc_snr36_fileid_3589.wav",
+        "farend_speaker": "reader_01500",
+        "farend_wav_path": "clean_fileid_10470.wav",
+        "farend_wav_path_noisy": "book_04733_chp_0018_reader_01500_17_door_Freesound_validated_442487_10-gTHcoeePNdU-WAWs2GCtchQ_snr26_fileid_10470.wav",
+        "ser": "-2",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "6622",
+        "nearend_scale": "0.6935011600402808"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6622.wav",
+          "git_pointer_blob_sha1": "78be1c195869d6b1b8a21b27d650eaafe1c6b45c",
+          "lfs_oid_sha256": "e38176a41b54862dc087733472c6dc4746e4fa77623a8d12d08cdc43618adcfc",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6622.wav",
+          "git_pointer_blob_sha1": "0f837a48cf5f808f7f535c06707fdf139010a4cf",
+          "lfs_oid_sha256": "2b3c60914eb52eb195208151957e68daafa5f30cabc711440c369561fc49009f",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6622.wav",
+          "git_pointer_blob_sha1": "bb6a7466934a4ce371d489c7c21ea2f6a46daae0",
+          "lfs_oid_sha256": "11f3e18593d231222fcb76918b8ea2b2d2ec5996ffb45f78996432eea56cb5cf",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6622.wav",
+          "git_pointer_blob_sha1": "a5819bf15b45a18a6309a58c42aa26c5b87ff243",
+          "lfs_oid_sha256": "bd8a8197d33793094dc1f0cdfbc2d0465e339d632c0e7b73c50c41ac04b143bd",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 26,
+      "fileid": "1557",
+      "metadata": {
+        "nearend_speaker": "reader_02859",
+        "nearend_wav_path": "clean_fileid_4349.wav",
+        "nearend_wav_path_noisy": "book_04759_chp_0002_reader_02859_35_TDvNTPn-Rts-ueesXxMxD64-8NePJuwGaxs_snr29_fileid_4349.wav",
+        "farend_speaker": "reader_00849",
+        "farend_wav_path": "clean_fileid_6856.wav",
+        "farend_wav_path_noisy": "book_08574_chp_0002_reader_00849_55_fan_Freesound_validated_170658_0-IodxAgKte8o-jb_XoDKYVMY_snr6_fileid_6856.wav",
+        "ser": "4",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "1557",
+        "nearend_scale": "0.7258165925236492"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_1557.wav",
+          "git_pointer_blob_sha1": "5858603fd88db8509a603787359264690dd6679d",
+          "lfs_oid_sha256": "8dfbb585953a00ed3b98c7a5cd991e2d9543dc8616ef8624dba5c1b0e942ffc7",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_1557.wav",
+          "git_pointer_blob_sha1": "51ba079f92aec4424ff88da2bd1233d193b23ffa",
+          "lfs_oid_sha256": "dcdc303daba007ce9901ac0806f6a2f44383be25624e83e229fab0c41aaa21d1",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_1557.wav",
+          "git_pointer_blob_sha1": "7067855cdf4cee15b0e8f7ac23fb93cd1a72ce3a",
+          "lfs_oid_sha256": "27d590a89e7e5db840ba644f4db5cf72707a1b8519c3d799420cacf557e43298",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_1557.wav",
+          "git_pointer_blob_sha1": "9863810e2018de69ded7ee599df89a766a98f2c0",
+          "lfs_oid_sha256": "3925467f098d182bd5789ce87c7dd71224dcbb9db9938b336e0c58f6f9ec88fc",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 27,
+      "fileid": "1477",
+      "metadata": {
+        "nearend_speaker": "reader_11591",
+        "nearend_wav_path": "clean_fileid_10502.wav",
+        "nearend_wav_path_noisy": "book_08803_chp_0021_reader_11591_6_Wn_lNBCvVJk-8ksSuklILTE-ExIYbL5zGbk_snr36_fileid_10502.wav",
+        "farend_speaker": "reader_06643",
+        "farend_wav_path": "clean_fileid_628.wav",
+        "farend_wav_path_noisy": "book_09255_chp_0012_reader_06643_1_breath_spit_Freesound_validated_95567_0-AMUMbcD9XVI-9rtvuHifBEY_snr3_fileid_628.wav",
+        "ser": "9",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "1477",
+        "nearend_scale": "0.7197331019262523"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_1477.wav",
+          "git_pointer_blob_sha1": "b54367aeb778e3a1c6c315ed38ad96ee0cdb4175",
+          "lfs_oid_sha256": "122a36d7d1119c643cd6e5fd940120124a98d11ea9eef955247fe3a94f13f834",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_1477.wav",
+          "git_pointer_blob_sha1": "0825b6a2597a8ee3bbbe4aa64fcdb358cd47d358",
+          "lfs_oid_sha256": "aebef04f8bfb873794ef0c5fcede79387118311ef176be67a0cd97c37a05b878",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_1477.wav",
+          "git_pointer_blob_sha1": "122a065153e52c788f98a11864eda22722e81351",
+          "lfs_oid_sha256": "74a0446fb2916c9d5ae83f3736c4ddbc4ae610e26d9cb2e8b54706e7240675f5",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_1477.wav",
+          "git_pointer_blob_sha1": "2120688ba03396609ea3f5c7f7385aa9d410cd14",
+          "lfs_oid_sha256": "03fd4bbbb1932f9a22c5d6834891f871405c08a7c60e6bf7a2107dbd1799b845",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 28,
+      "fileid": "3163",
+      "metadata": {
+        "nearend_speaker": "reader_07373",
+        "nearend_wav_path": "clean_fileid_1563.wav",
+        "nearend_wav_path_noisy": "book_09441_chp_0006_reader_07373_1_vqYe16JY4LI-71kcSbHaIZs-TNy6bYvSbd4_snr29_fileid_1563.wav",
+        "farend_speaker": "reader_07441",
+        "farend_wav_path": "clean_fileid_6061.wav",
+        "farend_wav_path_noisy": "book_03644_chp_0014_reader_07441_17_vzLhqHxWW2k-HZmo2nGlzHA-FKq2Y299yT8_snr10_fileid_6061.wav",
+        "ser": "-3",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "3163",
+        "nearend_scale": "0.7487429491466463"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_3163.wav",
+          "git_pointer_blob_sha1": "ea981bc0eb055435c2102fbf73a95aab03b02738",
+          "lfs_oid_sha256": "d9d3979f2f4ea7d0775bf25ffd944c2c028e6cf5734db9144549f2de5e866f9a",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_3163.wav",
+          "git_pointer_blob_sha1": "425409cde86e63061e3636a129878ce548b3f705",
+          "lfs_oid_sha256": "d62360b1acb3a809af0a1ec2e71fd33fa3dfb12cfd5b7d47103b76004c4a94ec",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_3163.wav",
+          "git_pointer_blob_sha1": "5cfd834c8935f6933e80e2e93c6c1705a072559b",
+          "lfs_oid_sha256": "a3e8882dd5183fd3c18080e112e663eaebe3fd6327c10b73ca42b902f086eb48",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_3163.wav",
+          "git_pointer_blob_sha1": "0dae0e89a2cf51d9a4b74e815feca2c9eedb475d",
+          "lfs_oid_sha256": "a0f36168ca5610c6c47881b87bc9fcdcb4eb4d165a338264aef6b0943ece9f42",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 29,
+      "fileid": "6537",
+      "metadata": {
+        "nearend_speaker": "reader_02691",
+        "nearend_wav_path": "clean_fileid_11020.wav",
+        "nearend_wav_path_noisy": "book_03629_chp_0010_reader_02691_17_fiTorVjzf0g-h6j_PFvr4vs-Zz5O9dYlQKQ_snr11_fileid_11020.wav",
+        "farend_speaker": "reader_00390",
+        "farend_wav_path": "clean_fileid_6914.wav",
+        "farend_wav_path_noisy": "book_08293_chp_0001_reader_00390_25_mWM2RDmfzHE-oK3U6F97YFw-dZ7tDpZ_qJw_snr21_fileid_6914.wav",
+        "ser": "2",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "1",
+        "is_nearend_noisy": "0",
+        "split": "train",
+        "fileid": "6537",
+        "nearend_scale": "0.6049760646398366"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6537.wav",
+          "git_pointer_blob_sha1": "153140dcadaf79a7f63fd1447275d5376e1622cf",
+          "lfs_oid_sha256": "c2c7a0cc6b0d071df3776b461dec729ca24ff8c1c57351a0d863e9d0a0a92fb9",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6537.wav",
+          "git_pointer_blob_sha1": "63c9701b1c9f87a34ccbd56e42859f9fb95a6048",
+          "lfs_oid_sha256": "53ca9ac598c36907cfaac90256e3accd9d5aead0770208922f5b4548aa39065b",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6537.wav",
+          "git_pointer_blob_sha1": "d0f228f6857a86d6ac120619e7707dc9acc6237b",
+          "lfs_oid_sha256": "bda0e267185cea5e50ec15399bce607938413f7e12026b836e1574ee5219e42d",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6537.wav",
+          "git_pointer_blob_sha1": "10c6762e35c1bfd8484212c245ac87d91cfb3353",
+          "lfs_oid_sha256": "8fd0135ac181f6f6c867b38c82ba3610ac76da31af735c2d31dc9adfc7bab8da",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 30,
+      "fileid": "6078",
+      "metadata": {
+        "nearend_speaker": "reader_07406",
+        "nearend_wav_path": "clean_fileid_3618.wav",
+        "nearend_wav_path_noisy": "book_03276_chp_0047_reader_07406_14_lDlph0J0a-g-1R2Ejgfkmp8-hfNhs_MCxX4_snr6_fileid_3618.wav",
+        "farend_speaker": "reader_06919",
+        "farend_wav_path": "clean_fileid_9564.wav",
+        "farend_wav_path_noisy": "book_09393_chp_0017_reader_06919_22_door_Freesound_validated_446460_0-8wrjWBEo84o-door_Freesound_validated_237400_1_snr0_fileid_9564.wav",
+        "ser": "-1",
+        "is_farend_nonlinear": "0",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "6078",
+        "nearend_scale": "0.7843043110127838"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_6078.wav",
+          "git_pointer_blob_sha1": "9ba0f1a5db7fbb53bae6c1d95ad521f89922c094",
+          "lfs_oid_sha256": "6fefc1609b368ad2447b9cc70cba9d16b48aafb84d19d63723300fad408c0185",
+          "size_bytes": 320044
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_6078.wav",
+          "git_pointer_blob_sha1": "3d56fcf5f138065e1dcc5746bda43b2aa5056a1c",
+          "lfs_oid_sha256": "969b42d98dbd6b086d82d5af4a9ea6aacd069ca382eaad485d9621efc8345170",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_6078.wav",
+          "git_pointer_blob_sha1": "316b3acd6c9c2f56325093292ecfccd7f03a04d8",
+          "lfs_oid_sha256": "0b9db8bcc68adf5b06eae796871a5e6428fd991e5c9d1f2d2a407543d72933e2",
+          "size_bytes": 320044
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_6078.wav",
+          "git_pointer_blob_sha1": "22985781f6a06f307e36517a3a62c8ce020307f6",
+          "lfs_oid_sha256": "a0291d728f695d9723072dab8c50a7947250ebaf09b30d97d4259676f779a613",
+          "size_bytes": 320044
+        }
+      ]
+    },
+    {
+      "ordinal": 31,
+      "fileid": "431",
+      "metadata": {
+        "nearend_speaker": "reader_02245",
+        "nearend_wav_path": "clean_fileid_5747.wav",
+        "nearend_wav_path_noisy": "book_05060_chp_0014_reader_02245_3_B8M33O19WTk-doBFAf0He0E-ykK_RL0C30w_snr1_fileid_5747.wav",
+        "farend_speaker": "reader_07872",
+        "farend_wav_path": "clean_fileid_4359.wav",
+        "farend_wav_path_noisy": "book_09283_chp_0057_reader_07872_13_3dG1KirUNtg-E0KcnlNbmq8-door_Freesound_validated_456932_2_snr11_fileid_4359.wav",
+        "ser": "-10",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "test",
+        "fileid": "431",
+        "nearend_scale": "0.7041021515905466"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_431.wav",
+          "git_pointer_blob_sha1": "37b9e6c322f970f52196067101a7f02e266f2404",
+          "lfs_oid_sha256": "b17fd5b06847612bccb401a3f38d681c1cecfd9921eb2b69173aa4cbdd0cc9b0",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_431.wav",
+          "git_pointer_blob_sha1": "6eca01bcead10bc89f75272bf168529e075aa2cb",
+          "lfs_oid_sha256": "6e35a8a92fa6e4bf7357b88b881db5c53b1721c6c7272c3c42506c0012e9fd5a",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_431.wav",
+          "git_pointer_blob_sha1": "a219e09ca356fd6b4afe7109b07f0012f1373fb3",
+          "lfs_oid_sha256": "24c0eb77bc60baa4a54376127326ea0ef8fe0e2a18fd944c5b357a22237883d7",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_431.wav",
+          "git_pointer_blob_sha1": "8725f1f933b12abce850ecc2055d582515331d66",
+          "lfs_oid_sha256": "b4e9a9eccef5bd6a74c994def8ee5fdb497f23262a3f13808c98648600ade860",
+          "size_bytes": 320042
+        }
+      ]
+    },
+    {
+      "ordinal": 32,
+      "fileid": "5598",
+      "metadata": {
+        "nearend_speaker": "reader_02521",
+        "nearend_wav_path": "clean_fileid_11778.wav",
+        "nearend_wav_path_noisy": "book_02684_chp_0005_reader_02521_5_typing_Freesound_validated_399603_63-J2h3JItRnVc-evEO_ouW-Xs_snr12_fileid_11778.wav",
+        "farend_speaker": "reader_03566",
+        "farend_wav_path": "clean_fileid_4087.wav",
+        "farend_wav_path_noisy": "book_08134_chp_0012_reader_03566_63_eRYJFc0lVAE-FlM85DliPCo-V-PLDYSO3f8_snr23_fileid_4087.wav",
+        "ser": "9",
+        "is_farend_nonlinear": "1",
+        "is_farend_noisy": "0",
+        "is_nearend_noisy": "1",
+        "split": "train",
+        "fileid": "5598",
+        "nearend_scale": "0.6651527493702107"
+      },
+      "artifacts": [
+        {
+          "role": "echo_signal",
+          "relative_path": "datasets/synthetic/echo_signal/echo_fileid_5598.wav",
+          "git_pointer_blob_sha1": "2b2feb532deaf2c770db5da0a5c85855afc7592e",
+          "lfs_oid_sha256": "5778da0e3c7b2c7ef1907edeef95db1d63ecc744235cf9aacd74af4755b911de",
+          "size_bytes": 320042
+        },
+        {
+          "role": "farend_speech",
+          "relative_path": "datasets/synthetic/farend_speech/farend_speech_fileid_5598.wav",
+          "git_pointer_blob_sha1": "e549ee0212695807696b6a6ea63b3aa43a1d0008",
+          "lfs_oid_sha256": "950d5adf46f1a0e4031e182ef7d746c042bfcf619185c9838de8b42a42c3119e",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_mic_signal",
+          "relative_path": "datasets/synthetic/nearend_mic_signal/nearend_mic_fileid_5598.wav",
+          "git_pointer_blob_sha1": "32765320c77e1bbcd068c1023845730767eb4c31",
+          "lfs_oid_sha256": "915524b2550f917788bf8861559d7a052310cfb519f08603ec7d0b7d4fcdc9c6",
+          "size_bytes": 320042
+        },
+        {
+          "role": "nearend_speech",
+          "relative_path": "datasets/synthetic/nearend_speech/nearend_speech_fileid_5598.wav",
+          "git_pointer_blob_sha1": "9727753e97d9a1a0229361615057b6bcb1b8911d",
+          "lfs_oid_sha256": "478aab7b2a5d89ae03c9c5ed58319b211fa4dee2fea4d1c1c2a40fed997b304a",
+          "size_bytes": 320042
+        }
+      ]
+    }
+  ]
+}

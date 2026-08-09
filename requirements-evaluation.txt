@@ -4,4 +4,4 @@
 # isolated environment used to decode the pinned Common Voice SPS evaluation
 # archive; the preparer additionally hashes the complete PyAV/FFmpeg closure.
 av==18.0.0
-numpy==2.4.6
+numpy==2.5.1

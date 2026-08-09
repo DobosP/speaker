@@ -294,6 +294,48 @@ _PARAKEET_HIGH_COMPRESSION_MEMBERS = {
     ),
 }
 
+_KYUTAI_EXTERNAL_RUNTIME_EXCLUSIONS = {
+    (
+        "sympy",
+        "1.14.0",
+        "sympy-1.14.0.data/data/share/man/man1/isympy.1",
+    ): (
+        "f4365d48e2102e292b0131e56e4743674e0b0508a0643504d3fa025c10ef741b",
+        6_659,
+    ),
+}
+_KYUTAI_INERT_PTH_FILES = {
+    ("setuptools", "84.0.0", "distutils-precedence.pth"): (
+        "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224",
+        151,
+    ),
+}
+_KYUTAI_SHARED_RUNTIME_FILES = {
+    "nvidia/__init__.py": {
+        "receipt": (
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        ),
+        "owners": frozenset(
+            {
+                ("nvidia-cublas-cu12", "12.6.4.1"),
+                ("nvidia-cuda-cupti-cu12", "12.6.80"),
+                ("nvidia-cuda-nvrtc-cu12", "12.6.77"),
+                ("nvidia-cuda-runtime-cu12", "12.6.77"),
+                ("nvidia-cudnn-cu12", "9.5.1.17"),
+                ("nvidia-cufft-cu12", "11.3.0.4"),
+                ("nvidia-cufile-cu12", "1.11.1.6"),
+                ("nvidia-curand-cu12", "10.3.7.77"),
+                ("nvidia-cusolver-cu12", "11.7.1.2"),
+                ("nvidia-cusparse-cu12", "12.5.4.2"),
+                ("nvidia-nccl-cu12", "2.26.2"),
+                ("nvidia-nvjitlink-cu12", "12.6.85"),
+                ("nvidia-nvtx-cu12", "12.6.77"),
+            }
+        ),
+    },
+}
+
 WHEEL_LOCK_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
     maximum_receipt_bytes=32 * 1024 * 1024,
     maximum_files=MAXIMUM_INSTALLED_FILES,
@@ -635,6 +677,18 @@ PARAKEET_WHEEL_ARCHIVE_POLICY = WheelArchivePolicy(
             compressed_size_bytes=profile[2],
         )
         for key, profile in _PARAKEET_HIGH_COMPRESSION_MEMBERS.items()
+    },
+)
+KYUTAI_WHEEL_ARCHIVE_POLICY = WheelArchivePolicy(
+    external_runtime_exclusions=_KYUTAI_EXTERNAL_RUNTIME_EXCLUSIONS,
+    inert_pth_files=_KYUTAI_INERT_PTH_FILES,
+    shared_runtime_files={
+        path: SharedRuntimeFilePolicy(
+            sha256=profile["receipt"][0],
+            size_bytes=profile["receipt"][1],
+            owners=profile["owners"],
+        )
+        for path, profile in _KYUTAI_SHARED_RUNTIME_FILES.items()
     },
 )
 

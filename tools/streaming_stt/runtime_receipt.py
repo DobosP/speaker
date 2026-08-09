@@ -78,6 +78,15 @@ NEMOTRON_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
     maximum_relative_path_bytes=1024,
     maximum_depth=32,
 )
+KYUTAI_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
+    maximum_receipt_bytes=4 * 1024 * 1024,
+    maximum_files=20_000,
+    maximum_directories=10_000,
+    maximum_file_bytes=1024 * 1024 * 1024,
+    maximum_aggregate_bytes=6 * 1024 * 1024 * 1024,
+    maximum_relative_path_bytes=1024,
+    maximum_depth=32,
+)
 PARAKEET_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
     maximum_receipt_bytes=32 * 1024 * 1024,
     maximum_files=100_000,

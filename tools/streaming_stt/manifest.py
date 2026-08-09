@@ -45,6 +45,8 @@ MAX_PARAKEET_CPP_BRIDGE_SOURCE_BYTES = 1024 * 1024
 MAX_PARAKEET_CPP_LIBRARY_BYTES = 256 * 1024 * 1024
 MAX_PARAKEET_CPP_MODEL_BYTES = 320 * 1024 * 1024
 MAX_PARAKEET_CPP_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
+MAX_KYUTAI_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_KYUTAI_TOTAL_ARTIFACT_BYTES = 3 * 1024 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -61,6 +63,7 @@ _MANIFEST_V5_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V6_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V7_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V8_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V9_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -228,6 +231,60 @@ _PARAKEET_CPP_CONFIG_FIELDS = {
     "maximum_tail_padding_samples",
     "frame_sec",
 }
+_KYUTAI_CONFIG_FIELDS = {
+    "python_version",
+    "moshi_version",
+    "torch_version",
+    "cuda_version",
+    "julius_version",
+    "wheel_lock_sha256",
+    "runtime_content_sha256",
+    "runtime_file_count",
+    "runtime_total_size_bytes",
+    "runtime_maximum_file_bytes",
+    "model_repo_id",
+    "model_revision",
+    "model_config_filename",
+    "model_weights_filename",
+    "mimi_weights_filename",
+    "tokenizer_filename",
+    "model_license",
+    "language",
+    "device",
+    "dtype",
+    "input_sample_rate_hz",
+    "mimi_sample_rate_hz",
+    "input_chunk_samples",
+    "mimi_frame_samples",
+    "resampling_mode",
+    "initial_frame_policy",
+    "initial_frame_prime_steps",
+    "terminal_tail_samples",
+    "partial_interval_ms",
+    "maximum_source_samples",
+    "batch_size",
+    "temperature",
+    "text_temperature",
+    "use_sampling",
+    "text_padding_token_id",
+    "end_of_padding_token_id",
+    "audio_delay_seconds",
+    "audio_silence_prefix_seconds",
+    "semantic_head_count",
+    "semantic_head_dim",
+    "semantic_head_policy",
+    "endpoint_owner",
+    "early_stop",
+    "num_threads",
+    "maximum_vram_fraction",
+    "minimum_free_vram_mb",
+    "minimum_host_available_bytes",
+    "torch_compile",
+    "no_torch_compile_env",
+    "cuda_graph",
+    "no_cuda_graph_env",
+    "local_files_only",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
 MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER = (
     "moonshine-voice-external-endpoint-v1"
@@ -237,6 +294,7 @@ SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
 FASTER_WHISPER_ENDPOINT_ADAPTER = "faster-whisper-endpoint-v1"
 PARAKEET_CPP_ADAPTER = "parakeet-cpp-realtime-eou-v1"
+KYUTAI_ADAPTER = "kyutai-stt-1b-semantic-stream-v1"
 NEMOTRON_WHEEL_LOCK_SHA256 = (
     "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
 )
@@ -261,6 +319,16 @@ PARAKEET_REALTIME_EOU_RUNTIME_CONTENT_SHA256 = (
 PARAKEET_REALTIME_EOU_RUNTIME_FILE_COUNT = 49_600
 PARAKEET_REALTIME_EOU_RUNTIME_TOTAL_SIZE_BYTES = 6_430_910_098
 PARAKEET_REALTIME_EOU_RUNTIME_MAXIMUM_FILE_BYTES = 984_633_129
+KYUTAI_RUNTIME_WHEEL_LOCK_SHA256 = (
+    "8d0e41563bb5e91500af42a912c5e6f825f16a67537ddc350556303e88609e25"
+)
+KYUTAI_RUNTIME_WHEEL_LOCK_SIZE_BYTES = 25_818
+KYUTAI_RUNTIME_CONTENT_SHA256 = (
+    "9edc9c42b8c718d0e4b17d917c04c05acc0b5ecca4ec9504866ad34f1f62dbf0"
+)
+KYUTAI_RUNTIME_FILE_COUNT = 16_547
+KYUTAI_RUNTIME_TOTAL_SIZE_BYTES = 5_694_993_765
+KYUTAI_RUNTIME_MAXIMUM_FILE_BYTES = 984_633_129
 MOONSHINE_ARTIFACT_NAMES = (
     "runtime-receipt",
     "venv-marker",
@@ -629,6 +697,49 @@ _PARAKEET_CPP_RECEIPT_NAMES = frozenset(
     {"source-receipt", "build-receipt", "model-receipt"}
 )
 _PARAKEET_CPP_LIBRARY_NAMES = frozenset({"libparakeet", "bridge-library"})
+KYUTAI_ARTIFACT_NAMES = (
+    "runtime-receipt",
+    "runtime-wheel-lock",
+    "venv-marker",
+    "model-config",
+    "model-weights",
+    "model-mimi",
+    "model-tokenizer",
+)
+_KYUTAI_ARTIFACT_BASENAMES = {
+    "runtime-receipt": "runtime-receipt.json",
+    "runtime-wheel-lock": "kyutai-stt-runtime-wheels.lock.json",
+    "venv-marker": "pyvenv.cfg",
+    "model-config": "config.json",
+    "model-weights": "model.safetensors",
+    "model-mimi": "mimi-pytorch-e351c8d8@125.safetensors",
+    "model-tokenizer": "tokenizer_en_fr_audio_8000.model",
+}
+_KYUTAI_SMALL_ARTIFACTS = {
+    "runtime-receipt": 32 * 1024 * 1024,
+    "runtime-wheel-lock": 512 * 1024,
+    "venv-marker": 64 * 1024,
+    "model-config": 64 * 1024,
+    "model-tokenizer": 4 * 1024 * 1024,
+}
+KYUTAI_MODEL_RECEIPTS = {
+    "model-config": (
+        "a3f1c6f7a39fca1fb1bbff68eaabc560b8037d2cdc68aa1f489859949a4223de",
+        1_315,
+    ),
+    "model-weights": (
+        "b9e97c53229dce728d65c76bfa892f7b563c69d671899f0ebc6518582dddec6f",
+        1_978_522_200,
+    ),
+    "model-mimi": (
+        "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50",
+        384_644_900,
+    ),
+    "model-tokenizer": (
+        "cd87dd5d17169151782ac700280ec057e5d658a9afbe238a048ea5ff318cce69",
+        120_378,
+    ),
+}
 
 
 class ManifestError(RuntimeError):
@@ -1278,6 +1389,141 @@ class FasterWhisperEndpointConfig:
 
 
 @dataclass(frozen=True)
+class KyutaiConfig:
+    """One local, diagnostic-only Moshi 0.2.11 semantic-STT cell."""
+
+    python_version: str = "3.12.3"
+    moshi_version: str = "0.2.11"
+    torch_version: str = "2.7.1+cu126"
+    cuda_version: str = "12.6"
+    julius_version: str = "0.2.8"
+    wheel_lock_sha256: str = KYUTAI_RUNTIME_WHEEL_LOCK_SHA256
+    runtime_content_sha256: str = KYUTAI_RUNTIME_CONTENT_SHA256
+    runtime_file_count: int = KYUTAI_RUNTIME_FILE_COUNT
+    runtime_total_size_bytes: int = KYUTAI_RUNTIME_TOTAL_SIZE_BYTES
+    runtime_maximum_file_bytes: int = KYUTAI_RUNTIME_MAXIMUM_FILE_BYTES
+    model_repo_id: str = "kyutai/stt-1b-en_fr-candle"
+    model_revision: str = "095e38f6242006a93c2541149b181988397f5c7c"
+    model_config_filename: str = "config.json"
+    model_weights_filename: str = "model.safetensors"
+    mimi_weights_filename: str = "mimi-pytorch-e351c8d8@125.safetensors"
+    tokenizer_filename: str = "tokenizer_en_fr_audio_8000.model"
+    model_license: str = "CC-BY-4.0"
+    language: str = "en_fr"
+    device: str = "cuda:0"
+    dtype: str = "bfloat16"
+    input_sample_rate_hz: int = 16_000
+    mimi_sample_rate_hz: int = 24_000
+    input_chunk_samples: int = 1_280
+    mimi_frame_samples: int = 1_920
+    resampling_mode: str = "whole-buffer-noncausal"
+    initial_frame_policy: str = "duplicate-first-frame-prime"
+    initial_frame_prime_steps: int = 1
+    terminal_tail_samples: int = 16_000
+    partial_interval_ms: int = 160
+    maximum_source_samples: int = 2_097_152
+    batch_size: int = 1
+    temperature: float = 0.0
+    text_temperature: float = 0.0
+    use_sampling: bool = False
+    text_padding_token_id: int = 3
+    end_of_padding_token_id: int = 0
+    audio_delay_seconds: float = 0.5
+    audio_silence_prefix_seconds: float = 0.0
+    semantic_head_count: int = 4
+    semantic_head_dim: int = 6
+    semantic_head_policy: str = "diagnostic-finite-only"
+    endpoint_owner: str = "none"
+    early_stop: bool = False
+    num_threads: int = 1
+    maximum_vram_fraction: float = 0.5
+    minimum_free_vram_mb: int = 8_192
+    minimum_host_available_bytes: int = 12 * 1024**3
+    torch_compile: bool = False
+    no_torch_compile_env: str = "1"
+    cuda_graph: bool = False
+    no_cuda_graph_env: str = "1"
+    local_files_only: bool = True
+
+    def __post_init__(self) -> None:
+        exact = {
+            "python_version": "3.12.3",
+            "moshi_version": "0.2.11",
+            "torch_version": "2.7.1+cu126",
+            "cuda_version": "12.6",
+            "julius_version": "0.2.8",
+            "model_repo_id": "kyutai/stt-1b-en_fr-candle",
+            "model_revision": "095e38f6242006a93c2541149b181988397f5c7c",
+            "model_config_filename": "config.json",
+            "model_weights_filename": "model.safetensors",
+            "mimi_weights_filename": "mimi-pytorch-e351c8d8@125.safetensors",
+            "tokenizer_filename": "tokenizer_en_fr_audio_8000.model",
+            "model_license": "CC-BY-4.0",
+            "language": "en_fr",
+            "device": "cuda:0",
+            "dtype": "bfloat16",
+            "input_sample_rate_hz": 16_000,
+            "mimi_sample_rate_hz": 24_000,
+            "input_chunk_samples": 1_280,
+            "mimi_frame_samples": 1_920,
+            "resampling_mode": "whole-buffer-noncausal",
+            "initial_frame_policy": "duplicate-first-frame-prime",
+            "initial_frame_prime_steps": 1,
+            "terminal_tail_samples": 16_000,
+            "partial_interval_ms": 160,
+            "maximum_source_samples": 2_097_152,
+            "batch_size": 1,
+            "temperature": 0.0,
+            "text_temperature": 0.0,
+            "use_sampling": False,
+            "text_padding_token_id": 3,
+            "end_of_padding_token_id": 0,
+            "audio_delay_seconds": 0.5,
+            "audio_silence_prefix_seconds": 0.0,
+            "semantic_head_count": 4,
+            "semantic_head_dim": 6,
+            "semantic_head_policy": "diagnostic-finite-only",
+            "endpoint_owner": "none",
+            "early_stop": False,
+            "num_threads": 1,
+            "maximum_vram_fraction": 0.5,
+            "minimum_free_vram_mb": 8_192,
+            "minimum_host_available_bytes": 12 * 1024**3,
+            "torch_compile": False,
+            "no_torch_compile_env": "1",
+            "cuda_graph": False,
+            "no_cuda_graph_env": "1",
+            "local_files_only": True,
+        }
+        receipt_integers = (
+            self.runtime_file_count,
+            self.runtime_total_size_bytes,
+            self.runtime_maximum_file_bytes,
+        )
+        if (
+            any(
+                type(getattr(self, name)) is not type(expected)
+                or getattr(self, name) != expected
+                for name, expected in exact.items()
+            )
+            or math.copysign(1.0, self.temperature) != 1.0
+            or math.copysign(1.0, self.text_temperature) != 1.0
+            or math.copysign(1.0, self.audio_silence_prefix_seconds) != 1.0
+            or self.wheel_lock_sha256 != KYUTAI_RUNTIME_WHEEL_LOCK_SHA256
+            or self.runtime_content_sha256 != KYUTAI_RUNTIME_CONTENT_SHA256
+            or self.runtime_file_count != KYUTAI_RUNTIME_FILE_COUNT
+            or self.runtime_total_size_bytes != KYUTAI_RUNTIME_TOTAL_SIZE_BYTES
+            or self.runtime_maximum_file_bytes
+            != KYUTAI_RUNTIME_MAXIMUM_FILE_BYTES
+            or any(type(value) is not int for value in receipt_integers)
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in _KYUTAI_CONFIG_FIELDS}
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     path: Path
     digest: str
@@ -1296,6 +1542,7 @@ class WorkerManifest:
         | ParakeetRealtimeEouConfig
         | ParakeetCppConfig
         | FasterWhisperEndpointConfig
+        | KyutaiConfig
         | None
     ) = None
 
@@ -1398,6 +1645,11 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         if artifact_name in _PARAKEET_CPP_LIBRARY_NAMES:
             return MAX_PARAKEET_CPP_LIBRARY_BYTES
         return MAX_PARAKEET_CPP_MODEL_BYTES
+    if adapter == KYUTAI_ADAPTER and artifact_name in KYUTAI_ARTIFACT_NAMES:
+        return _KYUTAI_SMALL_ARTIFACTS.get(
+            artifact_name,
+            MAX_KYUTAI_ARTIFACT_BYTES,
+        )
     raise ManifestError()
 
 
@@ -1734,6 +1986,15 @@ def _faster_whisper_config(value: object) -> FasterWhisperEndpointConfig:
             model_total_size_bytes=value.get("model_total_size_bytes"),  # type: ignore[arg-type]
             model_maximum_file_bytes=value.get("model_maximum_file_bytes"),  # type: ignore[arg-type]
         )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
+def _kyutai_config(value: object) -> KyutaiConfig:
+    if not isinstance(value, dict) or set(value) != _KYUTAI_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return KyutaiConfig(**value)  # type: ignore[arg-type]
     except (TypeError, ValueError, ManifestError):
         raise ManifestError() from None
 
@@ -2340,6 +2601,49 @@ def _validate_faster_whisper_layout(
     _validate_venv_layout(python, by_name["venv-marker"])
 
 
+def _validate_kyutai_layout(
+    python: BoundFile,
+    artifacts: tuple[BoundArtifact, ...],
+    config: KyutaiConfig,
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    model_names = tuple(
+        name for name in KYUTAI_ARTIFACT_NAMES if name.startswith("model-")
+    )
+    if (
+        tuple(by_name) != KYUTAI_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_KYUTAI_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _KYUTAI_ARTIFACT_BASENAMES.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in KYUTAI_MODEL_RECEIPTS.items()
+        )
+        or by_name["runtime-wheel-lock"].sha256 != config.wheel_lock_sha256
+        or (
+            by_name["runtime-wheel-lock"].sha256,
+            by_name["runtime-wheel-lock"].size_bytes,
+        )
+        != (
+            KYUTAI_RUNTIME_WHEEL_LOCK_SHA256,
+            KYUTAI_RUNTIME_WHEEL_LOCK_SIZE_BYTES,
+        )
+        or len({by_name[name].path.parent for name in model_names}) != 1
+        or len(
+            {
+                by_name[name].path.parent
+                for name in ("runtime-receipt", "runtime-wheel-lock")
+            }
+        )
+        != 1
+    ):
+        raise ManifestError()
+    _validate_venv_layout(python, by_name["venv-marker"])
+
+
 def load_worker_manifest(path: Path | str) -> WorkerManifest:
     """Load and verify one immutable, machine-local worker receipt."""
 
@@ -2366,6 +2670,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         6,
         7,
         8,
+        9,
     }:
         raise ManifestError()
     expected_fields = {
@@ -2377,6 +2682,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         6: _MANIFEST_V6_FIELDS,
         7: _MANIFEST_V7_FIELDS,
         8: _MANIFEST_V8_FIELDS,
+        9: _MANIFEST_V9_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -2394,6 +2700,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
             and adapter != MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
         )
         or (schema_version == 8 and adapter != PARAKEET_CPP_ADAPTER)
+        or (schema_version == 9 and adapter != KYUTAI_ADAPTER)
     ):
         raise ManifestError()
 
@@ -2420,6 +2727,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         6: FASTER_WHISPER_ARTIFACT_NAMES,
         7: MOONSHINE_ARTIFACT_NAMES,
         8: PARAKEET_CPP_ARTIFACT_NAMES,
+        9: KYUTAI_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -2440,6 +2748,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
             value.get("adapter_config")
         ),
         8: lambda: _parakeet_cpp_config(value.get("adapter_config")),
+        9: lambda: _kyutai_config(value.get("adapter_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -2462,6 +2771,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 8:
         assert isinstance(adapter_config, ParakeetCppConfig)
         _validate_parakeet_cpp_layout(artifacts, adapter_config)
+    elif schema_version == 9:
+        assert isinstance(adapter_config, KyutaiConfig)
+        _validate_kyutai_layout(python, artifacts, adapter_config)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

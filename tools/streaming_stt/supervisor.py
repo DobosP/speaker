@@ -30,6 +30,7 @@ from .manifest import (
     FASTER_WHISPER_ENDPOINT_ADAPTER,
     FASTER_WHISPER_REQUIRED_MODEL_FILES,
     FASTER_WHISPER_VOCABULARY_FILES,
+    KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
@@ -39,6 +40,7 @@ from .manifest import (
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    KyutaiConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetCppConfig,
@@ -82,6 +84,7 @@ from .source_bundle import (
 from .runtime_receipt import (
     FASTER_WHISPER_MODEL_TREE_LIMITS,
     FASTER_WHISPER_RUNTIME_TREE_LIMITS,
+    KYUTAI_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
@@ -127,6 +130,24 @@ _PARAKEET_CPP_SCOPE_PROPERTIES = (
     "MemorySwapMax=0",
     f"CPUQuota={_PARAKEET_CPP_CPU_QUOTA_PERCENT}%",
     f"TasksMax={_PARAKEET_CPP_TASKS_MAX}",
+    "OOMPolicy=kill",
+)
+_KYUTAI_MEMORY_HIGH_BYTES = 5 * 1024**3
+_KYUTAI_MEMORY_MAX_BYTES = 6 * 1024**3
+_KYUTAI_CPU_QUOTA_PERCENT = 100
+_KYUTAI_TASKS_MAX = 128
+_KYUTAI_IO_WEIGHT = 1
+# Keep one full worker ceiling available to unrelated host workloads even if
+# the candidate reaches its cgroup limit.
+_KYUTAI_MINIMUM_HOST_AVAILABLE_BYTES = 12 * 1024**3
+_KYUTAI_SCOPE_PROPERTIES = (
+    f"MemoryHigh={_KYUTAI_MEMORY_HIGH_BYTES}",
+    f"MemoryMax={_KYUTAI_MEMORY_MAX_BYTES}",
+    "MemorySwapMax=0",
+    f"CPUQuota={_KYUTAI_CPU_QUOTA_PERCENT}%",
+    f"TasksMax={_KYUTAI_TASKS_MAX}",
+    f"IOWeight={_KYUTAI_IO_WEIGHT}",
+    "IOSchedulingClass=idle",
     "OOMPolicy=kill",
 )
 _NVIDIA_REQUIRED_DEVICE_NAMES = ("nvidia0", "nvidiactl", "nvidia-uvm")
@@ -206,8 +227,7 @@ def _external_moonshine_config(
             config.streaming_chunk_samples,
         )
         or config.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
-        or config.finalization_policy
-        != "verified-native-free-authoritative-batch-v2"
+        or config.finalization_policy != "verified-native-free-authoritative-batch-v2"
         or type(config.maximum_source_samples) is not int
         or config.maximum_source_samples != 2_097_152
     ):
@@ -270,8 +290,7 @@ def _expected_final_evidence(
         if (
             request.stream.tail_padding_samples != 0
             or request.stream.chunk_samples != config.streaming_chunk_samples
-            or request.stream.partial_interval_ms
-            != config.online_partial_interval_ms
+            or request.stream.partial_interval_ms != config.online_partial_interval_ms
             or request.pcm.samples > config.maximum_source_samples
         ):
             raise WorkerError("invalid_request")
@@ -282,6 +301,21 @@ def _expected_final_evidence(
             chunks,
             (-request.pcm.samples) % config.authoritative_alignment_samples,
         )
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            not isinstance(config, KyutaiConfig)
+            or manifest.schema_version != 9
+            or request.stream.chunk_samples != config.input_chunk_samples
+            or request.stream.partial_interval_ms != config.partial_interval_ms
+            or request.stream.tail_padding_samples != config.terminal_tail_samples
+            or request.pcm.samples > config.maximum_source_samples
+        ):
+            raise WorkerError("invalid_request")
+        chunks = (
+            total_samples + config.input_chunk_samples - 1
+        ) // config.input_chunk_samples
+        return chunks, (-total_samples) % config.input_chunk_samples
     if manifest.adapter != NEMOTRON_ADAPTER:
         chunks = (
             total_samples + request.stream.chunk_samples - 1
@@ -445,17 +479,14 @@ def _validate_parakeet_cpp_final(
     if (
         request.protocol_version != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
         or request.stream.chunk_samples != config.native_chunk_samples
-        or request.stream.tail_padding_samples
-        > config.maximum_tail_padding_samples
+        or request.stream.tail_padding_samples > config.maximum_tail_padding_samples
     ):
         raise WorkerError("worker_protocol")
     samples_seen = event.source_samples_consumed + event.tail_samples_consumed
     expected_chunks = (
         samples_seen + config.native_chunk_samples - 1
     ) // config.native_chunk_samples
-    source_complete = (
-        event.source_samples_consumed == event.source_samples_offered
-    )
+    source_complete = event.source_samples_consumed == event.source_samples_offered
     if (
         event.protocol_version != PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
         or event.request_id != request.request_id
@@ -474,10 +505,7 @@ def _validate_parakeet_cpp_final(
         or event.finalization_ms > event.elapsed_ms
         or event.chunks != expected_chunks
         or event.model_padding_samples != 0
-        or abs(
-            event.audio_seconds
-            - request.pcm.samples / request.pcm.sample_rate
-        )
+        or abs(event.audio_seconds - request.pcm.samples / request.pcm.sample_rate)
         > 1e-6
         or not isinstance(event.observed_events, tuple)
         or len(event.observed_events) > MAX_PARAKEET_CPP_OBSERVED_EVENTS
@@ -524,10 +552,8 @@ def _validate_parakeet_cpp_final(
                     finalize_seen
                     or (
                         observation.observed_sample
-                        != event.source_samples_offered
-                        + event.tail_samples_offered
-                        and observation.observed_sample
-                        % config.native_chunk_samples
+                        != event.source_samples_offered + event.tail_samples_offered
+                        and observation.observed_sample % config.native_chunk_samples
                         != 0
                     )
                     or float(observation_time)
@@ -885,6 +911,78 @@ def _verify_parakeet_cpp_cgroup_evidence(
     }
 
 
+def _verify_kyutai_cgroup_evidence(
+    proc_cgroup: bytes,
+    *,
+    cgroup_root: Path | None = None,
+) -> dict[str, object]:
+    """Verify Kyutai's exact hard cgroup-v2 and lowest I/O weight."""
+
+    selected_root = _CGROUP_ROOT if cgroup_root is None else cgroup_root
+    relative = _parse_unified_cgroup_path(proc_cgroup).relative_to("/")
+    try:
+        root = selected_root.resolve(strict=True)
+        controllers = set(
+            _single_ascii_line(
+                _read_small_pseudo_file(root / "cgroup.controllers")
+            ).split()
+        )
+        scope = (root / relative).resolve(strict=True)
+        scope.relative_to(root)
+        if (
+            not scope.is_dir()
+            or not {
+                "cpu",
+                "io",
+                "memory",
+                "pids",
+            }
+            <= controllers
+        ):
+            raise WorkerError("worker_prerequisite")
+        values = {
+            name: _single_ascii_line(_read_small_pseudo_file(scope / name))
+            for name in (
+                "memory.high",
+                "memory.max",
+                "memory.swap.max",
+                "memory.oom.group",
+                "cpu.max",
+                "pids.max",
+                "io.weight",
+            )
+        }
+        quota_fields = values["cpu.max"].split()
+        if len(quota_fields) != 2 or "max" in quota_fields:
+            raise WorkerError("worker_prerequisite")
+        quota, period = (int(field, 10) for field in quota_fields)
+        if (
+            values["memory.high"] != str(_KYUTAI_MEMORY_HIGH_BYTES)
+            or values["memory.max"] != str(_KYUTAI_MEMORY_MAX_BYTES)
+            or values["memory.swap.max"] != "0"
+            or values["memory.oom.group"] != "1"
+            or values["pids.max"] != str(_KYUTAI_TASKS_MAX)
+            or values["io.weight"] != f"default {_KYUTAI_IO_WEIGHT}"
+            or quota <= 0
+            or period <= 0
+            or quota * 100 != _KYUTAI_CPU_QUOTA_PERCENT * period
+        ):
+            raise WorkerError("worker_prerequisite")
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    return {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "memory_high_bytes": _KYUTAI_MEMORY_HIGH_BYTES,
+        "memory_max_bytes": _KYUTAI_MEMORY_MAX_BYTES,
+        "memory_swap_max_bytes": 0,
+        "cpu_quota_percent": _KYUTAI_CPU_QUOTA_PERCENT,
+        "tasks_max": _KYUTAI_TASKS_MAX,
+        "io_weight": _KYUTAI_IO_WEIGHT,
+        "oom_policy": "kill",
+        "verified": True,
+    }
+
+
 def _read_parakeet_cgroup_evidence(
     pid: int,
     *,
@@ -915,25 +1013,45 @@ def _read_parakeet_cpp_cgroup_evidence(
     )
 
 
+def _read_kyutai_cgroup_evidence(
+    pid: int,
+    *,
+    proc_root: Path | None = None,
+    cgroup_root: Path | None = None,
+) -> dict[str, object]:
+    if type(pid) is not int or pid <= 0:
+        raise WorkerError("worker_prerequisite")
+    selected_proc = _PROC_ROOT if proc_root is None else proc_root
+    return _verify_kyutai_cgroup_evidence(
+        _read_small_pseudo_file(selected_proc / str(pid) / "cgroup"),
+        cgroup_root=cgroup_root,
+    )
+
+
 def _bind_cgroup_observer(
     pid: int,
     *,
     cpp: bool,
+    kyutai: bool = False,
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
 ) -> tuple[dict[str, object], CgroupScopeObserver]:
     """Pin the same exact scope whose effective limits were verified."""
 
-    if type(pid) is not int or pid <= 0:
+    if type(pid) is not int or pid <= 0 or (cpp and kyutai):
         raise WorkerError("worker_prerequisite")
     selected_proc = _PROC_ROOT if proc_root is None else proc_root
     selected_cgroup = _CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_path = selected_proc / str(pid) / "cgroup"
     payload = _read_small_pseudo_file(proc_path)
     verifier = (
-        _verify_parakeet_cpp_cgroup_evidence
-        if cpp
-        else _verify_parakeet_cgroup_evidence
+        _verify_kyutai_cgroup_evidence
+        if kyutai
+        else (
+            _verify_parakeet_cpp_cgroup_evidence
+            if cpp
+            else _verify_parakeet_cgroup_evidence
+        )
     )
     evidence = verifier(payload, cgroup_root=selected_cgroup)
     try:
@@ -996,6 +1114,53 @@ def _await_parakeet_cpp_cgroup(
             if remaining <= 0.0:
                 raise WorkerError("worker_prerequisite") from None
             sleeper(min(0.01, remaining))
+
+
+def _await_kyutai_cgroup(
+    process: subprocess.Popen[bytes],
+    *,
+    monotonic=time.monotonic,
+    sleeper=time.sleep,
+) -> dict[str, object]:
+    """Wait for the Kyutai worker's exact hard systemd scope."""
+
+    deadline = monotonic() + _CGROUP_SETUP_TIMEOUT_SEC
+    while True:
+        if process.poll() is not None:
+            raise WorkerError("worker_prerequisite")
+        try:
+            return _read_kyutai_cgroup_evidence(process.pid)
+        except WorkerError:
+            remaining = deadline - monotonic()
+            if remaining <= 0.0:
+                raise WorkerError("worker_prerequisite") from None
+            sleeper(min(0.01, remaining))
+
+
+def _verify_kyutai_host_memory_available(
+    *,
+    meminfo_path: Path | None = None,
+    minimum_bytes: int = _KYUTAI_MINIMUM_HOST_AVAILABLE_BYTES,
+) -> None:
+    """Fail before launch unless Linux reports the frozen RAM headroom."""
+
+    if (
+        type(minimum_bytes) is not int
+        or minimum_bytes != _KYUTAI_MINIMUM_HOST_AVAILABLE_BYTES
+    ):
+        raise WorkerError("worker_prerequisite")
+    selected = Path("/proc/meminfo") if meminfo_path is None else meminfo_path
+    payload = _read_small_pseudo_file(selected, maximum_bytes=16 * 1024)
+    try:
+        text = payload.decode("ascii", errors="strict")
+        matches = re.findall(r"(?m)^MemAvailable:[ \t]+([0-9]+)[ \t]+kB$", text)
+        if len(matches) != 1:
+            raise WorkerError("worker_prerequisite")
+        available_kib = int(matches[0], 10)
+        if available_kib <= 0 or available_kib * 1024 < minimum_bytes:
+            raise WorkerError("worker_prerequisite")
+    except (UnicodeError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
 
 
 def _require_mount_source(path: Path, *, directory: bool) -> None:
@@ -1138,7 +1303,10 @@ def _verify_nemotron_runtime_layout(
     maximum_file = max((item.size_bytes for item in receipt.files), default=0)
     try:
         if (
-            not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
+            not isinstance(
+                config,
+                (KyutaiConfig, NemotronConfig, ParakeetRealtimeEouConfig),
+            )
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -1246,7 +1414,7 @@ def _append_mount(
     command.extend((option, str(source), str(destination or source)))
 
 
-def _nemotron_bwrap_command(
+def _direct_model_gpu_bwrap_command(
     manifest: WorkerManifest,
     scratch: Path,
     source_bundle: SourceBundle,
@@ -1258,7 +1426,7 @@ def _nemotron_bwrap_command(
     system_ro_paths: Sequence[Path],
     proc_driver_available: bool,
 ) -> list[str]:
-    """Build the closed Nemotron-only Bubblewrap command."""
+    """Build a sealed GPU command for an exact direct-artifact model root."""
 
     artifacts = manifest.artifact_by_name
     try:
@@ -1292,6 +1460,11 @@ def _nemotron_bwrap_command(
         runtime_wheel_lock,
     )
     if any(not path.is_absolute() or "\x00" in str(path) for path in required_paths):
+        raise WorkerError("worker_prerequisite")
+    if any(
+        _path_is_within(model_root, root) or _path_is_within(root, model_root)
+        for root in (scratch, source_bundle.root, venv_root)
+    ):
         raise WorkerError("worker_prerequisite")
 
     command = [
@@ -1361,6 +1534,60 @@ def _nemotron_bwrap_command(
         )
     )
     return command
+
+
+def _nemotron_bwrap_command(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+    *,
+    bundle_descriptor: int,
+    worker_descriptor: int,
+    python_descriptor: int,
+    device_nodes: Sequence[Path],
+    system_ro_paths: Sequence[Path],
+    proc_driver_available: bool,
+) -> list[str]:
+    """Retain the stable Nemotron helper seam."""
+
+    return _direct_model_gpu_bwrap_command(
+        manifest,
+        scratch,
+        source_bundle,
+        bundle_descriptor=bundle_descriptor,
+        worker_descriptor=worker_descriptor,
+        python_descriptor=python_descriptor,
+        device_nodes=device_nodes,
+        system_ro_paths=system_ro_paths,
+        proc_driver_available=proc_driver_available,
+    )
+
+
+def _kyutai_bwrap_command(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+    *,
+    bundle_descriptor: int,
+    worker_descriptor: int,
+    python_descriptor: int,
+    device_nodes: Sequence[Path],
+    system_ro_paths: Sequence[Path],
+    proc_driver_available: bool,
+) -> list[str]:
+    """Build Kyutai's networkless exact-four-file model sandbox."""
+
+    return _direct_model_gpu_bwrap_command(
+        manifest,
+        scratch,
+        source_bundle,
+        bundle_descriptor=bundle_descriptor,
+        worker_descriptor=worker_descriptor,
+        python_descriptor=python_descriptor,
+        device_nodes=device_nodes,
+        system_ro_paths=system_ro_paths,
+        proc_driver_available=proc_driver_available,
+    )
 
 
 def _faster_whisper_bwrap_command(
@@ -1675,6 +1902,47 @@ def _parakeet_cpp_systemd_scope_command(
     return command
 
 
+def _kyutai_systemd_scope_command(
+    bwrap_command: Sequence[str],
+    *,
+    bwrap_descriptor: int,
+) -> list[str]:
+    """Place the sealed Kyutai GPU worker beneath its dedicated hard scope."""
+
+    if (
+        type(bwrap_descriptor) is not int
+        or bwrap_descriptor < 0
+        or not bwrap_command
+        or bwrap_command[0] != str(_BWRAP_PATH)
+        or any(not isinstance(value, str) or "\x00" in value for value in bwrap_command)
+    ):
+        raise WorkerError("worker_prerequisite")
+    inner = [
+        f"/proc/self/fd/{bwrap_descriptor}",
+        "--unsetenv",
+        "XDG_RUNTIME_DIR",
+        "--unsetenv",
+        "INVOCATION_ID",
+        *bwrap_command[1:],
+    ]
+    command = [
+        str(_SYSTEMD_RUN_PATH),
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--no-ask-password",
+        "--expand-environment=no",
+        "--slice-inherit",
+        "--nice=15",
+        "--description=speaker-kyutai-stt-worker",
+    ]
+    for value in _KYUTAI_SCOPE_PROPERTIES:
+        command.extend(("--property", value))
+    command.extend(("--", *inner))
+    return command
+
+
 def _zipformer_bwrap_command(
     manifest: WorkerManifest,
     scratch: Path,
@@ -1826,9 +2094,10 @@ class StreamingWorker:
     def resource_observations(self) -> Mapping[str, object] | None:
         if self._cgroup_evidence is None:
             return None
-        if tuple(
-            (item.phase, item.boundary) for item in self._resource_boundaries
-        ) != _RESOURCE_PHASES:
+        if (
+            tuple((item.phase, item.boundary) for item in self._resource_boundaries)
+            != _RESOURCE_PHASES
+        ):
             return None
         return {
             "schema_version": 1,
@@ -1838,17 +2107,11 @@ class StreamingWorker:
             "cache_state_claim": "none",
             "cache_eviction_performed": False,
             "wall_clock_origin": "supervisor_immediately_before_popen",
-            "memory_current_scope": (
-                "point_sample_including_cgroup_charged_cache"
-            ),
-            "memory_peak_scope": (
-                "cumulative_since_scope_creation_not_phase_local"
-            ),
+            "memory_current_scope": ("point_sample_including_cgroup_charged_cache"),
+            "memory_peak_scope": ("cumulative_since_scope_creation_not_phase_local"),
             "cpu_stat_scope": "cumulative_since_scope_creation",
             "snapshot_atomicity": "sequential_cgroup_file_reads_not_atomic",
-            "resident_scope": (
-                "pre_shutdown_after_requested_cases_no_idle_settle"
-            ),
+            "resident_scope": ("pre_shutdown_after_requested_cases_no_idle_settle"),
             "boundaries": [item.as_dict() for item in self._resource_boundaries],
         }
 
@@ -1886,6 +2149,22 @@ class StreamingWorker:
                 raise WorkerError("worker_protocol")
         elif self.manifest.schema_version == 8:
             raise WorkerError("worker_protocol")
+        if self.manifest.adapter == KYUTAI_ADAPTER:
+            config = self.manifest.adapter_config
+            if (
+                self.manifest.schema_version != 9
+                or not isinstance(config, KyutaiConfig)
+                or config.minimum_host_available_bytes
+                != _KYUTAI_MINIMUM_HOST_AVAILABLE_BYTES
+                or config.minimum_free_vram_mb != 8_192
+                or config.maximum_vram_fraction != 0.5
+                or config.no_torch_compile_env != "1"
+                or config.cuda_graph is not False
+                or config.no_cuda_graph_env != "1"
+            ):
+                raise WorkerError("worker_protocol")
+        elif self.manifest.schema_version == 9:
+            raise WorkerError("worker_protocol")
         try:
             lexical_scratch = Path(os.path.abspath(self.scratch_root))
             with opened_directory_nofollow(
@@ -1901,6 +2180,7 @@ class StreamingWorker:
         user_runtime_directory: Path | None = None
         if self.manifest.adapter in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
@@ -1914,6 +2194,7 @@ class StreamingWorker:
             system_ro_paths = _core_system_ro_paths()
         if self.manifest.adapter in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
@@ -1929,10 +2210,15 @@ class StreamingWorker:
                 _require_mount_source(_NVIDIA_PROC_DRIVER, directory=True)
                 proc_driver_available = True
         if self.manifest.adapter in {
+            KYUTAI_ADAPTER,
             PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
             user_runtime_directory = _verified_user_runtime_directory()
+        if self.manifest.adapter == KYUTAI_ADAPTER:
+            _verify_kyutai_host_memory_available(
+                minimum_bytes=_KYUTAI_MINIMUM_HOST_AVAILABLE_BYTES,
+            )
         self._verify_bound_files()
         if os.name != "posix" or not Path("/proc/self/fd").is_dir():
             raise WorkerError("worker_prerequisite")
@@ -1946,6 +2232,7 @@ class StreamingWorker:
             self._python_descriptor = self._open_bound_python_descriptor()
             if self.manifest.adapter in {
                 FASTER_WHISPER_ENDPOINT_ADAPTER,
+                KYUTAI_ADAPTER,
                 NEMOTRON_ADAPTER,
                 PARAKEET_CPP_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
@@ -1953,6 +2240,7 @@ class StreamingWorker:
             }:
                 self._bwrap_descriptor = _open_bwrap_descriptor()
             if self.manifest.adapter in {
+                KYUTAI_ADAPTER,
                 PARAKEET_CPP_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
             }:
@@ -2013,15 +2301,17 @@ class StreamingWorker:
             pass_fds = (*pass_fds, self._systemd_run_descriptor)
         elif self.manifest.adapter in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
             try:
-                builder = (
-                    _faster_whisper_bwrap_command
-                    if self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
-                    else _nemotron_bwrap_command
-                )
+                if self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
+                    builder = _faster_whisper_bwrap_command
+                elif self.manifest.adapter == KYUTAI_ADAPTER:
+                    builder = _kyutai_bwrap_command
+                else:
+                    builder = _nemotron_bwrap_command
                 command = builder(
                     self.manifest,
                     scratch,
@@ -2038,10 +2328,17 @@ class StreamingWorker:
                 raise
             executable = f"/proc/self/fd/{self._bwrap_descriptor}"
             pass_fds = (*pass_fds, self._bwrap_descriptor)
-            if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
-                command = _parakeet_systemd_scope_command(
-                    command,
-                    bwrap_descriptor=self._bwrap_descriptor,
+            if self.manifest.adapter in {
+                KYUTAI_ADAPTER,
+                PARAKEET_REALTIME_EOU_ADAPTER,
+            }:
+                scope_builder = (
+                    _kyutai_systemd_scope_command
+                    if self.manifest.adapter == KYUTAI_ADAPTER
+                    else _parakeet_systemd_scope_command
+                )
+                command = scope_builder(
+                    command, bwrap_descriptor=self._bwrap_descriptor
                 )
                 executable = f"/proc/self/fd/{self._systemd_run_descriptor}"
                 pass_fds = (*pass_fds, self._systemd_run_descriptor)
@@ -2067,6 +2364,7 @@ class StreamingWorker:
             pass_fds = (*pass_fds, self._bwrap_descriptor)
         environment = sanitized_worker_environment(scratch)
         if self.manifest.adapter in {
+            KYUTAI_ADAPTER,
             PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
@@ -2083,6 +2381,13 @@ class StreamingWorker:
             # host binary directory even though the worker has no network and
             # executes only receipt-bound Python/source artifacts.
             environment["PATH"] = "/usr/bin"
+        if self.manifest.adapter == KYUTAI_ADAPTER:
+            config = self.manifest.adapter_config
+            if not isinstance(config, KyutaiConfig):
+                self._close_bundle_descriptors()
+                raise WorkerError("worker_protocol")
+            environment["NO_TORCH_COMPILE"] = config.no_torch_compile_env
+            environment["NO_CUDA_GRAPH"] = config.no_cuda_graph_env
         try:
             launch_started = self._monotonic()
         except Exception:
@@ -2153,6 +2458,21 @@ class StreamingWorker:
                     raise WorkerError("worker_prerequisite")
                 self._cgroup_evidence = evidence
                 self._cgroup_observer = observer
+            if self.manifest.adapter == KYUTAI_ADAPTER:
+                awaited = _await_kyutai_cgroup(
+                    process,
+                    monotonic=self._monotonic,
+                )
+                evidence, observer = _bind_cgroup_observer(
+                    process.pid,
+                    cpp=False,
+                    kyutai=True,
+                )
+                if evidence != awaited:
+                    observer.close()
+                    raise WorkerError("worker_prerequisite")
+                self._cgroup_evidence = evidence
+                self._cgroup_observer = observer
             event = self._next_event(self.manifest.limits.startup_timeout_sec)
             if (
                 type(event) is not ReadyEvent
@@ -2206,11 +2526,12 @@ class StreamingWorker:
         ):
             raise WorkerError("worker_prerequisite")
         try:
-            current_evidence = (
-                _read_parakeet_cpp_cgroup_evidence(process.pid)
-                if self.manifest.adapter == PARAKEET_CPP_ADAPTER
-                else _read_parakeet_cgroup_evidence(process.pid)
-            )
+            if self.manifest.adapter == PARAKEET_CPP_ADAPTER:
+                current_evidence = _read_parakeet_cpp_cgroup_evidence(process.pid)
+            elif self.manifest.adapter == KYUTAI_ADAPTER:
+                current_evidence = _read_kyutai_cgroup_evidence(process.pid)
+            else:
+                current_evidence = _read_parakeet_cgroup_evidence(process.pid)
             observed_at = self._monotonic()
             if (
                 current_evidence != self._cgroup_evidence
@@ -2405,10 +2726,7 @@ class StreamingWorker:
                 return
             if process.poll() is None and self.ready is not None:
                 try:
-                    if (
-                        self._cgroup_observer is not None
-                        and self._completed_cases > 0
-                    ):
+                    if self._cgroup_observer is not None and self._completed_cases > 0:
                         self._record_resource_boundary(
                             "resident",
                             "pre_shutdown_after_suite",
@@ -2498,6 +2816,7 @@ class StreamingWorker:
                 raise WorkerError("worker_artifact_changed")
             if self.manifest.adapter in {
                 FASTER_WHISPER_ENDPOINT_ADAPTER,
+                KYUTAI_ADAPTER,
                 MOONSHINE_ADAPTER,
                 MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
                 NEMOTRON_ADAPTER,
@@ -2509,6 +2828,7 @@ class StreamingWorker:
                 limits = {
                     MOONSHINE_ADAPTER: None,
                     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: None,
+                    KYUTAI_ADAPTER: KYUTAI_RUNTIME_TREE_LIMITS,
                     NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
                     PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
                     FASTER_WHISPER_ENDPOINT_ADAPTER: (
@@ -2525,6 +2845,7 @@ class StreamingWorker:
                     self.manifest.python.path,
                 )
                 if self.manifest.adapter in {
+                    KYUTAI_ADAPTER,
                     NEMOTRON_ADAPTER,
                     PARAKEET_REALTIME_EOU_ADAPTER,
                 }:

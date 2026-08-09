@@ -38,6 +38,7 @@ from tools.streaming_stt.manifest import (
     FASTER_WHISPER_ENDPOINT_ADAPTER,
     FASTER_WHISPER_REQUIRED_MODEL_FILES,
     FASTER_WHISPER_VOCABULARY_FILES,
+    KYUTAI_ADAPTER,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
@@ -46,6 +47,7 @@ from tools.streaming_stt.manifest import (
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    KyutaiConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
@@ -82,6 +84,7 @@ from tools.streaming_stt.protocol import (
 from tools.streaming_stt.runtime_receipt import (
     FASTER_WHISPER_MODEL_TREE_LIMITS,
     FASTER_WHISPER_RUNTIME_TREE_LIMITS,
+    KYUTAI_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceiptError,
@@ -134,6 +137,17 @@ _PARAKEET_CPP_CGROUP_EVIDENCE = {
     "oom_policy": "kill",
     "verified": True,
 }
+_KYUTAI_CGROUP_EVIDENCE = {
+    "kind": "systemd-user-scope-cgroup-v2",
+    "memory_high_bytes": 5_368_709_120,
+    "memory_max_bytes": 6_442_450_944,
+    "memory_swap_max_bytes": 0,
+    "cpu_quota_percent": 100,
+    "tasks_max": 128,
+    "io_weight": 1,
+    "oom_policy": "kill",
+    "verified": True,
+}
 _EVALUATOR_FILES = (
     "core/diagnostic_bundle.py",
     "tools/streaming_stt_eval.py",
@@ -153,6 +167,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
+    "tools/streaming_stt/adapters/kyutai.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/adapters/parakeet_cpp.py",
@@ -370,6 +385,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
     if adapter not in {
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
+        KYUTAI_ADAPTER,
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
@@ -402,6 +418,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         "real_candidate_model": adapter
         in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             MOONSHINE_ADAPTER,
             MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
@@ -428,6 +445,7 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         return None
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
+        KYUTAI_ADAPTER,
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
@@ -439,6 +457,7 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         raise ValueError
     limits = {
         FASTER_WHISPER_ENDPOINT_ADAPTER: FASTER_WHISPER_RUNTIME_TREE_LIMITS,
+        KYUTAI_ADAPTER: KYUTAI_RUNTIME_TREE_LIMITS,
         NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
         PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
     }.get(manifest.adapter)
@@ -459,6 +478,20 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         maximum_file = max((item.size_bytes for item in receipt.files), default=0)
         if (
             not isinstance(config, NemotronConfig)
+            or wheel_lock is None
+            or wheel_lock.sha256 != config.wheel_lock_sha256
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+        ):
+            raise ValueError
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
+        maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+        if (
+            not isinstance(config, KyutaiConfig)
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -571,6 +604,7 @@ def _worker_binding(
     expected_schema = {
         MOONSHINE_ADAPTER: 2,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: 7,
+        KYUTAI_ADAPTER: 9,
         NEMOTRON_ADAPTER: 3,
         SHERPA_ZIPFORMER_ADAPTER: 4,
         PARAKEET_REALTIME_EOU_ADAPTER: 5,
@@ -587,8 +621,11 @@ def _worker_binding(
         )
         or (
             manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER
-            and type(manifest.adapter_config)
-            is not MoonshineExternalEndpointConfig
+            and type(manifest.adapter_config) is not MoonshineExternalEndpointConfig
+        )
+        or (
+            manifest.adapter == KYUTAI_ADAPTER
+            and not isinstance(manifest.adapter_config, KyutaiConfig)
         )
         or (
             manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
@@ -603,18 +640,15 @@ def _worker_binding(
             and not isinstance(manifest.adapter_config, ParakeetCppConfig)
         )
         or (
-            manifest.adapter
-            in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
+            manifest.adapter in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
             and runtime_receipt_sha256 is not None
         )
         or (
-            manifest.adapter
-            not in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
+            manifest.adapter not in {SHERPA_ZIPFORMER_ADAPTER, PARAKEET_CPP_ADAPTER}
             and runtime_receipt_sha256 is None
         )
         or (
-            manifest.adapter
-            in {FASTER_WHISPER_ENDPOINT_ADAPTER, PARAKEET_CPP_ADAPTER}
+            manifest.adapter in {FASTER_WHISPER_ENDPOINT_ADAPTER, PARAKEET_CPP_ADAPTER}
             and model_receipt_sha256 is None
         )
         or (
@@ -637,6 +671,7 @@ def _worker_binding(
             MoonshineExternalEndpointConfig().as_dict()
         ),
         NEMOTRON_ADAPTER: set(NemotronConfig().as_dict()),
+        KYUTAI_ADAPTER: set(KyutaiConfig().as_dict()),
         SHERPA_ZIPFORMER_ADAPTER: set(SherpaZipformerConfig().as_dict()),
         PARAKEET_REALTIME_EOU_ADAPTER: (
             set(manifest.adapter_config.as_dict())
@@ -673,11 +708,13 @@ def _validated_parakeet_cgroup_evidence(
     """Bind only native endpoint candidates to their verified hard scope."""
 
     expected = {
+        (KYUTAI_ADAPTER, 9): _KYUTAI_CGROUP_EVIDENCE,
         (PARAKEET_REALTIME_EOU_ADAPTER, 5): _PARAKEET_CGROUP_EVIDENCE,
         (PARAKEET_CPP_ADAPTER, 8): _PARAKEET_CPP_CGROUP_EVIDENCE,
     }.get((manifest.adapter, manifest.schema_version))
     if expected is None:
         if manifest.adapter in {
+            KYUTAI_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
             PARAKEET_CPP_ADAPTER,
         }:
@@ -686,8 +723,7 @@ def _validated_parakeet_cgroup_evidence(
     if not isinstance(value, Mapping):
         raise ValueError
     if set(value) != set(expected) or any(
-        type(value[name]) is not type(expected_value)
-        or value[name] != expected_value
+        type(value[name]) is not type(expected_value) or value[name] != expected_value
         for name, expected_value in expected.items()
     ):
         raise ValueError
@@ -705,6 +741,7 @@ def _validated_cgroup_resource_observations(
     """Bind exact complete observations only for verified scoped candidates."""
 
     applicable = (manifest.adapter, manifest.schema_version) in {
+        (KYUTAI_ADAPTER, 9),
         (PARAKEET_REALTIME_EOU_ADAPTER, 5),
         (PARAKEET_CPP_ADAPTER, 8),
     }
@@ -718,12 +755,8 @@ def _validated_cgroup_resource_observations(
         "cache_state_claim": "none",
         "cache_eviction_performed": False,
         "wall_clock_origin": "supervisor_immediately_before_popen",
-        "memory_current_scope": (
-            "point_sample_including_cgroup_charged_cache"
-        ),
-        "memory_peak_scope": (
-            "cumulative_since_scope_creation_not_phase_local"
-        ),
+        "memory_current_scope": ("point_sample_including_cgroup_charged_cache"),
+        "memory_peak_scope": ("cumulative_since_scope_creation_not_phase_local"),
         "cpu_stat_scope": "cumulative_since_scope_creation",
         "snapshot_atomicity": "sequential_cgroup_file_reads_not_atomic",
         "resident_scope": "pre_shutdown_after_requested_cases_no_idle_settle",
@@ -754,8 +787,7 @@ def _validated_cgroup_resource_observations(
         or expected_completed_cases <= 0
         or set(value) != {*expected_root, "boundaries"}
         or any(
-            type(value[name]) is not type(expected)
-            or value[name] != expected
+            type(value[name]) is not type(expected) or value[name] != expected
             for name, expected in expected_root.items()
         )
     ):
@@ -850,6 +882,7 @@ def _evidence_binding(
     pace: str,
     adapter_config: (
         FasterWhisperEndpointConfig
+        | KyutaiConfig
         | MoonshineExternalEndpointConfig
         | NemotronConfig
         | ParakeetCppConfig
@@ -864,6 +897,7 @@ def _evidence_binding(
     if adapter not in {
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
+        KYUTAI_ADAPTER,
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
@@ -875,11 +909,21 @@ def _evidence_binding(
         "realtime",
     }:
         raise ValueError
+    kyutai_config = None
     parakeet_cpp_config = None
     if adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
         if type(adapter_config) is not MoonshineExternalEndpointConfig:
             raise ValueError
         external_moonshine_config = adapter_config
+        config = None
+        zipformer_config = None
+        parakeet_config = None
+        faster_whisper_config = None
+    elif adapter == KYUTAI_ADAPTER:
+        if not isinstance(adapter_config, KyutaiConfig):
+            raise ValueError
+        kyutai_config = adapter_config
+        external_moonshine_config = None
         config = None
         zipformer_config = None
         parakeet_config = None
@@ -941,6 +985,7 @@ def _evidence_binding(
         "real_candidate_model": adapter
         in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             MOONSHINE_ADAPTER,
             MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
             NEMOTRON_ADAPTER,
@@ -976,8 +1021,7 @@ def _evidence_binding(
         "controller_ipc_included": False,
         "capture_to_text_latency": False,
         "vad": False,
-        "endpointing": adapter
-        in {PARAKEET_REALTIME_EOU_ADAPTER, PARAKEET_CPP_ADAPTER},
+        "endpointing": adapter in {PARAKEET_REALTIME_EOU_ADAPTER, PARAKEET_CPP_ADAPTER},
         "aec": False,
         "live_hardware": False,
         "adoption_authority": False,
@@ -1017,16 +1061,12 @@ def _evidence_binding(
                     0,
                     external_moonshine_config.authoritative_alignment_samples - 1,
                 ],
-                "finalization_policy": (
-                    external_moonshine_config.finalization_policy
-                ),
+                "finalization_policy": (external_moonshine_config.finalization_policy),
                 "maximum_source_samples": (
                     external_moonshine_config.maximum_source_samples
                 ),
                 "partial_source": "candidate_online_stream_snapshot",
-                "final_source": (
-                    "authoritative_complete_pcm_batch_after_online_close"
-                ),
+                "final_source": ("authoritative_complete_pcm_batch_after_online_close"),
                 "online_stream_final_used": False,
                 "authoritative_final_second_pass": True,
                 "compute_rtf_scope": (
@@ -1082,6 +1122,81 @@ def _evidence_binding(
                     "model_tree_read_only": True,
                     "hard_host_memory_limit": False,
                     "hard_vram_limit": False,
+                },
+            }
+        )
+    if kyutai_config is not None:
+        binding.update(
+            {
+                "benchmark_only": True,
+                "runtime_class": "moshi-pytorch-research",
+                "streaming_recognizer": True,
+                "streaming_fidelity": (
+                    "native-moshi-lm-frame-step-after-noncausal-resample"
+                ),
+                "input_contract": "externally_bounded_complete_pcm",
+                "partial_source": "candidate_stream_token_snapshot",
+                "final_source": "candidate_after_declared_zero_tail",
+                "finalization_latency_scope": (
+                    "last_declared_tail_frame_candidate_step"
+                ),
+                "finalization_is_speech_end_latency": False,
+                "finalization_metrics_applicable": False,
+                "endpointing": False,
+                "endpoint_owner": kyutai_config.endpoint_owner,
+                "early_stop": kyutai_config.early_stop,
+                "endpoint_evidence": False,
+                "tool_authority": False,
+                "live_runtime_authority": False,
+                "semantic_heads": {
+                    "executed": True,
+                    "shape_and_finiteness_validated": True,
+                    "policy": kyutai_config.semantic_head_policy,
+                    "count": kyutai_config.semantic_head_count,
+                    "dimension": kyutai_config.semantic_head_dim,
+                    "diagnostic_only": True,
+                    "endpoint_authority": False,
+                    "early_stop": False,
+                },
+                "semantic_vad_evaluated": False,
+                "resource_control": {
+                    "kind": "systemd-user-scope-cgroup-v2",
+                    "proof_source": "supervisor_cgroup_files_before_ready",
+                    "receipt_field": "worker.cgroup_evidence",
+                    "network_namespace": "unshared",
+                    "runtime_tree_read_only": True,
+                    "direct_model_root_read_only": True,
+                    "hard_host_memory_limit": True,
+                    "hard_cpu_quota": True,
+                    "hard_tasks_limit": True,
+                    "io_weight": 1,
+                    "io_scheduling_class": "idle",
+                    "torch_compile": kyutai_config.torch_compile,
+                    "no_torch_compile_env": kyutai_config.no_torch_compile_env,
+                    "cuda_graph": kyutai_config.cuda_graph,
+                    "no_cuda_graph_env": kyutai_config.no_cuda_graph_env,
+                    "prelaunch_host_available_bytes": (
+                        kyutai_config.minimum_host_available_bytes
+                    ),
+                    "preload_free_vram_mb": kyutai_config.minimum_free_vram_mb,
+                    "cuda_allocator_fraction": (kyutai_config.maximum_vram_fraction),
+                    "hard_vram_limit": False,
+                },
+                "native_stream_geometry": {
+                    "input_sample_rate_hz": kyutai_config.input_sample_rate_hz,
+                    "mimi_sample_rate_hz": kyutai_config.mimi_sample_rate_hz,
+                    "input_chunk_samples": kyutai_config.input_chunk_samples,
+                    "mimi_frame_samples": kyutai_config.mimi_frame_samples,
+                    "partial_interval_ms": kyutai_config.partial_interval_ms,
+                    "terminal_tail_samples": kyutai_config.terminal_tail_samples,
+                    "resampling": "julius-resample-frac",
+                    "resampling_mode": kyutai_config.resampling_mode,
+                    "resampling_scope": "complete-source-tail-alignment-once-noncausal",
+                    "initial_frame_policy": kyutai_config.initial_frame_policy,
+                    "initial_frame_prime_steps": (
+                        kyutai_config.initial_frame_prime_steps
+                    ),
+                    "sample_accounting_domain": "input-16000hz-source-tail",
                 },
             }
         )
@@ -1204,27 +1319,19 @@ def _evidence_binding(
                     "first_source_early_eou": (
                         "blocks_later_acceptance_continue_to_tail_exhaustion"
                     ),
-                    "first_complete_source_feed_eou": (
-                        "accept_and_stop_optional_tail"
-                    ),
-                    "first_finalize_eou": (
-                        "blocks_later_acceptance_tail_exhausted"
-                    ),
+                    "first_complete_source_feed_eou": ("accept_and_stop_optional_tail"),
+                    "first_finalize_eou": ("blocks_later_acceptance_tail_exhausted"),
                     "later_eou": "telemetry_only_never_terminal",
                     "finalize": "telemetry_only_never_terminal",
                 },
                 "turn_text_policy": {
                     "document_text": "upstream_newly_finalized_json_delta",
-                    "visible_assembly": (
-                        "append_through_first_observed_eou_document"
-                    ),
+                    "visible_assembly": ("append_through_first_observed_eou_document"),
                     "after_first_eou": (
                         "visible_final_and_partials_frozen_later_deltas_telemetry_only"
                     ),
                 },
-                "source_completion_policy": (
-                    "consume_complete_source_before_terminal"
-                ),
+                "source_completion_policy": ("consume_complete_source_before_terminal"),
                 "endpoint_ground_truth": False,
                 "endpoint_latency_scope": (
                     "declared_source_end_to_observed_feed_boundary"
@@ -1326,6 +1433,37 @@ def _mark_endpoint_deadline_metrics_not_applicable(
         if not isinstance(nested, dict):
             raise ValueError
         _mark_endpoint_deadline_metrics_not_applicable(nested)
+
+
+def _mark_kyutai_finalization_metrics_not_applicable(
+    metrics: dict[str, object],
+) -> None:
+    """Suppress a wire placeholder that is not source-end latency."""
+
+    latency = metrics.get("latency")
+    if not isinstance(latency, dict):
+        raise ValueError
+    for field_name in (
+        "finalization_p50_ms",
+        "finalization_p95_ms",
+        "finalization_max_ms",
+    ):
+        if field_name not in latency:
+            raise ValueError
+        latency[field_name] = None
+    latency["finalization_metrics_applicable"] = False
+    strata = metrics.get("strata")
+    if strata is None:
+        return
+    if not isinstance(strata, list):
+        raise ValueError
+    for row in strata:
+        if not isinstance(row, dict) or set(row) != {"tag", "cases", "metrics"}:
+            raise ValueError
+        nested = row.get("metrics")
+        if not isinstance(nested, dict):
+            raise ValueError
+        _mark_kyutai_finalization_metrics_not_applicable(nested)
 
 
 def _corpus_binding(
@@ -1551,6 +1689,16 @@ def _wire_protocol_version(manifest: WorkerManifest) -> int:
 
 
 def _default_stream(manifest: WorkerManifest) -> StreamConfig:
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        if not isinstance(config, KyutaiConfig):
+            raise ValueError
+        return StreamConfig(
+            chunk_samples=config.input_chunk_samples,
+            pace="burst",
+            partial_interval_ms=config.partial_interval_ms,
+            tail_padding_samples=config.terminal_tail_samples,
+        )
     if manifest.adapter in {
         PARAKEET_REALTIME_EOU_ADAPTER,
         PARAKEET_CPP_ADAPTER,
@@ -1685,6 +1833,15 @@ def _selected_stream(
             or selected.tail_padding_samples != 0
         ):
             raise ValueError
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            not isinstance(config, KyutaiConfig)
+            or selected.chunk_samples != config.input_chunk_samples
+            or selected.partial_interval_ms != config.partial_interval_ms
+            or selected.tail_padding_samples != config.terminal_tail_samples
+        ):
+            raise ValueError
     return selected
 
 
@@ -1781,11 +1938,10 @@ def _run_benchmark_locked(
 ) -> dict[str, object]:
     selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     manifest = load_worker_manifest(worker_manifest_path)
-    if (
-        ami_endpoint_proxy is not None
-        and manifest.adapter
-        not in {PARAKEET_CPP_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}
-    ):
+    if ami_endpoint_proxy is not None and manifest.adapter not in {
+        PARAKEET_CPP_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         raise ValueError
     selected_stream = _selected_stream(
         manifest,
@@ -1871,6 +2027,7 @@ def _run_benchmark_locked(
             ready = worker.ready
         if manifest.adapter in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
+            KYUTAI_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
         }:
@@ -1880,6 +2037,7 @@ def _run_benchmark_locked(
                     config,
                     (
                         FasterWhisperEndpointConfig,
+                        KyutaiConfig,
                         NemotronConfig,
                         ParakeetRealtimeEouConfig,
                     ),
@@ -1931,6 +2089,8 @@ def _run_benchmark_locked(
             )
         if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
             _mark_endpoint_deadline_metrics_not_applicable(metrics)
+        if manifest.adapter == KYUTAI_ADAPTER:
+            _mark_kyutai_finalization_metrics_not_applicable(metrics)
         worker_report = _worker_report(
             manifest,
             worker_binding,
@@ -1967,6 +2127,7 @@ def _run_benchmark_locked(
                         manifest.adapter_config,
                         (
                             NemotronConfig,
+                            KyutaiConfig,
                             MoonshineExternalEndpointConfig,
                             SherpaZipformerConfig,
                             ParakeetCppConfig,

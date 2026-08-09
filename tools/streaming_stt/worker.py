@@ -30,6 +30,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/faster_whisper_endpoint.py",
+    "tools/streaming_stt/adapters/kyutai.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/adapters/parakeet_cpp.py",
@@ -423,6 +424,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     FASTER_WHISPER_ENDPOINT_ADAPTER,
     FASTER_WHISPER_REQUIRED_MODEL_FILES,
     FASTER_WHISPER_VOCABULARY_FILES,
+    KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
     ManifestError,
     MOONSHINE_ADAPTER,
@@ -432,6 +434,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
+    KyutaiConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
@@ -461,6 +464,7 @@ from tools.streaming_stt.protocol import (  # noqa: E402
 from tools.streaming_stt.runtime_receipt import (  # noqa: E402
     FASTER_WHISPER_MODEL_TREE_LIMITS,
     FASTER_WHISPER_RUNTIME_TREE_LIMITS,
+    KYUTAI_RUNTIME_TREE_LIMITS,
     NEMOTRON_RUNTIME_TREE_LIMITS,
     PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
@@ -501,8 +505,7 @@ def _external_moonshine_config(
             config.streaming_chunk_samples,
         )
         or config.tail_alignment_policy != "zero-pad-to-vad-model-lcm"
-        or config.finalization_policy
-        != "verified-native-free-authoritative-batch-v2"
+        or config.finalization_policy != "verified-native-free-authoritative-batch-v2"
         or type(config.maximum_source_samples) is not int
         or config.maximum_source_samples != 2_097_152
     ):
@@ -686,10 +689,7 @@ def _parakeet_cpp_final_payload(
         "chunks_yielded": getattr(case, "chunks_yielded", None),
         "model_padding_samples": getattr(case, "model_padding_samples", None),
     }
-    if any(
-        type(value) is not int or value < 0
-        for value in integer_fields.values()
-    ):
+    if any(type(value) is not int or value < 0 for value in integer_fields.values()):
         raise ProtocolError()
     source_offered = integer_fields["source_samples_offered"]
     source_consumed = integer_fields["source_samples_consumed"]
@@ -773,10 +773,8 @@ def _parakeet_cpp_final_payload(
                 and (
                     finalize_seen
                     or (
-                        observation.observed_sample
-                        != source_offered + tail_offered
-                        and observation.observed_sample
-                        % config.native_chunk_samples
+                        observation.observed_sample != source_offered + tail_offered
+                        and observation.observed_sample % config.native_chunk_samples
                         != 0
                     )
                     or float(observation_time)
@@ -983,6 +981,7 @@ def _verify_runtime_receipt(
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
         NEMOTRON_ADAPTER,
+        KYUTAI_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
         raise ManifestError()
@@ -993,6 +992,7 @@ def _verify_runtime_receipt(
         MOONSHINE_ADAPTER: None,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER: None,
         NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
+        KYUTAI_ADAPTER: KYUTAI_RUNTIME_TREE_LIMITS,
         PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
         FASTER_WHISPER_ENDPOINT_ADAPTER: FASTER_WHISPER_RUNTIME_TREE_LIMITS,
     }[manifest.adapter]
@@ -1023,7 +1023,11 @@ def _verify_runtime_receipt(
         or Path(os.path.abspath(sys.executable)) != manifest.python.path
     ):
         raise ManifestError()
-    if manifest.adapter in {NEMOTRON_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}:
+    if manifest.adapter in {
+        KYUTAI_ADAPTER,
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         config = manifest.adapter_config
         wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
         maximum_file = max(
@@ -1031,7 +1035,10 @@ def _verify_runtime_receipt(
             default=0,
         )
         if (
-            not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
+            not isinstance(
+                config,
+                (KyutaiConfig, NemotronConfig, ParakeetRealtimeEouConfig),
+            )
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -1114,6 +1121,7 @@ def _verify_worker_state(
 def _verify_candidate_python_version(manifest: WorkerManifest) -> None:
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
+        KYUTAI_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -1124,6 +1132,7 @@ def _verify_candidate_python_version(manifest: WorkerManifest) -> None:
             config,
             (
                 FasterWhisperEndpointConfig,
+                KyutaiConfig,
                 NemotronConfig,
                 ParakeetRealtimeEouConfig,
             ),
@@ -1137,6 +1146,64 @@ def _verify_nemotron_python_version(manifest: WorkerManifest) -> None:
     """Retain the existing test seam while applying the shared GPU check."""
 
     _verify_candidate_python_version(manifest)
+
+
+def _verify_kyutai_cuda_preflight(
+    manifest: WorkerManifest,
+    *,
+    torch_api=None,
+) -> None:
+    """Bind the frozen CUDA policy and require free VRAM before model load."""
+
+    if manifest.adapter != KYUTAI_ADAPTER:
+        if torch_api is not None:
+            raise ManifestError()
+        return
+    config = manifest.adapter_config
+    if (
+        not isinstance(config, KyutaiConfig)
+        or manifest.schema_version != 9
+        or config.device != "cuda:0"
+        or config.dtype != "bfloat16"
+        or config.num_threads != 1
+        or config.maximum_vram_fraction != 0.5
+        or config.minimum_free_vram_mb != 8_192
+        or config.minimum_host_available_bytes != 12 * 1024**3
+        or config.torch_compile is not False
+        or config.no_torch_compile_env != "1"
+        or config.cuda_graph is not False
+        or config.no_cuda_graph_env != "1"
+        or os.environ.get("NO_TORCH_COMPILE") != config.no_torch_compile_env
+        or os.environ.get("NO_CUDA_GRAPH") != config.no_cuda_graph_env
+    ):
+        raise ManifestError()
+    try:
+        if torch_api is None:
+            import torch as torch_api  # noqa: PLC0415
+
+        cuda = torch_api.cuda
+        version = torch_api.version.cuda
+        if (
+            torch_api.__version__ != config.torch_version
+            or version != config.cuda_version
+            or cuda.is_available() is not True
+            or cuda.device_count() != 1
+        ):
+            raise ManifestError()
+        free_bytes, total_bytes = cuda.mem_get_info(0)
+        if (
+            type(free_bytes) is not int
+            or type(total_bytes) is not int
+            or total_bytes <= 0
+            or free_bytes <= 0
+            or free_bytes > total_bytes
+            or free_bytes < config.minimum_free_vram_mb * 1024**2
+        ):
+            raise ManifestError()
+    except ManifestError:
+        raise
+    except Exception:
+        raise ManifestError() from None
 
 
 def _activate_candidate_runtime(
@@ -1177,8 +1244,7 @@ def _activate_candidate_runtime(
             or sys.flags.isolated != 1
             or sys.flags.dont_write_bytecode != 1
             or any(
-                name == "ctypes" or name.startswith("ctypes.")
-                for name in sys.modules
+                name == "ctypes" or name.startswith("ctypes.") for name in sys.modules
             )
         ):
             raise ManifestError()
@@ -1187,6 +1253,7 @@ def _activate_candidate_runtime(
         FASTER_WHISPER_ENDPOINT_ADAPTER,
         MOONSHINE_ADAPTER,
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
+        KYUTAI_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -1206,6 +1273,16 @@ def _activate_candidate_runtime(
         MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     }:
         module_prefixes = ("moonshine_voice",)
+    elif manifest.adapter == KYUTAI_ADAPTER:
+        module_prefixes = (
+            "huggingface_hub",
+            "julius",
+            "moshi",
+            "numpy",
+            "safetensors",
+            "sentencepiece",
+            "torch",
+        )
     elif manifest.adapter == NEMOTRON_ADAPTER:
         module_prefixes = (
             "librosa",
@@ -1293,9 +1370,8 @@ def _create_adapter(manifest: WorkerManifest):
             FasterWhisperEndpointAdapterError,
         )
     if manifest.adapter == PARAKEET_CPP_ADAPTER:
-        if (
-            manifest.schema_version != 8
-            or not isinstance(manifest.adapter_config, ParakeetCppConfig)
+        if manifest.schema_version != 8 or not isinstance(
+            manifest.adapter_config, ParakeetCppConfig
         ):
             raise ManifestError()
         artifacts = manifest.artifact_by_name
@@ -1332,7 +1408,11 @@ def _create_adapter(manifest: WorkerManifest):
     if len(model_roots) != 1:
         raise ManifestError()
     model_root = model_roots.pop()
-    if manifest.adapter in {NEMOTRON_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}:
+    if manifest.adapter in {
+        KYUTAI_ADAPTER,
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         try:
             expected_model_files = {artifact.path.name for artifact in model_artifacts}
             if set(os.listdir(model_root)) != expected_model_files:
@@ -1365,6 +1445,40 @@ def _create_adapter(manifest: WorkerManifest):
         return (
             MoonshineAdapter(model_root, config=manifest.adapter_config),
             MoonshineAdapterError,
+        )
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        artifacts = manifest.artifact_by_name
+        if not isinstance(config, KyutaiConfig) or manifest.schema_version != 9:
+            raise ManifestError()
+        try:
+            model_config = artifacts["model-config"]
+            model_weights = artifacts["model-weights"]
+            mimi_weights = artifacts["model-mimi"]
+            tokenizer = artifacts["model-tokenizer"]
+        except KeyError:
+            raise ManifestError() from None
+        if (
+            model_config.path.name != config.model_config_filename
+            or model_weights.path.name != config.model_weights_filename
+            or mimi_weights.path.name != config.mimi_weights_filename
+            or tokenizer.path.name != config.tokenizer_filename
+        ):
+            raise ManifestError()
+        from tools.streaming_stt.adapters.kyutai import (  # noqa: PLC0415
+            KyutaiAdapter,
+            KyutaiAdapterError,
+        )
+
+        return (
+            KyutaiAdapter(
+                model_config.path,
+                model_weights.path,
+                mimi_weights.path,
+                tokenizer.path,
+                config=config,
+            ),
+            KyutaiAdapterError,
         )
     if manifest.adapter == NEMOTRON_ADAPTER:
         if manifest.adapter_config is None:
@@ -1450,6 +1564,7 @@ def _run(
         raise ManifestError()
     runtime_receipt = _verify_worker_state(manifest, source_bundle)
     _activate_candidate_runtime(manifest, runtime_receipt)
+    _verify_kyutai_cuda_preflight(manifest)
     final_only_endpoint = manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
     if final_only_endpoint and manifest.schema_version != 6:
         raise ManifestError()
@@ -1463,6 +1578,25 @@ def _run(
             or adapter.ready.num_threads != config.num_threads
             or adapter.ready.bridge_abi_version != config.bridge_abi_version
             or adapter.ready.c_api_version != config.c_api_version
+        ):
+            _close_adapter(adapter)
+            raise ManifestError()
+    if manifest.adapter == KYUTAI_ADAPTER:
+        config = manifest.adapter_config
+        geometry = getattr(adapter.ready, "stream_geometry", None)
+        if (
+            not isinstance(config, KyutaiConfig)
+            or getattr(geometry, "input_sample_rate_hz", None)
+            != config.input_sample_rate_hz
+            or getattr(geometry, "mimi_sample_rate_hz", None)
+            != config.mimi_sample_rate_hz
+            or getattr(geometry, "input_chunk_samples", None)
+            != config.input_chunk_samples
+            or getattr(geometry, "mimi_frame_samples", None)
+            != config.mimi_frame_samples
+            or getattr(geometry, "terminal_tail_samples", None)
+            != config.terminal_tail_samples
+            or getattr(geometry, "resampling_mode", None) != config.resampling_mode
         ):
             _close_adapter(adapter)
             raise ManifestError()
@@ -1525,12 +1659,23 @@ def _run(
                         or request.pcm.samples > config.maximum_source_samples
                     ):
                         raise ProtocolError()
+                if manifest.adapter == KYUTAI_ADAPTER:
+                    config = manifest.adapter_config
+                    if (
+                        not isinstance(config, KyutaiConfig)
+                        or request.stream.chunk_samples != config.input_chunk_samples
+                        or request.stream.partial_interval_ms
+                        != config.partial_interval_ms
+                        or request.stream.tail_padding_samples
+                        != config.terminal_tail_samples
+                        or request.pcm.samples > config.maximum_source_samples
+                    ):
+                        raise ProtocolError()
                 if manifest.adapter == PARAKEET_CPP_ADAPTER:
                     config = manifest.adapter_config
                     if (
                         not isinstance(config, ParakeetCppConfig)
-                        or request.stream.chunk_samples
-                        != config.native_chunk_samples
+                        or request.stream.chunk_samples != config.native_chunk_samples
                         or request.stream.tail_padding_samples
                         > config.maximum_tail_padding_samples
                     ):
@@ -1612,6 +1757,27 @@ def _run(
                 chunks = (
                     total_samples + request.stream.chunk_samples - 1
                 ) // request.stream.chunk_samples
+                if manifest.adapter == KYUTAI_ADAPTER:
+                    adapter_chunks = getattr(case, "chunks_yielded", None)
+                    semantic_head_steps = getattr(case, "semantic_head_steps", None)
+                    if (
+                        type(adapter_chunks) is not int
+                        or adapter_chunks != chunks
+                        or type(semantic_head_steps) is not int
+                        or semantic_head_steps
+                        != chunks + config.initial_frame_prime_steps
+                        or getattr(case, "source_samples", None) != request.pcm.samples
+                        or getattr(case, "source_samples_consumed", None)
+                        != request.pcm.samples
+                        or getattr(case, "declared_tail_samples", None)
+                        != request.stream.tail_padding_samples
+                        or getattr(case, "tail_samples_consumed", None)
+                        != request.stream.tail_padding_samples
+                        or model_padding_samples
+                        != (-total_samples) % request.stream.chunk_samples
+                    ):
+                        raise ProtocolError()
+                    chunks = adapter_chunks
                 if manifest.adapter == NEMOTRON_ADAPTER:
                     chunks = getattr(case, "chunks_yielded", None)
                     if (

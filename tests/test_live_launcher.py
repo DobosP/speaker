@@ -1,6 +1,7 @@
 """Headless contract tests for the one-command live-session launcher."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -9,8 +10,10 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import tools.live_launcher as live_launcher_module
 
 from tools.live_launcher import (
     LiveSessionLock,
@@ -1536,21 +1539,36 @@ def _write_guided_capture_config(root: Path) -> None:
     )
 
 
-def test_guided_capture_is_one_effect_free_profile_bound_live_entry(tmp_path, capsys):
+def test_guided_capture_is_one_effect_free_profile_bound_live_entry(
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    import tools.guided_stt_capture as guided_capture
+
     _write_guided_capture_config(tmp_path)
     ops = _FakeOps(nodes=True, ollama_healthy=False)
+    terminal = SimpleNamespace(receipt_sha256="d" * 64)
+    monkeypatch.setattr(
+        guided_capture,
+        "publish_guided_capture_bundle_receipt",
+        lambda _publication, **_kwargs: terminal,
+    )
 
-    assert _run_session(
-        [
-            "--guided-stt-capture",
-            "--run-label",
-            "owner-stt-control",
-            "--final-stt-profile",
-            "sense-voice",
-        ],
-        ops=ops,
-        root=tmp_path,
-    ) == 0
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "owner-stt-control",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 0
+    )
 
     assert all(command != ("ollama", "serve") for command, _ in ops.popen_calls)
     assert all(command != ("ollama", "list") for command in _commands(ops))
@@ -1589,10 +1607,15 @@ def test_guided_capture_is_one_effect_free_profile_bound_live_entry(tmp_path, ca
     assert contract["capture_environment"]["effective_input_gain"] == 1.0
     profile_digest_index = voice.index("--capture-only-profile-sha256")
     sherpa_digest_index = voice.index("--capture-only-sherpa-sha256")
+    contract_digest_index = voice.index("--capture-only-contract-sha256")
     assert voice[profile_digest_index + 1] == contract["final_stt_profile"]["sha256"]
     assert (
         voice[sherpa_digest_index + 1]
         == contract["capture_environment"]["effective_sherpa_sha256"]
+    )
+    assert (
+        voice[contract_digest_index + 1]
+        == hashlib.sha256(contract_path.read_bytes()).hexdigest()
     )
     assert not any(
         option in voice
@@ -1601,6 +1624,215 @@ def test_guided_capture_is_one_effect_free_profile_bound_live_entry(tmp_path, ca
     output = capsys.readouterr().out
     assert "effect-free" in output
     assert "stops automatically" in output
+
+
+def test_guided_capture_child_zero_without_terminal_artifacts_is_red(tmp_path):
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "missing-terminal",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 2
+    )
+
+    run_dir = tmp_path / "logs/live/missing-terminal-20260716-123456"
+    assert (run_dir / "reference-plan.json").is_file()
+    assert (run_dir / "capture-contract.json").is_file()
+    assert not (run_dir / "capture-bundle-receipt.json").exists()
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask") or not hasattr(signal, "sigpending"),
+    reason="protected terminal commit is POSIX-only",
+)
+def test_guided_capture_interrupt_before_terminal_commit_is_130_without_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    import tools.guided_stt_capture as guided_capture
+
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    def interrupt_before_commit(_publication, *, commit_guard):
+        signal.raise_signal(signal.SIGINT)
+        assert commit_guard() is False
+        raise guided_capture.GuidedCapturePublicationError()
+
+    monkeypatch.setattr(
+        guided_capture,
+        "publish_guided_capture_bundle_receipt",
+        interrupt_before_commit,
+    )
+
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "interrupt-terminal",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 128 + signal.SIGINT
+    )
+
+    receipt = (
+        tmp_path
+        / "logs/live/interrupt-terminal-20260716-123456"
+        / "capture-bundle-receipt.json"
+    )
+    assert not receipt.exists()
+
+
+def test_guided_capture_artifact_listing_failure_happens_before_terminal_commit(
+    tmp_path,
+    monkeypatch,
+):
+    import tools.guided_stt_capture as guided_capture
+
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+    published = False
+
+    def fail_listing(_run_dir):
+        raise OSError("injected listing failure")
+
+    def publish(_publication, **_kwargs):
+        nonlocal published
+        published = True
+
+    monkeypatch.setattr(live_launcher_module, "_print_artifacts", fail_listing)
+    monkeypatch.setattr(
+        guided_capture,
+        "publish_guided_capture_bundle_receipt",
+        publish,
+    )
+
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "listing-failure",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 2
+    )
+    assert published is False
+    assert not (
+        tmp_path
+        / "logs/live/listing-failure-20260716-123456"
+        / "capture-bundle-receipt.json"
+    ).exists()
+
+
+def test_guided_capture_post_commit_restore_failure_cannot_turn_receipt_red(
+    tmp_path,
+    monkeypatch,
+):
+    import tools.guided_stt_capture as guided_capture
+
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+    run_dir = tmp_path / "logs/live/terminal-commit-20260716-123456"
+    receipt = run_dir / "capture-bundle-receipt.json"
+    real_restore = live_launcher_module._restore_signal_mask
+
+    def fail_restore(mask):
+        real_restore(mask)
+        raise OSError("injected post-commit restore failure")
+
+    def publish(_publication, *, commit_guard):
+        assert commit_guard() is True
+        receipt.write_bytes(b"terminal-commit\n")
+        receipt.chmod(0o600)
+        monkeypatch.setattr(live_launcher_module, "_restore_signal_mask", fail_restore)
+        return SimpleNamespace(receipt_sha256="d" * 64)
+
+    monkeypatch.setattr(
+        guided_capture,
+        "publish_guided_capture_bundle_receipt",
+        publish,
+    )
+
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "terminal-commit",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 0
+    )
+    assert receipt.read_bytes() == b"terminal-commit\n"
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="protected terminal commit is POSIX-only",
+)
+def test_guided_capture_interrupt_after_terminal_link_cannot_turn_receipt_red(
+    tmp_path,
+    monkeypatch,
+):
+    import tools.guided_stt_capture as guided_capture
+
+    _write_guided_capture_config(tmp_path)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+    run_dir = tmp_path / "logs/live/late-interrupt-20260716-123456"
+    receipt = run_dir / "capture-bundle-receipt.json"
+
+    def publish(_publication, *, commit_guard):
+        assert commit_guard() is True
+        receipt.write_bytes(b"terminal-commit\n")
+        receipt.chmod(0o600)
+        signal.raise_signal(signal.SIGINT)
+        return SimpleNamespace(receipt_sha256="d" * 64)
+
+    monkeypatch.setattr(
+        guided_capture,
+        "publish_guided_capture_bundle_receipt",
+        publish,
+    )
+
+    assert (
+        _run_session(
+            [
+                "--guided-stt-capture",
+                "--run-label",
+                "late-interrupt",
+                "--final-stt-profile",
+                "sense-voice",
+            ],
+            ops=ops,
+            root=tmp_path,
+        )
+        == 0
+    )
+    assert receipt.read_bytes() == b"terminal-commit\n"
 
 
 @pytest.mark.parametrize(

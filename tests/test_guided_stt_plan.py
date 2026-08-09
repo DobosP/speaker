@@ -18,6 +18,7 @@ from core.guided_stt_plan import (
     guided_stt_capture_config_sha256,
     guided_stt_route_availability_sha256,
     guided_stt_sherpa_config_sha256,
+    guided_stt_summary_contract_sha256,
     load_private_guided_stt_plan,
 )
 from tools.prepare_live_stt_corpus import _reference_plan
@@ -33,6 +34,56 @@ def _private_plan(path: Path) -> Path:
     path.write_bytes(canonical_guided_stt_plan_bytes())
     path.chmod(0o600)
     return path
+
+
+def _summary_meta() -> dict[str, object]:
+    plan = built_in_guided_stt_plan()
+    return {
+        "session": "local",
+        "topology": "local_device",
+        "audio_egress": "device_only",
+        "engine": "sherpa",
+        "llm": "disabled",
+        "device": "safe",
+        "final_stt_profile": "sense-voice",
+        "final_stt_profile_sha256": "1" * 64,
+        "final_stt_profile_schema_version": 1,
+        "capture_only_contract_sha256": "2" * 64,
+        "capture_only_profile_sha256": "1" * 64,
+        "capture_only_sherpa_sha256": "3" * 64,
+        "execution_purpose": "stt_capture_only",
+        "llm_constructed": False,
+        "control_plane_constructed": False,
+        "tts_constructed": False,
+        "keyword_spotter_constructed": False,
+        "speaker_gate_constructed": False,
+        "playback_worker_constructed": False,
+        "output_device_queried": False,
+        "owner_authority": False,
+        "speaker_identity_policy": "off_for_session",
+        "capture_protocol": GUIDED_STT_CAPTURE_PROTOCOL,
+        "capture_plan_id": plan.plan_id,
+        "capture_plan_sha256": plan.sha256,
+        "capture_planned_cases": plan.case_count,
+        "capture_accepted_finals": plan.case_count,
+        "capture_state": "open",
+        "capture_completed": True,
+        "effects_enabled": False,
+        "diagnostic_manifest_sha256": "4" * 64,
+        "diagnostic_status": {"status": "complete", "failure_codes": []},
+    }
+
+
+def test_summary_contract_digest_is_stable_and_rejects_non_success() -> None:
+    meta = _summary_meta()
+    digest = guided_stt_summary_contract_sha256(meta)
+
+    assert len(digest) == 64
+    assert digest == guided_stt_summary_contract_sha256(dict(reversed(meta.items())))
+
+    changed = dict(meta, capture_accepted_finals=15)
+    with pytest.raises(GuidedSttPlanError):
+        guided_stt_summary_contract_sha256(changed)
 
 
 def test_fixed_plan_has_exact_canonical_schema_and_digest() -> None:

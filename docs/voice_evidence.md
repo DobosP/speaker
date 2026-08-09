@@ -203,7 +203,9 @@ latency, natural-conversation, or live behavior
 
 For a physical control/candidate check, run the immutable guided plan once per
 complete profile. Follow the terminal geometry and case prompts; speak each
-armed phrase exactly once:
+armed phrase exactly once. Run both commands from the same revision without
+changing configuration or the audio route between them. If you intentionally
+pass `--device` or `--input-gain`, pass the exact same value to both runs:
 
 ```bash
 ./live.sh --guided-stt-capture --run-label owner-stt-sense-control \
@@ -219,14 +221,49 @@ construct tools, control, memory, TTS, KWS, speaker identity, playback, or an
 output device. The private contract binds the fixed plan, profile, device,
 input gain, and effective capture/configuration digests before microphone
 startup. Exit zero additionally requires 16/16 armed live finals and a valid
-post-stop diagnostic manifest. Keep both bundles; a separate paired
-qualification and physical owner review are still required before a profile
-verdict. Do not substitute `--llm echo`, the backend-only `--asr-final`
-option, or a low-level core command (ADR-0157).
+post-stop diagnostic manifest. Keep both bundles unchanged. Do not substitute
+`--llm echo`, the backend-only `--asr-final` option, or a low-level core command
+(ADR-0157).
 
-After exporting one labelled exact-input corpus as above, compare both complete
-selectors on the *same* PCM without relying on the machine's ambient final-ASR
-configuration:
+Qualify only those two completed bundles through the fixed device-free paired
+attestor. The scratch root and report must be new absent absolute paths under
+owner-private parents:
+
+```bash
+python -B -m tools.guided_stt_pair_attestor \
+  --control-bundle /absolute/private/owner-stt-sense-control-bundle \
+  --candidate-bundle /absolute/private/owner-stt-parakeet-candidate-bundle \
+  --scratch-root /absolute/private/new-guided-stt-pair-scratch \
+  --output /absolute/private/new-guided-stt-pair-attestation.json
+```
+
+The attestor reopens both canonical plans, capture contracts, and diagnostic
+manifests. It requires the fixed profile roles and matching non-final capture
+protocol, plan/order, configuration, device, input gain, and route-policy
+bindings. It compiles each bundle's 16 receipt-bound final inputs separately,
+then runs the fixed crossover in this order: both profiles on the control
+capture, followed by both profiles on the candidate capture. The selectors see
+identical PCM within each physical-take comparison; the two independently
+spoken bundles are not identical PCM.
+
+The same evaluation runs the inert deterministic tool-route gate with
+fail-closed no-invoke/no-open capability and launcher sentinels. It constructs
+no execution-capable provider, voice runtime, capability, reminder store, app
+launcher, audio device, or effect path. Selected hypotheses exist only in
+private process memory and are reduced to aggregate counters; stdout and the
+report contain no transcript, case row, path, alias, or identity. Exit zero
+means the four cells, dry route checks, closing input revalidation, and
+no-clobber report publication completed. Before that terminal link, Ctrl-C
+returns 130, SIGHUP or SIGTERM returns 128 plus the signal number, and ordinary
+failure returns 2, all without a final report. After the link, every outcome
+returns 0 with the report retained;
+it does not mean that either profile won. The tool cannot prove that each
+reference was spoken correctly or that the prompted physical geometry was
+followed, so physical owner review remains required (ADR-0158).
+
+For exploratory diagnosis of one already-retained labelled corpus, both
+complete selectors can still be compared on that corpus's same PCM without
+relying on the machine's ambient final-ASR configuration:
 
 ```bash
 python -m tools.recorded_stt_eval \
@@ -239,10 +276,13 @@ python -m tools.recorded_stt_eval \
 
 The two profile arguments are a pair and cannot be mixed with `--set`. Keep the
 report in a private directory and use a new output name. This replay measures
-the production final-selection result after the endpoint on identical audio;
-the two physical bundles separately expose capture, room, interruption, and
-latency behavior. Neither result alone authorizes a default change
-([ADR-0144](adr/0144-add-atomic-live-final-stt-profiles.md)).
+the production final-selection result after the endpoint on identical audio,
+but it does not enforce or replace the two-bundle attestation contract. The
+guided bundles contain different spoken takes and no assistant playback path;
+they do not establish comparative live latency, interruption, AEC, barge-in,
+or natural-conversation behavior. Neither result authorizes a default change
+([ADR-0144](adr/0144-add-atomic-live-final-stt-profiles.md),
+[ADR-0158](adr/0158-add-paired-guided-stt-bundle-attestation.md)).
 
 The locked public command/noise corpus has a separate production-selector pair
 route. It fixes the same ordered profiles and requires both model closures

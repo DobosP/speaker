@@ -156,7 +156,9 @@ so the word-cut barge is live) — let the OS do the DSP:
   (ADR-0075): it starts/reuses session-local dependencies, selects both EC nodes,
   requires full doctor `READY` on the normal path (or the base/deferred preflight
   with `--llm echo`), records mic + aligned playback reference, and restores only
-  its own state. For manual troubleshooting, the equivalent module is:
+  its own state. Echo mode is still the ordinary assistant: deterministic tool
+  routes remain available, so it is not effect-free labelled-command evidence.
+  For manual troubleshooting, the equivalent module is:
   ```
   pactl load-module module-echo-cancel aec_method=webrtc \
       source_name=echo-cancel-source sink_name=echo-cancel-sink \
@@ -207,14 +209,23 @@ never fired in a committed run.
 
 ```bash
 ./live.sh                     # setup + doctor + private mic/reference recording
-./live.sh --llm echo          # same physical audio path, no Ollama startup
+
+# Fixed effect-free STT evidence; run the second profile and paired attestor
+# exactly as documented in docs/voice_evidence.md:
+./live.sh --guided-stt-capture --run-label owner-stt-sense-control \
+  --final-stt-profile sense-voice
 
 # In-app APM fallback (no OS setup; NS smears the near-end during double-talk):
 pip install livekit
-python -m core --session local --device open_speaker            # run; no enrollment required
+python -m core --session local --device open_speaker            # low-level diagnostic only
 python -m core --session local --device open_speaker --enroll   # optional enrollment/update, then exits
 # Run the preceding non-enrollment command again after an optional update.
 ```
+
+`--llm echo` changes model/startup behavior but does not disable the ordinary
+assistant's deterministic vault, web, reminder, or trusted-app routes. Never use
+it to collect a labelled command plan. The direct `python -m core` fallback also
+lacks the launcher's host lifecycle and guided evidence contract.
 
 `./live.sh` deliberately does not select `--device open_speaker` or enroll. The
 current OS-EC path keeps generic interruption enrollment-optional under

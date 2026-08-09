@@ -1574,6 +1574,100 @@ def test_profile_pair_uses_shared_resolver_from_one_effective_base(monkeypatch):
     assert effective == {"sherpa": {"streaming": "unchanged"}}
 
 
+def test_profile_pair_passes_explicit_device_to_strict_effective_resolver(
+    monkeypatch,
+):
+    effective = {"sherpa": {"streaming": "unchanged"}}
+    selected_devices = []
+
+    def load_effective(device=None):
+        selected_devices.append(device)
+        return effective
+
+    monkeypatch.setattr(stt_eval, "_load_effective_config", load_effective)
+    monkeypatch.setattr(
+        "core.config.apply_final_stt_profile",
+        lambda config, name: (
+            {"sherpa": {"profile": name}},
+            SimpleNamespace(
+                name=name,
+                sha256=("a" if name == "sense-voice" else "b") * 64,
+                schema_version=1,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        stt_eval,
+        "_sherpa_config",
+        lambda config: config["sherpa"]["profile"],
+    )
+
+    stt_eval._load_profile_configs(
+        "sense-voice",
+        "parakeet-faster-whisper",
+        device="desktop_gpu_4090",
+    )
+
+    assert selected_devices == ["desktop_gpu_4090"]
+
+
+def test_cli_forwards_explicit_device_to_profile_pair(monkeypatch, capsys):
+    @dataclass(frozen=True)
+    class Config:
+        profile: str
+
+    item = stt_eval._CorpusItem("alpha beta", object(), 16_000, None)
+    baseline = _totals((("alpha beta", "alpha wrong"),))
+    candidate = _totals((("alpha beta", "alpha beta"),))
+    calls = []
+
+    def load_profiles(baseline_name, candidate_name, *, device=None):
+        calls.append((baseline_name, candidate_name, device))
+        return (
+            Config("baseline"),
+            (baseline_name, "a" * 64),
+            Config("candidate"),
+            (candidate_name, "b" * 64),
+        )
+
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: _loaded_fixture(item))
+    monkeypatch.setattr(stt_eval, "_load_profile_configs", load_profiles)
+    monkeypatch.setattr(stt_eval, "_config_digest", lambda _config: "c" * 64)
+    monkeypatch.setattr(stt_eval, "_model_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(
+        stt_eval,
+        "_evaluate",
+        lambda config, _corpus, _keywords: (
+            (candidate, ((0, 0),))
+            if config.profile == "candidate"
+            else (baseline, ((1, 5),))
+        ),
+    )
+
+    assert (
+        stt_eval.main(
+            [
+                "--device",
+                "desktop_gpu_4090",
+                "--baseline-final-stt-profile",
+                "sense-voice",
+                "--candidate-final-stt-profile",
+                "parakeet-faster-whisper",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "sense-voice",
+            "parakeet-faster-whisper",
+            "desktop_gpu_4090",
+        )
+    ]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
 @pytest.mark.parametrize(
     "argv",
     [

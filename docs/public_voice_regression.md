@@ -298,4 +298,6 @@ audio are CC BY-NC or mixed-term schema inspiration, not accepted product data.
 - Licensed or consented product-phrase audio with target/bystander roles.
 - A disjoint owner set spanning controls, near-controls, vault terms,
   numerals, negation, noise/echo, bystanders, and multiple voices.
-- Fresh `./live.sh` owner A/B in the current room and route.
+- Fresh effect-free `./live.sh --guided-stt-capture` control/candidate bundles
+  in the current room and route, followed by the fixed paired attestation and
+  physical owner review (ADR-0157/0158).

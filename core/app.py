@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import math
 import os
+from pathlib import Path
+import stat
 import sys
 from typing import Callable, Optional
 
@@ -623,19 +626,126 @@ def _capture_only_diagnostic_status(engine: AudioEngine) -> dict[str, object] | 
         return None
 
 
+def _capture_only_manifest_snapshot(
+    manifest_path: str,
+) -> tuple[str, tuple[int, ...]] | None:
+    """Hash one stable owner-private manifest without following path links."""
+
+    parent_fd = descriptor = -1
+    try:
+        candidate = Path(manifest_path)
+        if not candidate.is_absolute() or candidate.name in {"", ".", ".."}:
+            return None
+        parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        parent_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        parent_fd = os.open(candidate.parent, parent_flags)
+        parent_before = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_before.st_mode)
+            or stat.S_IMODE(parent_before.st_mode) != 0o700
+            or parent_before.st_uid != os.getuid()
+        ):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(candidate.name, flags, dir_fd=parent_fd)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_uid != os.getuid()
+            or before.st_nlink != 1
+            or before.st_size <= 0
+            or before.st_size > (1 << 20)
+        ):
+            return None
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                return None
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            return None
+        after = os.fstat(descriptor)
+        path_after = os.stat(
+            candidate.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        parent_after = os.fstat(parent_fd)
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+            stat.S_IMODE(before.st_mode),
+            before.st_uid,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            stat.S_IFMT(after.st_mode),
+            stat.S_IMODE(after.st_mode),
+            after.st_uid,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        path_identity = (
+            path_after.st_dev,
+            path_after.st_ino,
+            stat.S_IFMT(path_after.st_mode),
+            stat.S_IMODE(path_after.st_mode),
+            path_after.st_uid,
+            path_after.st_nlink,
+            path_after.st_size,
+            path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
+        )
+        if (
+            identity != after_identity
+            or after_identity != path_identity
+            or parent_before.st_dev != parent_after.st_dev
+            or parent_before.st_ino != parent_after.st_ino
+            or parent_before.st_mode != parent_after.st_mode
+        ):
+            return None
+        return digest.hexdigest(), identity
+    except (OSError, TypeError, ValueError):
+        return None
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+
 def _capture_only_evidence_complete(
     engine: AudioEngine,
     paths: dict,
     *,
     expected_final_count: int,
-) -> tuple[bool, dict[str, object] | None]:
+) -> tuple[bool, dict[str, object] | None, str | None]:
     """Validate post-stop aggregate status and every promised artifact."""
 
     from .diagnostic_bundle import validate_manifest
 
     status = _capture_only_diagnostic_status(engine)
     if status is None:
-        return False, None
+        return False, None, None
     failure_codes = status.get("failure_codes")
     status_ok = (
         status.get("status") == "complete"
@@ -644,6 +754,7 @@ def _capture_only_evidence_complete(
     )
     manifest_path = paths.get("diagnostic_manifest")
     artifacts_ok = False
+    manifest_sha256 = None
     if isinstance(manifest_path, str):
         parent = os.path.abspath(os.path.dirname(manifest_path))
         public_paths = tuple(
@@ -666,12 +777,23 @@ def _capture_only_evidence_complete(
             expected_files = frozenset(
                 os.path.basename(path) for path in public_paths
             )
-            artifacts_ok = validate_manifest(
-                manifest_path,
-                expected_final_model_input_count=expected_final_count,
-                expected_artifact_files=expected_files,
+            before = _capture_only_manifest_snapshot(manifest_path)
+            artifacts_ok = bool(
+                before is not None
+                and validate_manifest(
+                    manifest_path,
+                    expected_final_model_input_count=expected_final_count,
+                    expected_artifact_files=expected_files,
+                )
             )
-    return status_ok and artifacts_ok, status
+            after = (
+                _capture_only_manifest_snapshot(manifest_path) if artifacts_ok else None
+            )
+            if before is not None and after == before:
+                manifest_sha256 = before[0]
+            else:
+                artifacts_ok = False
+    return status_ok and artifacts_ok, status, manifest_sha256
 
 
 def _print_capture_only_artifacts(runlog, paths: dict) -> None:
@@ -707,6 +829,7 @@ def _run_capture_only(
     paths: dict = {}
     result = None
     status_payload = None
+    diagnostic_manifest_sha256 = None
     return_code = 2
     try:
         plan = load_private_guided_stt_plan(args.capture_only_plan)
@@ -715,7 +838,11 @@ def _run_capture_only(
         monitor.mark("after_build")
         session = CaptureOnlySession(engine, plan)
         result = session.run()
-        evidence_complete, status_payload = _capture_only_evidence_complete(
+        (
+            evidence_complete,
+            status_payload,
+            diagnostic_manifest_sha256,
+        ) = _capture_only_evidence_complete(
             engine,
             paths,
             expected_final_count=result.planned_cases,
@@ -768,6 +895,27 @@ def _run_capture_only(
             runlog.summary.note(
                 diagnostic_status={"status": "unavailable", "failure_codes": []}
             )
+        if return_code == 0:
+            try:
+                from .guided_stt_plan import guided_stt_summary_contract_sha256
+
+                if diagnostic_manifest_sha256 is None:
+                    raise GuidedSttPlanError()
+                runlog.summary.note(
+                    diagnostic_manifest_sha256=diagnostic_manifest_sha256,
+                )
+                summary_meta = getattr(runlog.summary, "meta", None)
+                if not isinstance(summary_meta, dict):
+                    summary_meta = getattr(runlog.summary, "notes", None)
+                summary_contract_sha256 = guided_stt_summary_contract_sha256(
+                    summary_meta
+                )
+                runlog.summary.note(
+                    capture_summary_contract_sha256=(summary_contract_sha256),
+                )
+            except Exception:  # noqa: BLE001 - terminal evidence must fail closed
+                return_code = 2
+                runlog.logger.error("[capture] summary contract binding failed")
         runlog.finalize(None)
         if paths:
             _print_capture_only_artifacts(runlog, paths)
@@ -1228,6 +1376,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--capture-only-contract-sha256",
+        type=_lower_sha256,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
     explicit_options = {token.split("=", 1)[0] for token in raw_argv}
@@ -1248,6 +1402,7 @@ def main(argv: list[str] | None = None) -> int:
         args.capture_only_plan,
         args.capture_only_profile_sha256,
         args.capture_only_sherpa_sha256,
+        args.capture_only_contract_sha256,
     )
     if not args.capture_only and any(
         value is not None for value in capture_binding_args
@@ -1282,7 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--capture-only requires --final-stt-profile")
         if any(value is None for value in capture_binding_args):
             parser.error(
-                "--capture-only requires its plan and both expected configuration digests"
+                "--capture-only requires its plan and all expected binding digests"
             )
         if not (
             args.record
@@ -1488,6 +1643,7 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             parser.error("capture-only configuration binding does not match")
         runlog.summary.note(
+            capture_only_contract_sha256=args.capture_only_contract_sha256,
             capture_only_profile_sha256=args.capture_only_profile_sha256,
             capture_only_sherpa_sha256=args.capture_only_sherpa_sha256,
             execution_purpose="stt_capture_only",

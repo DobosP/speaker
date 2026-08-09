@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +17,7 @@ _DIGEST = "1" * 64
 class _Summary:
     def __init__(self) -> None:
         self.notes: dict[str, object] = {}
+        self.meta = self.notes
 
     def note(self, **values) -> None:
         self.notes.update(values)
@@ -64,6 +67,12 @@ def _artifact_paths(tmp_path) -> dict[str, str]:
     }
 
 
+def _write_private_manifest(paths: dict[str, str]) -> None:
+    path = Path(paths["diagnostic_manifest"])
+    path.write_bytes(b"{}\n")
+    path.chmod(0o600)
+
+
 def test_post_stop_evidence_gate_binds_status_count_and_exact_artifact_names(
     tmp_path,
     monkeypatch,
@@ -79,8 +88,9 @@ def test_post_stop_evidence_gate_binds_status_count_and_exact_artifact_names(
         diagnostic_status={"status": "complete", "failure_codes": []}
     )
     paths = _artifact_paths(tmp_path)
+    _write_private_manifest(paths)
 
-    complete, status = app._capture_only_evidence_complete(
+    complete, status, manifest_sha256 = app._capture_only_evidence_complete(
         engine,
         paths,
         expected_final_count=16,
@@ -88,6 +98,7 @@ def test_post_stop_evidence_gate_binds_status_count_and_exact_artifact_names(
 
     assert complete
     assert status == {"status": "complete", "failure_codes": []}
+    assert manifest_sha256 == hashlib.sha256(b"{}\n").hexdigest()
     assert calls == [
         (
             paths["diagnostic_manifest"],
@@ -119,10 +130,12 @@ def test_post_stop_evidence_gate_rejects_incomplete_status(
 ) -> None:
     monkeypatch.setattr(diagnostic_bundle, "validate_manifest", lambda *_a, **_k: True)
     engine = SimpleNamespace(diagnostic_status=status)
+    paths = _artifact_paths(tmp_path)
+    _write_private_manifest(paths)
 
-    complete, _payload = app._capture_only_evidence_complete(
+    complete, _payload, _manifest_sha256 = app._capture_only_evidence_complete(
         engine,
-        _artifact_paths(tmp_path),
+        paths,
         expected_final_count=16,
     )
 
@@ -139,6 +152,8 @@ def _capture_cli(*extra: str) -> list[str]:
         "--capture-only-profile-sha256",
         _DIGEST,
         "--capture-only-sherpa-sha256",
+        _DIGEST,
+        "--capture-only-contract-sha256",
         _DIGEST,
         "--final-stt-profile",
         app.FINAL_STT_PROFILE_NAMES[0],
@@ -275,6 +290,8 @@ def test_capture_main_binds_final_effective_config_and_bypasses_assistant_builds
             profile_digest,
             "--capture-only-sherpa-sha256",
             sherpa_digest,
+            "--capture-only-contract-sha256",
+            _DIGEST,
             "--final-stt-profile",
             app.FINAL_STT_PROFILE_NAMES[0],
             "--no-speaker-enrollment",
@@ -300,6 +317,7 @@ def test_capture_main_binds_final_effective_config_and_bypasses_assistant_builds
     }
     assert len(capture_calls) == 1
     assert capture_calls[0][1]["sherpa"] == effective["sherpa"]
+    assert runlog.summary.notes["capture_only_contract_sha256"] == _DIGEST
     assert runlog.summary.notes["llm_constructed"] is False
     assert runlog.summary.notes["control_plane_constructed"] is False
     assert runlog.summary.notes["tts_constructed"] is False
@@ -378,6 +396,8 @@ def test_capture_digest_mismatch_closes_telemetry_before_readiness_or_build(
                         "record_playback_reference": True,
                     }
                 ),
+                "--capture-only-contract-sha256",
+                _DIGEST,
                 "--final-stt-profile",
                 app.FINAL_STT_PROFILE_NAMES[0],
                 "--no-speaker-enrollment",
@@ -447,9 +467,18 @@ def test_run_capture_only_checks_evidence_only_after_session_stop(
         assert selected_engine.stopped
         assert selected_paths is paths
         assert expected_final_count == 16
-        return evidence_complete, selected_engine.diagnostic_status
+        return (
+            evidence_complete,
+            selected_engine.diagnostic_status,
+            ("d" * 64 if evidence_complete else None),
+        )
 
     monkeypatch.setattr(app, "_capture_only_evidence_complete", evidence)
+    monkeypatch.setattr(
+        guided_plan,
+        "guided_stt_summary_contract_sha256",
+        lambda _meta: "e" * 64,
+    )
     runlog = _Runlog(tmp_path)
     monitor = _Monitor()
     args = SimpleNamespace(capture_only_plan=str(tmp_path / "plan.json"))
@@ -464,6 +493,9 @@ def test_run_capture_only_checks_evidence_only_after_session_stop(
     assert code == (0 if evidence_complete else 2)
     assert engine.stopped
     assert runlog.finalize_calls == 1
+    if evidence_complete:
+        assert runlog.summary.notes["diagnostic_manifest_sha256"] == "d" * 64
+        assert runlog.summary.notes["capture_summary_contract_sha256"] == "e" * 64
 
 
 def test_run_capture_only_stop_failure_is_nonzero_and_still_finalizes(

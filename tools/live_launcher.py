@@ -1536,10 +1536,12 @@ def run_live_session(
     guided_publication = None
     result_code = 2
     cleanup_errors: list[str] = []
-    signal_state = {"signum": 0, "cleaning": False}
+    signal_state = {"signum": 0, "cleaning": False, "committed": False}
     saved_signals: dict[int, object] = {}
 
     def request_shutdown(signum, _frame):
+        if signal_state["committed"]:
+            return
         if signal_state["signum"]:
             return
         signal_state["signum"] = int(signum)
@@ -1699,6 +1701,8 @@ def run_live_session(
                     selected.final_stt_profile_sha256,
                     "--capture-only-sherpa-sha256",
                     selected.effective_sherpa_sha256,
+                    "--capture-only-contract-sha256",
+                    guided_publication.contract_sha256,
                 ]
                 if guided_publication is not None
                 else []
@@ -1748,23 +1752,83 @@ def run_live_session(
                 live_lock.close()
             except OSError as exc:
                 cleanup_errors.append(f"live-session lock release: {exc}")
-        for signum, handler in saved_signals.items():
+
+    def terminal_commit_allowed() -> bool:
+        if signal_state["signum"]:
+            return False
+        if hasattr(signal, "sigpending"):
             try:
-                signal.signal(signum, handler)
-            except (ValueError, OSError) as exc:
-                cleanup_errors.append(f"signal-handler restore {signum}: {exc}")
-        os.umask(prior_umask)
+                pending = signal.sigpending()
+            except (OSError, ValueError):
+                return False
+            for signum in sorted(_lifecycle_signals()):
+                if signum in pending:
+                    signal_state["signum"] = signum
+                    return False
+        return True
 
     if signal_state["signum"]:
         result_code = 128 + signal_state["signum"]
-
-    if cleanup_errors:
-        for error in cleanup_errors:
-            print(f"[live] cleanup warning: {error}", file=sys.stderr)
-        if result_code == 0:
-            result_code = 2
     if run_dir is not None:
-        _print_artifacts(run_dir)
+        try:
+            _print_artifacts(run_dir)
+        except Exception:  # noqa: BLE001 - artifact listing is pre-commit
+            cleanup_errors.append("private artifact listing failed")
+    if signal_state["signum"]:
+        result_code = 128 + signal_state["signum"]
+    if cleanup_errors and result_code == 0:
+        result_code = 2
+    for error in cleanup_errors:
+        print(f"[live] cleanup warning: {error}", file=sys.stderr)
+
+    if guided_publication is not None and result_code == 0:
+        commit_mask = _block_lifecycle_signals()
+        try:
+            if not terminal_commit_allowed():
+                result_code = 128 + int(signal_state["signum"] or signal.SIGINT)
+            else:
+                from tools.guided_stt_capture import (
+                    publish_guided_capture_bundle_receipt,
+                )
+
+                publish_guided_capture_bundle_receipt(
+                    guided_publication,
+                    commit_guard=terminal_commit_allowed,
+                )
+                signal_state["committed"] = True
+        except Exception:  # noqa: BLE001 - preserve private failure details
+            if signal_state["signum"]:
+                result_code = 128 + signal_state["signum"]
+            else:
+                print(
+                    "[live] cleanup warning: guided capture terminal receipt "
+                    "publication failed",
+                    file=sys.stderr,
+                )
+                result_code = 2
+        finally:
+            try:
+                _restore_signal_mask(commit_mask)
+            except (OSError, ValueError):
+                if not signal_state["committed"]:
+                    result_code = 2
+
+    restoration_errors: list[str] = []
+    for signum, handler in saved_signals.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, OSError) as exc:
+            restoration_errors.append(f"signal-handler restore {signum}: {exc}")
+    try:
+        os.umask(prior_umask)
+    except OSError:
+        if not signal_state["committed"]:
+            restoration_errors.append("process umask restore failed")
+    if not signal_state["committed"]:
+        for error in restoration_errors:
+            print(f"[live] cleanup warning: {error}", file=sys.stderr)
+    if restoration_errors and not signal_state["committed"] and result_code == 0:
+        result_code = 2
     return result_code
 
 

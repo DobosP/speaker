@@ -817,13 +817,17 @@ def _guard_output_path(loaded: _CorpusLoad, output: Path | None) -> None:
         raise EvaluationPrerequisiteError() from None
 
 
-def _load_effective_config() -> dict:
+def _load_effective_config(device: str | None = None) -> dict:
     try:
         import sherpa_onnx  # noqa: F401 - explicit native prerequisite
         from core.config import apply_device_profile, load_config
 
         cfg = load_config()
-        return apply_device_profile(cfg, cfg.get("device", "desktop"))
+        if device is None:
+            return apply_device_profile(cfg, cfg.get("device", "desktop"))
+        if type(device) is not str or not device.strip():
+            raise ValueError
+        return apply_device_profile(cfg, device, strict=True)
     except Exception as exc:  # noqa: BLE001 - public error must stay detail-free
         raise EvaluationPrerequisiteError() from exc
 
@@ -843,8 +847,11 @@ def _sherpa_config(effective_config: Mapping[str, object]):
         raise EvaluationPrerequisiteError() from exc
 
 
-def _load_config():
-    return _sherpa_config(_load_effective_config())
+def _load_config(device: str | None = None):
+    effective = (
+        _load_effective_config() if device is None else _load_effective_config(device)
+    )
+    return _sherpa_config(effective)
 
 
 def _profile_binding(metadata: object, expected_name: str) -> tuple[str, str]:
@@ -875,13 +882,19 @@ def _profile_binding(metadata: object, expected_name: str) -> tuple[str, str]:
 def _load_profile_configs(
     baseline_name: str,
     candidate_name: str,
+    *,
+    device: str | None = None,
 ):
     """Resolve both closed profiles from one effective base before replay."""
 
     try:
         from core.config import apply_final_stt_profile
 
-        effective = _load_effective_config()
+        effective = (
+            _load_effective_config()
+            if device is None
+            else _load_effective_config(device)
+        )
         baseline_raw, baseline_metadata = apply_final_stt_profile(
             effective, baseline_name
         )
@@ -1124,6 +1137,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--manifest", type=Path, default=_DEFAULT_MANIFEST)
     parser.add_argument(
+        "--device",
+        help=(
+            "explicit device profile used as the common base for both final-STT "
+            "profiles; unknown names fail closed"
+        ),
+    )
+    parser.add_argument(
         "--set",
         dest="overrides",
         action="append",
@@ -1242,15 +1262,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_config_digest = baseline_model_digest = None
         candidate_config_digest = candidate_model_digest = None
         if profile_comparison:
+            if args.device is None:
+                loaded_profiles = _load_profile_configs(
+                    baseline_profile_name,
+                    candidate_profile_name,
+                )
+            else:
+                loaded_profiles = _load_profile_configs(
+                    baseline_profile_name,
+                    candidate_profile_name,
+                    device=args.device,
+                )
             (
                 baseline_config,
                 baseline_profile_binding,
                 candidate_config,
                 candidate_profile_binding,
-            ) = _load_profile_configs(
-                baseline_profile_name,
-                candidate_profile_name,
-            )
+            ) = loaded_profiles
             # Resolve and bind the complete pair before the first replay cell.
             # A malformed/missing candidate can therefore never leave a
             # baseline-only result that looks like an atomic profile A/B.
@@ -1259,7 +1287,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate_config_digest = _config_digest(candidate_config)
             candidate_model_digest = _model_digest(candidate_config)
         else:
-            baseline_config = _load_config()
+            baseline_config = (
+                _load_config() if args.device is None else _load_config(args.device)
+            )
         if baseline_gate_accumulator is None:
             baseline, baseline_selected_errors = _evaluate(
                 baseline_config, corpus, tuple(args.keyword)

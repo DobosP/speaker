@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Mapping
 
@@ -20,6 +21,8 @@ from typing import Mapping
 GUIDED_STT_PLAN_ID = "agent-core-v1"
 GUIDED_STT_PLAN_SCHEMA_VERSION = 1
 GUIDED_STT_CAPTURE_PROTOCOL = "guided-stt-capture-v1"
+GUIDED_STT_SUMMARY_CONTRACT_KIND = "guided-stt-capture-summary-v1"
+GUIDED_STT_SUMMARY_CONTRACT_SCHEMA_VERSION = 1
 GUIDED_STT_ROUTE_PROFILE = {
     "app_aliases": ["obsidian"],
     "reminders_enabled": True,
@@ -37,6 +40,43 @@ _ROUTES = frozenset(
     }
 )
 _MAX_PLAN_BYTES = 64 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_SUMMARY_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_SUMMARY_CONTRACT_DOMAIN = b"speaker-guided-stt-capture-summary-v1\0"
+_SUMMARY_CONTRACT_FIELDS = (
+    "session",
+    "topology",
+    "audio_egress",
+    "engine",
+    "llm",
+    "device",
+    "final_stt_profile",
+    "final_stt_profile_sha256",
+    "final_stt_profile_schema_version",
+    "capture_only_contract_sha256",
+    "capture_only_profile_sha256",
+    "capture_only_sherpa_sha256",
+    "execution_purpose",
+    "llm_constructed",
+    "control_plane_constructed",
+    "tts_constructed",
+    "keyword_spotter_constructed",
+    "speaker_gate_constructed",
+    "playback_worker_constructed",
+    "output_device_queried",
+    "owner_authority",
+    "speaker_identity_policy",
+    "capture_protocol",
+    "capture_plan_id",
+    "capture_plan_sha256",
+    "capture_planned_cases",
+    "capture_accepted_finals",
+    "capture_state",
+    "capture_completed",
+    "effects_enabled",
+    "diagnostic_manifest_sha256",
+    "diagnostic_status",
+)
 
 
 class GuidedSttPlanError(ValueError):
@@ -238,6 +278,91 @@ def guided_stt_capture_config_sha256(config: Mapping[str, object]) -> str:
     ).hexdigest()
 
 
+def guided_stt_summary_contract_sha256(
+    meta: Mapping[str, object],
+) -> str:
+    """Bind the fixed aggregate success facts written by capture-only runs.
+
+    The full run summary is intentionally not hashed here: it contains volatile
+    duration and telemetry fields and is not final until the logging queue has
+    drained.  The launcher separately hashes those final bytes in the terminal
+    bundle receipt.
+    """
+
+    if not isinstance(meta, Mapping) or isinstance(meta, (str, bytes)):
+        raise GuidedSttPlanError()
+    try:
+        facts = {field: meta[field] for field in _SUMMARY_CONTRACT_FIELDS}
+    except (KeyError, TypeError):
+        raise GuidedSttPlanError() from None
+
+    plan = built_in_guided_stt_plan()
+    sha_fields = (
+        "final_stt_profile_sha256",
+        "capture_only_contract_sha256",
+        "capture_only_profile_sha256",
+        "capture_only_sherpa_sha256",
+        "capture_plan_sha256",
+        "diagnostic_manifest_sha256",
+    )
+    disabled_fields = (
+        "llm_constructed",
+        "control_plane_constructed",
+        "tts_constructed",
+        "keyword_spotter_constructed",
+        "speaker_gate_constructed",
+        "playback_worker_constructed",
+        "output_device_queried",
+        "owner_authority",
+        "effects_enabled",
+    )
+    diagnostic_status = facts.get("diagnostic_status")
+    if (
+        facts.get("session") != "local"
+        or facts.get("topology") != "local_device"
+        or facts.get("audio_egress") != "device_only"
+        or facts.get("engine") != "sherpa"
+        or facts.get("llm") != "disabled"
+        or not isinstance(facts.get("device"), str)
+        or _SAFE_SUMMARY_NAME_RE.fullmatch(str(facts["device"])) is None
+        or facts.get("final_stt_profile")
+        not in {"sense-voice", "parakeet-faster-whisper"}
+        or type(facts.get("final_stt_profile_schema_version")) is not int
+        or int(facts["final_stt_profile_schema_version"]) <= 0
+        or any(
+            not isinstance(facts.get(field), str)
+            or _SHA256_RE.fullmatch(str(facts[field])) is None
+            for field in sha_fields
+        )
+        or facts.get("final_stt_profile_sha256")
+        != facts.get("capture_only_profile_sha256")
+        or facts.get("execution_purpose") != "stt_capture_only"
+        or any(facts.get(field) is not False for field in disabled_fields)
+        or facts.get("speaker_identity_policy") != "off_for_session"
+        or facts.get("capture_protocol") != GUIDED_STT_CAPTURE_PROTOCOL
+        or facts.get("capture_plan_id") != plan.plan_id
+        or facts.get("capture_plan_sha256") != plan.sha256
+        or facts.get("capture_planned_cases") != plan.case_count
+        or facts.get("capture_accepted_finals") != plan.case_count
+        or facts.get("capture_state") != "open"
+        or facts.get("capture_completed") is not True
+        or not isinstance(diagnostic_status, Mapping)
+        or set(diagnostic_status) != {"status", "failure_codes"}
+        or diagnostic_status.get("status") != "complete"
+        or diagnostic_status.get("failure_codes") != []
+    ):
+        raise GuidedSttPlanError()
+
+    payload = {
+        "schema_version": GUIDED_STT_SUMMARY_CONTRACT_SCHEMA_VERSION,
+        "kind": GUIDED_STT_SUMMARY_CONTRACT_KIND,
+        "facts": facts,
+    }
+    return hashlib.sha256(
+        _SUMMARY_CONTRACT_DOMAIN + _canonical_json(payload)
+    ).hexdigest()
+
+
 def _parse_exact(raw: bytes) -> GuidedSttPlan:
     expected = canonical_guided_stt_plan_bytes()
     if raw != expected:
@@ -357,6 +482,8 @@ __all__ = [
     "GUIDED_STT_CAPTURE_PROTOCOL",
     "GUIDED_STT_PLAN_ID",
     "GUIDED_STT_ROUTE_PROFILE",
+    "GUIDED_STT_SUMMARY_CONTRACT_KIND",
+    "GUIDED_STT_SUMMARY_CONTRACT_SCHEMA_VERSION",
     "GuidedSttCase",
     "GuidedSttPlan",
     "GuidedSttPlanError",
@@ -365,5 +492,6 @@ __all__ = [
     "guided_stt_capture_config_sha256",
     "guided_stt_route_availability_sha256",
     "guided_stt_sherpa_config_sha256",
+    "guided_stt_summary_contract_sha256",
     "load_private_guided_stt_plan",
 ]

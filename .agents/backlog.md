@@ -250,11 +250,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         decoding, loading, or scoring candidate bytes (ADR-0169). The private provisioner verifies
         caller-supplied opaque bytes only; its artifact manifest is neither a
         worker/runtime receipt nor redistribution clearance.
+      - [x] freeze the 20-wheel/46,744,727-byte CPython 3.12 Linux CPU package
+        source selection and strict four-logit worker/result algebra, including
+        exact ties and the aggregate 2-by-4 synthetic24 reducer, without
+        acquiring packages or adding an executable worker (ADR-0170).
       - [ ] acquire and privately provision the exact Anyreach bytes only after
-        accepting the publisher-metadata terms, then bind a separate exact CPU
-        runtime/worker and four-way shadow evaluator before any post-cut recovery
-        or reversible pre-cut hold. Require aggregate assistant-playback evidence
-        and owner bare-speaker A/B before effects.
+        accepting the publisher-metadata terms; separately measure and inventory
+        the wheelhouse, install and receipt the exact CPU runtime, inspect the
+        tokenizer/graph, then bind a real worker manifest and four-way shadow
+        evaluator. Require aggregate assistant-playback evidence and owner
+        bare-speaker A/B before effects.
       - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default

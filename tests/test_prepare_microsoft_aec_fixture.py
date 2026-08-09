@@ -703,6 +703,7 @@ from pathlib import Path
 import sys
 
 root = Path.cwd().resolve()
+runtime_prefix = Path(sys.prefix).resolve()
 import tools.prepare_microsoft_aec_fixture as subject
 
 observed = set()
@@ -711,7 +712,17 @@ for module in tuple(sys.modules.values()):
     if not isinstance(raw_path, str):
         continue
     try:
-        relative = Path(raw_path).resolve(strict=True).relative_to(root).as_posix()
+        resolved = Path(raw_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        continue
+    try:
+        resolved.relative_to(runtime_prefix)
+    except ValueError:
+        pass
+    else:
+        continue
+    try:
+        relative = resolved.relative_to(root).as_posix()
     except (OSError, RuntimeError, ValueError):
         continue
     observed.add(relative)

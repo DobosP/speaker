@@ -4,7 +4,7 @@
 # (psycopg is already in requirements.txt for the memory subsystem, but is pinned here too so
 # the @pytest.mark.postgres integration tests have their driver even on a runtime-only box.)
 
-pytest>=8                     # the test runner (`pytest tests` / tools/run_tests.py)
-pytest-xdist>=3.5             # parallel run: `pytest -n auto` (~9s vs ~35s serial)
-pytest-timeout>=2.3           # per-test hang guard (pytest.ini: --timeout=60 --timeout-method=thread)
-psycopg[binary,pool]>=3.2     # PostgreSQL driver + pool; gates the @pytest.mark.postgres memory tests
+pytest>=9.1.1                     # the test runner (`pytest tests` / tools/run_tests.py)
+pytest-xdist>=3.8.0             # parallel run: `pytest -n auto` (~9s vs ~35s serial)
+pytest-timeout>=2.4.0           # per-test hang guard (pytest.ini: --timeout=60 --timeout-method=thread)
+psycopg[binary,pool]>=3.3.4     # PostgreSQL driver + pool; gates the @pytest.mark.postgres memory tests

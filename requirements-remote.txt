@@ -17,6 +17,6 @@
 livekit==1.1.14            # exact RTC pair reviewed with LiveKit Agents 1.6.8
 livekit-agents==1.6.8      # reviewed optional publisher-session composition
 livekit-api==1.2.0         # reviewed AccessToken / VideoGrants API
-livekit-protocol==1.1.21   # release-matched shared protocol closure
-fastapi>=0.110             # token server + /chat + static web hosting
-uvicorn>=0.29              # ASGI server for the token/web server
+livekit-protocol==1.1.22   # release-matched shared protocol closure
+fastapi>=0.141.1             # token server + /chat + static web hosting
+uvicorn>=0.52.1              # ASGI server for the token/web server

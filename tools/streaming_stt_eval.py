@@ -149,6 +149,7 @@ _KYUTAI_CGROUP_EVIDENCE = {
     "verified": True,
 }
 _EVALUATOR_FILES = (
+    "core/config.py",
     "core/diagnostic_bundle.py",
     "tools/streaming_stt_eval.py",
     "tools/streaming_stt/bounded_io.py",

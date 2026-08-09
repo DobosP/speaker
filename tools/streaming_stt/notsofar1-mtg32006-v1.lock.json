@@ -1,0 +1,97 @@
+{
+  "evidence_scope": {
+    "hard_wer_nonoverlap": true,
+    "overlap_cases": 0,
+    "overlap_evidence": false,
+    "speaker_authority": false
+  },
+  "fixture_id": "notsofar1-mtg32006-v1",
+  "kind": "notsofar1-far-field-fixture-lock-v1",
+  "license_id": "CC-BY-4.0",
+  "privacy": {
+    "local_paths_in_receipt": false,
+    "raw_device_ids_in_receipt": false,
+    "raw_speaker_ids_in_receipt": false,
+    "transcripts_in_receipt": false
+  },
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "bce20c48c793a4c793f5361abe837a5119c4c66a6fbb48c7716b423eba1e7c4e",
+  "repository": "microsoft/NOTSOFAR",
+  "revision": "bb97bae9458f477a85dfd6e8aee92e35d5887dd3",
+  "sample_format": {
+    "channels": 1,
+    "encoding": "f32le",
+    "sample_rate_hz": 16000
+  },
+  "schema_version": 1,
+  "selection": {
+    "algorithm": "hash-ranked-isolated-segments-paired-devices-v1",
+    "cases": 18,
+    "channels": 2,
+    "context_max_seconds": "0.200000",
+    "maximum_segment_seconds": "8.000000",
+    "minimum_segment_seconds": "0.600000",
+    "no_intersection_with_any_annotated_segment": true,
+    "reference_transform": "marker-stripped-row-text-v1",
+    "seed": "speaker-notsofar1-mtg32006-v1-2026-08-09",
+    "speakers": 3,
+    "timing_agreement": "core-wer-token-equality-v1",
+    "unknown_marker_policy": "segment-ineligible-v1",
+    "windows": 9,
+    "windows_per_speaker": 3
+  },
+  "source": {
+    "input_sample_format": {
+      "bits_per_sample": 16,
+      "channels": 1,
+      "encoding": "pcm-signed-little-endian",
+      "sample_rate_hz": 16000
+    },
+    "maximum_total_size_bytes": 25165824,
+    "meeting_relative_root": "benchmark-datasets/eval_set/240629.1_eval_small_with_GT/MTG/MTG_32006",
+    "subset": "240629.1_eval_small_with_GT",
+    "total_size_bytes": 24738302,
+    "devices": [
+      "sc_meetup_0/ch0.wav",
+      "sc_rockfall_2/ch0.wav"
+    ],
+    "files": [
+      {
+        "path": "gt_transcription.json",
+        "role": "transcription",
+        "sha256": "323cb14d9bb129d67645128bc5a65559c830b54982541bc577de86f199ce955b",
+        "size_bytes": 224525
+      },
+      {
+        "path": "gt_meeting_metadata.json",
+        "role": "meeting-metadata",
+        "sha256": "43cf2473716aa5dc958f16dfef82a5ea431a6ce5800cd695114de61b219187d0",
+        "size_bytes": 469
+      },
+      {
+        "path": "devices.json",
+        "role": "devices-metadata",
+        "sha256": "6877215356b488462bf3bcc16fea76983a42d89dd2221c4dbff86aca3dea580f",
+        "size_bytes": 1692
+      },
+      {
+        "path": "sc_meetup_0/ch0.wav",
+        "role": "channel-a",
+        "sha256": "02f49d286fbb3ada1cb5ec49e076a6d498d140124d11b420cfcee94b7ecc5ec6",
+        "size_bytes": 12255808
+      },
+      {
+        "path": "sc_rockfall_2/ch0.wav",
+        "role": "channel-b",
+        "sha256": "b37c3d34462ca56006d67bd0aba434fc8e7df95534d971ac66ecb46a7b908805",
+        "size_bytes": 12255808
+      }
+    ],
+    "meeting": {
+      "duration_seconds": "382.992625",
+      "hashtags": "#DebateOverlaps",
+      "id": "MTG_32006",
+      "participants": 4
+    }
+  }
+}

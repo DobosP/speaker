@@ -14,6 +14,22 @@ The separate fixed EdAcc-only development comparison is recorded in
 [ADR-0143](adr/0143-add-fixed-edacc-stt-comparison.md); it does not change the
 matrix or the canonical four-source qualification.
 
+The bounded NOTSOFAR-1 far-field fixture is likewise separate from matrix v5
+and its 96-case lock. [ADR-0159](adr/0159-add-bounded-notsofar-far-field-fixture.md)
+pins one eval-small meeting at an immutable source revision: nine isolated
+single-speaker windows are replayed through two synchronized far-field devices
+for 18 hard-WER cases. The selected fixture contains no overlap case and does
+not test diarization, enrollment, owner identity, capture, or live behavior.
+
+The first retained development replay completed all 18 cases. Faster-Whisper
+Small reported WER/CER `.1538`/`.1030` and 13 exact clips; the one-thread
+Zipformer control reported `.5096`/`.3467` and zero exact clips. Their
+aggregate-only report SHA-256 values are
+`df7fadd455f9de38639ea99fd69ec057d25dc7a22700a11385dee3fe1fb7920d` and
+`46d8437310732336605443f38aec9a68fb4474235af36413d6cc18e5f22bf5c1`.
+Both are accelerated after-PCM comparisons, not capture, endpoint, live, or
+conversational-latency evidence; reported peak VRAM is null.
+
 | Track | Public inputs | Report family |
 |---|---|---|
 | STT/accent | Common Voice 26, Common Voice SPS 4 English, SpeechOcean762, MInDS-14, HarperValleyBank, EdAcc test | literal/canonical WER and CER |

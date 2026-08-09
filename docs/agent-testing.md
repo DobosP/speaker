@@ -34,6 +34,7 @@
 | Dry recorded tool-route gate | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_tool_route_gate.py tests/test_recorded_stt_eval.py tests/test_public_voice_fixtures.py tests/test_obsidian.py tests/test_trusted_apps.py tests/test_device_tools_runtime.py -q` | receipt-bound schema-v3 expected-tag preflight, one-final boundary, closed vault/web/reminder/app/negative routing, fixed-clock empty-state matching, no-invoke/no-launch sentinels, aggregate/profile privacy, and candidate promotion safety pass with production analyzer/planner/match contracts only. No model, provider, capability invocation, vault read, reminder mutation, app launch, runtime, device, or live authority follows (ADR-0125/0126) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced synchronous Sherpa session seam, fixed aggregate conditions/privacy, evaluator, deterministic AMI preparation, and explicit production-owner rejection pass without a model or audio device; the digest binds but replay does not execute the dedicated owner (ADR-0092/0111) |
 | AMI natural-turn capture replay (headless) | `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 19 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_ami_natural_turn_capture_replay.py tests/test_ami_natural_turn_capture_replay_eval.py tests/test_capture_replay_eval.py tests/test_streaming_stt_overlap_metrics.py -q` | `193 passed`: exact lock/private-fixture and generated-source contracts, retained identity reopening, full padded-source fake evaluation, descriptive manual-DA/final accounting, custom two-utterance minimum-order integer metrics, aggregate privacy, lifecycle, and no-clobber publication pass without a model, GPU, microphone, audio device, endpoint/turn truth, quality, promotion, or live evidence (ADR-0166) |
+| AMI natural-turn protected model diagnostic | [Run the exact protected procedure below](#protected-ami-natural-turn-model-diagnostic). | The retained exact 12-evaluation run published a 5,687-byte mode-0600/single-link report SHA-256 `ca1625423f168378eb01ea941b208a2422565eeac14a3669a5ce5dfaf544d8d3`: 9 finals, 3 input-rejected aborts, 9/9 verifier decodes, transition WER .9167, custom minimum-order overlap WER .7500, 1.0046 wall/audio, 1,973.219 MiB RSS, and null reported VRAM. Preserve it; this is descriptive after-PCM replay, not device, live/conversational-latency, quality, promotion, or default evidence (ADR-0166) |
 | EdAcc endpoint-integrity contracts | `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 nice -n 15 ionice -c 3 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_edacc_endpoint_integrity_eval.py tests/test_capture_replay_eval.py tests/test_capture_replay_async_delivery.py tests/test_logical_turn.py tests/test_logical_turn_shadow.py tests/test_semantic_hold_capture.py -q` | `318 passed`: retained-corpus/profile/Smart-Turn admission; three capture-loop cells; closed raw composition and exact inline terminal lineage; separately flagged fresh-stage post-capture drain through the real final worker; capture-side prequeue abort separation; strict idle/close/join ordering; identity, reason, total, source-closure, receipt/mode, privacy, memory-bound, malformed-snapshot, balanced-forgery, capability-forgery, default/schema isolation, and no-clobber tests. This does not prove simultaneous capture/finalizer concurrency, async-inline selected-text parity, overflow, production shutdown, dispatcher, supervisor, runtime, device, latency, authority, quality, or live behavior (ADR-0147/0148/0153/0155/0156) |
 | Isolated streaming-STT harness | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_*.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `1,015 passed, 1 skipped, 5 deselected`: fake, Moonshine Tiny/Small/Medium, Nemotron, Parakeet NeMo, parakeet.cpp, phase-separated scoped-resource, and AMI endpoint-proxy private-source/exact-runtime or native-artifact, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass without a model or audio device; run the bounded-read race separately (ADR-0089/0090/0091/0099/0115/0119/0128/0129) |
 | Exact parakeet.cpp CPU candidate contracts | `SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_provision_parakeet_cpp_candidate.py tests/test_parakeet_cpp_worker_supervisor.py tests/test_streaming_stt_parakeet_cpp.py tests/test_streaming_stt_metrics_parakeet_cpp.py tests/test_streaming_stt_manifest.py tests/test_streaming_stt_protocol.py tests/test_streaming_stt_supervisor.py tests/test_streaming_stt_eval.py -m "not real_model" --deselect tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `464 passed, 1 deselected`: schema-v8 closed receipts and no-load provision, exact bridge/source/ELF/ABI binding, protocol-v4 first-EOU/text-freeze policy, no-network/no-NVIDIA sandbox, verified hard scope, aggregate metrics, evaluator binding, privacy, and teardown pass with fakes; no real model, device, live, tool, or adoption claim (ADR-0119) |
@@ -66,6 +67,65 @@
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Protected AMI natural-turn model diagnostic
+
+Run this only from a normal approved host login with a working user systemd
+manager. Choose an existing exact fixture and a new absent private run root.
+The preflight fails rather than lowering the 12-GiB RAM/12-GiB GPU/no-compute
+guards, and the transient unit asks systemd to cap the evaluator at one CPU,
+4 GiB RAM, 64 tasks, and 35 minutes:
+
+```bash
+set -euo pipefail
+umask 077
+
+REPO=/home/dobo/work/speaker
+FIXTURE=/absolute/private/ami-natural-turn/fixture-v1
+RUN_ROOT=/absolute/private/ami-natural-turn/new-run
+REPORT=$RUN_ROOT/report.json
+
+MEM_KIB=$(awk '$1=="MemAvailable:" {print $2}' /proc/meminfo)
+GPU_MIB=$(nvidia-smi -i 0 --query-gpu=memory.free \
+  --format=csv,noheader,nounits | tr -d '[:space:]')
+GPU_PIDS=$(nvidia-smi --query-compute-apps=pid \
+  --format=csv,noheader,nounits | tr -d '[:space:]')
+[ "$MEM_KIB" -ge 12582912 ]
+[ "$GPU_MIB" -ge 12288 ]
+[ -z "$GPU_PIDS" ]
+
+install -d -m 0700 "$RUN_ROOT"
+[ "$(stat -c '%u:%a' "$RUN_ROOT")" = "$(id -u):700" ]
+test ! -e "$REPORT"
+test ! -L "$REPORT"
+
+systemd-run --user --wait --pipe --collect --quiet \
+  --unit=speaker-ami-natural-turn-gpu-v1 \
+  --working-directory="$REPO" --nice=19 \
+  -p CPUAccounting=yes -p CPUQuota=100% -p CPUWeight=1 \
+  -p MemoryAccounting=yes -p MemoryHigh=3G -p MemoryMax=4G \
+  -p MemorySwapMax=0 -p TasksMax=64 -p KillMode=control-group \
+  -p OOMPolicy=stop -p RuntimeMaxSec=35min -p TimeoutStopSec=10s \
+  -p IOSchedulingClass=idle -p UMask=0077 \
+  -E SPEAKER_TEST_LOG=0 -E PYTHONDONTWRITEBYTECODE=1 \
+  -E OMP_NUM_THREADS=1 -E OPENBLAS_NUM_THREADS=1 \
+  -E MKL_NUM_THREADS=1 -E NUMEXPR_NUM_THREADS=1 \
+  -E OMP_WAIT_POLICY=PASSIVE -E MALLOC_ARENA_MAX=2 \
+  -E HF_HUB_OFFLINE=1 -E TRANSFORMERS_OFFLINE=1 \
+  -E CUDA_VISIBLE_DEVICES=0 -E CUDA_MODULE_LOADING=LAZY \
+  "$REPO/.venv/bin/python" -B \
+  -m tools.ami_natural_turn_capture_replay_eval \
+  --fixture-dir "$FIXTURE" \
+  --config "$REPO/config.json" \
+  --local-config "$REPO/config.local.json" \
+  --device desktop_gpu_4090 --provider cpu --asr-threads 1 \
+  --watchdog-seconds 1800 --report "$REPORT"
+```
+
+The evaluator's retained report attests its own closed aggregate schema and
+model execution, not the host cgroup. Record the launch command outcome
+separately, and do not infer GPU usage from this evaluator while its aggregate
+`peak_vram_mb` remains null.
 
 ## Exact EdAcc two-model development comparison
 

@@ -52,11 +52,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       tar writes now share one bounded exact-size helper with descriptor-relative
       no-follow publication on POSIX, stable-link rejection everywhere, and
       atomic leaf replacement/rollback instead of symlink/hardlink write-through.
-- [ ] **P2 model-selection cleanup from the ADR-0082 review (2026-07-17).**
-      `preserve_existing_kokoro_selection` protects only Kokoro; the generic
-      invariant belongs in `wire_sherpa_paths` (never downgrade ANY existing
-      valid on-disk backend selection unless that family was explicitly
-      requested) — closes the whole downgrade-to-hybrid bug class.
+- [x] **P2 model-selection cleanup from the ADR-0082 review (2026-07-17;
+      shipped 2026-08-09, ADR-0167).** `wire_sherpa_paths` now stages complete
+      model families, preserves every valid on-disk selection unless that exact
+      family has a complete successful explicit replacement, clears stale
+      selector members before repair/replacement, and leaves a valid prior
+      family untouched when a best-effort request fails.
 - [x] **Repeat-guard clock race (found 2026-07-17, Windows; shipped 2026-08-04,
       ADR-0123).** The ADR-0051
       controller repeat handler treats a pre-session `assistant_output` as

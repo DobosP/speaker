@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from core.engines._sherpa_models import _read_onnx_custom_metadata, build_tts
+from core.engines._sherpa_models import build_tts, read_onnx_custom_metadata
 from core.engines.sherpa import SherpaConfig
 
 
@@ -158,7 +158,7 @@ def _stub_onnx(path: Path, meta: dict[str, str]) -> str:
 
 def test_read_onnx_custom_metadata_reads_stub(tmp_path):
     p = _stub_onnx(tmp_path / "m.onnx", {"model_type": "kokoro", "style_dim": "510,1,256"})
-    assert _read_onnx_custom_metadata(p) == {"model_type": "kokoro", "style_dim": "510,1,256"}
+    assert read_onnx_custom_metadata(p) == {"model_type": "kokoro", "style_dim": "510,1,256"}
 
 
 def test_preflight_kokoro_selected_but_vits_model_raises(monkeypatch, tmp_path):

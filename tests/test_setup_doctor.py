@@ -89,10 +89,11 @@ def test_wire_sherpa_paths_sets_makes_absolute_and_preserves():
     cfg = {"sherpa": {"sample_rate": 16000}, "llm": {"backend": "ollama"}}
     out = wire_sherpa_paths(
         cfg,
-        {"asr_encoder": "m/enc.onnx", "tts_data_dir": ""},
+        {"vad_model": "m/vad.onnx", "tts_data_dir": ""},
         abspath=lambda p: "/abs/" + p,
+        exists=lambda _path: True,
     )
-    assert out["sherpa"]["asr_encoder"] == "/abs/m/enc.onnx"
+    assert out["sherpa"]["vad_model"] == "/abs/m/vad.onnx"
     assert out["sherpa"]["sample_rate"] == 16000  # untouched field preserved
     assert "tts_data_dir" not in out["sherpa"]  # empty path skipped
     assert out["llm"] == {"backend": "ollama"}  # other sections preserved
@@ -100,8 +101,293 @@ def test_wire_sherpa_paths_sets_makes_absolute_and_preserves():
 
 def test_wire_sherpa_paths_creates_sherpa_section_when_absent():
     cfg: dict = {}
-    wire_sherpa_paths(cfg, {"asr_tokens": "t.txt"}, abspath=lambda p: p)
-    assert cfg["sherpa"]["asr_tokens"] == "t.txt"
+    wire_sherpa_paths(
+        cfg,
+        {"vad_model": "vad.onnx"},
+        abspath=lambda p: p,
+        exists=lambda _path: True,
+    )
+    assert cfg["sherpa"]["vad_model"] == "vad.onnx"
+
+
+def _family_files(tmp_path: Path, prefix: str, keys: tuple[str, ...]) -> dict[str, str]:
+    root = tmp_path / prefix
+    root.mkdir()
+    paths: dict[str, str] = {}
+    for key in keys:
+        path = root / key
+        path.write_bytes(key.encode())
+        paths[key] = str(path)
+    return paths
+
+
+def test_wire_preserves_complete_existing_asr_and_speaker_families(tmp_path):
+    old_asr = _family_files(tmp_path, "old-asr", setup_models.ASR_FILE_KEYS)
+    new_asr = _family_files(tmp_path, "new-asr", setup_models.ASR_FILE_KEYS)
+    old_speaker = _family_files(tmp_path, "old-speaker", ("speaker_embedding_model",))
+    new_speaker = _family_files(tmp_path, "new-speaker", ("speaker_embedding_model",))
+    config = {"sherpa": {**old_asr, **old_speaker, "sample_rate": 16000}}
+    resolved = {**new_asr, **new_speaker}
+    before_resolved = dict(resolved)
+
+    wire_sherpa_paths(config, resolved)
+
+    assert {key: config["sherpa"][key] for key in old_asr} == old_asr
+    assert (
+        config["sherpa"]["speaker_embedding_model"]
+        == old_speaker["speaker_embedding_model"]
+    )
+    assert config["sherpa"]["sample_rate"] == 16000
+    assert resolved == before_resolved
+
+
+def test_wire_repairs_incomplete_existing_asr_as_one_family(tmp_path):
+    old_asr = _family_files(tmp_path, "old-asr", setup_models.ASR_FILE_KEYS[:-1])
+    old_asr["asr_joiner"] = str(tmp_path / "old-asr" / "missing-joiner")
+    new_asr = _family_files(tmp_path, "new-asr", setup_models.ASR_FILE_KEYS)
+    config = {"sherpa": dict(old_asr)}
+
+    wire_sherpa_paths(config, new_asr)
+
+    assert {key: config["sherpa"][key] for key in new_asr} == new_asr
+
+
+def test_wire_replaces_complete_asr_only_when_explicitly_requested(tmp_path):
+    old_asr = _family_files(tmp_path, "old-asr", setup_models.ASR_FILE_KEYS)
+    new_asr = _family_files(tmp_path, "new-asr", setup_models.ASR_FILE_KEYS)
+    config = {"sherpa": dict(old_asr)}
+
+    wire_sherpa_paths(
+        config,
+        new_asr,
+        requested_families={"streaming_asr"},
+    )
+
+    assert {key: config["sherpa"][key] for key in new_asr} == new_asr
+
+
+def test_wire_rejects_partial_incoming_family_without_mutation(tmp_path):
+    token = tmp_path / "tokens.txt"
+    token.write_text("tokens")
+    config = {"sherpa": {"sample_rate": 16000}}
+    before = json.loads(json.dumps(config))
+
+    with pytest.raises(ValueError, match="streaming_asr family is incomplete"):
+        wire_sherpa_paths(config, {"asr_tokens": str(token)})
+
+    assert config == before
+
+
+def test_wire_explicit_sensevoice_replaces_nemo_without_stale_members(tmp_path):
+    old = _family_files(
+        tmp_path,
+        "old-final",
+        setup_models.SHERPA_PATH_FAMILIES["final_asr"],
+    )
+    incoming = _family_files(
+        tmp_path,
+        "sensevoice",
+        ("asr_final_model", "asr_final_tokens"),
+    )
+    config = {"sherpa": {**old, "asr_final_backend": "nemo_transducer"}}
+
+    wire_sherpa_paths(
+        config,
+        incoming,
+        requested_families={"final_asr"},
+        family_modes={"final_asr": "sense_voice"},
+    )
+
+    assert config["sherpa"]["asr_final_backend"] == "sense_voice"
+    assert {key: config["sherpa"][key] for key in incoming} == incoming
+    assert "asr_final_decoder" not in config["sherpa"]
+    assert "asr_final_joiner" not in config["sherpa"]
+
+
+def test_wire_rejects_verifier_without_every_snapshot_leaf(tmp_path):
+    root = tmp_path / "verifier"
+    root.mkdir()
+    for name in setup_models.FASTER_WHISPER_REQUIRED_FILES[:-1]:
+        (root / name).write_bytes(b"model")
+    config: dict = {}
+
+    with pytest.raises(ValueError, match="vocabulary.txt"):
+        wire_sherpa_paths(
+            config,
+            {"asr_final_verifier_model": str(root)},
+            requested_families={"final_verifier"},
+            family_modes={"final_verifier": "faster_whisper"},
+        )
+
+    assert config == {}
+
+
+def test_wire_rejects_partial_kws_and_aec_families(tmp_path):
+    partial_kws = _family_files(
+        tmp_path,
+        "partial-kws",
+        setup_models.SHERPA_PATH_FAMILIES["kws"][:-1],
+    )
+    config: dict = {}
+    with pytest.raises(ValueError, match="kws family is incomplete"):
+        wire_sherpa_paths(
+            config,
+            partial_kws,
+            requested_families={"kws"},
+        )
+    assert config == {}
+
+    aec_root = tmp_path / "partial-aec"
+    aec_root.mkdir()
+    (aec_root / "dtln_aec_stage1.onnx").write_bytes(b"stage-1")
+    with pytest.raises(ValueError, match="missing DTLN stages"):
+        wire_sherpa_paths(
+            config,
+            {"aec_model": str(aec_root)},
+            requested_families={"aec"},
+        )
+    assert config == {}
+
+
+def test_wire_repairs_recognizable_tts_family_mismatch(tmp_path, monkeypatch):
+    old = _family_files(
+        tmp_path,
+        "hybrid",
+        ("tts_model", "tts_tokens", "tts_voices", "tts_lexicon"),
+    )
+    incoming = _family_files(tmp_path, "piper", ("tts_model", "tts_tokens"))
+    monkeypatch.setattr(
+        setup_models,
+        "read_onnx_custom_metadata",
+        lambda path: {"model_type": "vits"} if path == old["tts_model"] else {},
+    )
+    config = {"sherpa": dict(old)}
+
+    wire_sherpa_paths(config, incoming)
+
+    assert {key: config["sherpa"][key] for key in incoming} == incoming
+    assert "tts_voices" not in config["sherpa"]
+    assert "tts_lexicon" not in config["sherpa"]
+
+
+def test_wire_preserves_valid_custom_piper_until_tts_is_requested(
+    tmp_path,
+    monkeypatch,
+):
+    old = _family_files(tmp_path, "piper", ("tts_model", "tts_tokens"))
+    old_data = tmp_path / "piper" / "tts_data_dir"
+    old_data.mkdir()
+    old["tts_data_dir"] = str(old_data)
+    incoming = _family_files(
+        tmp_path,
+        "kokoro",
+        ("tts_model", "tts_tokens", "tts_voices", "tts_lexicon"),
+    )
+    incoming_data = tmp_path / "kokoro" / "tts_data_dir"
+    incoming_data.mkdir()
+    incoming["tts_data_dir"] = str(incoming_data)
+    monkeypatch.setattr(
+        setup_models,
+        "read_onnx_custom_metadata",
+        lambda path: {"model_type": "vits" if path == old["tts_model"] else "kokoro"},
+    )
+    config = {"sherpa": dict(old)}
+
+    wire_sherpa_paths(config, incoming)
+    assert {key: config["sherpa"][key] for key in old} == old
+    assert "tts_voices" not in config["sherpa"]
+
+    wire_sherpa_paths(config, incoming, requested_families={"tts"})
+    assert {key: config["sherpa"][key] for key in incoming} == incoming
+
+
+def test_wire_ignores_inert_optional_paths_when_preserving_families(
+    tmp_path,
+    monkeypatch,
+):
+    old_tts = _family_files(tmp_path, "piper", ("tts_model", "tts_tokens"))
+    old_tts["tts_lexicon"] = str(tmp_path / "missing-kokoro-lexicon.txt")
+    incoming_tts = _family_files(
+        tmp_path,
+        "fallback-piper",
+        ("tts_model", "tts_tokens"),
+    )
+    old_final = _family_files(
+        tmp_path,
+        "whisper",
+        ("asr_final_model", "asr_final_tokens", "asr_final_decoder"),
+    )
+    old_final["asr_final_hr_rule_fsts"] = str(tmp_path / "missing-sensevoice.fst")
+    incoming_final = _family_files(
+        tmp_path,
+        "fallback-whisper",
+        ("asr_final_model", "asr_final_tokens", "asr_final_decoder"),
+    )
+    monkeypatch.setattr(
+        setup_models,
+        "read_onnx_custom_metadata",
+        lambda _path: {"model_type": "vits"},
+    )
+    config = {
+        "sherpa": {
+            **old_tts,
+            **old_final,
+            "asr_final_backend": "whisper",
+        }
+    }
+
+    wire_sherpa_paths(
+        config,
+        {**incoming_tts, **incoming_final},
+    )
+
+    assert {key: config["sherpa"][key] for key in old_tts} == old_tts
+    assert {key: config["sherpa"][key] for key in old_final} == old_final
+    assert config["sherpa"]["asr_final_hr_rule_fsts"] == old_final[
+        "asr_final_hr_rule_fsts"
+    ]
+
+
+def test_wire_mixed_family_failure_is_atomic(tmp_path):
+    vad = tmp_path / "vad.onnx"
+    vad.write_bytes(b"vad")
+    token = tmp_path / "tokens.txt"
+    token.write_text("tokens")
+    config = {"sherpa": {"sample_rate": 16000}}
+    before = json.loads(json.dumps(config))
+
+    with pytest.raises(ValueError, match="streaming_asr family is incomplete"):
+        wire_sherpa_paths(
+            config,
+            {"vad_model": str(vad), "asr_tokens": str(token)},
+        )
+
+    assert config == before
+
+
+def test_wire_rejects_unknown_requested_family_without_mutation():
+    config = {"sherpa": {"sample_rate": 16000}}
+    with pytest.raises(ValueError, match="unknown requested"):
+        wire_sherpa_paths(config, {}, requested_families={"mystery"})
+    assert config == {"sherpa": {"sample_rate": 16000}}
+
+
+def test_wire_rejects_backend_mode_without_family_authorization():
+    config = {"sherpa": {"sample_rate": 16000}}
+    with pytest.raises(ValueError, match="require explicit family authorization"):
+        wire_sherpa_paths(
+            config,
+            {},
+            family_modes={"final_asr": "sense_voice"},
+        )
+    assert config == {"sherpa": {"sample_rate": 16000}}
+
+
+def test_wire_rejects_non_object_sherpa_without_mutation():
+    config = {"sherpa": ["not", "an", "object"]}
+    with pytest.raises(TypeError, match="must be an object"):
+        wire_sherpa_paths(config, {})
+    assert config == {"sherpa": ["not", "an", "object"]}
 
 
 def test_ordinary_setup_preserves_complete_prepared_bpe_asr_family(tmp_path):
@@ -776,6 +1062,177 @@ def test_required_selected_success_publishes_one_complete_config(
         )
     )
     assert list(tmp_path.glob(".config.local.json.*.tmp")) == []
+
+
+def _fake_kws_family(tmp_path: Path) -> dict[str, str]:
+    return _family_files(
+        tmp_path,
+        "requested-kws",
+        setup_models.SHERPA_PATH_FAMILIES["kws"],
+    )
+
+
+def test_unrelated_main_setup_preserves_every_complete_existing_family(
+    tmp_path,
+    monkeypatch,
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    old_asr = _family_files(tmp_path, "custom-asr", setup_models.ASR_FILE_KEYS)
+    old_tts = _family_files(
+        tmp_path,
+        "custom-kokoro",
+        ("tts_model", "tts_tokens", "tts_voices", "tts_lexicon"),
+    )
+    old_data = tmp_path / "custom-kokoro" / "tts_data_dir"
+    old_data.mkdir()
+    old_tts["tts_data_dir"] = str(old_data)
+    old_speaker = _family_files(
+        tmp_path, "custom-speaker", ("speaker_embedding_model",)
+    )
+    kws = _fake_kws_family(tmp_path)
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_kws_package",
+        lambda *_args, **_kwargs: kws,
+    )
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        json.dumps({"sherpa": {**old_asr, **old_tts, **old_speaker}}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        setup_models.main(
+            [
+                "--dest",
+                str(tmp_path / "models"),
+                "--config",
+                str(config),
+                "--kws",
+                "--kws-url",
+                "kws.tar.bz2",
+            ]
+        )
+        == 0
+    )
+
+    sherpa = json.loads(config.read_text(encoding="utf-8"))["sherpa"]
+    assert {key: sherpa[key] for key in old_asr} == old_asr
+    assert {key: sherpa[key] for key in old_tts} == old_tts
+    assert sherpa["speaker_embedding_model"] == old_speaker["speaker_embedding_model"]
+    assert {key: sherpa[key] for key in kws} == kws
+
+
+def test_failed_best_effort_kokoro_keeps_valid_existing_tts_family(
+    tmp_path,
+    monkeypatch,
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    old_tts = _family_files(
+        tmp_path,
+        "existing-kokoro",
+        ("tts_model", "tts_tokens", "tts_voices", "tts_lexicon"),
+    )
+    old_data = tmp_path / "existing-kokoro" / "tts_data_dir"
+    old_data.mkdir()
+    old_tts["tts_data_dir"] = str(old_data)
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_kokoro_package",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic Kokoro failure")
+        ),
+    )
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        json.dumps({"sherpa": dict(old_tts)}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        setup_models.main(
+            [
+                "--dest",
+                str(tmp_path / "models"),
+                "--config",
+                str(config),
+                "--kokoro",
+                "--kokoro-url",
+                "broken.tar.bz2",
+            ]
+        )
+        == 0
+    )
+
+    sherpa = json.loads(config.read_text(encoding="utf-8"))["sherpa"]
+    assert {key: sherpa[key] for key in old_tts} == old_tts
+
+
+def test_explicit_accuracy_option_authorizes_streaming_asr_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    old_asr = _family_files(tmp_path, "custom-asr", setup_models.ASR_FILE_KEYS)
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        json.dumps({"sherpa": dict(old_asr)}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        setup_models.main(
+            [
+                "--dest",
+                str(tmp_path / "models"),
+                "--config",
+                str(config),
+                "--accuracy",
+                "fast",
+                "--no-speaker-model",
+            ]
+        )
+        == 0
+    )
+
+    sherpa = json.loads(config.read_text(encoding="utf-8"))["sherpa"]
+    assert all(sherpa[key] != old_asr[key] for key in old_asr)
+
+
+def test_speaker_url_environment_override_authorizes_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    old_speaker = _family_files(
+        tmp_path,
+        "custom-speaker",
+        ("speaker_embedding_model",),
+    )
+    config = tmp_path / "config.local.json"
+    config.write_text(
+        json.dumps({"sherpa": dict(old_speaker)}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SPEAKER_EMBEDDING_MODEL_URL", "replacement-speaker.onnx")
+
+    assert (
+        setup_models.main(
+            [
+                "--dest",
+                str(tmp_path / "models"),
+                "--config",
+                str(config),
+            ]
+        )
+        == 0
+    )
+
+    selected = json.loads(config.read_text(encoding="utf-8"))["sherpa"][
+        "speaker_embedding_model"
+    ]
+    assert selected != old_speaker["speaker_embedding_model"]
+    assert selected.endswith("replacement-speaker.onnx")
 
 
 def _fake_bpe_context(tmp_path: Path) -> dict[str, str]:

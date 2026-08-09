@@ -530,7 +530,7 @@ def build_keyword_spotter(c: "SherpaConfig"):
     )
 
 
-def _read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
+def read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
     """Read an ONNX file's ``metadata_props`` (custom key/value metadata) in
     O(metadata) time, or ``None`` if the file can't be parsed as a ModelProto.
 
@@ -606,6 +606,11 @@ def _read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
     return meta
 
 
+# Compatibility for existing tests and out-of-tree diagnostics; new callers use
+# the public spelling so setup and runtime classify the same model bytes.
+_read_onnx_custom_metadata = read_onnx_custom_metadata
+
+
 def _tts_family_preflight(c: "SherpaConfig", kokoro: bool) -> None:
     """Refuse a config whose TTS family selection (``tts_voices``) contradicts
     what ``tts_model`` actually is, BEFORE sherpa-onnx sees it.
@@ -628,7 +633,7 @@ def _tts_family_preflight(c: "SherpaConfig", kokoro: bool) -> None:
 
     if not os.path.isfile(c.tts_model):
         return  # missing files are handled (loudly) by the existing paths
-    meta = _read_onnx_custom_metadata(c.tts_model)
+    meta = read_onnx_custom_metadata(c.tts_model)
     if meta is None:
         logging.getLogger("speaker.sherpa").warning(
             "Could not read ONNX metadata from tts_model (%s) -- skipping the "

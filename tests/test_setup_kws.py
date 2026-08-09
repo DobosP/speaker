@@ -9,40 +9,10 @@ asset; the URL is ``.invalid`` so any accidental network attempt fails loudly.
 """
 from __future__ import annotations
 
-from tools.setup_models import preserve_existing_kokoro_selection
-
-
-def test_preserve_kokoro_drops_default_tts_keys_on_non_kokoro_run():
-    cfg = {"sherpa": {"tts_voices": "/k/voices.bin", "tts_model": "/k/model.int8.onnx"}}
-    resolved = {"tts_model": "/p/piper.onnx", "tts_tokens": "/p/tok.txt",
-                "tts_data_dir": "/p/espeak", "kws_encoder": "/kws/enc.onnx"}
-    assert preserve_existing_kokoro_selection(
-        cfg, resolved, want_kokoro=False, exists=lambda p: p.startswith("/k/")
-    )
-    assert "tts_model" not in resolved and "tts_tokens" not in resolved
-    assert "tts_data_dir" not in resolved
-    assert resolved["kws_encoder"] == "/kws/enc.onnx"  # unrelated keys untouched
-
-
-def test_preserve_kokoro_noop_when_kokoro_requested_or_absent():
-    resolved = {"tts_model": "/p/piper.onnx"}
-    cfg = {"sherpa": {"tts_voices": "/k/voices.bin", "tts_model": "/k/model.onnx"}}
-    assert not preserve_existing_kokoro_selection(
-        cfg, dict(resolved), want_kokoro=True, exists=lambda p: True
-    )
-    # No existing voices selection -> defaults win.
-    assert not preserve_existing_kokoro_selection(
-        {"sherpa": {"tts_model": "/p/old.onnx"}}, dict(resolved),
-        want_kokoro=False, exists=lambda p: True,
-    )
-    # Selection present but files gone (deleted dir) -> defaults win (repair).
-    assert not preserve_existing_kokoro_selection(
-        cfg, dict(resolved), want_kokoro=False, exists=lambda p: False
-    )
-
 import io
 import os
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -50,7 +20,72 @@ from tools.setup_models import (
     KWS_BARGE_PHRASES,
     fetch_kws_package,
     generate_barge_keywords,
+    wire_sherpa_paths,
 )
+
+
+def _write_paths(root: Path, names: tuple[str, ...]) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode())
+        paths[name] = str(path)
+    return paths
+
+
+def test_unrelated_kws_setup_preserves_complete_kokoro_family(tmp_path):
+    old = _write_paths(
+        tmp_path / "old",
+        ("tts_model", "tts_tokens", "tts_voices", "tts_lexicon"),
+    )
+    old_data = tmp_path / "old" / "tts_data_dir"
+    old_data.mkdir()
+    old["tts_data_dir"] = str(old_data)
+    piper = _write_paths(tmp_path / "piper", ("tts_model", "tts_tokens"))
+    piper_data = tmp_path / "piper" / "tts_data_dir"
+    piper_data.mkdir()
+    piper["tts_data_dir"] = str(piper_data)
+    kws = _write_paths(
+        tmp_path / "kws",
+        (
+            "kws_tokens",
+            "kws_encoder",
+            "kws_decoder",
+            "kws_joiner",
+            "kws_keywords_file",
+        ),
+    )
+    config = {"sherpa": dict(old)}
+
+    wire_sherpa_paths(
+        config,
+        {**piper, **kws},
+        requested_families={"kws"},
+    )
+
+    assert {key: config["sherpa"][key] for key in old} == old
+    assert {key: config["sherpa"][key] for key in kws} == kws
+
+
+def test_invalid_kokoro_family_repairs_to_coherent_piper(tmp_path):
+    old = _write_paths(
+        tmp_path / "old",
+        ("tts_model", "tts_voices", "tts_lexicon"),
+    )
+    old["tts_tokens"] = str(tmp_path / "old" / "missing-tokens")
+    piper = _write_paths(tmp_path / "piper", ("tts_model", "tts_tokens"))
+    piper_data = tmp_path / "piper" / "tts_data_dir"
+    piper_data.mkdir()
+    piper["tts_data_dir"] = str(piper_data)
+    config = {"sherpa": dict(old)}
+
+    wire_sherpa_paths(config, piper)
+
+    assert {key: config["sherpa"][key] for key in piper} == piper
+    assert "tts_voices" not in config["sherpa"]
+    assert "tts_lexicon" not in config["sherpa"]
+
 
 _URL = "https://example.invalid/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2"
 _ROOT = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/"

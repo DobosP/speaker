@@ -41,6 +41,8 @@ import tarfile
 import tempfile
 from typing import Callable, Iterable, Literal
 
+from core.engines._sherpa_models import read_onnx_custom_metadata
+
 DEST = os.path.join("pretrained_models", "sherpa")
 # On-device LLM weights (llamacpp backend) live here; the phone/phone_lite device
 # profiles already point llm.main_model_path / fast_model_path at models/<file>.
@@ -64,6 +66,46 @@ ASR_FILE_KEYS = (
     "asr_encoder",
     "asr_decoder",
     "asr_joiner",
+)
+SHERPA_PATH_FAMILIES: dict[str, tuple[str, ...]] = {
+    "streaming_asr": ASR_FILE_KEYS,
+    "vad": ("vad_model",),
+    "tts": (
+        "tts_model",
+        "tts_tokens",
+        "tts_data_dir",
+        "tts_voices",
+        "tts_lexicon",
+    ),
+    "speaker": ("speaker_embedding_model",),
+    "punctuation": ("punct_model",),
+    "denoise": ("denoise_model",),
+    "endpoint": ("endpoint_prosody_model",),
+    "final_asr": (
+        "asr_final_model",
+        "asr_final_tokens",
+        "asr_final_decoder",
+        "asr_final_joiner",
+    ),
+    "final_verifier": ("asr_final_verifier_model",),
+    "kws": (
+        "kws_tokens",
+        "kws_encoder",
+        "kws_decoder",
+        "kws_joiner",
+        "kws_keywords_file",
+    ),
+    "aec": ("aec_model",),
+}
+_SHERPA_PATH_FAMILY_BY_KEY = {
+    key: family for family, keys in SHERPA_PATH_FAMILIES.items() for key in keys
+}
+_SHERPA_FAMILY_SELECTOR_KEYS = {
+    "final_asr": ("asr_final_backend",),
+    "final_verifier": ("asr_final_verifier_backend",),
+}
+_COMMA_SEPARATED_SHERPA_PATH_KEYS = frozenset(
+    {"tts_lexicon", "asr_final_hr_rule_fsts", "asr_final_rule_fsts"}
 )
 # The English hotword context is a setup-only, immutable ASR-family selection.
 # Keep it out of tools.bench.models: benchmarks must not download an unused
@@ -1645,48 +1687,343 @@ def apply_accuracy(manifest: dict, accuracy: str) -> dict:
     return manifest
 
 
-def preserve_existing_kokoro_selection(
-    cfg: dict,
-    resolved: dict,
-    *,
-    want_kokoro: bool,
-    exists=os.path.exists,
-) -> bool:
-    """Keep a previously selected on-disk Kokoro voice across non-Kokoro runs.
+def _configured_path_parts(key: str, value: object) -> tuple[str, ...]:
+    raw = str(value or "")
+    if not raw:
+        return ()
+    if key in _COMMA_SEPARATED_SHERPA_PATH_KEYS:
+        return tuple(part.strip() for part in raw.split(",") if part.strip())
+    return (raw,)
 
-    The default fetch resolves the Piper tts_model/tts_tokens/tts_data_dir;
-    wiring those over an existing ``tts_voices`` selection produces a broken
-    HYBRID (Kokoro voices.bin against the Piper model.onnx -- ``build_tts``
-    selects the Kokoro backend on ``tts_voices`` alone, then fails to load).
-    Seen live 2026-07-17 when ``--kws`` downgraded the Kokoro selection
-    (ADR-0082). Only an explicit ``--kokoro`` run re-wires the TTS keys.
-    Returns True when the resolved TTS defaults were dropped."""
-    if want_kokoro:
-        return False
-    sherpa = cfg.get("sherpa") if isinstance(cfg.get("sherpa"), dict) else {}
-    voices = str((sherpa or {}).get("tts_voices", "") or "")
-    model = str((sherpa or {}).get("tts_model", "") or "")
-    if not (voices and exists(voices) and model and exists(model)):
-        return False
-    dropped = False
-    for key in ("tts_model", "tts_tokens", "tts_data_dir"):
-        dropped = (resolved.pop(key, None) is not None) or dropped
-    return dropped
+
+def _configured_paths_exist(
+    sherpa: dict,
+    keys: Iterable[str],
+    *,
+    exists: Callable[[str], bool],
+) -> bool:
+    for key in keys:
+        parts = _configured_path_parts(key, sherpa.get(key, ""))
+        if not parts or any(not exists(path) for path in parts):
+            return False
+    return True
+
+
+def _optional_configured_paths_exist(
+    sherpa: dict,
+    keys: Iterable[str],
+    *,
+    exists: Callable[[str], bool],
+) -> bool:
+    for key in keys:
+        parts = _configured_path_parts(key, sherpa.get(key, ""))
+        if parts and any(not exists(path) for path in parts):
+            return False
+    return True
+
+
+def _existing_sherpa_family_is_valid(
+    sherpa: dict,
+    family: str,
+    *,
+    exists: Callable[[str], bool],
+) -> bool:
+    if family == "streaming_asr":
+        return _configured_paths_exist(sherpa, ASR_FILE_KEYS, exists=exists)
+    if family == "tts":
+        required = ["tts_model", "tts_tokens"]
+        kokoro = bool(str(sherpa.get("tts_voices", "") or ""))
+        if kokoro:
+            required.append("tts_voices")
+        optional = ("tts_data_dir", "tts_lexicon") if kokoro else ("tts_data_dir",)
+        if not (
+            _configured_paths_exist(sherpa, required, exists=exists)
+            and _optional_configured_paths_exist(
+                sherpa,
+                optional,
+                exists=exists,
+            )
+        ):
+            return False
+        metadata = read_onnx_custom_metadata(str(sherpa["tts_model"]))
+        if metadata is None:
+            return True
+        model_type = metadata.get("model_type", "").strip().lower()
+        if model_type:
+            model_is_kokoro = model_type == "kokoro"
+        elif "style_dim" in metadata:
+            model_is_kokoro = True
+        else:
+            return True
+        return kokoro == model_is_kokoro
+    if family == "final_asr":
+        backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
+        required = {
+            "sense_voice": ("asr_final_model", "asr_final_tokens"),
+            "whisper": (
+                "asr_final_model",
+                "asr_final_tokens",
+                "asr_final_decoder",
+            ),
+            "nemo_transducer": (
+                "asr_final_model",
+                "asr_final_tokens",
+                "asr_final_decoder",
+                "asr_final_joiner",
+            ),
+        }.get(backend)
+        if required is None or not _configured_paths_exist(
+            sherpa, required, exists=exists
+        ):
+            return False
+        if backend != "sense_voice":
+            return True
+        return _optional_configured_paths_exist(
+            sherpa,
+            (
+                "asr_final_hr_dict_dir",
+                "asr_final_hr_lexicon",
+                "asr_final_hr_rule_fsts",
+                "asr_final_rule_fsts",
+            ),
+            exists=exists,
+        )
+    if family == "final_verifier":
+        backend = (
+            str(sherpa.get("asr_final_verifier_backend", "") or "").strip().lower()
+        )
+        root = str(sherpa.get("asr_final_verifier_model", "") or "")
+        return (
+            backend == "faster_whisper"
+            and bool(root)
+            and exists(root)
+            and all(
+                exists(os.path.join(root, name))
+                for name in FASTER_WHISPER_REQUIRED_FILES
+            )
+        )
+    if family == "kws":
+        if not str(sherpa.get("kws_encoder", "") or ""):
+            return False
+        return _configured_paths_exist(
+            sherpa, SHERPA_PATH_FAMILIES[family], exists=exists
+        )
+    if family == "aec":
+        model = str(sherpa.get("aec_model", "") or "")
+        if not model or not exists(model):
+            return False
+        backend = str(sherpa.get("aec_backend", "") or "").strip().lower()
+        if backend != "dtln":
+            return True
+        if model.lower().endswith(".onnx"):
+            stage2 = re.sub(r"(?<!\d)1(\.onnx)$", r"2\1", model)
+            return stage2 != model and exists(stage2)
+        return all(
+            exists(os.path.join(model, name))
+            for name in ("dtln_aec_stage1.onnx", "dtln_aec_stage2.onnx")
+        )
+    return _configured_paths_exist(sherpa, SHERPA_PATH_FAMILIES[family], exists=exists)
+
+
+def _incoming_family_required_keys(
+    family: str,
+    incoming: dict[str, str],
+    *,
+    target_mode: str = "",
+) -> tuple[str, ...]:
+    if family == "streaming_asr":
+        return ASR_FILE_KEYS
+    if family == "tts":
+        required = ["tts_model", "tts_tokens"]
+        if incoming.get("tts_voices"):
+            required.append("tts_voices")
+        return tuple(required)
+    if family == "final_asr":
+        return {
+            "sense_voice": ("asr_final_model", "asr_final_tokens"),
+            "whisper": (
+                "asr_final_model",
+                "asr_final_tokens",
+                "asr_final_decoder",
+            ),
+            "nemo_transducer": SHERPA_PATH_FAMILIES[family],
+        }.get(target_mode, ())
+    if family == "final_verifier":
+        return SHERPA_PATH_FAMILIES[family] if target_mode == "faster_whisper" else ()
+    if family == "kws":
+        return SHERPA_PATH_FAMILIES[family]
+    return tuple(key for key in SHERPA_PATH_FAMILIES[family] if key in incoming)
+
+
+def _validate_incoming_sherpa_family(
+    family: str,
+    incoming: dict[str, str],
+    *,
+    target_mode: str = "",
+    exists: Callable[[str], bool],
+) -> None:
+    required = _incoming_family_required_keys(family, incoming, target_mode=target_mode)
+    if family in _SHERPA_FAMILY_SELECTOR_KEYS and not required:
+        raise ValueError(f"resolved {family} family has no valid target mode")
+    missing = [key for key in required if not incoming.get(key)]
+    if missing:
+        raise ValueError(
+            f"resolved {family} family is incomplete (missing {', '.join(missing)})"
+        )
+    unexpected = sorted(set(incoming) - set(required))
+    if family == "final_asr" and unexpected:
+        raise ValueError(
+            f"resolved {family} family has unexpected members for {target_mode} "
+            f"({', '.join(unexpected)})"
+        )
+    for key, value in incoming.items():
+        parts = _configured_path_parts(key, value)
+        if not parts or any(not exists(path) for path in parts):
+            raise ValueError(f"resolved {family} family path {key} is missing on disk")
+    if family == "tts":
+        metadata = read_onnx_custom_metadata(incoming["tts_model"])
+        if metadata is not None:
+            model_type = metadata.get("model_type", "").strip().lower()
+            if model_type:
+                model_is_kokoro = model_type == "kokoro"
+            elif "style_dim" in metadata:
+                model_is_kokoro = True
+            else:
+                model_is_kokoro = None
+            if model_is_kokoro is not None and model_is_kokoro != bool(
+                incoming.get("tts_voices")
+            ):
+                raise ValueError(
+                    "resolved tts family model metadata contradicts its selector"
+                )
+    if family == "final_verifier":
+        root = incoming["asr_final_verifier_model"]
+        missing_files = [
+            name
+            for name in FASTER_WHISPER_REQUIRED_FILES
+            if not exists(os.path.join(root, name))
+        ]
+        if missing_files:
+            raise ValueError(
+                "resolved final_verifier family is incomplete "
+                f"(missing {', '.join(missing_files)})"
+            )
+    if family == "aec":
+        model = incoming["aec_model"]
+        if model.lower().endswith(".onnx"):
+            stage2 = re.sub(r"(?<!\d)1(\.onnx)$", r"2\1", model)
+            stage_paths = (model, stage2) if stage2 != model else ()
+        else:
+            stage_paths = tuple(
+                os.path.join(model, name)
+                for name in ("dtln_aec_stage1.onnx", "dtln_aec_stage2.onnx")
+            )
+        if len(stage_paths) != 2 or any(not exists(path) for path in stage_paths):
+            raise ValueError("resolved aec family is incomplete (missing DTLN stages)")
+
+
+def _absolute_sherpa_path_value(
+    key: str,
+    value: object,
+    *,
+    abspath: Callable[[str], str],
+) -> str:
+    raw = os.fspath(value)
+    if key in _COMMA_SEPARATED_SHERPA_PATH_KEYS:
+        return ", ".join(
+            abspath(part.strip()) for part in raw.split(",") if part.strip()
+        )
+    return abspath(raw)
 
 
 def wire_sherpa_paths(
-    config: dict, resolved: dict, *, abspath: Callable[[str], str] = os.path.abspath
+    config: dict,
+    resolved: dict,
+    *,
+    requested_families: Iterable[str] = (),
+    family_modes: dict[str, str] | None = None,
+    abspath: Callable[[str], str] = os.path.abspath,
+    exists: Callable[[str], bool] = os.path.exists,
 ) -> dict:
-    """Merge resolved model paths into ``config['sherpa']`` in place.
+    """Transactionally merge complete model families into ``config['sherpa']``.
 
-    Empty paths are skipped (so a missing optional artifact like
-    ``tts_data_dir`` leaves the existing value alone) and every other config
-    section is preserved. Pure + injectable ``abspath`` so it is unit-testable
-    without touching the filesystem."""
-    sherpa = config.setdefault("sherpa", {})
+    A complete existing on-disk family wins over an incidental resolved default.
+    A caller may replace it only by naming that family in ``requested_families``.
+    Invalid families are repairable, but every stale member is cleared before a
+    complete incoming family is installed, so a model/selector hybrid can never
+    be published. Empty paths remain no-ops and unrelated config is preserved.
+    """
+    requested = frozenset(requested_families)
+    unknown = sorted(requested - SHERPA_PATH_FAMILIES.keys())
+    if unknown:
+        raise ValueError(
+            f"unknown requested sherpa path families: {', '.join(unknown)}"
+        )
+    modes = dict(family_modes or {})
+    unknown_modes = sorted(modes.keys() - _SHERPA_FAMILY_SELECTOR_KEYS.keys())
+    if unknown_modes:
+        raise ValueError(f"unknown sherpa family modes: {', '.join(unknown_modes)}")
+    unauthorized_modes = sorted(modes.keys() - requested)
+    if unauthorized_modes:
+        raise ValueError(
+            "sherpa family modes require explicit family authorization: "
+            + ", ".join(unauthorized_modes)
+        )
+
+    current = config.get("sherpa", {})
+    if not isinstance(current, dict):
+        raise TypeError("config['sherpa'] must be an object")
+    staged = dict(current)
+    normalized: dict[str, str] = {}
     for key, path in resolved.items():
         if path:
-            sherpa[key] = abspath(path)
+            normalized[key] = _absolute_sherpa_path_value(key, path, abspath=abspath)
+
+    incoming_by_family: dict[str, dict[str, str]] = {}
+    ungrouped: dict[str, str] = {}
+    for key, path in normalized.items():
+        family = _SHERPA_PATH_FAMILY_BY_KEY.get(key)
+        if family is None:
+            ungrouped[key] = path
+        else:
+            incoming_by_family.setdefault(family, {})[key] = path
+
+    for family, incoming in incoming_by_family.items():
+        if family not in requested and _existing_sherpa_family_is_valid(
+            current, family, exists=exists
+        ):
+            continue
+        target_mode = str(modes.get(family, "") or "").strip().lower()
+        _validate_incoming_sherpa_family(
+            family,
+            incoming,
+            target_mode=target_mode,
+            exists=exists,
+        )
+        for key in SHERPA_PATH_FAMILIES[family]:
+            staged.pop(key, None)
+        for key in _SHERPA_FAMILY_SELECTOR_KEYS.get(family, ()):
+            staged.pop(key, None)
+        staged.update(incoming)
+        if family == "final_asr":
+            staged["asr_final_backend"] = target_mode
+        elif family == "final_verifier":
+            staged["asr_final_verifier_backend"] = target_mode
+
+    untouched_modes = sorted(modes.keys() - incoming_by_family.keys())
+    if untouched_modes:
+        raise ValueError(
+            "sherpa family mode supplied without a resolved family: "
+            + ", ".join(untouched_modes)
+        )
+
+    for key, path in ungrouped.items():
+        parts = _configured_path_parts(key, path)
+        if not parts or any(not exists(item) for item in parts):
+            raise ValueError(f"resolved sherpa path {key} is missing on disk")
+        staged[key] = path
+
+    config["sherpa"] = staged
     return config
 
 
@@ -1928,6 +2265,18 @@ def fetch_gguf_models(
 
 
 def main(argv: list[str] | None = None) -> int:
+    command_args = list(sys.argv[1:] if argv is None else argv)
+
+    def option_was_explicit(name: str) -> bool:
+        return any(
+            argument == name or argument.startswith(f"{name}=")
+            for argument in command_args
+        )
+
+    speaker_url_was_explicit = option_was_explicit(
+        "--speaker-model-url"
+    ) or bool(os.environ.get("SPEAKER_EMBEDDING_MODEL_URL"))
+
     parser = argparse.ArgumentParser(description="Fetch sherpa models + wire config.local.json")
     parser.add_argument("--force", action="store_true", help="re-download even if files exist")
     parser.add_argument(
@@ -2136,7 +2485,7 @@ def main(argv: list[str] | None = None) -> int:
         default=GGUF_DIR,
         help=f"dir for the on-device GGUF weights (default: {GGUF_DIR})",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(command_args)
     if args.require_selected and not args.speaker_model:
         parser.error("--require-selected cannot be combined with --no-speaker-model")
     if args.sense_voice and args.final_asr:
@@ -2192,7 +2541,11 @@ def main(argv: list[str] | None = None) -> int:
                 force=args.force,
                 download=hf_hub_download,
             )
-            wire_sherpa_paths(cfg, resolved)
+            wire_sherpa_paths(
+                cfg,
+                resolved,
+                requested_families={"streaming_asr"},
+            )
             sherpa = cfg.setdefault("sherpa", {})
             sherpa["asr_modeling_unit"] = "bpe"
             sherpa["asr_hotwords_case_policy"] = "upper_ascii_words"
@@ -2578,26 +2931,41 @@ def main(argv: list[str] | None = None) -> int:
     # overrides survive; any read/write error is a failed setup, never a
     # partially-truncated config that the installer could mistake for success.
     try:
-        if preserve_existing_kokoro_selection(
-            cfg, resolved, want_kokoro=bool(args.kokoro)
+        requested_families: set[str] = set()
+        if args.require_selected:
+            requested_families.update({"streaming_asr", "vad", "tts", "speaker"})
+        elif option_was_explicit("--accuracy") and not preserved_bpe_paths:
+            requested_families.add("streaming_asr")
+        if speaker_url_was_explicit and resolved.get("speaker_embedding_model"):
+            requested_families.add("speaker")
+        for selected, key, family in (
+            (args.punct_model, "punct_model", "punctuation"),
+            (args.denoise_model, "denoise_model", "denoise"),
+            (args.turn_model, "endpoint_prosody_model", "endpoint"),
+            (args.kokoro, "tts_voices", "tts"),
+            (args.kws, "kws_encoder", "kws"),
+            (args.aec_model, "aec_model", "aec"),
         ):
-            print(
-                "[models] existing Kokoro voice selection preserved "
-                "(pass --kokoro to re-wire the TTS keys)"
-            )
-        wire_sherpa_paths(cfg, resolved)
+            if selected and resolved.get(key):
+                requested_families.add(family)
+
+        family_modes: dict[str, str] = {}
         if want_sense_voice:
-            # backend is a mode string, not a path -> set it directly
-            # (wire_sherpa_paths only handles paths).
-            cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
-        if want_parakeet_final:
-            cfg.setdefault("sherpa", {})[
-                "asr_final_backend"
-            ] = "nemo_transducer"
+            requested_families.add("final_asr")
+            family_modes["final_asr"] = "sense_voice"
+        elif want_parakeet_final:
+            requested_families.add("final_asr")
+            family_modes["final_asr"] = "nemo_transducer"
         if want_final_verifier:
-            cfg.setdefault("sherpa", {})[
-                "asr_final_verifier_backend"
-            ] = "faster_whisper"
+            requested_families.add("final_verifier")
+            family_modes["final_verifier"] = "faster_whisper"
+
+        wire_sherpa_paths(
+            cfg,
+            resolved,
+            requested_families=requested_families,
+            family_modes=family_modes,
+        )
         publish_config_atomic(
             cfg,
             args.config,

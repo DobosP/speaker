@@ -1,0 +1,214 @@
+{
+  "evidence_scope": {
+    "acoustic_mix_synthetic": true,
+    "hard_wer_isolated_cases": 3,
+    "identity_authority": false,
+    "live_evidence": false,
+    "overlap_diagnostic_cases": 3,
+    "promotion_authority": false,
+    "qualification_authority": false,
+    "source_timing_actual_overlap": true
+  },
+  "fixture_id": "primock57-consultation01-v1",
+  "kind": "primock57-conversation-fixture-lock-v1",
+  "license_id": "CC-BY-4.0",
+  "output_artifacts": {
+    "isolated": [
+      {
+        "file": "primock57-isolated-00.f32le",
+        "samples": 39165,
+        "sha256": "fd45d1f2790f95f3820049b51891edda58b1f897d189e2ebfd61e5be6c08472c"
+      },
+      {
+        "file": "primock57-isolated-01.f32le",
+        "samples": 16001,
+        "sha256": "f9083dfba4f2fb32fc0f25a021511012496826afd60ed239c498ddcf4b0e2272"
+      },
+      {
+        "file": "primock57-isolated-02.f32le",
+        "samples": 16001,
+        "sha256": "03188ef2d60792b4730bd726d8d14893dc11411428a9e7928bda9cbe58b8df2f"
+      }
+    ],
+    "overlap": [
+      {
+        "case_id": "primock57-overlap-00",
+        "mix_sha256": "c85539e0afdb6a0d36a1ea825cc3ee539b61d04cc7ef6174a5e23cb22c4fa2f3",
+        "role_a_sha256": "004a352f46a67fa56b3af60b99099bbbccf92a0665ea843214d097e7f5bfc2a9",
+        "role_b_sha256": "9b0569721ea29aef40b24a62621b58dcf4741a45df8f377b71aa41900317874c",
+        "samples": 89828
+      },
+      {
+        "case_id": "primock57-overlap-01",
+        "mix_sha256": "826bf56f9af5f3df28f7d9dd7b933d1be3fabd1edf228f1e62a09704a2f22f36",
+        "role_a_sha256": "634284ddb0824aeaec681d8f63c66088aaa62dab1b72f02db8d277084dd488ed",
+        "role_b_sha256": "cae5357c014d963c76fb812760ea609407e80ea2c807d34ad09d55a5695d1ce6",
+        "samples": 296935
+      },
+      {
+        "case_id": "primock57-overlap-02",
+        "mix_sha256": "14741ddeec92a3344ef1544411ca472f1ad90d0fde9d4d31af8343b92158ef4f",
+        "role_a_sha256": "599c910e3ec1db7bbe66d92ce4453f1aa83d9fbffcc998e8a0f259425bd384b8",
+        "role_b_sha256": "1b991e89a4eb6db71fb4c5b16a8c3c9f2a05511a3306e2d683bfaacb52f99a65",
+        "samples": 176627
+      }
+    ]
+  },
+  "privacy": {
+    "local_paths_in_receipt": false,
+    "raw_role_labels_in_receipt": false,
+    "transcripts_in_receipt": false
+  },
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "2bc14c4114959fe1323d843ed6bb1b17cf81aa46f620b6805a98dd380a1e17ef",
+  "repository": "babylonhealth/primock57",
+  "revision": "cd2ac707ad03cb4d2531f4ec6b90c659bf4357c5",
+  "sample_format": {
+    "channels": 1,
+    "encoding": "f32le",
+    "sample_conversion": "pcm-s16le-to-f32le-divide-32768-v1",
+    "sample_rate_hz": 16000
+  },
+  "schema_version": 1,
+  "selection": {
+    "isolated": {
+      "algorithm": "fixed-zero-other-role-intersection-v1",
+      "cases": [
+        {
+          "end_seconds": "253.10151950718688",
+          "interval_index": 47,
+          "reference_sha256": "834f0165e4e083232e6a33d3e3205d174dd81094c997aa9088d3b13f97e48a85",
+          "role": "role-a",
+          "start_seconds": "250.65377530067468"
+        },
+        {
+          "end_seconds": "440.1260840199919",
+          "interval_index": 88,
+          "reference_sha256": "2dbdde05d42048db99cd7db370bcf295f7342aacb306c6280d0ef1b2bd8842dd",
+          "role": "role-a",
+          "start_seconds": "439.1260840199919"
+        },
+        {
+          "end_seconds": "438.8797276347908",
+          "interval_index": 104,
+          "reference_sha256": "03cbd90632d4c9cbfaae019d5e10a745450c300051e727d24529c1f31d422cf7",
+          "role": "role-b",
+          "start_seconds": "437.8797276347908"
+        }
+      ],
+      "other_role_intersection_seconds": "0",
+      "reference_transform": "primock57-marker-strip-collapse-space-v1",
+      "scoreability": "marker-free-nonempty-hard-wer-v1"
+    },
+    "overlap": {
+      "algorithm": "fixed-marker-free-nonempty-disjoint-overlap-pairs-v1",
+      "cases": [
+        {
+          "overlap_end_seconds": "91.15847202728304",
+          "overlap_start_seconds": "90.68522097853337",
+          "role_a": {
+            "end_seconds": "91.15847202728304",
+            "interval_index": 18,
+            "reference_sha256": "2efafca4469637800b296049dcec9e37caa14b986d94e756bbdb1f3c922e42b9",
+            "start_seconds": "86.80327309910236"
+          },
+          "role_b": {
+            "end_seconds": "92.41744506872324",
+            "interval_index": 20,
+            "reference_sha256": "8ae93f5246e7c7023773827003840d42747f0c20df00b073b7bbee9851f1edb6",
+            "start_seconds": "90.68522097853337"
+          }
+        },
+        {
+          "overlap_end_seconds": "164.32857354758966",
+          "overlap_start_seconds": "161.99902873538608",
+          "role_a": {
+            "end_seconds": "164.32857354758966",
+            "interval_index": 31,
+            "reference_sha256": "3307b5737e1e690cf2211c5197d556b7866d89bb909336b83cbd0f69c9993e42",
+            "start_seconds": "154.22489987639068"
+          },
+          "role_b": {
+            "end_seconds": "172.78328379940905",
+            "interval_index": 36,
+            "reference_sha256": "e56a1071ab15414dbdd88f03afa8988213cc1deabb08c8322b87d3e77b6b5174",
+            "start_seconds": "161.99902873538608"
+          }
+        },
+        {
+          "overlap_end_seconds": "289.56377823408627",
+          "overlap_start_seconds": "288.56377823408627",
+          "role_a": {
+            "end_seconds": "289.56377823408627",
+            "interval_index": 57,
+            "reference_sha256": "85fec70372b092bb42d021a6d1b373081dde8bcf90feb49e0725e285043fb0ad",
+            "start_seconds": "288.56377823408627"
+          },
+          "role_b": {
+            "end_seconds": "290.17473684210535",
+            "interval_index": 60,
+            "reference_sha256": "ea7212100d58b877b34d2438418b7957b14ef440cdf4f52c248c639f5841384c",
+            "start_seconds": "279.1355813455527"
+          }
+        }
+      ],
+      "mix": "average-two-masked-full-utterance-stems-v1",
+      "mix_arithmetic": "float32-add-then-multiply-float32-0.5-v1",
+      "ordinary_wer": false,
+      "reference_contract": "two-role-separate-references-v1",
+      "reference_transform": "primock57-marker-strip-collapse-space-v1",
+      "scoreability": "diagnostic-references-only-no-metric-v1"
+    },
+    "sample_rounding": "floor-start-ceil-end-v1"
+  },
+  "source": {
+    "consultation": "day1_consultation01",
+    "files": [
+      {
+        "git_blob": "a7313097e6740a232428dac6c6f2ef3b6bd63004",
+        "path": "audio/day1_consultation01_doctor.wav",
+        "role": "role-a-audio",
+        "sha256": "a93ca69f49da821b2d10b03f3189fd0d82200a697805c18f316719ba328ff96b",
+        "size_bytes": 14653484
+      },
+      {
+        "git_blob": "3a2d49b101e1e3213672187b591147054ad4dc8c",
+        "path": "audio/day1_consultation01_patient.wav",
+        "role": "role-b-audio",
+        "sha256": "12b0c5c12018cff8399cf95b713eba4b7d2bb9d6581281844057ecab2ea3a414",
+        "size_bytes": 14651564
+      },
+      {
+        "git_blob": "70c91e1424e43f95538d3993868c4b78c65609e7",
+        "path": "transcripts/day1_consultation01_doctor.TextGrid",
+        "role": "role-a-annotation",
+        "sha256": "a727b4f53fd0c21750405fa683a0079585d9cf3cf763d3ced51bde9673a3eb04",
+        "size_bytes": 18434
+      },
+      {
+        "git_blob": "f1fb8134b55a266169444990c22a0defd360c47f",
+        "path": "transcripts/day1_consultation01_patient.TextGrid",
+        "role": "role-b-annotation",
+        "sha256": "7082e1abf185b30a82d57d585b999d4f11263e006359249aeffbad1061bfd0bd",
+        "size_bytes": 17513
+      },
+      {
+        "git_blob": "0b1c29ed40e85d5fec8219e05d73b6bfef4943b3",
+        "path": "LICENSE.md",
+        "role": "license",
+        "sha256": "c4077139f0479418e8ce544f45f409fd3192a315f23071b4d41083e4a28357a1",
+        "size_bytes": 17067
+      }
+    ],
+    "input_sample_format": {
+      "bits_per_sample": 16,
+      "channels": 1,
+      "encoding": "pcm-signed-little-endian",
+      "sample_rate_hz": 16000
+    },
+    "maximum_total_size_bytes": 31457280,
+    "role_a_duration_seconds": "457.92",
+    "role_b_duration_seconds": "457.86",
+    "total_size_bytes": 29358062
+  }
+}

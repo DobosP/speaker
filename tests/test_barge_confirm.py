@@ -23,9 +23,11 @@ from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 class _FakeStream:
     def __init__(self):
         self.fed_blocks = 0
+        self.blocks: list[np.ndarray] = []
 
     def accept_waveform(self, sr, samples):
         self.fed_blocks += 1
+        self.blocks.append(np.asarray(samples, dtype="float32").copy())
 
 
 class _FakeRecognizer:
@@ -147,6 +149,34 @@ def test_stop_command_confirms_alone():
         eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is True
     )  # 1 word, but a stop command
     assert rec.barges == 1
+
+
+def test_confirm_decode_source_is_raw_only_when_canceller_masks_near_end():
+    processed = np.full(1600, 0.25, dtype="float32")
+    raw = np.full(1600, 0.75, dtype="float32")
+
+    for resid_blind, expected in ((False, processed), (True, raw)):
+        eng = _engine()
+        eng._resid_blind = resid_blind
+        recognizer = _FakeRecognizer([""])
+        stream = _FakeStream()
+        now = time.monotonic()
+        eng._begin_barge_confirm(recognizer, stream, now)
+
+        assert not eng._barge_confirm_step(
+            recognizer,
+            stream,
+            processed,
+            now + 0.1,
+            mic_raw=raw,
+        )
+        assert len(stream.blocks) == 1
+        assert np.array_equal(stream.blocks[0], expected)
+        assert len(eng._confirm_primary_pcm) == 1
+        assert len(eng._confirm_alternate_pcm) == 1
+        assert np.array_equal(eng._confirm_primary_pcm[0], processed)
+        assert np.array_equal(eng._confirm_alternate_pcm[0], expected)
+        eng._end_barge_confirm()
 
 
 def test_confirm_window_from_old_playback_generation_cannot_cut_new_run():

@@ -260,7 +260,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         tokenizer/graph, then bind a real worker manifest and four-way shadow
         evaluator. Require aggregate assistant-playback evidence and owner
         bare-speaker A/B before effects.
-      - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
+      - [x] audit raw-mic word-confirm + KWS hotwords in the confirm window
+        (ADR-0171). Masking-canceller confirmation already decodes the
+        application pre-AEC mic tap, and its primary stream already carries
+        configured ASR hotwords. Do not add raw KWS authority: result labels
+        collapse distinct phrases and live
+        evidence already contains phantom hits. Consumed KWS callbacks now
+        explicitly close any open duck-confirm window after returning.
+      - [ ] before changing playback-time KWS authority, atomically bind its
+        callback to the captured playback/source generation and route exact STOP
+        ambiguity through ADR-0042's own-TTS/speaker rule. A raw-KWS experiment
+        must begin as separate-stream aggregate-only shadow evidence and still
+        needs owner bare-speaker A/B before effects. First add explicit native
+        decode-step and confirm-PCM caps; current KWS/confirm loops remain bounded
+        only by the native model becoming not-ready and the monotonic deadline.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default
         pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a

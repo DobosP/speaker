@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import types
 
 import numpy as np
@@ -313,7 +314,7 @@ def test_legacy_kws_callback_still_closes_a_typed_partial_turn() -> None:
     assert next_lineage.spans[0].turn_index == 2
 
 
-def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
+def _one_block_kws_capture() -> tuple[SherpaOnnxEngine, object]:
     class _Stream:
         def __init__(self) -> None:
             self.blocks = []
@@ -361,6 +362,11 @@ def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
     engine._recognizer = recognizer
     engine._capture_sr = engine.config.sample_rate
     engine._stream_in = _OneBlockInput(engine)
+    return engine, recognizer
+
+
+def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
+    engine, recognizer = _one_block_kws_capture()
     engine._poll_keywords = lambda _samples, **_kwargs: True
 
     engine._running.set()
@@ -368,6 +374,54 @@ def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
 
     assert recognizer.reset_calls == 1
     assert recognizer.stream.blocks == []
+
+
+def test_capture_kws_terminal_closes_open_confirm_window() -> None:
+    engine, recognizer = _one_block_kws_capture()
+    engine._capture_authority_source_generation = 0
+    engine._capture_authority_source_device = None
+    engine._os_echo_route_verified = True
+    engine._kws = _FixedKws("custom label")
+    engine._kws_stream = _NullKwsStream()
+    commands: list[str] = []
+    barges: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_command=commands.append,
+        on_barge_in=lambda: barges.append("barge"),
+    )
+    engine._speaking.set()
+    engine._begin_barge_confirm(recognizer, recognizer.stream, time.monotonic())
+    engine._confirm_base_text = "old partial"
+    engine._confirm_handoff_stream_live = True
+    engine._confirm_handoff_pending = object()
+    engine._confirm_primary_pcm.append(np.ones(3, dtype="float32"))
+    engine._confirm_alternate_pcm.append(np.ones(3, dtype="float32"))
+    engine._confirm_audio_started_at = 1.0
+    engine._confirm_audio_ended_at = 2.0
+    engine._confirm_echo_obs.append((1.0, 2.0, 0.0))
+    assert engine._barge_confirm_active()
+    assert engine._duck_gain < 1.0
+
+    engine._running.set()
+    engine._capture_loop()
+
+    assert recognizer.reset_calls == 1
+    assert recognizer.stream.blocks == []
+    assert engine._kws.resets == 1
+    assert commands == ["custom label"]
+    assert barges == []
+    assert not engine._barge_confirm_active()
+    assert engine._duck_gain == 1.0
+    assert engine._confirm_base_text == ""
+    assert engine._confirm_speak_generation is None
+    assert engine._confirm_playback_generation is None
+    assert not engine._confirm_handoff_stream_live
+    assert engine._confirm_handoff_pending is None
+    assert engine._confirm_primary_pcm == []
+    assert engine._confirm_alternate_pcm == []
+    assert engine._confirm_audio_started_at is None
+    assert engine._confirm_audio_ended_at is None
+    assert engine._confirm_echo_obs == []
 
 
 def test_failed_virtual_playback_proof_never_grants_authority():

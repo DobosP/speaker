@@ -8249,6 +8249,14 @@ class SherpaOnnxEngine(AudioEngine):
                     # turn. Retire every normal-ASR owner in the same capture
                     # iteration so the recognizer cannot later publish a second
                     # final for the consumed PCM under a new lineage key.
+                    # It also wins over an already-open duck-confirm window.
+                    # The shipped stop labels synchronously re-enter
+                    # stop_speaking(), which closes that window, but custom or
+                    # unmapped labels need not stop playback. Once the callback
+                    # returns consumed, close it here so this terminal cannot
+                    # carry duck gain, PCM, or old playback generations into
+                    # the next capture block.
+                    self._end_barge_confirm()
                     try:
                         recognizer.reset(stream)
                     except Exception as exc:  # noqa: BLE001 - rotate exact owner

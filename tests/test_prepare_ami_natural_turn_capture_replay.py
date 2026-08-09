@@ -1106,7 +1106,11 @@ for module in sys.modules.values():
         relative = pathlib.Path(path).resolve().relative_to(root)
     except (OSError, ValueError):
         continue
-    if relative.suffix == '.py':
+    if (
+        relative.suffix == '.py'
+        and relative.parts
+        and relative.parts[0] != '.venv'
+    ):
         rows.append(relative.as_posix())
 print(json.dumps(sorted(set(rows))))
 """

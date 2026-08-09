@@ -1026,6 +1026,8 @@ files = sorted({
     if getattr(module, "__file__", None)
     and pathlib.Path(module.__file__).resolve().is_relative_to(root)
     and pathlib.Path(module.__file__).suffix == ".py"
+    and pathlib.Path(module.__file__).resolve().relative_to(root).parts[0]
+    != ".venv"
 })
 print(json.dumps(files))
 """

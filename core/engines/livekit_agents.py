@@ -61,7 +61,7 @@ _PLAYBACK_CAPABILITIES = PlaybackCapabilities(
 
 
 class SpeechHandleLike(Protocol):
-    """Public LiveKit 1.6.7 ``SpeechHandle`` surface used here."""
+    """Public LiveKit Agents 1.6.8 ``SpeechHandle`` surface used here."""
 
     @property
     def interrupted(self) -> bool: ...
@@ -110,7 +110,7 @@ class PublisherSessionPolicy:
 
 
 class PublisherSessionLike(Protocol):
-    """Trusted publisher wrapper around LiveKit Agents 1.6.7.
+    """Trusted publisher wrapper around LiveKit Agents 1.6.8.
 
     The wrapper records the exact ``RoomOptions.participant_identity``, owns all
     raw output mutations, and never exposes the raw session/output. Its atomic
@@ -363,7 +363,9 @@ class LiveKitAgentsEngine(AudioEngine):
                 wait=True,
             )
         except Exception:
-            log.warning("LiveKit Agents cleanup could not reach its loop", exc_info=True)
+            log.warning(
+                "LiveKit Agents cleanup could not reach its loop", exc_info=True
+            )
             # A handle may still be playing when its loop disappears. Never
             # release that ownership without a real handle terminal or the
             # wrapper's disposal-proven close event. Calls not yet handed to the
@@ -499,8 +501,7 @@ class LiveKitAgentsEngine(AudioEngine):
                 return False
             barge = (
                 self._make_barge_locked(state, stamp)
-                if self._candidate_valid_locked(state)
-                and not state.barge_emitted
+                if self._candidate_valid_locked(state) and not state.barge_emitted
                 else None
             )
             lineage, revision = state.tracker.close(
@@ -513,9 +514,7 @@ class LiveKitAgentsEngine(AudioEngine):
             state.barge_emitted = False
             state.user_speaking = False
 
-        if barge is not None and not self._publish_barge(
-            barge, state
-        ):
+        if barge is not None and not self._publish_barge(barge, state):
             return False
         result = FinalTranscript(
             text=clean,
@@ -570,9 +569,7 @@ class LiveKitAgentsEngine(AudioEngine):
         self._session.on("user_input_transcribed", handlers.transcript)
         self._session.on("user_state_changed", handlers.user_state)
         self._session.on("agent_state_changed", handlers.agent_state)
-        self._session.on(
-            "agent_false_interruption", handlers.false_interruption
-        )
+        self._session.on("agent_false_interruption", handlers.false_interruption)
         self._session.on("close", handlers.close)
         bind_committer = getattr(
             self._session,
@@ -638,13 +635,18 @@ class LiveKitAgentsEngine(AudioEngine):
     ) -> None:
         reason_value = getattr(getattr(event, "reason", None), "value", None)
         reason = str(reason_value or getattr(event, "reason", "unknown"))
-        reason = reason if reason in {
-            "error",
-            "job_shutdown",
-            "participant_disconnected",
-            "user_initiated",
-            "task_completed",
-        } else "unknown"
+        reason = (
+            reason
+            if reason
+            in {
+                "error",
+                "job_shutdown",
+                "participant_disconnected",
+                "user_initiated",
+                "task_completed",
+            }
+            else "unknown"
+        )
         stamp = max(0.0, float(self._clock()))
         with self._lock:
             if self._session_closed:
@@ -668,9 +670,7 @@ class LiveKitAgentsEngine(AudioEngine):
                 current_state.barge_emitted = False
             calls = tuple(call for call in self._pending if not call.terminal)
             bound_handlers = tuple(
-                dict.fromkeys(
-                    (handlers, *self._retained_close_handlers)
-                )
+                dict.fromkeys((handlers, *self._retained_close_handlers))
             )
             self._retained_close_handlers.clear()
 
@@ -781,9 +781,7 @@ class LiveKitAgentsEngine(AudioEngine):
                 # This is assistant playout quiescence, not user speech EOT.
                 self._callbacks.on_speech_end()
 
-    def _on_false_interruption(
-        self, _event: Any, state: _TurnLifecycle
-    ) -> None:
+    def _on_false_interruption(self, _event: Any, state: _TurnLifecycle) -> None:
         with self._lock:
             if self._is_current_state_locked(state):
                 state.candidate = None
@@ -844,9 +842,7 @@ class LiveKitAgentsEngine(AudioEngine):
             detected_at=stamp,
         )
 
-    def _publish_barge(
-        self, signal: AcousticSignal, state: _TurnLifecycle
-    ) -> bool:
+    def _publish_barge(self, signal: AcousticSignal, state: _TurnLifecycle) -> bool:
         with self._lock:
             if not self._is_current_state_locked(state):
                 return False
@@ -857,9 +853,7 @@ class LiveKitAgentsEngine(AudioEngine):
                 self._callbacks.on_barge_in()
             return True
 
-    def _publish_final(
-        self, result: FinalTranscript, state: _TurnLifecycle
-    ) -> bool:
+    def _publish_final(self, result: FinalTranscript, state: _TurnLifecycle) -> bool:
         with self._lock:
             if not self._is_current_state_locked(state):
                 return False
@@ -922,9 +916,7 @@ class LiveKitAgentsEngine(AudioEngine):
             log.warning("LiveKit publisher wrapper admission failed", exc_info=True)
             self._terminalize(call, PlaybackOutcome.FAILED)
 
-    def _interrupt_calls_on_loop(
-        self, calls: tuple[_PlaybackCall, ...]
-    ) -> None:
+    def _interrupt_calls_on_loop(self, calls: tuple[_PlaybackCall, ...]) -> None:
         for call in calls:
             with self._lock:
                 if call.terminal:
@@ -956,9 +948,7 @@ class LiveKitAgentsEngine(AudioEngine):
             self._playback_generation += 1
             aborted = None
             if state is not None:
-                aborted = state.tracker.abort(
-                    emitted_at=max(0.0, float(self._clock()))
-                )
+                aborted = state.tracker.abort(emitted_at=max(0.0, float(self._clock())))
                 state.candidate = None
                 state.barge_emitted = False
             if handlers is not None:
@@ -983,7 +973,9 @@ class LiveKitAgentsEngine(AudioEngine):
                 "livekit_playout_close_requested",
             )
         except Exception:
-            log.exception("LiveKit capture-state callback raised during playout failure")
+            log.exception(
+                "LiveKit capture-state callback raised during playout failure"
+            )
         try:
             self._session.close_on_playout_failure()
         except Exception:
@@ -1003,7 +995,9 @@ class LiveKitAgentsEngine(AudioEngine):
         except Exception:
             # A vanished loop is not evidence that the remote sink is quiet.
             # Retain ownership for the close/disposal path.
-            log.warning("LiveKit handle terminal could not reach its loop", exc_info=True)
+            log.warning(
+                "LiveKit handle terminal could not reach its loop", exc_info=True
+            )
 
     def _handle_done_on_loop(
         self,
@@ -1135,6 +1129,7 @@ class LiveKitAgentsEngine(AudioEngine):
             return
 
         if not wait:
+
             def invoke_unobserved() -> None:
                 try:
                     action()

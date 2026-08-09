@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 import logging
 import threading
 from types import SimpleNamespace
@@ -22,8 +23,10 @@ log = logging.getLogger("speaker.livekit_agents_session")
 
 _CLOSE_TIMEOUT_SEC = 2.0
 _READY_TIMEOUT_SEC = 5.0
-_LIVEKIT_AGENTS_VERSION = "1.6.7"
+_LIVEKIT_AGENTS_VERSION = "1.6.8"
 _LIVEKIT_RTC_VERSION = "1.1.14"
+_LIVEKIT_API_VERSION = "1.2.0"
+_LIVEKIT_PROTOCOL_VERSION = "1.1.21"
 _SDK_EVENTS = (
     "user_input_transcribed",
     "user_state_changed",
@@ -84,10 +87,16 @@ def _load_livekit_agents_sdk() -> SimpleNamespace:
     try:
         import livekit.agents as agents
         from livekit import rtc
-    except ImportError as exc:
+
+        api_version = importlib_metadata.version("livekit-api")
+        protocol_version = importlib_metadata.version("livekit-protocol")
+    except (ImportError, importlib_metadata.PackageNotFoundError) as exc:
         raise LiveKitAgentsDependencyError(
-            "trusted LiveKit media needs optional livekit==1.1.14 and "
-            "livekit-agents==1.6.7; "
+            "trusted LiveKit media needs optional "
+            f"livekit=={_LIVEKIT_RTC_VERSION} and "
+            f"livekit-agents=={_LIVEKIT_AGENTS_VERSION}, "
+            f"livekit-api=={_LIVEKIT_API_VERSION}, and "
+            f"livekit-protocol=={_LIVEKIT_PROTOCOL_VERSION}; "
             "install requirements-remote.txt in an isolated environment"
         ) from exc
 
@@ -98,6 +107,8 @@ def _load_livekit_agents_sdk() -> SimpleNamespace:
     return SimpleNamespace(
         agents_version=str(getattr(agents, "__version__", "")),
         rtc_version=str(getattr(rtc, "__version__", "")),
+        api_version=str(api_version),
+        protocol_version=str(protocol_version),
         Agent=getattr(agents, "Agent", None),
         AgentSession=getattr(agents, "AgentSession", None),
         RoomIO=getattr(agents, "RoomIO", None),
@@ -113,18 +124,19 @@ def _load_livekit_agents_sdk() -> SimpleNamespace:
 
 def _validated_livekit_agents_sdk() -> Any:
     result = _load_livekit_agents_sdk()
-    agents_version = str(getattr(result, "agents_version", ""))
-    if agents_version != _LIVEKIT_AGENTS_VERSION:
-        raise LiveKitAgentsDependencyError(
-            "trusted LiveKit media requires reviewed livekit-agents=="
-            f"{_LIVEKIT_AGENTS_VERSION}, got {agents_version or 'unknown'}"
-        )
-    rtc_version = str(getattr(result, "rtc_version", ""))
-    if rtc_version != _LIVEKIT_RTC_VERSION:
-        raise LiveKitAgentsDependencyError(
-            "trusted LiveKit media requires reviewed livekit=="
-            f"{_LIVEKIT_RTC_VERSION}, got {rtc_version or 'unknown'}"
-        )
+    versions = (
+        ("agents_version", "livekit-agents", _LIVEKIT_AGENTS_VERSION),
+        ("rtc_version", "livekit", _LIVEKIT_RTC_VERSION),
+        ("api_version", "livekit-api", _LIVEKIT_API_VERSION),
+        ("protocol_version", "livekit-protocol", _LIVEKIT_PROTOCOL_VERSION),
+    )
+    for field, package, expected in versions:
+        actual = str(getattr(result, field, ""))
+        if actual != expected:
+            raise LiveKitAgentsDependencyError(
+                f"trusted LiveKit media requires reviewed {package}=={expected}, "
+                f"got {actual or 'unknown'}"
+            )
     required = (
         "Agent",
         "AgentSession",

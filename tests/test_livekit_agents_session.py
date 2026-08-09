@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 import inspect
-from types import SimpleNamespace
+from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -93,7 +95,7 @@ class _AgentOutput:
 
     def replace_audio_tail(self, sink) -> None:
         self.tail_replacements.append(sink)
-        # Exact livekit-agents 1.6.7 behavior with no output proxy: replacing
+        # Exact livekit-agents 1.6.8 behavior with no output proxy: replacing
         # the "tail" falls back to replacing the AgentOutput head.
         self.audio = sink
 
@@ -203,7 +205,11 @@ def _fake_sdk():
             self.shutdown_error = None
             self.auto_close = True
             self.close_events = 0
+            self.participant_link_calls = []
             captured.sessions.append(self)
+
+        def _on_room_io_participant_linked(self, participant) -> None:
+            self.participant_link_calls.append(participant)
 
         async def start(self, agent, **kwargs) -> None:
             captured.operations.append("session.start")
@@ -284,6 +290,9 @@ def _fake_sdk():
                 captured.forbidden.append("PreConnectAudioHandler")
             self.agent_session.input.audio = self.audio_input
             self.agent_session.output.audio = self.audio_output
+            self.agent_session._on_room_io_participant_linked(
+                SimpleNamespace(identity=self.options.participant_identity)
+            )
             if self.start_gate is not None:
                 await self.start_gate.wait()
             if self.start_error is not None:
@@ -312,8 +321,10 @@ def _fake_sdk():
             self.closed = True
 
     sdk = SimpleNamespace(
-        agents_version="1.6.7",
+        agents_version="1.6.8",
         rtc_version="1.1.14",
+        api_version="1.2.0",
+        protocol_version="1.1.21",
         Agent=Agent,
         AgentSession=AgentSession,
         RoomIO=RoomIO,
@@ -408,8 +419,11 @@ def test_builds_exact_manual_room_io_without_implicit_control_paths(monkeypatch)
         assert room_io.options.video_input is False
         assert room_io.options.text_output is False
         assert room_io.options.audio_output.track_publish_options.source == _MICROPHONE
+        assert session.kwargs["aec_warmup_duration"] is None
 
         await wrapper.start()
+        assert len(session.participant_link_calls) == 1
+        assert session.participant_link_calls[0].identity == "publisher-7"
         assert session.start_calls == [{"record": False, "capture_run": False}]
         assert session.started_agent is agent
         assert session.input.audio is room_io.audio_input
@@ -431,11 +445,78 @@ def test_constructor_has_no_public_arbitrary_sdk_injection():
     assert "sdk" not in inspect.signature(TrustedLiveKitPublisherSession).parameters
 
 
+@pytest.mark.parametrize("missing_metadata", [False, True])
+def test_loader_binds_or_rejects_api_and_protocol_distribution_metadata(
+    monkeypatch, missing_metadata
+):
+    livekit = ModuleType("livekit")
+    livekit.__path__ = []
+    agents = ModuleType("livekit.agents")
+    agents.__version__ = "1.6.8"
+    rtc = ModuleType("livekit.rtc")
+    rtc.__version__ = "1.1.14"
+    livekit.agents = agents
+    livekit.rtc = rtc
+    monkeypatch.setitem(sys.modules, "livekit", livekit)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents)
+    monkeypatch.setitem(sys.modules, "livekit.rtc", rtc)
+
+    versions = {"livekit-api": "1.2.0", "livekit-protocol": "1.1.21"}
+
+    def version(name):
+        if missing_metadata:
+            raise publisher_session.importlib_metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(publisher_session.importlib_metadata, "version", version)
+    if missing_metadata:
+        with pytest.raises(LiveKitAgentsDependencyError, match="requirements-remote"):
+            publisher_session._load_livekit_agents_sdk()
+        return
+
+    loaded = publisher_session._load_livekit_agents_sdk()
+    assert loaded.agents_version == "1.6.8"
+    assert loaded.rtc_version == "1.1.14"
+    assert loaded.api_version == "1.2.0"
+    assert loaded.protocol_version == "1.1.21"
+
+
+def test_remote_requirements_pin_the_reviewed_sdk_closure():
+    requirements_path = Path(__file__).resolve().parents[1] / "requirements-remote.txt"
+    pins = {}
+    for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+        requirement = raw_line.partition("#")[0].strip()
+        name, separator, version = requirement.partition("==")
+        if name not in {
+            "livekit",
+            "livekit-agents",
+            "livekit-api",
+            "livekit-protocol",
+        }:
+            continue
+        assert separator == "=="
+        assert name not in pins
+        pins[name] = version
+
+    assert publisher_session._LIVEKIT_RTC_VERSION == "1.1.14"
+    assert publisher_session._LIVEKIT_AGENTS_VERSION == "1.6.8"
+    assert publisher_session._LIVEKIT_API_VERSION == "1.2.0"
+    assert publisher_session._LIVEKIT_PROTOCOL_VERSION == "1.1.21"
+    assert pins == {
+        "livekit": publisher_session._LIVEKIT_RTC_VERSION,
+        "livekit-agents": publisher_session._LIVEKIT_AGENTS_VERSION,
+        "livekit-api": publisher_session._LIVEKIT_API_VERSION,
+        "livekit-protocol": publisher_session._LIVEKIT_PROTOCOL_VERSION,
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
-        ("agents_version", "1.6.8", "livekit-agents==1.6.7"),
+        ("agents_version", "1.6.7", "livekit-agents==1.6.8"),
         ("rtc_version", "1.1.10", "livekit==1.1.14"),
+        ("api_version", "1.1.1", "livekit-api==1.2.0"),
+        ("protocol_version", "1.1.20", "livekit-protocol==1.1.21"),
         ("RoomIO", None, "reviewed surfaces"),
         ("AgentsConsole", None, "reviewed surfaces"),
     ],

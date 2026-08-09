@@ -29,6 +29,7 @@ turn through the same local LLM for the web UI's text box.
 Pure string helpers live at module scope and are import-safe without fastapi or
 livekit installed; everything else lazy-imports those deps.
 """
+
 from __future__ import annotations
 
 import logging
@@ -114,7 +115,9 @@ class RateLimiter:
     public /chat surface, not a substitute for an upstream gateway.
     """
 
-    def __init__(self, max_requests: int = RATE_LIMIT_MAX, window: float = RATE_LIMIT_WINDOW):
+    def __init__(
+        self, max_requests: int = RATE_LIMIT_MAX, window: float = RATE_LIMIT_WINDOW
+    ):
         self.max_requests = max_requests
         self.window = window
         self._hits: Dict[str, Deque[float]] = {}
@@ -148,12 +151,9 @@ def create_access_token(identity: str, room: str, ttl_seconds: int = 3600) -> st
         .with_name(identity)
         .with_grants(api.VideoGrants(room_join=True, room=room))
     )
-    try:
-        from datetime import timedelta
+    from datetime import timedelta
 
-        token = token.with_ttl(timedelta(seconds=ttl_seconds))
-    except Exception:
-        pass
+    token = token.with_ttl(timedelta(seconds=ttl_seconds))
     return token.to_jwt()
 
 
@@ -278,7 +278,12 @@ def create_app(config: Optional[dict] = None):
             # surfaces in the exception text) to the client.
             logger.exception("token mint failed for identity=%r room=%r", ident, rm)
             raise HTTPException(status_code=500, detail="failed to mint access token")
-        return {"token": jwt, "url": os.environ.get("LIVEKIT_URL", ""), "room": rm, "identity": ident}
+        return {
+            "token": jwt,
+            "url": os.environ.get("LIVEKIT_URL", ""),
+            "room": rm,
+            "identity": ident,
+        }
 
     @app.post("/chat")
     async def chat(
@@ -309,7 +314,9 @@ def create_app(config: Optional[dict] = None):
             raise HTTPException(status_code=500, detail="chat backend error")
         return {"reply": (reply or "").strip()}
 
-    web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+    web_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
+    )
     if os.path.isdir(web_dir):
         from fastapi.staticfiles import StaticFiles
 
@@ -339,7 +346,10 @@ def main():  # pragma: no cover
             port,
         )
     else:
-        logger.info("Binding token server to 127.0.0.1:%s (set SPEAKER_REMOTE_BIND_ALL=1 to expose).", port)
+        logger.info(
+            "Binding token server to 127.0.0.1:%s (set SPEAKER_REMOTE_BIND_ALL=1 to expose).",
+            port,
+        )
     uvicorn.run(create_app(cfg), host=host, port=port)
 
 

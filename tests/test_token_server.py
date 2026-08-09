@@ -3,10 +3,19 @@
 The endpoint-level tests below additionally require fastapi/starlette and
 self-skip when those are absent (keeping the Tier-0 suite import-safe).
 """
+
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
 from core.llm_threads import resolve_llamacpp_thread_pair
-from remote.token_server import _make_llm, sanitize_identity, sanitize_room_name
+from remote.token_server import (
+    _make_llm,
+    create_access_token,
+    sanitize_identity,
+    sanitize_room_name,
+)
 
 
 def test_sanitize_room_name():
@@ -26,9 +35,7 @@ def test_sanitize_identity():
 
 
 def test_llamacpp_text_server_uses_bounded_thread_pair():
-    llm = _make_llm(
-        {"llm": {"backend": "llamacpp", "main_model_path": "model.gguf"}}
-    )
+    llm = _make_llm({"llm": {"backend": "llamacpp", "main_model_path": "model.gguf"}})
     expected = resolve_llamacpp_thread_pair()
 
     assert (llm.n_threads, llm.n_threads_batch) == (
@@ -50,6 +57,74 @@ def test_llamacpp_text_server_preserves_explicit_batch_override():
     )
 
     assert (llm.n_threads, llm.n_threads_batch) == (2, 3)
+
+
+def _fake_livekit_api(monkeypatch, *, ttl_error=None):
+    calls = []
+
+    class VideoGrants:
+        def __init__(self, **kwargs):
+            calls.append(("grants", kwargs))
+
+    class AccessToken:
+        def __init__(self, key, secret):
+            calls.append(("token", key, secret))
+
+        def with_identity(self, identity):
+            calls.append(("identity", identity))
+            return self
+
+        def with_name(self, name):
+            calls.append(("name", name))
+            return self
+
+        def with_grants(self, grants):
+            assert isinstance(grants, VideoGrants)
+            calls.append(("with_grants",))
+            return self
+
+        def with_ttl(self, ttl):
+            calls.append(("ttl_seconds", ttl.total_seconds()))
+            if ttl_error is not None:
+                raise ttl_error
+            return self
+
+        def to_jwt(self):
+            calls.append(("to_jwt",))
+            return "test-token"
+
+    livekit = ModuleType("livekit")
+    livekit.api = SimpleNamespace(AccessToken=AccessToken, VideoGrants=VideoGrants)
+    monkeypatch.setitem(sys.modules, "livekit", livekit)
+    return calls
+
+
+def test_access_token_uses_reviewed_api_chain_and_exact_ttl(monkeypatch):
+    calls = _fake_livekit_api(monkeypatch)
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret")
+
+    assert create_access_token("publisher", "room", ttl_seconds=3600) == "test-token"
+    assert calls == [
+        ("token", "test-key", "test-secret"),
+        ("identity", "publisher"),
+        ("name", "publisher"),
+        ("grants", {"room_join": True, "room": "room"}),
+        ("with_grants",),
+        ("ttl_seconds", 3600.0),
+        ("to_jwt",),
+    ]
+
+
+def test_access_token_ttl_failure_is_fail_closed(monkeypatch):
+    calls = _fake_livekit_api(monkeypatch, ttl_error=RuntimeError("ttl rejected"))
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret")
+
+    with pytest.raises(RuntimeError, match="ttl rejected"):
+        create_access_token("publisher", "room", ttl_seconds=3600)
+    assert calls[-1] == ("ttl_seconds", 3600.0)
+    assert ("to_jwt",) not in calls
 
 
 def _client(monkeypatch):

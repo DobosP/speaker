@@ -1,7 +1,7 @@
 # ADR-0104: Implement the trusted LiveKit publisher session
 
 Date: 2026-08-01
-Status: accepted
+Status: superseded-by ADR-0164
 
 ## Decision
 

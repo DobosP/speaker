@@ -244,9 +244,17 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         non-interrupting/abstain decisions, a representable uncertainty band,
         and exhaustive device-free tests (ADR-0168). It has no detector or
         runtime effect and cannot weaken exact STOP.
-      - [ ] admit a version-pinned local semantic detector in shadow mode before
-        any post-cut recovery or reversible pre-cut hold. Require aggregate
-        assistant-playback evidence and owner bare-speaker A/B before effects.
+      - [x] freeze the Anyreach Q8 four-file source/artifact contract and
+        declared zero-based physical rows 36–59 (12 `start_listening`, 12
+        `continue_speaking`) without retaining/provisioning the locked set or
+        decoding, loading, or scoring candidate bytes (ADR-0169). The private provisioner verifies
+        caller-supplied opaque bytes only; its artifact manifest is neither a
+        worker/runtime receipt nor redistribution clearance.
+      - [ ] acquire and privately provision the exact Anyreach bytes only after
+        accepting the publisher-metadata terms, then bind a separate exact CPU
+        runtime/worker and four-way shadow evaluator before any post-cut recovery
+        or reversible pre-cut hold. Require aggregate assistant-playback evidence
+        and owner bare-speaker A/B before effects.
       - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default

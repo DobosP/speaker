@@ -15,6 +15,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
@@ -52,6 +53,63 @@ class _FakeRecognizer:
 
     def reset(self, stream):
         self.resets += 1
+
+
+class _BoundedWorkRecognizer(_FakeRecognizer):
+    """Recognizer whose one feed needs an exact or unbounded decode count."""
+
+    def __init__(self, *, ready_decodes: int | None, result: str = "") -> None:
+        super().__init__([result])
+        self.ready_decodes = ready_decodes
+        self.ready_calls = 0
+        self.decode_calls = 0
+        self.result_calls = 0
+
+    def is_ready(self, stream):
+        self.ready_calls += 1
+        return self.ready_decodes is None or self.decode_calls < self.ready_decodes
+
+    def decode_stream(self, stream):
+        self.decode_calls += 1
+
+    def get_result(self, stream):
+        self.result_calls += 1
+        return super().get_result(stream)
+
+
+class _FaultingConfirmStream(_FakeStream):
+    def __init__(self, failure_phase: str) -> None:
+        super().__init__()
+        self.failure_phase = failure_phase
+
+    def accept_waveform(self, sr, samples):
+        super().accept_waveform(sr, samples)
+        if self.failure_phase == "accept":
+            raise RuntimeError("injected confirm accept failure")
+
+
+class _FaultingConfirmRecognizer(_BoundedWorkRecognizer):
+    def __init__(self, failure_phase: str) -> None:
+        super().__init__(
+            ready_decodes=1 if failure_phase == "decode" else 0,
+        )
+        self.failure_phase = failure_phase
+
+    def is_ready(self, stream):
+        if self.failure_phase == "readiness":
+            raise RuntimeError("injected confirm readiness failure")
+        return super().is_ready(stream)
+
+    def decode_stream(self, stream):
+        super().decode_stream(stream)
+        if self.failure_phase == "decode":
+            raise RuntimeError("injected confirm decode failure")
+
+    def get_result(self, stream):
+        result = super().get_result(stream)
+        if self.failure_phase == "result" and self.result_calls > 1:
+            raise RuntimeError("injected confirm result failure")
+        return result
 
 
 class _Rec:
@@ -549,3 +607,428 @@ def test_confirmed_window_discards_echo_obs():
     # User speech contaminated the window -> nothing taught to the echo charts.
     assert eng._dtd.echo_obs == []
     assert eng._confirm_echo_obs == []
+
+
+# --- finite native-work and retained-PCM bounds -------------------------------
+
+
+def _assert_confirm_window_fully_closed(eng: SherpaOnnxEngine) -> None:
+    assert not eng._barge_confirm_active()
+    assert eng._duck_gain == 1.0
+    assert eng._confirm_base_text == ""
+    assert eng._confirm_speak_generation is None
+    assert eng._confirm_playback_generation is None
+    assert not eng._confirm_handoff_stream_live
+    assert eng._confirm_handoff_pending is None
+    assert eng._confirm_primary_pcm == []
+    assert eng._confirm_alternate_pcm == []
+    assert eng._confirm_primary_samples == 0
+    assert eng._confirm_alternate_samples == 0
+    assert eng._confirm_invocations == 0
+    assert eng._confirm_feed_sample_limit == 0
+    assert eng._confirm_sample_limit == 0
+    assert eng._confirm_invocation_limit == 0
+    assert eng._confirm_last_at is None
+    assert eng._confirm_audio_started_at is None
+    assert eng._confirm_audio_ended_at is None
+    assert eng._confirm_echo_obs == []
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        -1.0,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        True,
+        pytest.param(10**10_000, id="giant-int"),
+    ],
+)
+def test_confirm_begin_rejects_invalid_time_before_duck(now):
+    rec = _Rec()
+    eng = _engine(rec)
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+
+    eng._begin_barge_confirm(recognizer, stream, now)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert recognizer.result_calls == 0
+    assert rec.metrics == []
+    assert rec.barges == 0
+
+
+def test_confirm_begin_accepts_zero_timestamp():
+    rec = _Rec()
+    eng = _engine(rec)
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+
+    eng._begin_barge_confirm(recognizer, _FakeStream(), 0.0)
+
+    assert eng._barge_confirm_active()
+    assert eng._confirm_last_at == 0.0
+    assert recognizer.result_calls == 1
+    assert rec.metrics == ["barge_in_duck"]
+    eng._end_barge_confirm()
+
+
+@pytest.mark.parametrize("window", [-1.0, 0.0, 0.01, 0.1])
+def test_confirm_begin_clamps_finite_short_window_to_point_one_second(window):
+    eng = _engine(barge_confirm_window_sec=window)
+    recognizer = _FakeRecognizer([""])
+    stream = _FakeStream()
+
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    assert eng._confirm_until == pytest.approx(10.1)
+    assert eng._confirm_invocation_limit == 2
+    eng._end_barge_confirm()
+
+
+@pytest.mark.parametrize(
+    "config_override",
+    [
+        {"barge_confirm_window_sec": float("nan")},
+        {"barge_confirm_window_sec": float("inf")},
+        {"block_sec": 0.0},
+        {"block_sec": float("nan")},
+        {"block_sec": float.fromhex("0x0.0000000000001p-1022")},
+        {"barge_confirm_window_sec": True},
+        {"block_sec": True},
+        {"sample_rate": True},
+        {"media_pcm_queue_ms": True},
+    ],
+)
+def test_confirm_begin_rejects_invalid_or_unrepresentable_derived_bounds(
+    config_override,
+):
+    rec = _Rec()
+    config = {"media_pcm_queue_ms": 0.0, **config_override}
+    eng = _engine(rec, **config)
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+
+    eng._begin_barge_confirm(recognizer, _FakeStream(), 10.0)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert recognizer.result_calls == 0
+    assert rec.metrics == []
+
+
+@pytest.mark.parametrize(
+    "step_at",
+    [
+        10.0,
+        9.9,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        pytest.param(10**10_000, id="giant-int"),
+    ],
+)
+def test_confirm_step_rejects_invalid_or_nonadvancing_time_before_native_work(
+    step_at,
+):
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, step_at)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert stream.fed_blocks == 0
+    assert recognizer.ready_calls == 0
+    assert recognizer.decode_calls == 0
+    assert recognizer.result_calls == 1  # begin snapshot only
+    assert recognizer.resets == 1
+    assert eng._dtd.echo_obs == []
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+def test_confirm_step_rejects_bool_after_zero_begin_before_native_work():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 0.0)
+
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, True)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert stream.fed_blocks == 0
+    assert recognizer.ready_calls == 0
+    assert recognizer.decode_calls == 0
+    assert recognizer.result_calls == 1
+    assert recognizer.resets == 1
+    assert eng._dtd.echo_obs == []
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+@pytest.mark.parametrize(
+    "queue_ms, primary_samples, alternate_samples",
+    [
+        (300.0, 31, 1),
+        (300.0, 1, 31),
+        (300.0, 0, 1),
+        (300.0, 1, 0),
+        (0.0, 11, 1),
+    ],
+)
+def test_confirm_rejects_empty_or_per_feed_oversize_domain_before_side_effects(
+    queue_ms,
+    primary_samples,
+    alternate_samples,
+):
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        sample_rate=100,
+        block_sec=0.1,
+        media_pcm_queue_ms=queue_ms,
+        barge_confirm_window_sec=0.5,
+    )
+    eng._resid_blind = True
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    assert not eng._barge_confirm_step(
+        recognizer,
+        stream,
+        np.zeros(primary_samples, dtype="float32"),
+        10.1,
+        mic_raw=np.zeros(alternate_samples, dtype="float32"),
+    )
+
+    _assert_confirm_window_fully_closed(eng)
+    assert stream.fed_blocks == 0
+    assert recognizer.ready_calls == 0
+    assert recognizer.decode_calls == 0
+    assert recognizer.result_calls == 1
+    assert recognizer.resets == 1
+    assert eng._dtd.echo_obs == []
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+@pytest.mark.parametrize(
+    "primary_samples, alternate_samples",
+    [(30, 1), (1, 30)],
+)
+def test_confirm_accepts_each_domain_at_the_exact_per_feed_cap(
+    primary_samples,
+    alternate_samples,
+):
+    eng = _engine(
+        sample_rate=100,
+        block_sec=0.1,
+        media_pcm_queue_ms=300.0,
+        barge_confirm_window_sec=0.5,
+    )
+    eng._resid_blind = True
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    assert not eng._barge_confirm_step(
+        recognizer,
+        stream,
+        np.zeros(primary_samples, dtype="float32"),
+        10.1,
+        mic_raw=np.zeros(alternate_samples, dtype="float32"),
+    )
+
+    assert eng._barge_confirm_active()
+    assert eng._confirm_feed_sample_limit == 30
+    assert eng._confirm_primary_samples == primary_samples
+    assert eng._confirm_alternate_samples == alternate_samples
+    assert stream.fed_blocks == 1
+    eng._end_barge_confirm()
+
+
+@pytest.mark.parametrize("overflow_domain", ["primary", "alternate"])
+def test_confirm_prospective_cumulative_overflow_aborts_before_third_feed(
+    overflow_domain,
+):
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        sample_rate=100,
+        block_sec=0.1,
+        media_pcm_queue_ms=300.0,
+        barge_confirm_window_sec=0.5,
+    )
+    eng._resid_blind = True
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+    primary_n, alternate_n = (30, 1) if overflow_domain == "primary" else (1, 30)
+
+    for step_at in (10.1, 10.2):
+        assert not eng._barge_confirm_step(
+            recognizer,
+            stream,
+            np.zeros(primary_n, dtype="float32"),
+            step_at,
+            mic_raw=np.zeros(alternate_n, dtype="float32"),
+        )
+    retained = (
+        eng._confirm_primary_samples
+        if overflow_domain == "primary"
+        else eng._confirm_alternate_samples
+    )
+    assert retained == 60
+    assert retained <= 80  # ceil(100 * .5s) + one 30-sample feed
+
+    assert not eng._barge_confirm_step(
+        recognizer,
+        stream,
+        np.zeros(primary_n, dtype="float32"),
+        10.3,
+        mic_raw=np.zeros(alternate_n, dtype="float32"),
+    )
+
+    _assert_confirm_window_fully_closed(eng)
+    assert stream.fed_blocks == 2
+    assert recognizer.ready_calls == 2
+    assert recognizer.result_calls == 3  # begin plus two accepted feeds
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+def test_confirm_zero_window_has_two_invocation_minimum_and_no_third_feed():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        sample_rate=100,
+        block_sec=1.0,
+        media_pcm_queue_ms=0.0,
+        barge_confirm_window_sec=0.0,
+    )
+    recognizer = _BoundedWorkRecognizer(ready_decodes=0)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+    assert eng._confirm_invocation_limit == 2
+
+    assert not eng._barge_confirm_step(recognizer, stream, np.zeros(1), 10.01)
+    assert not eng._barge_confirm_step(recognizer, stream, np.zeros(1), 10.02)
+    assert eng._barge_confirm_active()
+    assert not eng._barge_confirm_step(recognizer, stream, np.zeros(1), 10.03)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert stream.fed_blocks == 2
+    assert recognizer.result_calls == 3
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+def test_confirm_exactly_sixty_four_decodes_runs_final_probe_and_result_path():
+    eng = _engine()
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _BoundedWorkRecognizer(ready_decodes=64)
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, 10.1)
+
+    assert recognizer.ready_calls == 65
+    assert recognizer.decode_calls == 64
+    assert recognizer.result_calls == 2  # begin snapshot plus accepted feed
+    assert stream.fed_blocks == 1
+    assert len(eng._confirm_primary_pcm) == 1
+    assert len(eng._confirm_alternate_pcm) == 1
+    assert len(eng._confirm_echo_obs) == 1
+    assert eng._dtd.echo_obs == []
+    eng._end_barge_confirm()
+
+
+def test_confirm_decode_exhaustion_never_reads_result_or_labels_window():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _BoundedWorkRecognizer(ready_decodes=None, result="stop")
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+    eng._confirm_handoff_stream_live = True
+    eng._confirm_handoff_pending = object()
+
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, 10.1)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert recognizer.ready_calls == 65
+    assert recognizer.decode_calls == 64
+    assert recognizer.result_calls == 1  # begin only; no post-exhaustion read
+    assert recognizer.resets == 1
+    assert eng._dtd.echo_obs == []
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+@pytest.mark.parametrize("failure_phase", ["accept", "readiness", "decode", "result"])
+def test_legacy_confirm_native_fault_closes_resets_and_abstains(failure_phase):
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    recognizer = _FaultingConfirmRecognizer(failure_phase)
+    stream = _FaultingConfirmStream(failure_phase)
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+    eng._confirm_handoff_stream_live = True
+    eng._confirm_handoff_pending = object()
+
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, 10.1)
+
+    _assert_confirm_window_fully_closed(eng)
+    assert recognizer.resets == 1
+    assert eng._dtd.echo_obs == []
+    assert rec.metrics == ["barge_in_duck"]
+    assert rec.barges == 0
+
+
+def test_confirm_callback_exception_is_not_reclassified_as_native_failure():
+    class _CallbackFailure(RuntimeError):
+        pass
+
+    eng = _engine()
+
+    def fail_callback():
+        raise _CallbackFailure("barge callback failed")
+
+    eng._cb = EngineCallbacks(on_barge_in=fail_callback)
+    recognizer = _FakeRecognizer(["", "stop"])
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+
+    with pytest.raises(_CallbackFailure, match="barge callback failed"):
+        eng._barge_confirm_step(recognizer, stream, _BLOCK, 10.1)
+
+    assert recognizer.resets == 0
+    assert eng._confirmed_barge_claim is None
+
+
+def test_engine_stop_clears_active_confirm_window_and_all_retained_state():
+    eng = _engine(_Rec())
+    recognizer = _FakeRecognizer([""])
+    stream = _FakeStream()
+    eng._begin_barge_confirm(recognizer, stream, 10.0)
+    assert not eng._barge_confirm_step(recognizer, stream, _BLOCK, 10.1)
+    eng._confirm_handoff_stream_live = True
+    eng._confirm_handoff_pending = object()
+    assert eng._barge_confirm_active()
+    assert eng._confirm_primary_pcm
+
+    eng.stop()
+
+    _assert_confirm_window_fully_closed(eng)

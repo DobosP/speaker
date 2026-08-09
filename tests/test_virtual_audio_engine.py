@@ -9,7 +9,11 @@ import pytest
 
 from core.engine import EngineCallbacks
 from core.engines._acoustic_turn import AcousticTurnTracker
-from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.sherpa import (
+    SherpaConfig,
+    SherpaOnnxEngine,
+    _CaptureBlockRejected,
+)
 
 
 class _Binder:
@@ -218,6 +222,69 @@ class _NullKwsStream:
         pass
 
 
+class _BoundedKwsStream:
+    def __init__(self, spotter: "_BoundedKws", sequence: int) -> None:
+        self.spotter = spotter
+        self.sequence = sequence
+        self.decode_calls = 0
+
+    def accept_waveform(self, _sample_rate, samples):
+        self.spotter.accept_calls += 1
+        self.spotter.accepted.append(np.asarray(samples).copy())
+        if self.spotter.failure_phase == "accept":
+            raise RuntimeError("injected KWS accept failure")
+
+
+class _BoundedKws:
+    """Keyword fake with exact native-call accounting and stream recreation."""
+
+    def __init__(
+        self,
+        *,
+        ready_decodes: int | None,
+        keyword: str = "",
+        failure_phase: str | None = None,
+    ) -> None:
+        self.ready_decodes = ready_decodes
+        self.keyword = keyword
+        self.failure_phase = failure_phase
+        self.create_calls = 0
+        self.accept_calls = 0
+        self.ready_calls = 0
+        self.decode_calls = 0
+        self.result_calls = 0
+        self.reset_calls = 0
+        self.accepted: list[np.ndarray] = []
+        self.streams: list[_BoundedKwsStream] = []
+
+    def create_stream(self):
+        self.create_calls += 1
+        stream = _BoundedKwsStream(self, self.create_calls)
+        self.streams.append(stream)
+        return stream
+
+    def is_ready(self, stream):
+        self.ready_calls += 1
+        if self.failure_phase == "is_ready":
+            raise RuntimeError("injected KWS readiness failure")
+        return self.ready_decodes is None or stream.decode_calls < self.ready_decodes
+
+    def decode_stream(self, stream):
+        self.decode_calls += 1
+        stream.decode_calls += 1
+        if self.failure_phase == "decode":
+            raise RuntimeError("injected KWS decode failure")
+
+    def get_result(self, _stream):
+        self.result_calls += 1
+        if self.failure_phase == "result":
+            raise RuntimeError("injected KWS result failure")
+        return self.keyword
+
+    def reset_stream(self, _stream):
+        self.reset_calls += 1
+
+
 def _kws_engine(keyword):
     engine = SherpaOnnxEngine(SherpaConfig())
     engine._kws = _FixedKws(keyword)
@@ -314,6 +381,196 @@ def test_legacy_kws_callback_still_closes_a_typed_partial_turn() -> None:
     assert next_lineage.spans[0].turn_index == 2
 
 
+def _bounded_kws_engine(spotter: _BoundedKws) -> SherpaOnnxEngine:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._kws = spotter
+    engine._kws_stream = spotter.create_stream()
+    return engine
+
+
+def test_kws_exactly_sixty_four_decodes_runs_final_probe_and_result_path() -> None:
+    spotter = _BoundedKws(ready_decodes=64)
+    engine = _bounded_kws_engine(spotter)
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert spotter.accept_calls == 1
+    assert spotter.ready_calls == 65
+    assert spotter.decode_calls == 64
+    assert spotter.result_calls == 1
+    assert spotter.reset_calls == 0
+    assert spotter.create_calls == 1
+
+
+def test_kws_decode_exhaustion_abstains_before_result_and_preserves_lineage() -> None:
+    spotter = _BoundedKws(ready_decodes=None, keyword="stop")
+    engine = _bounded_kws_engine(spotter)
+    old_stream = engine._kws_stream
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=3)
+    before, revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    commands: list[str] = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert revision == 0
+    assert before.spans[0].key == after.spans[0].key
+    assert tracker.active
+    assert commands == []
+    assert spotter.accept_calls == 1
+    assert spotter.ready_calls == 65
+    assert spotter.decode_calls == 64
+    assert spotter.result_calls == 0
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
+    assert engine._kws_stream is spotter.streams[-1]
+    assert engine._kws_stream is not old_stream
+
+
+@pytest.mark.parametrize("failure_phase", ["accept", "is_ready", "decode", "result"])
+def test_kws_native_fault_abstains_recreates_stream_and_preserves_lineage(
+    failure_phase,
+) -> None:
+    spotter = _BoundedKws(
+        ready_decodes=1,
+        keyword="stop",
+        failure_phase=failure_phase,
+    )
+    engine = _bounded_kws_engine(spotter)
+    old_stream = engine._kws_stream
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=3)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    commands: list[str] = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert before.spans[0].key == after.spans[0].key
+    assert tracker.active
+    assert commands == []
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
+    assert engine._kws_stream is not old_stream
+
+
+def test_kws_recovery_recreates_even_when_best_effort_reset_fails() -> None:
+    class _ResetFailureKws(_BoundedKws):
+        def reset_stream(self, stream):
+            super().reset_stream(stream)
+            raise RuntimeError("injected KWS reset failure")
+
+    spotter = _ResetFailureKws(ready_decodes=None)
+    engine = _bounded_kws_engine(spotter)
+    old_stream = engine._kws_stream
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
+    assert engine._kws_stream is spotter.streams[-1]
+    assert engine._kws_stream is not old_stream
+
+
+def test_kws_recovery_sets_stream_none_when_recreation_fails() -> None:
+    class _RecreateFailureKws(_BoundedKws):
+        def create_stream(self):
+            if self.create_calls:
+                self.create_calls += 1
+                raise RuntimeError("injected KWS recreate failure")
+            return super().create_stream()
+
+    spotter = _RecreateFailureKws(ready_decodes=None)
+    engine = _bounded_kws_engine(spotter)
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
+    assert engine._kws_stream is None
+
+
+@pytest.mark.parametrize(
+    "config_override, samples, detected_at",
+    [
+        ({}, np.zeros(0, dtype="float32"), None),
+        (
+            {
+                "sample_rate": 100,
+                "block_sec": 0.1,
+                "media_pcm_queue_ms": 300.0,
+            },
+            np.zeros(31, dtype="float32"),
+            None,
+        ),
+        ({"block_sec": float("nan")}, np.zeros(1, dtype="float32"), None),
+        ({"sample_rate": True}, np.zeros(1, dtype="float32"), None),
+        ({"block_sec": True}, np.zeros(1, dtype="float32"), None),
+        ({"media_pcm_queue_ms": True}, np.zeros(1, dtype="float32"), None),
+        ({}, np.zeros(1, dtype="float32"), -1.0),
+        ({}, np.zeros(1, dtype="float32"), float("nan")),
+        ({}, np.zeros(1, dtype="float32"), True),
+        pytest.param(
+            {},
+            np.zeros(1, dtype="float32"),
+            10**10_000,
+            id="giant-detected-at",
+        ),
+    ],
+)
+def test_kws_rejects_empty_oversize_or_invalid_timing_before_native_work(
+    config_override,
+    samples,
+    detected_at,
+) -> None:
+    spotter = _BoundedKws(ready_decodes=0, keyword="stop")
+    engine = SherpaOnnxEngine(SherpaConfig(**config_override))
+    engine._kws = spotter
+    initial_stream = spotter.create_stream()
+    engine._kws_stream = initial_stream
+    commands: list[str] = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+
+    with pytest.raises(_CaptureBlockRejected):
+        engine._poll_keywords(samples, detected_at=detected_at)
+
+    assert commands == []
+    assert spotter.accept_calls == 0
+    assert spotter.ready_calls == 0
+    assert spotter.decode_calls == 0
+    assert spotter.result_calls == 0
+    assert spotter.reset_calls == 0
+    assert spotter.create_calls == 1
+    assert engine._kws_stream is initial_stream
+
+
+def test_kws_callback_exception_is_not_reclassified_as_native_failure() -> None:
+    class _CallbackFailure(RuntimeError):
+        pass
+
+    spotter = _BoundedKws(ready_decodes=0, keyword="stop")
+    engine = _bounded_kws_engine(spotter)
+
+    def fail_callback(_keyword):
+        raise _CallbackFailure("command callback failed")
+
+    engine._cb = EngineCallbacks(on_command=fail_callback)
+
+    with pytest.raises(_CallbackFailure, match="command callback failed"):
+        engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert spotter.result_calls == 1
+    assert spotter.reset_calls == 1  # the ordinary hit reset, not recovery
+    assert spotter.create_calls == 1
+
+
 def _one_block_kws_capture() -> tuple[SherpaOnnxEngine, object]:
     class _Stream:
         def __init__(self) -> None:
@@ -373,6 +630,53 @@ def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
     engine._capture_loop()
 
     assert recognizer.reset_calls == 1
+    assert recognizer.stream.blocks == []
+
+
+def test_legacy_kws_exhaustion_recreates_stream_then_preserves_same_block_asr():
+    engine, recognizer = _one_block_kws_capture()
+    spotter = _BoundedKws(ready_decodes=None, keyword="stop")
+    engine._kws = spotter
+    engine._kws_stream = spotter.create_stream()
+    commands: list[str] = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+
+    engine._running.set()
+    engine._capture_loop()
+
+    assert commands == []
+    assert spotter.ready_calls == 65
+    assert spotter.decode_calls == 64
+    assert spotter.result_calls == 0
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
+    assert len(recognizer.stream.blocks) == 1
+    assert np.array_equal(
+        recognizer.stream.blocks[0],
+        np.ones(1600, dtype="float32"),
+    )
+
+
+def test_oversize_kws_capture_block_is_rejected_without_normal_asr_laundering():
+    engine, recognizer = _one_block_kws_capture()
+    spotter = _BoundedKws(ready_decodes=0, keyword="stop")
+    engine._kws = spotter
+    engine._kws_stream = spotter.create_stream()
+
+    class _OversizeInput:
+        generation = 0
+
+        def read(self, _frames):
+            engine._running.clear()
+            return np.ones(4801, dtype="float32"), False
+
+    engine._stream_in = _OversizeInput()
+    engine._running.set()
+    engine._capture_loop()
+
+    assert spotter.accept_calls == 0
+    assert spotter.ready_calls == 0
+    assert spotter.result_calls == 0
     assert recognizer.stream.blocks == []
 
 

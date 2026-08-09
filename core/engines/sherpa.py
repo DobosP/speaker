@@ -78,6 +78,66 @@ _FIFO_SEC_MAX = 4.0
 # engine wait realistic but finite; a tracked helper retains ownership past it.
 _INPUT_TEARDOWN_TIMEOUT_SEC = 1.0
 _CAPTURE_FORCE_JOIN_TIMEOUT_SEC = 1.0
+# One KWS or duck-confirm feed cannot authorize unbounded native decoder work.
+# The final readiness probe distinguishes an exactly-full, successfully drained
+# budget from a stream that still asks for a 65th decode call.
+_MAX_NATIVE_DECODE_STEPS_PER_FEED = 64
+
+
+class _NativeDecodeStepLimitExceeded(RuntimeError):
+    """One native streaming feed remained ready past its decode-step budget."""
+
+
+class _BargeConfirmContinuityFault(RuntimeError):
+    """A structural confirm fault requires all decode roles to rotate."""
+
+
+class _CaptureBlockRejected(RuntimeError):
+    """A malformed capture block must not reach another streaming consumer."""
+
+
+@dataclass(frozen=True, slots=True)
+class _BargeConfirmWorkLimits:
+    """Finite, indexable work authorized by one confirm window."""
+
+    sample_rate: int
+    window_sec: float
+    retry_suppress_sec: float
+    duck_gain: float
+    deadline: float
+    feed_samples: int
+    domain_samples: int
+    invocations: int
+
+
+def _drain_native_ready_bounded(recognizer, stream) -> int:
+    """Drain one accepted feed, or fail before a 65th native decode call.
+
+    This bounds Python/native call count, not the wall time of any individual
+    extension call.  Exactly 64 ready decodes followed by not-ready is valid.
+    """
+
+    for step in range(_MAX_NATIVE_DECODE_STEPS_PER_FEED):
+        if not recognizer.is_ready(stream):
+            return step
+        recognizer.decode_stream(stream)
+    if recognizer.is_ready(stream):
+        raise _NativeDecodeStepLimitExceeded(
+            "native streaming decoder exceeded the per-feed step limit"
+        )
+    return _MAX_NATIVE_DECODE_STEPS_PER_FEED
+
+
+def _checked_ceil_size(value: float) -> Optional[int]:
+    """Return a non-negative ``ceil(value)`` representable as ``Py_ssize_t``."""
+
+    if not math.isfinite(value) or value < 0.0:
+        return None
+    result = math.ceil(value)
+    if result < 0 or result > sys.maxsize:
+        return None
+    return result
+
 
 # Startup calibration must measure stationary room tone, not the stream-open
 # impulse observed in live run 20260711-144211 (peak 0.818 over a 0.0049-RMS
@@ -2308,6 +2368,16 @@ class SherpaOnnxEngine(AudioEngine):
         self._confirm_handoff_pending: Optional[_ConfirmedBargeHandoff] = None
         self._confirm_primary_pcm: list[np.ndarray] = []
         self._confirm_alternate_pcm: list[np.ndarray] = []
+        self._confirm_primary_samples: int = 0
+        self._confirm_alternate_samples: int = 0
+        self._confirm_invocations: int = 0
+        self._confirm_feed_sample_limit: int = 0
+        self._confirm_sample_limit: int = 0
+        self._confirm_invocation_limit: int = 0
+        self._confirm_sample_rate: int = 0
+        self._confirm_last_at: Optional[float] = None
+        self._confirm_window_sec: float = 0.0
+        self._confirm_retry_suppress_sec: float = 0.0
         self._confirm_audio_started_at: Optional[float] = None
         self._confirm_audio_ended_at: Optional[float] = None
         # Continuous no-duck word-cut state (barge_word_cut_enabled). Detection
@@ -5245,8 +5315,7 @@ class SherpaOnnxEngine(AudioEngine):
             # remain counted until their capture owner releases them.
             self._capture_epoch += 1
             self._capture_stopping.set()
-            self._confirm_handoff_stream_live = False
-            self._confirm_handoff_pending = None
+            self._end_barge_confirm()
             self._capture_effect_condition.notify_all()
         if self._capture_control_lane is not None:
             self._capture_control_lane.close()
@@ -5362,6 +5431,12 @@ class SherpaOnnxEngine(AudioEngine):
         )
         capture_effects_idle = self._capture_effects_are_idle()
         capture_quiesced = not capture_alive and capture_effects_idle
+        # The early epoch-invalidation clear restores volume immediately.  A
+        # capture effect admitted just before that fence is allowed to finish and
+        # may have banked confirm PCM after the first clear, so clear once more
+        # after the bounded capture/decode joins.  If ownership was retained,
+        # the resource hold forbids restart until a later stop observes it idle.
+        self._end_barge_confirm()
         capture_closed = True
         if capture_stream is not None and capture_quiesced:
             capture_closed = self._close_capture_input()
@@ -7661,6 +7736,50 @@ class SherpaOnnxEngine(AudioEngine):
                 return False
             return True
 
+        def reject_capture_block(
+            exc: _CaptureBlockRejected,
+            captured: CapturedBlock,
+        ) -> None:
+            """Retire decoder state so rejected PCM cannot be silently spliced."""
+
+            nonlocal last_partial
+            nonlocal last_published_partial
+            nonlocal post_gap_guard_blocks
+            nonlocal rejected_run
+            nonlocal rejected_flagged
+            nonlocal stream
+            nonlocal word_cut_stream
+            log.warning("rejecting invalid KWS capture feed: %s", exc)
+            self._abort_active_acoustic_turn(
+                acoustic_turn,
+                TranscriptAbortReason.BACKPRESSURE,
+                capture_epoch=capture_epoch,
+            )
+            self._reset_capture_frontends_after_gap(
+                capture_sample_rate=captured.sample_rate_hz
+            )
+            self._reset_keyword_stream_after_discontinuity()
+            last_partial = ""
+            last_published_partial = ""
+            segment.reset()
+            barge_sustain.reset()
+            post_gap_guard_blocks = 1
+            rejected_run = 0.0
+            rejected_flagged = False
+            if isinstance(recognizer, SherpaStreamingDecodeOwner):
+                recognizer.rotate_decode_continuity(
+                    DecodeLossReason.EXPLICIT_DISCONTINUITY
+                )
+                stream = self._new_asr_stream(recognizer)
+                word_cut_stream = None
+                self._capture_callback_context.decode_identity = recognizer.identity
+            else:
+                word_cut_stream = None
+                try:
+                    recognizer.reset(stream)
+                except Exception:  # noqa: BLE001 - replacement is authoritative
+                    stream = self._new_asr_stream(recognizer)
+
         log.info(
             "capture loop started (capture_sr=%d -> asr_sr=%d)",
             self._capture_sr,
@@ -8223,27 +8342,33 @@ class SherpaOnnxEngine(AudioEngine):
                         and block_context.os_echo_route_verified
                     )
                 ):
-                    command_consumed = self._poll_keywords(
-                        samples,
-                        guard_private_route=bool(
-                            self._virtual_audio_binder is not None
-                        ),
-                        require_os_echo_route=bool(
-                            self._virtual_audio_binder is not None
-                            and speaking_for_kws
-                            and self._aec is None
-                        ),
-                        speaking=speaking_for_kws,
-                        allow_publish=bool(
-                            not block_after_gap
-                            and self._captured_control_effect_is_current(block_context)
-                        ),
-                        detected_at=now,
-                        os_echo_route_verified=bool(
-                            context_authority_current
-                            and block_context.os_echo_route_verified
-                        ),
-                    )
+                    try:
+                        command_consumed = self._poll_keywords(
+                            samples,
+                            guard_private_route=bool(
+                                self._virtual_audio_binder is not None
+                            ),
+                            require_os_echo_route=bool(
+                                self._virtual_audio_binder is not None
+                                and speaking_for_kws
+                                and self._aec is None
+                            ),
+                            speaking=speaking_for_kws,
+                            allow_publish=bool(
+                                not block_after_gap
+                                and self._captured_control_effect_is_current(
+                                    block_context
+                                )
+                            ),
+                            detected_at=now,
+                            os_echo_route_verified=bool(
+                                context_authority_current
+                                and block_context.os_echo_route_verified
+                            ),
+                        )
+                    except _CaptureBlockRejected as exc:
+                        reject_capture_block(exc, captured)
+                        continue
                 if command_consumed:
                     # KWS publication is a terminal for this exact acoustic
                     # turn. Retire every normal-ASR owner in the same capture
@@ -8499,12 +8624,7 @@ class SherpaOnnxEngine(AudioEngine):
                                     )
                                 ),
                             )
-                        except Exception as exc:  # noqa: BLE001
-                            if not isinstance(
-                                recognizer,
-                                SherpaStreamingDecodeOwner,
-                            ):
-                                raise
+                        except _BargeConfirmContinuityFault as exc:
                             recover_playback_native_error(
                                 exc,
                                 phase="barge-confirm decode",
@@ -8621,12 +8741,7 @@ class SherpaOnnxEngine(AudioEngine):
                                                 block_context.playback_generation
                                             ),
                                         )
-                                    except Exception as exc:  # noqa: BLE001
-                                        if not isinstance(
-                                            recognizer,
-                                            SherpaStreamingDecodeOwner,
-                                        ):
-                                            raise
+                                    except _BargeConfirmContinuityFault as exc:
                                         recover_playback_native_error(
                                             exc,
                                             phase="barge-confirm start",
@@ -8716,12 +8831,7 @@ class SherpaOnnxEngine(AudioEngine):
                                                     block_context.playback_generation
                                                 ),
                                             )
-                                        except Exception as exc:  # noqa: BLE001
-                                            if not isinstance(
-                                                recognizer,
-                                                SherpaStreamingDecodeOwner,
-                                            ):
-                                                raise
+                                        except _BargeConfirmContinuityFault as exc:
                                             recover_playback_native_error(
                                                 exc,
                                                 phase="barge-confirm loose start",
@@ -9588,6 +9698,10 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             if close_logical_turn_shadow:
                 self._logical_turn_shadow_close()
+            # A retained owner may finish an admitted block after stop()'s
+            # bounded post-join clear. Its own terminal cleanup is therefore the
+            # final authority that prevents confirm PCM/duck state surviving exit.
+            self._end_barge_confirm()
             segment.reset()
             try:
                 del self._capture_callback_context.epoch
@@ -10062,6 +10176,114 @@ class SherpaOnnxEngine(AudioEngine):
             source_device=device,
         )
 
+    def _native_capture_work_math(self) -> Optional[tuple[int, float, int]]:
+        """Return validated sample rate, block seconds, and per-feed sample cap."""
+
+        sample_rate = self.config.sample_rate
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+        ):
+            return None
+        configured_block_sec = self.config.block_sec
+        configured_queue_ms = self.config.media_pcm_queue_ms
+        if isinstance(configured_block_sec, bool) or isinstance(
+            configured_queue_ms, bool
+        ):
+            return None
+        try:
+            sample_rate_math = float(sample_rate)
+            block_sec = float(configured_block_sec)
+            queue_ms = float(configured_queue_ms)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not math.isfinite(sample_rate_math)
+            or sample_rate_math <= 0.0
+            or not math.isfinite(block_sec)
+            or block_sec <= 0.0
+            or not math.isfinite(queue_ms)
+            or queue_ms < 0.0
+        ):
+            return None
+        feed_sec = max(block_sec, queue_ms / 1000.0)
+        feed_samples = _checked_ceil_size(sample_rate_math * feed_sec)
+        if feed_samples is None or feed_samples <= 0:
+            return None
+        return sample_rate, block_sec, feed_samples
+
+    def _native_capture_feed_sample_limit(self) -> Optional[int]:
+        """Maximum samples one KWS/confirm invocation may feed natively."""
+
+        work_math = self._native_capture_work_math()
+        return None if work_math is None else work_math[2]
+
+    def _barge_confirm_work_limits(
+        self,
+        now: float,
+    ) -> Optional[_BargeConfirmWorkLimits]:
+        """Derive one finite confirm-window budget without mutating engine state."""
+
+        if isinstance(now, bool):
+            return None
+        work_math = self._native_capture_work_math()
+        if work_math is None:
+            return None
+        sample_rate, block_sec, feed_samples = work_math
+        configured_window_value = self.config.barge_confirm_window_sec
+        configured_retry_value = self.config.barge_confirm_retry_suppress_sec
+        configured_duck_gain_value = self.config.barge_confirm_duck_gain
+        if any(
+            isinstance(value, bool)
+            for value in (
+                configured_window_value,
+                configured_retry_value,
+                configured_duck_gain_value,
+            )
+        ):
+            return None
+        try:
+            at = float(now)
+            configured_window = float(configured_window_value)
+            configured_retry = float(configured_retry_value)
+            configured_duck_gain = float(configured_duck_gain_value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not math.isfinite(at)
+            or at < 0.0
+            or not math.isfinite(configured_window)
+            or not math.isfinite(configured_retry)
+            or not math.isfinite(configured_duck_gain)
+        ):
+            return None
+        window_sec = max(0.1, configured_window)
+        retry_suppress_sec = max(0.0, configured_retry)
+        duck_gain = min(1.0, max(0.0, configured_duck_gain))
+        deadline = at + window_sec
+        sample_rate_math = float(sample_rate)
+        window_samples = _checked_ceil_size(sample_rate_math * window_sec)
+        invocation_base = _checked_ceil_size(window_sec / block_sec)
+        if (
+            not math.isfinite(deadline)
+            or window_samples is None
+            or invocation_base is None
+            or window_samples > sys.maxsize - feed_samples
+            or invocation_base >= sys.maxsize
+        ):
+            return None
+        return _BargeConfirmWorkLimits(
+            sample_rate=sample_rate,
+            window_sec=window_sec,
+            retry_suppress_sec=retry_suppress_sec,
+            duck_gain=duck_gain,
+            deadline=deadline,
+            feed_samples=feed_samples,
+            domain_samples=window_samples + feed_samples,
+            invocations=invocation_base + 1,
+        )
+
     def _poll_keywords(
         self,
         samples,
@@ -10078,12 +10300,42 @@ class SherpaOnnxEngine(AudioEngine):
         ks = self._kws_stream
         if kws is None or ks is None:
             return False
-        ks.accept_waveform(self.config.sample_rate, samples)
-        while kws.is_ready(ks):
-            kws.decode_stream(ks)
-        keyword = kws.get_result(ks)
+        if detected_at is not None:
+            if isinstance(detected_at, bool) or not isinstance(
+                detected_at, (int, float)
+            ):
+                raise _CaptureBlockRejected("KWS detection time is invalid")
+            try:
+                detected_at = float(detected_at)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise _CaptureBlockRejected("KWS detection time is invalid") from exc
+            if not math.isfinite(detected_at) or detected_at < 0.0:
+                raise _CaptureBlockRejected("KWS detection time is invalid")
+        feed_limit = self._native_capture_feed_sample_limit()
+        try:
+            sample_count = int(np.asarray(samples).size)
+        except Exception as exc:  # noqa: BLE001 - reject the whole capture block
+            raise _CaptureBlockRejected("KWS feed has invalid PCM") from exc
+        if feed_limit is None or sample_count <= 0 or sample_count > feed_limit:
+            log.warning("KWS feed rejected: invalid or oversized capture block")
+            raise _CaptureBlockRejected(
+                "KWS feed is empty or exceeds its capture-work limit"
+            )
+        try:
+            ks.accept_waveform(self.config.sample_rate, samples)
+            _drain_native_ready_bounded(kws, ks)
+            keyword = kws.get_result(ks)
+            if keyword:
+                kws.reset_stream(ks)
+        except Exception:  # noqa: BLE001 - KWS is independent command authority
+            log.warning(
+                "KWS native decode failed or exceeded its work limit; "
+                "resetting the keyword stream and abstaining",
+                exc_info=True,
+            )
+            self._reset_keyword_stream_after_discontinuity()
+            return False
         if keyword:
-            kws.reset_stream(ks)
             if not allow_publish:
                 return False
             route_guard = (
@@ -11632,6 +11884,25 @@ class SherpaOnnxEngine(AudioEngine):
             if self._confirmed_barge_claim is claim:
                 self._confirmed_barge_claim = None
 
+    def _abort_barge_confirm_without_evidence(
+        self,
+        recognizer,
+        stream,
+        *,
+        reason: str,
+    ) -> bool:
+        """Discard a structurally invalid window without labeling its audio."""
+
+        log.warning("barge-confirm aborted without evidence: %s", reason)
+        self._end_barge_confirm()
+        if isinstance(recognizer, SherpaStreamingDecodeOwner):
+            raise _BargeConfirmContinuityFault(reason)
+        try:
+            recognizer.reset(stream)
+        except Exception:  # noqa: BLE001 - legacy reset remains best-effort
+            pass
+        return False
+
     def _begin_barge_confirm(
         self,
         recognizer,
@@ -11646,35 +11917,69 @@ class SherpaOnnxEngine(AudioEngine):
         The base snapshot means only words transcribed AFTER the trigger count
         as confirmation -- residue already in the stream (a pre-reply partial
         tail) can't confirm by itself."""
+        limits = self._barge_confirm_work_limits(now)
+        if limits is None:
+            log.warning(
+                "barge-confirm trigger rejected: invalid clock or work-bound math"
+            )
+            return
+        at = float(now)
+        try:
+            with self._gen_lock:
+                origin_speak_generation = (
+                    self._speak_gen
+                    if speak_generation is None
+                    else int(speak_generation)
+                )
+                origin_playback_generation = (
+                    self._playback_generation
+                    if playback_generation is None
+                    else int(playback_generation)
+                )
+        except (TypeError, ValueError, OverflowError):
+            log.warning("barge-confirm trigger rejected: invalid playback generation")
+            return
         self._confirm_handoff_stream_live = False
         self._confirm_handoff_pending = None
         self._confirm_primary_pcm.clear()
         self._confirm_alternate_pcm.clear()
+        self._confirm_primary_samples = 0
+        self._confirm_alternate_samples = 0
+        self._confirm_invocations = 0
+        self._confirm_sample_rate = limits.sample_rate
+        self._confirm_feed_sample_limit = limits.feed_samples
+        self._confirm_sample_limit = limits.domain_samples
+        self._confirm_invocation_limit = limits.invocations
+        self._confirm_last_at = at
+        self._confirm_window_sec = limits.window_sec
+        self._confirm_retry_suppress_sec = limits.retry_suppress_sec
         self._confirm_audio_started_at = None
         self._confirm_audio_ended_at = None
+        self._confirm_echo_obs.clear()
         with self._gen_lock:
-            self._confirm_speak_generation = (
-                self._speak_gen if speak_generation is None else int(speak_generation)
-            )
-            self._confirm_playback_generation = (
-                self._playback_generation
-                if playback_generation is None
-                else int(playback_generation)
-            )
-        self._confirm_until = now + max(0.1, self.config.barge_confirm_window_sec)
+            self._confirm_speak_generation = origin_speak_generation
+            self._confirm_playback_generation = origin_playback_generation
+        self._confirm_until = limits.deadline
         base = ""
         try:
             base = (recognizer.get_result(stream) or "").strip()
-        except Exception:  # noqa: BLE001 - a stream hiccup must not break capture
+        except Exception as exc:  # noqa: BLE001 - native baseline is exact
+            self._end_barge_confirm()
             if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                raise
-            base = ""
+                raise _BargeConfirmContinuityFault(
+                    "confirm baseline result failed"
+                ) from exc
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - legacy reset is best-effort
+                pass
+            return
         self._confirm_base_text = base
-        self._duck_gain = min(1.0, max(0.0, self.config.barge_confirm_duck_gain))
+        self._duck_gain = limits.duck_gain
         log.info(
             "barge-in: acoustic trigger -- ducking playback, awaiting speech "
             "confirmation (%.1fs window)",
-            self.config.barge_confirm_window_sec,
+            limits.window_sec,
         )
         if self._capture_callback_is_current():
             self._emit_capture_callback(self._cb.on_metric, "barge_in_duck")
@@ -11703,13 +12008,131 @@ class SherpaOnnxEngine(AudioEngine):
             self._end_barge_confirm()
             try:
                 recognizer.reset(stream)
-            except Exception:  # noqa: BLE001 - stale playback fails closed
+            except Exception as exc:  # noqa: BLE001 - stale playback fails closed
                 if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                    raise
+                    raise _BargeConfirmContinuityFault(
+                        "confirm stale-playback reset failed"
+                    ) from exc
                 pass
             return False
+        if isinstance(now, bool):
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="invalid confirm clock state",
+            )
+        try:
+            at = float(now)
+            last_at = float(self._confirm_last_at)
+            deadline = float(self._confirm_until)
+            window_sec = float(self._confirm_window_sec)
+            retry_suppress_sec = float(self._confirm_retry_suppress_sec)
+        except (TypeError, ValueError, OverflowError):
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="invalid confirm clock state",
+            )
+        feed_limit = self._confirm_feed_sample_limit
+        sample_limit = self._confirm_sample_limit
+        invocation_limit = self._confirm_invocation_limit
+        sample_rate = self._confirm_sample_rate
+        primary_samples = self._confirm_primary_samples
+        alternate_samples = self._confirm_alternate_samples
+        invocations = self._confirm_invocations
+        if (
+            not math.isfinite(at)
+            or at < 0.0
+            or not math.isfinite(last_at)
+            or at <= last_at
+            or not math.isfinite(deadline)
+            or deadline <= 0.0
+            or not math.isfinite(window_sec)
+            or window_sec < 0.1
+            or not math.isfinite(retry_suppress_sec)
+            or retry_suppress_sec < 0.0
+            or isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+            or isinstance(feed_limit, bool)
+            or not isinstance(feed_limit, int)
+            or feed_limit <= 0
+            or feed_limit > sys.maxsize
+            or isinstance(sample_limit, bool)
+            or not isinstance(sample_limit, int)
+            or sample_limit < feed_limit
+            or sample_limit > sys.maxsize
+            or isinstance(invocation_limit, bool)
+            or not isinstance(invocation_limit, int)
+            or invocation_limit <= 0
+            or invocation_limit > sys.maxsize
+            or isinstance(primary_samples, bool)
+            or not isinstance(primary_samples, int)
+            or primary_samples < 0
+            or primary_samples > sample_limit
+            or isinstance(alternate_samples, bool)
+            or not isinstance(alternate_samples, int)
+            or alternate_samples < 0
+            or alternate_samples > sample_limit
+            or isinstance(invocations, bool)
+            or not isinstance(invocations, int)
+            or invocations < 0
+            or invocations > invocation_limit
+        ):
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="non-finite, non-advancing, or invalid confirm bounds",
+            )
+        retry_suppress_until = at + retry_suppress_sec
+        if not math.isfinite(retry_suppress_until):
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="confirm retry deadline is not finite",
+            )
         if mic_raw is None:
             mic_raw = samples
+        decode_src = mic_raw if getattr(self, "_resid_blind", False) else samples
+        try:
+            primary_size = int(np.asarray(samples).size)
+            raw_size = int(np.asarray(mic_raw).size)
+            alternate_size = int(np.asarray(decode_src).size)
+        except Exception:  # noqa: BLE001 - malformed PCM cannot reach native code
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="invalid confirm PCM",
+            )
+        if (
+            primary_size <= 0
+            or raw_size <= 0
+            or alternate_size <= 0
+            or primary_size > feed_limit
+            or raw_size > feed_limit
+            or alternate_size > feed_limit
+            or invocations >= invocation_limit
+            or primary_size > sample_limit - primary_samples
+            or alternate_size > sample_limit - alternate_samples
+        ):
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="confirm PCM or invocation budget exhausted",
+            )
+        try:
+            primary_block = np.asarray(samples, dtype="float32").reshape(-1)
+            alternate_block = np.asarray(decode_src, dtype="float32").reshape(-1)
+        except Exception:  # noqa: BLE001 - malformed PCM cannot reach native code
+            return self._abort_barge_confirm_without_evidence(
+                recognizer,
+                stream,
+                reason="confirm PCM conversion failed",
+            )
+        self._confirm_last_at = at
+        self._confirm_invocations = invocations + 1
+        self._confirm_primary_samples = primary_samples + primary_size
+        self._confirm_alternate_samples = alternate_samples + alternate_size
         # Bank this block's levels as a POTENTIAL echo observation -- committed
         # to the DTD charts only if the window expires unconfirmed (then it was
         # echo by definition; a confirmed window is user-contaminated -> discard).
@@ -11720,28 +12143,41 @@ class SherpaOnnxEngine(AudioEngine):
                 (rms(mic_raw), self._dtd_residual_level(samples, mic_raw), incoh)
             )
         text = ""
-        decode_src = mic_raw if getattr(self, "_resid_blind", False) else samples
-        primary_block = np.asarray(samples, dtype="float32").reshape(-1)
-        alternate_block = np.asarray(decode_src, dtype="float32").reshape(-1)
-        if primary_block.size and alternate_block.size:
-            self._confirm_primary_pcm.append(primary_block.copy())
-            self._confirm_alternate_pcm.append(alternate_block.copy())
-            if self._confirm_audio_started_at is None:
-                self._confirm_audio_started_at = float(now)
-            self._confirm_audio_ended_at = float(now)
+        self._confirm_primary_pcm.append(primary_block.copy())
+        self._confirm_alternate_pcm.append(alternate_block.copy())
+        if self._confirm_audio_started_at is None:
+            self._confirm_audio_started_at = at
+        self._confirm_audio_ended_at = at
         try:
             # C (masking-canceller path): decode the RAW mic, not the DTLN/NS-masked
             # residual. Playback is ducked to barge_confirm_duck_gain during the
             # window, so the raw mic is user-dominated and the words SURVIVE -- the
             # masked residual would erase them and the window could never confirm.
-            stream.accept_waveform(self.config.sample_rate, decode_src)
-            while recognizer.is_ready(stream):
-                recognizer.decode_stream(stream)
+            stream.accept_waveform(sample_rate, decode_src)
+            _drain_native_ready_bounded(recognizer, stream)
             text = (recognizer.get_result(stream) or "").strip()
-        except Exception:  # noqa: BLE001 - decode errors must not break capture
+        except _NativeDecodeStepLimitExceeded as exc:
+            self._end_barge_confirm()
             if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                raise
-            pass
+                raise _BargeConfirmContinuityFault(
+                    "confirm native decode-step limit exceeded"
+                ) from exc
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - legacy reset is best-effort
+                pass
+            return False
+        except Exception as exc:  # noqa: BLE001 - native continuity is exact
+            self._end_barge_confirm()
+            if isinstance(recognizer, SherpaStreamingDecodeOwner):
+                raise _BargeConfirmContinuityFault(
+                    "confirm native decode failed"
+                ) from exc
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - legacy reset is best-effort
+                pass
+            return False
         base = self._confirm_base_text
         new_text = text[len(base) :].strip() if base and text.startswith(base) else text
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
@@ -11760,9 +12196,11 @@ class SherpaOnnxEngine(AudioEngine):
                 self._end_barge_confirm()
                 try:
                     recognizer.reset(stream)
-                except Exception:  # noqa: BLE001 - stale playback fails closed
+                except Exception as exc:  # noqa: BLE001 - stale playback fails closed
                     if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                        raise
+                        raise _BargeConfirmContinuityFault(
+                            "confirm stale-claim reset failed"
+                        ) from exc
                     pass
                 return False
             handoff_primary = tuple(self._confirm_primary_pcm)
@@ -11770,21 +12208,23 @@ class SherpaOnnxEngine(AudioEngine):
             handoff_start = (
                 float(self._confirm_audio_started_at)
                 if self._confirm_audio_started_at is not None
-                else float(now)
+                else at
             )
             handoff_end = (
                 float(self._confirm_audio_ended_at)
                 if self._confirm_audio_ended_at is not None
-                else float(now)
+                else at
             )
-            claim = self._claim_barge_confirm_if_current(now=now)
+            claim = self._claim_barge_confirm_if_current(now=at)
             if claim is None:
                 self._end_barge_confirm()
                 try:
                     recognizer.reset(stream)
-                except Exception:  # noqa: BLE001 - stale playback fails closed
+                except Exception as exc:  # noqa: BLE001 - stale playback fails closed
                     if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                        raise
+                        raise _BargeConfirmContinuityFault(
+                            "confirm rejected-claim reset failed"
+                        ) from exc
                     pass
                 return False
             self._end_barge_confirm()
@@ -11800,7 +12240,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # (grep "barge-in detected") sees confirmed barges too.
                 log.info("barge-in detected")
                 if not self._emit_barge_in_callback(
-                    detected_at=now,
+                    detected_at=at,
                     speech_start_at=handoff_start,
                 ):
                     return False
@@ -11817,7 +12257,7 @@ class SherpaOnnxEngine(AudioEngine):
                 return True
             finally:
                 self._release_barge_confirm_claim(claim)
-        if now >= self._confirm_until:
+        if at >= deadline:
             # Echo (or a transient) tripped the acoustics but nobody is talking:
             # TEACH the DTD charts this window's levels before restoring. An
             # unconfirmed window is the one reliably-labeled echo sample this box
@@ -11825,27 +12265,27 @@ class SherpaOnnxEngine(AudioEngine):
             # normal VAD-quiet observe_echo tap) -- so the chart baseline rises
             # to the true echo level and the trigger flood decays instead of
             # re-ducking every few seconds (run-223217: 14 triggers/45s).
-            if self._dtd is not None:
-                for obs in self._confirm_echo_obs:
-                    self._dtd.observe_echo(*obs)
+            echo_obs = tuple(self._confirm_echo_obs)
             self._end_barge_confirm()
             # Restore volume and keep speaking. Reset the stream so any ducked
             # echo it was fed can't pollute the next real final, and suppress
             # re-triggers so an echo-heavy reply can't pump the volume.
             try:
                 recognizer.reset(stream)
-            except Exception:  # noqa: BLE001 - reset is best-effort
+            except Exception as exc:  # noqa: BLE001 - native continuity is exact
                 if isinstance(recognizer, SherpaStreamingDecodeOwner):
-                    raise
-                pass
-            self._confirm_handoff_stream_live = False
-            self._barge_in_suppressed_until = now + max(
-                0.0, self.config.barge_confirm_retry_suppress_sec
-            )
+                    raise _BargeConfirmContinuityFault(
+                        "confirm expiry reset failed"
+                    ) from exc
+                return False
+            if self._dtd is not None:
+                for obs in echo_obs:
+                    self._dtd.observe_echo(*obs)
+            self._barge_in_suppressed_until = retry_suppress_until
             log.info(
                 "barge-in NOT confirmed (no talk-over speech in %.1fs) -- "
                 "restoring volume",
-                self.config.barge_confirm_window_sec,
+                window_sec,
             )
             if self._capture_callback_is_current():
                 self._emit_capture_callback(self._cb.on_metric, "barge_in_unconfirmed")
@@ -11861,6 +12301,16 @@ class SherpaOnnxEngine(AudioEngine):
         self._confirm_handoff_pending = None
         self._confirm_primary_pcm.clear()
         self._confirm_alternate_pcm.clear()
+        self._confirm_primary_samples = 0
+        self._confirm_alternate_samples = 0
+        self._confirm_invocations = 0
+        self._confirm_sample_rate = 0
+        self._confirm_feed_sample_limit = 0
+        self._confirm_sample_limit = 0
+        self._confirm_invocation_limit = 0
+        self._confirm_last_at = None
+        self._confirm_window_sec = 0.0
+        self._confirm_retry_suppress_sec = 0.0
         self._confirm_audio_started_at = None
         self._confirm_audio_ended_at = None
         self._duck_gain = 1.0

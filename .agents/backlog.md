@@ -267,13 +267,19 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         collapse distinct phrases and live
         evidence already contains phantom hits. Consumed KWS callbacks now
         explicitly close any open duck-confirm window after returning.
+      - [x] bound existing KWS/duck-confirm native work (ADR-0172). Each valid
+        feed gets at most 64 native decode calls plus one final readiness probe;
+        per-feed, per-confirm-domain cumulative, and invocation caps derive from
+        the validated capture geometry; confirm starts at a finite non-negative
+        time, and every step must be finite and strictly advance.
+        KWS faults/exhaustion recreate and abstain; malformed capture PCM becomes
+        a controlled gap; confirm structural/native failures close and discard
+        before whole-continuity recovery without acoustic/effect side effects.
       - [ ] before changing playback-time KWS authority, atomically bind its
         callback to the captured playback/source generation and route exact STOP
         ambiguity through ADR-0042's own-TTS/speaker rule. A raw-KWS experiment
         must begin as separate-stream aggregate-only shadow evidence and still
-        needs owner bare-speaker A/B before effects. First add explicit native
-        decode-step and confirm-PCM caps; current KWS/confirm loops remain bounded
-        only by the native model becoming not-ready and the monotonic deadline.
+        needs owner bare-speaker A/B before effects.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default
         pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a

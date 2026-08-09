@@ -23,7 +23,7 @@
 | Task type | Start here | Verify with |
 |---|---|---|
 | APM/DTD/barge-in bug | `core/engines/`, `tests/test_apm_double_talk.py` | targeted pytest |
-| Duck-confirm/KWS terminal safety | `core/engines/sherpa.py`, `tests/test_barge_confirm.py`, `tests/test_virtual_audio_engine.py`, ADR-0171 | raw-vs-processed confirm-source and KWS-terminal-precedence tests, then the complete local Sherpa and APM/DTD gates; real microphone/open-speaker A/B remains separate |
+| Duck-confirm/KWS terminal and native-work safety | `core/engines/sherpa.py`, `tests/test_barge_confirm.py`, `tests/test_sherpa_media_session.py`, `tests/test_virtual_audio_engine.py`, ADR-0171/0172 | raw-vs-processed source and KWS-terminal precedence; exact 64-decode/final-probe boundary; config-derived feed/cumulative/invocation limits; strict confirm clock; malformed-block gap; KWS abstain/recreate; confirm close-before-whole-continuity-recovery; stop cleanup. Run the focused bounded-work and APM/DTD gates; one native call/callback and real microphone/open-speaker behavior remain outside this proof |
 | Model setup | `tools/setup_models.py`, `core/engines/_sherpa_models.py`, ADR-0165/0167 | shared bounded archive extraction plus whole-family selection preservation/replacement, setup/doctor/TTS tests; no download or model run |
 | Native capture latency/gaps | `core/media_session.py`, `core/engines/sherpa.py`, ADR-0088 | reader-time playback/source context + control-lane tests, then APM gate |
 | Post-ASR mailbox/order | `always_on_agent/event_bus.py`, ADR-0093 | `tests/test_event_bus.py` plus supervisor/playback/preprocessing race tests |

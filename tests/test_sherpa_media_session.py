@@ -923,20 +923,34 @@ class _NativeFaultStream:
         self.recognizer = recognizer
         self.sequence = sequence
         self.accepted = False
+        self.decoded = False
 
     def accept_waveform(self, _sample_rate: int, samples) -> None:
         self.recognizer.note_native_thread()
         if (
-            self.recognizer.failure_phase == "primary_accept"
-            and self.sequence == 1
-            and not self.recognizer.failed
-        ) or (
-            self.recognizer.failure_phase == "word_cut_accept"
-            and self.sequence == 2
-            and not self.recognizer.failed
+            (
+                self.recognizer.failure_phase == "primary_accept"
+                and self.sequence == 1
+                and not self.recognizer.failed
+            )
+            or (
+                self.recognizer.failure_phase == "word_cut_accept"
+                and self.sequence == 2
+                and not self.recognizer.failed
+            )
+            or (
+                self.recognizer.failure_phase == "confirm_accept"
+                and self.sequence == 1
+                and not self.recognizer.failed
+            )
         ):
             self.recognizer.failed = True
-            self.recognizer.trace.append(("fault_accept", self.sequence))
+            label = (
+                "fault_confirm_accept"
+                if self.recognizer.failure_phase == "confirm_accept"
+                else "fault_accept"
+            )
+            self.recognizer.trace.append((label, self.sequence))
             raise RuntimeError("injected native accept failure")
         self.accepted = True
         self.recognizer.decode_identities.append(
@@ -960,6 +974,9 @@ class _NativeFaultRecognizer:
         self.native_threads: list[threading.Thread] = []
         self.engine = None
         self.decode_identities = []
+        self.ready_calls = 0
+        self.decode_calls = 0
+        self.result_calls = 0
 
     def note_native_thread(self) -> None:
         self.native_threads.append(threading.current_thread())
@@ -970,15 +987,51 @@ class _NativeFaultRecognizer:
         self.trace.append(("create", self.streams_created))
         return _NativeFaultStream(self, self.streams_created)
 
-    def is_ready(self, _stream: _NativeFaultStream) -> bool:
+    def is_ready(self, stream: _NativeFaultStream) -> bool:
         self.note_native_thread()
-        return False
+        self.ready_calls += 1
+        if (
+            self.failure_phase == "confirm_readiness"
+            and stream.sequence == 1
+            and not self.failed
+        ):
+            self.failed = True
+            self.trace.append(("fault_confirm_readiness", stream.sequence))
+            raise RuntimeError("injected confirm readiness failure")
+        if self.failure_phase == "confirm_exhaustion" and stream.sequence == 1:
+            return True
+        return bool(
+            self.failure_phase == "confirm_decode"
+            and stream.accepted
+            and not stream.decoded
+        )
 
-    def decode_stream(self, _stream: _NativeFaultStream) -> None:
+    def decode_stream(self, stream: _NativeFaultStream) -> None:
         self.note_native_thread()
+        self.decode_calls += 1
+        if (
+            self.failure_phase == "confirm_decode"
+            and stream.sequence == 1
+            and not self.failed
+        ):
+            self.failed = True
+            self.trace.append(("fault_confirm_decode", stream.sequence))
+            raise RuntimeError("injected confirm decode failure")
+        stream.decoded = True
 
-    def get_result(self, _stream: _NativeFaultStream) -> str:
+    def get_result(self, stream: _NativeFaultStream) -> str:
         self.note_native_thread()
+        self.result_calls += 1
+        if (
+            self.failure_phase == "confirm_result"
+            and stream.sequence == 1
+            and not self.failed
+        ):
+            self.failed = True
+            self.trace.append(("fault_confirm_result", stream.sequence))
+            raise RuntimeError("injected confirm result failure")
+        if self.failure_phase == "confirm_callback" and stream.sequence == 1:
+            return "stop"
         return ""
 
     def is_endpoint(self, _stream: _NativeFaultStream) -> bool:
@@ -996,6 +1049,7 @@ class _NativeFaultRecognizer:
             self.trace.append(("fault_reset", stream.sequence))
             raise RuntimeError("injected native reset failure")
         stream.accepted = False
+        stream.decoded = False
         self.trace.append(("reset", stream.sequence))
 
 
@@ -1098,6 +1152,416 @@ def test_complete_owner_rotates_whole_continuity_after_native_fault(
             item[:2] == ("accept", expected_streams)
             for item in recognizer.trace
         )
+        assert recognizer.native_threads
+        assert set(recognizer.native_threads) == {owner.thread}
+        assert recognizer.decode_identities[-1] == snapshot.identity
+    finally:
+        engine._running.clear()
+        first_release.set()
+        owner.close(timeout=1.0)
+
+
+class _OwnerKwsStream:
+    def __init__(self, sequence: int) -> None:
+        self.sequence = sequence
+        self.decode_calls = 0
+
+    def accept_waveform(self, _sample_rate: int, _samples) -> None:
+        pass
+
+
+class _OwnerExhaustingKws:
+    """The first stream never drains; its replacement is immediately healthy."""
+
+    def __init__(self) -> None:
+        self.streams: list[_OwnerKwsStream] = []
+        self.ready_calls = 0
+        self.decode_calls = 0
+        self.result_calls = 0
+        self.reset_calls = 0
+
+    def create_stream(self) -> _OwnerKwsStream:
+        stream = _OwnerKwsStream(len(self.streams) + 1)
+        self.streams.append(stream)
+        return stream
+
+    def is_ready(self, stream: _OwnerKwsStream) -> bool:
+        self.ready_calls += 1
+        return stream.sequence == 1
+
+    def decode_stream(self, stream: _OwnerKwsStream) -> None:
+        self.decode_calls += 1
+        stream.decode_calls += 1
+
+    def get_result(self, _stream: _OwnerKwsStream) -> str:
+        self.result_calls += 1
+        return ""
+
+    def reset_stream(self, _stream: _OwnerKwsStream) -> None:
+        self.reset_calls += 1
+
+
+def test_owner_kws_exhaustion_preserves_primary_continuity_and_both_blocks():
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            barge_in_enabled=False,
+            aec_enabled=False,
+        )
+    )
+    recognizer = _NativeFaultRecognizer("none")
+    recognizer.engine = engine
+    keyword_spotter = _OwnerExhaustingKws()
+    engine._kws = keyword_spotter
+    engine._kws_stream = keyword_spotter.create_stream()
+    source = _IdentityInput()
+    first_release = threading.Event()
+
+    def wait_until_owner_started() -> None:
+        assert first_release.wait(2.0)
+
+    first = _captured(
+        0.1,
+        at=20.0,
+        context=CaptureBlockContext(),
+        sequence=1,
+    )
+    second = _captured(
+        0.2,
+        at=20.1,
+        context=CaptureBlockContext(),
+        sequence=2,
+    )
+    media = _ScriptedMedia(
+        engine,
+        [(first, wait_until_owner_started), (second, None)],
+    )
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = media
+    commands = []
+    barges = []
+    aborts = []
+    engine._cb = EngineCallbacks(
+        on_command=commands.append,
+        on_barge_in=lambda: barges.append("barge"),
+        on_transcript_abort=aborts.append,
+    )
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=engine._streaming_decode_owner_loop,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start(timeout=1.0)
+    first_release.set()
+    try:
+        assert owner.close(timeout=2.0)
+
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.CLOSED
+        assert snapshot.capture_rotations == 0
+        assert snapshot.decode_rotations == 0
+        assert snapshot.identity.continuity_generation == 0
+        assert snapshot.streams_created == 1
+        assert snapshot.streams_retired == 1
+        assert keyword_spotter.ready_calls == 66  # 64 + probe, then healthy probe
+        assert keyword_spotter.decode_calls == 64
+        assert keyword_spotter.result_calls == 1  # replacement stream only
+        assert keyword_spotter.reset_calls == 1
+        assert len(keyword_spotter.streams) == 2
+        accepted = [item for item in recognizer.trace if item[:2] == ("accept", 1)]
+        assert [item[2] for item in accepted] == pytest.approx([0.1, 0.2])
+        assert commands == []
+        assert barges == []
+        assert aborts == []
+        assert recognizer.native_threads
+        assert set(recognizer.native_threads) == {owner.thread}
+        assert recognizer.decode_identities[-1] == snapshot.identity
+    finally:
+        engine._running.clear()
+        first_release.set()
+        owner.close(timeout=1.0)
+
+
+class _ConfirmFaultDtd:
+    def __init__(self) -> None:
+        self.observed = []
+
+    def observe_echo(self, *observation) -> None:
+        self.observed.append(observation)
+
+
+def _assert_owner_confirm_closed(engine: SherpaOnnxEngine) -> None:
+    assert not engine._barge_confirm_active()
+    assert engine._duck_gain == 1.0
+    assert engine._confirm_base_text == ""
+    assert engine._confirm_speak_generation is None
+    assert engine._confirm_playback_generation is None
+    assert not engine._confirm_handoff_stream_live
+    assert engine._confirm_handoff_pending is None
+    assert engine._confirm_primary_pcm == []
+    assert engine._confirm_alternate_pcm == []
+    assert engine._confirm_primary_samples == 0
+    assert engine._confirm_alternate_samples == 0
+    assert engine._confirm_invocations == 0
+    assert engine._confirm_feed_sample_limit == 0
+    assert engine._confirm_sample_limit == 0
+    assert engine._confirm_invocation_limit == 0
+    assert engine._confirm_last_at is None
+    assert engine._confirm_audio_started_at is None
+    assert engine._confirm_audio_ended_at is None
+    assert engine._confirm_echo_obs == []
+
+
+def test_capture_loop_finally_clears_residual_confirm_state() -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(endpoint_enabled=False, barge_confirm_enabled=True)
+    )
+    begin_recognizer = _CollectingRecognizer()
+    engine._begin_barge_confirm(
+        begin_recognizer,
+        begin_recognizer.create_stream(),
+        10.0,
+    )
+    engine._confirm_handoff_stream_live = True
+    engine._confirm_handoff_pending = object()
+    engine._confirm_primary_pcm.append(np.ones(1, dtype="float32"))
+    engine._confirm_alternate_pcm.append(np.ones(1, dtype="float32"))
+    source = _IdentityInput()
+    engine._recognizer = _CollectingRecognizer()
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = _ScriptedMedia(engine, [])
+
+    engine._running.set()
+    engine._capture_loop()
+
+    _assert_owner_confirm_closed(engine)
+
+
+def test_owner_confirm_callback_exception_is_not_native_recovery() -> None:
+    class _ConfirmCallbackFailure(RuntimeError):
+        pass
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            barge_in_enabled=True,
+            barge_confirm_enabled=True,
+            barge_word_cut_enabled=False,
+            aec_enabled=False,
+        )
+    )
+    recognizer = _NativeFaultRecognizer("confirm_callback")
+    recognizer.engine = engine
+    metrics: list[str] = []
+    callback_calls: list[str] = []
+
+    def fail_callback() -> None:
+        callback_calls.append("barge")
+        raise _ConfirmCallbackFailure("confirm callback failed")
+
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+        on_barge_in=fail_callback,
+    )
+    begin_recognizer = _CollectingRecognizer()
+    engine._begin_barge_confirm(
+        begin_recognizer,
+        begin_recognizer.create_stream(),
+        19.9,
+    )
+    engine._dtd = _ConfirmFaultDtd()
+    engine._echo_coherence = None
+    engine._speaking.set()
+    first_release = threading.Event()
+
+    def wait_until_owner_started() -> None:
+        assert first_release.wait(2.0)
+
+    first = _captured(
+        0.1,
+        at=20.0,
+        context=CaptureBlockContext(
+            speaking=True,
+            speak_generation=0,
+            playback_generation=0,
+            barge_watch_active=True,
+        ),
+        sequence=1,
+    )
+    source = _IdentityInput()
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = _ScriptedMedia(
+        engine,
+        [(first, wait_until_owner_started)],
+    )
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=engine._streaming_decode_owner_loop,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start(timeout=1.0)
+    first_release.set()
+    try:
+        assert owner.close(timeout=2.0)
+
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.FAILED
+        assert snapshot.processor_error_type == "_ConfirmCallbackFailure"
+        assert snapshot.decode_rotations == 0
+        assert snapshot.streams_created == 1
+        assert snapshot.streams_retired == 1
+        assert callback_calls == ["barge"]
+        assert metrics == ["barge_in_duck", "barge_in_confirmed"]
+        assert engine._dtd.observed == []
+        _assert_owner_confirm_closed(engine)
+    finally:
+        engine._running.clear()
+        first_release.set()
+        owner.close(timeout=1.0)
+
+
+@pytest.mark.parametrize(
+    "failure_phase",
+    [
+        "confirm_accept",
+        "confirm_readiness",
+        "confirm_decode",
+        "confirm_result",
+        "confirm_exhaustion",
+        "structural_time",
+    ],
+)
+def test_complete_owner_confirm_failure_closes_then_rotates_once(
+    failure_phase: str,
+) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            barge_in_enabled=True,
+            barge_confirm_enabled=True,
+            barge_word_cut_enabled=False,
+            aec_enabled=False,
+        )
+    )
+    recognizer = _NativeFaultRecognizer(failure_phase)
+    recognizer.engine = engine
+    source = _IdentityInput()
+    metrics: list[str] = []
+    barges: list[str] = []
+    commands: list[str] = []
+    aborts = []
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+        on_barge_in=lambda: barges.append("barge"),
+        on_command=commands.append,
+        on_transcript_abort=aborts.append,
+    )
+    begin_recognizer = _CollectingRecognizer()
+    engine._begin_barge_confirm(
+        begin_recognizer,
+        begin_recognizer.create_stream(),
+        19.9,
+    )
+    engine._confirm_handoff_stream_live = True
+    engine._confirm_handoff_pending = object()
+    engine._dtd = _ConfirmFaultDtd()
+    engine._echo_coherence = None
+    engine._barge_in_suppressed_until = 7.0
+    engine._speaking.set()
+    first_release = threading.Event()
+
+    def wait_until_owner_started() -> None:
+        assert first_release.wait(2.0)
+
+    first = _captured(
+        0.1,
+        at=19.9 if failure_phase == "structural_time" else 20.0,
+        context=CaptureBlockContext(
+            speaking=True,
+            speak_generation=0,
+            playback_generation=0,
+            barge_watch_active=True,
+        ),
+        sequence=1,
+    )
+
+    def finish_playback() -> None:
+        engine._speaking.clear()
+
+    second = _captured(
+        0.2,
+        at=20.1,
+        context=CaptureBlockContext(),
+        sequence=2,
+    )
+    media = _ScriptedMedia(
+        engine,
+        [(first, wait_until_owner_started), (second, finish_playback)],
+    )
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = media
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=engine._streaming_decode_owner_loop,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start(timeout=1.0)
+    first_release.set()
+    try:
+        assert owner.close(timeout=2.0)
+
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.CLOSED
+        assert snapshot.capture_rotations == 0
+        assert snapshot.decode_rotations == 1
+        assert snapshot.identity.continuity_generation == 1
+        assert snapshot.streams_created == 2
+        assert snapshot.streams_retired == 2
+        if failure_phase == "confirm_exhaustion":
+            assert recognizer.ready_calls == 66  # 64 + final probe, then healthy
+            assert recognizer.decode_calls == 64
+            assert recognizer.result_calls == 1  # replacement primary only
+        elif failure_phase == "structural_time":
+            assert not any(item[0].startswith("fault_") for item in recognizer.trace)
+            assert not any(item[:2] == ("accept", 1) for item in recognizer.trace)
+        else:
+            assert (f"fault_{failure_phase}", 1) in recognizer.trace
+        assert any(item[:2] == ("accept", 2) for item in recognizer.trace)
+        _assert_owner_confirm_closed(engine)
+        assert engine._dtd.observed == []
+        assert engine._barge_in_suppressed_until == 7.0
+        assert metrics == ["barge_in_duck"]
+        assert barges == []
+        assert commands == []
+        assert aborts == []
         assert recognizer.native_threads
         assert set(recognizer.native_threads) == {owner.thread}
         assert recognizer.decode_identities[-1] == snapshot.identity

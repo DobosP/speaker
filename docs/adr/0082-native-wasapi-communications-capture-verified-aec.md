@@ -1,6 +1,6 @@
 # 0082 — Native WASAPI communications capture with OS-verified AEC; stop-word floor; barge telemetry
 
-Status: accepted 2026-07-17 (Windows box session; roadmap Phase 2, `docs/2026-07-17-performance-roadmap.md`; supersedes the ADR-0019 fail-closed *blocker* by supplying the verified API it demanded — ADR-0019's fail-closed *principle* is retained and strengthened).
+Status: superseded-by ADR-0183
 
 ## Context
 

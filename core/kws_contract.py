@@ -26,6 +26,7 @@ class KwsStopPhrase:
 
     words: tuple[str, ...]
     tokens: tuple[str, ...]
+    word_token_counts: tuple[int, ...]
     result_label: str
     threshold: float
 
@@ -35,29 +36,33 @@ class KwsStopPhrase:
 
 
 KWS_STOP_PHRASES: tuple[KwsStopPhrase, ...] = (
-    KwsStopPhrase(("STOP",), ("S", "T", "AA1", "P"), "stop", 0.25),
+    KwsStopPhrase(("STOP",), ("S", "T", "AA1", "P"), (4,), "stop", 0.25),
     KwsStopPhrase(
         ("STOP", "TALKING"),
         ("S", "T", "AA1", "P", "T", "AO1", "K", "IH0", "NG"),
+        (4, 5),
         "stop",
         0.25,
     ),
     KwsStopPhrase(
         ("STOP", "SPEAKING"),
         ("S", "T", "AA1", "P", "S", "P", "IY1", "K", "IH0", "NG"),
+        (4, 6),
         "stop",
         0.25,
     ),
     KwsStopPhrase(
         ("BE", "QUIET"),
         ("B", "IY1", "K", "W", "AY1", "AH0", "T"),
+        (2, 5),
         "stop",
         0.25,
     ),
-    KwsStopPhrase(("WAIT",), ("W", "EY1", "T"), "wait", 0.30),
+    KwsStopPhrase(("WAIT",), ("W", "EY1", "T"), (3,), "wait", 0.30),
     KwsStopPhrase(
         ("HOLD", "ON"),
         ("HH", "OW1", "L", "D", "AA1", "N"),
+        (4, 2),
         "wait",
         0.30,
     ),
@@ -69,6 +74,7 @@ class KwsPhraseBinding:
     """Exact decoded-token identity for one configured surface phrase."""
 
     tokens: tuple[str, ...]
+    word_token_counts: tuple[int, ...]
     surface: str
     result_label: str
 
@@ -158,6 +164,7 @@ def load_kws_phrase_bindings(path: str) -> tuple[KwsPhraseBinding, ...]:
         bindings.append(
             KwsPhraseBinding(
                 tokens=tokens,
+                word_token_counts=expected.word_token_counts,
                 surface=expected.surface,
                 result_label=expected.result_label,
             )
@@ -165,13 +172,13 @@ def load_kws_phrase_bindings(path: str) -> tuple[KwsPhraseBinding, ...]:
     return tuple(bindings)
 
 
-def resolve_kws_stop_phrase(
+def resolve_kws_stop_binding(
     bindings: tuple[KwsPhraseBinding, ...],
     *,
     result_label: str,
     tokens: object,
-) -> Optional[str]:
-    """Resolve one exact native result to its canonical STOP-only phrase."""
+) -> Optional[KwsPhraseBinding]:
+    """Resolve one exact native result to its closed STOP-only binding."""
 
     if (
         type(bindings) is not tuple
@@ -194,6 +201,14 @@ def resolve_kws_stop_phrase(
             or not 0 < len(binding.tokens) <= _MAX_TOKENS_PER_PHRASE
             or any(type(token) is not str or not token for token in binding.tokens)
             or binding.tokens != expected.tokens
+            or type(binding.word_token_counts) is not tuple
+            or binding.word_token_counts != expected.word_token_counts
+            or len(binding.word_token_counts) != len(expected.words)
+            or any(
+                type(count) is not int or count <= 0
+                for count in binding.word_token_counts
+            )
+            or sum(binding.word_token_counts) != len(binding.tokens)
             or type(binding.surface) is not str
             or binding.surface != expected.surface
             or type(binding.result_label) is not str
@@ -206,7 +221,23 @@ def resolve_kws_stop_phrase(
             matches.append(binding)
     if len(matches) != 1:
         return None
-    return matches[0].surface
+    return matches[0]
+
+
+def resolve_kws_stop_phrase(
+    bindings: tuple[KwsPhraseBinding, ...],
+    *,
+    result_label: str,
+    tokens: object,
+) -> Optional[str]:
+    """Compatibility wrapper returning the canonical phrase surface."""
+
+    binding = resolve_kws_stop_binding(
+        bindings,
+        result_label=result_label,
+        tokens=tokens,
+    )
+    return None if binding is None else binding.surface
 
 
 def collapsed_label_surfaces(result_label: str) -> tuple[str, ...]:

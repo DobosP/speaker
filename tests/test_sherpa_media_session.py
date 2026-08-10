@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import threading
 import time
 import sys
@@ -19,6 +20,7 @@ from core.engines._sherpa_streaming_decode_owner import (
 from core.realtime_media_stage import CaptureScope
 from core.engines._aec import FarEndRing
 from core.engines._asr_segment import ASRSegment
+from core.engines.speaker_gate import SpeakerGate
 from core.media_session import (
     CaptureBlockContext,
     CaptureControlLane,
@@ -504,6 +506,7 @@ class _StallingRecognizer:
 
 class _BurstingInput:
     actual_samplerate = 16000
+    actual_device = None
     generation = 1
 
     def __init__(self, first_accepted: threading.Event) -> None:
@@ -1241,6 +1244,16 @@ def test_owner_kws_exhaustion_preserves_primary_continuity_and_both_blocks():
     engine._stream_in = source
     engine._capture_sr = source.actual_samplerate
     engine._capture_media_session = media
+    engine._capture_authority_source_generation = source.generation
+    engine._capture_authority_source_device = source.actual_device
+    current_context = CaptureBlockContext(
+        source_domain=engine._capture_resolution,
+        authority_source_generation=source.generation,
+        authority_source_device=source.actual_device,
+    )
+    first = replace(first, context=current_context)
+    second = replace(second, context=current_context)
+    media.entries = [(first, wait_until_owner_started), (second, None)]
     commands = []
     barges = []
     aborts = []
@@ -1275,7 +1288,7 @@ def test_owner_kws_exhaustion_preserves_primary_continuity_and_both_blocks():
         assert keyword_spotter.ready_calls == 66  # 64 + probe, then healthy probe
         assert keyword_spotter.decode_calls == 64
         assert keyword_spotter.result_calls == 1  # replacement stream only
-        assert keyword_spotter.reset_calls == 1
+        assert keyword_spotter.reset_calls == 2
         assert len(keyword_spotter.streams) == 2
         accepted = [item for item in recognizer.trace if item[:2] == ("accept", 1)]
         assert [item[2] for item in accepted] == pytest.approx([0.1, 0.2])
@@ -1587,9 +1600,11 @@ class _KeywordStream:
     def __init__(self) -> None:
         self.low = False
         self.high = False
+        self.accepted: list[float] = []
 
     def accept_waveform(self, _sample_rate: int, samples) -> None:
         mean = float(np.mean(samples))
+        self.accepted.append(mean)
         self.low |= mean <= 1.0
         self.high |= mean > 1.0
 
@@ -1642,6 +1657,8 @@ def test_capture_gap_recreates_kws_before_post_gap_pcm() -> None:
     engine._stream_in = source
     engine._capture_sr = source.actual_samplerate
     engine._capture_media_session = media
+    engine._capture_authority_source_generation = source.generation
+    engine._capture_authority_source_device = source.actual_device
     commands: list[str] = []
     engine._cb = EngineCallbacks(on_command=commands.append)
 
@@ -1659,8 +1676,8 @@ def test_capture_gap_recreates_kws_before_post_gap_pcm() -> None:
         assert commands == []
         assert len(spotter.streams) >= 2
         assert spotter.streams[0] is not spotter.streams[1]
-        assert spotter.streams[1].high
-        assert not spotter.streams[1].low
+        assert spotter.streams[0].accepted == [1.0]
+        assert spotter.streams[1].accepted == []
     finally:
         engine._running.clear()
         media.request_stop()
@@ -2299,9 +2316,6 @@ def test_capture_context_snapshots_both_reference_windows_atomically() -> None:
 
 
 def test_capture_context_fails_closed_until_new_source_authority_is_bound() -> None:
-    class _Gate:
-        is_enrolled = True
-
     engine = SherpaOnnxEngine(SherpaConfig())
     domain = object()
     engine._capture_media_session = object()
@@ -2310,8 +2324,10 @@ def test_capture_context_fails_closed_until_new_source_authority_is_bound() -> N
     engine._capture_authority_source_device = "mic-a"
     engine._word_cut_route_verified = True
     engine._os_echo_route_verified = True
-    engine._speaker_gate = _Gate()
-    engine._speaker_gate_warmed = True
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
     engine._playback_ref = FarEndRing()
 
     old_stamp = CaptureStamp(
@@ -2347,12 +2363,18 @@ def test_capture_context_fails_closed_until_new_source_authority_is_bound() -> N
     assert old.word_cut_route_verified
     assert old.os_echo_route_verified
     assert old.speaker_authority_available
+    assert old.speaker_authority is not None
+    assert old.speaker_authority.gate is gate
+    assert engine._kws_speaker_authority_is_current(old.speaker_authority)
     assert not unbound.word_cut_route_verified
     assert not unbound.os_echo_route_verified
     assert not unbound.speaker_authority_available
+    assert unbound.speaker_authority is None
     assert rebound.word_cut_route_verified
     assert rebound.os_echo_route_verified
     assert rebound.speaker_authority_available
+    assert rebound.speaker_authority is not None
+    assert rebound.speaker_authority.gate is gate
 
 
 class _BlockingDenoiser:

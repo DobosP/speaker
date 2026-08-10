@@ -145,6 +145,7 @@ class CaptureBlockContext:
     os_echo_route_verified: bool = False
     word_cut_route_verified: bool = False
     speaker_authority_available: bool = False
+    speaker_authority: Any = field(default=None, repr=False, compare=False)
     speaking: bool = False
     barge_watch_active: bool = False
     speak_generation: int = 0

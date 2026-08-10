@@ -23,6 +23,7 @@ import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.speaker_gate import SpeakerGate
 from core.realtime_media_stage import RealtimeMediaStage
 
 
@@ -1813,14 +1814,85 @@ def test_cold_speaker_authority_defers_without_blocking_capture_inference():
 
 def test_required_speaker_authority_warms_idempotently_off_capture_thread():
     eng = _engine(barge_word_cut_require_speaker=True)
-    gate = _FakeSpeakerGate([])
-    eng._speaker_gate = gate
+    embed_calls = 0
+
+    def embed(_samples, _sample_rate):
+        nonlocal embed_calls
+        embed_calls += 1
+        return [1.0, 0.0]
+
+    gate = SpeakerGate(embed_fn=embed)
+    eng._replace_speaker_gate(gate)
 
     assert eng._warm_speaker_gate()
     assert eng._speaker_gate_warmed
-    assert gate.embed_calls == 1
+    assert embed_calls == 1
     assert eng._warm_speaker_gate()
-    assert gate.embed_calls == 1
+    assert embed_calls == 1
+
+
+def test_speaker_warm_result_cannot_cross_gate_replacement_aba():
+    started = threading.Event()
+    release = threading.Event()
+    old_embed_calls = 0
+    new_embed_calls = 0
+
+    def old_embed(_samples, _sample_rate):
+        nonlocal old_embed_calls
+        old_embed_calls += 1
+        started.set()
+        assert release.wait(timeout=2.0)
+        return [1.0, 0.0]
+
+    def new_embed(_samples, _sample_rate):
+        nonlocal new_embed_calls
+        new_embed_calls += 1
+        return [1.0, 0.0]
+
+    eng = _engine(barge_word_cut_require_speaker=True)
+    old_gate = SpeakerGate(embed_fn=old_embed)
+    new_gate = SpeakerGate(embed_fn=new_embed)
+    eng._replace_speaker_gate(old_gate)
+    outcomes: list[bool] = []
+    worker = threading.Thread(target=lambda: outcomes.append(eng._warm_speaker_gate()))
+
+    worker.start()
+    assert started.wait(timeout=2.0)
+    eng._replace_speaker_gate(new_gate)
+    release.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert outcomes == [False]
+    assert not eng._speaker_gate_warmed
+    assert old_embed_calls == 1
+    assert new_embed_calls == 0
+
+    assert eng._warm_speaker_gate()
+    assert eng._speaker_gate_warmed
+    assert new_embed_calls == 1
+
+
+def test_same_gate_model_replacement_retires_kws_warm_authority_until_rewarm():
+    eng = _engine(barge_word_cut_require_speaker=True)
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    eng._replace_speaker_gate(gate)
+
+    assert eng._warm_speaker_gate()
+    authority = eng._snapshot_kws_speaker_authority()
+    assert authority is not None
+
+    gate.set_embed_fn(lambda _samples, _sample_rate: [1.0, 0.0])
+
+    assert eng._snapshot_kws_speaker_authority() is None
+    assert not eng._kws_speaker_authority_is_current(authority)
+
+    assert eng._warm_speaker_gate()
+    replacement_authority = eng._snapshot_kws_speaker_authority()
+    assert replacement_authority is not None
+    assert replacement_authority.gate is gate
+    assert replacement_authority != authority
 
 
 def test_speaker_authority_embedding_window_is_bounded_off_capture_hot_path():

@@ -1,7 +1,7 @@
 # ADR-0182: Fence playback KWS by phrase and generation authority
 
 Date: 2026-08-10
-Status: accepted
+Status: superseded-by ADR-0183
 
 ## Decision
 

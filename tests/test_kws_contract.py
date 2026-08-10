@@ -11,6 +11,7 @@ from core.kws_contract import (
     KwsPhraseBinding,
     collapsed_label_surfaces,
     load_kws_phrase_bindings,
+    resolve_kws_stop_binding,
     resolve_kws_stop_phrase,
 )
 
@@ -51,6 +52,7 @@ def test_load_and_resolve_exact_shipped_phrase_rows(tmp_path) -> None:
     assert bindings == tuple(
         KwsPhraseBinding(
             tokens=tokens,
+            word_token_counts=phrase.word_token_counts,
             surface=phrase.surface,
             result_label=phrase.result_label,
         )
@@ -64,6 +66,36 @@ def test_load_and_resolve_exact_shipped_phrase_rows(tmp_path) -> None:
                 tokens=list(binding.tokens),
             )
             == binding.surface
+        )
+
+
+def test_shipped_word_token_counts_are_exact_and_resolve_with_binding() -> None:
+    assert tuple(phrase.word_token_counts for phrase in KWS_STOP_PHRASES) == (
+        (4,),
+        (4, 5),
+        (4, 6),
+        (2, 5),
+        (3,),
+        (4, 2),
+    )
+
+    bindings = tuple(
+        KwsPhraseBinding(
+            tokens=phrase.tokens,
+            word_token_counts=phrase.word_token_counts,
+            surface=phrase.surface,
+            result_label=phrase.result_label,
+        )
+        for phrase in KWS_STOP_PHRASES
+    )
+    for expected in bindings:
+        assert (
+            resolve_kws_stop_binding(
+                bindings,
+                result_label=expected.result_label,
+                tokens=list(expected.tokens),
+            )
+            is expected
         )
 
 
@@ -145,6 +177,9 @@ def test_loader_rejects_file_identity_change_while_read(
         ("stop", _TOKENS[0], "label"),
         ("stop", _TOKENS[0], "duplicate"),
         ("stop", _TOKENS[0], "reorder"),
+        ("stop", _TOKENS[0], "word-count-shape"),
+        ("stop", _TOKENS[0], "word-count-sum"),
+        ("stop", _TOKENS[0], "word-count-bool"),
         ("stop", ("S", None), None),
     ],
     ids=(
@@ -154,6 +189,9 @@ def test_loader_rejects_file_identity_change_while_read(
         "binding-label-mutated",
         "ambiguous-duplicate-tokens",
         "same-label-binding-rows-reordered",
+        "binding-word-count-shape-mutated",
+        "binding-word-count-sum-mutated",
+        "binding-word-count-bool-mutated",
         "non-string-token",
     ),
 )
@@ -176,7 +214,21 @@ def test_resolver_fails_closed_for_mismatched_or_ambiguous_identity(
         first_tokens, second_tokens = bindings[0].tokens, bindings[1].tokens
         bindings[0] = replace(bindings[0], tokens=second_tokens)
         bindings[1] = replace(bindings[1], tokens=first_tokens)
+    elif mutate == "word-count-shape":
+        bindings[0] = replace(bindings[0], word_token_counts=(2, 2))
+    elif mutate == "word-count-sum":
+        bindings[0] = replace(bindings[0], word_token_counts=(3,))
+    elif mutate == "word-count-bool":
+        bindings[0] = replace(bindings[0], word_token_counts=(True,))
 
+    assert (
+        resolve_kws_stop_binding(
+            tuple(bindings),
+            result_label=label,
+            tokens=tokens,
+        )
+        is None
+    )
     assert (
         resolve_kws_stop_phrase(
             tuple(bindings),

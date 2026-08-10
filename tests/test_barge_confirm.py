@@ -23,6 +23,7 @@ from core.engines.sherpa import (
     SherpaConfig,
     SherpaOnnxEngine,
     _KwsControlAuthority,
+    _KwsFeedRoute,
 )
 
 
@@ -337,15 +338,34 @@ def _current_kws_authority(eng: SherpaOnnxEngine) -> _KwsControlAuthority:
     eng._stream_in = SimpleNamespace(generation=0, actual_device=None)
     eng._capture_authority_source_generation = 0
     eng._capture_authority_source_device = None
+    speaking = eng._speaking.is_set()
+    if speaking:
+        route_owner = SimpleNamespace(reset=lambda: None)
+        eng._aec = route_owner
+        route = _KwsFeedRoute.IN_APP_AEC
+    else:
+        route_owner = None
+        route = _KwsFeedRoute.IDLE
     return _KwsControlAuthority(
         capture_epoch=eng._capture_epoch,
         capture_generation=0,
+        capture_sequence=1,
         source_generation=0,
         source_device=None,
+        source_sample_rate_hz=eng.config.sample_rate,
+        source_sample_count=1_600,
+        source_sample_start=0,
+        source_sample_end=1_600,
+        source_domain=eng._capture_resolution,
+        kws_sample_rate_hz=eng.config.sample_rate,
         authority_source_generation=0,
         authority_source_device=None,
         os_echo_route_verified=eng._os_echo_route_verified,
-        speaking=eng._speaking.is_set(),
+        route=route,
+        route_owner=route_owner,
+        speaker_authority_available=False,
+        speaker_authority=None,
+        speaking=speaking,
         speak_generation=eng._speak_gen,
         playback_generation=eng._playback_generation,
     )

@@ -292,12 +292,37 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         Headless receipts: 349 focused, 218 adjacent, 449 complete-Sherpa, 6
         APM/DTD; scoped static/changed-region format/whitespace/STATUS gates and
         an independent adversarial audit are green.
-      - [ ] separately evaluate speaker-authorized resolution of an own-TTS-
-        ambiguous KWS hit. ADR-0182 preserves ADR-0082's abstention and the
-        independent word-cut fallback; any future KWS acceptance needs dedicated
-        generation-scoped PCM, compatible warmed speaker evidence, a new ADR,
-        and owner bare-speaker A/B. A raw-KWS experiment must still begin as a
-        separate-stream aggregate-only shadow before any effect.
+      - [x] resolve an exact own-TTS-ambiguous shipped KWS hit only through
+        ADR-0183's word-scoped speaker authority. Speaker-unavailable KWS retains
+        only native clock/adjacency, no PCM or timestamp work. An available
+        compatible enrolled/warmed receipt enables exact KWS-fed post-front-end
+        PCM bound to the full capture/source/route/playback and gate/model/
+        enrollment/policy/warm generations. All KWS restarts across speaker-
+        authority transitions; within stable state, idle/novel label/effect
+        eligibility stays unchanged and runs no inference. Public pinned v1.13.3
+        40 ms token timestamps plus code-pinned phone counts define exact word
+        spans only for an ambiguous hit with available authority; every word
+        needs independent current `ACCEPT` and the unchanged 0.10-second voiced/
+        threshold floor. The default config-derived ledger cap is 32,000 float32
+        samples/128,000 bytes (twenty normal 100 ms chunks); unavailable retains
+        zero PCM. One inference slot is acquired without blocking, then at most
+        two synchronous native embedding calls run; an entered call is not
+        wall-clock-preemptible, while mailbox/PCM stay bounded. All failures
+        abstain. A publication-ineligible block, including the first post-gap
+        guard, is never fed and dirties the stream plus any PCM ledger before the
+        next fresh stream. Headless receipts: 607 focused, 280 adjacent with two
+        SWIG warnings, 516 complete-Sherpa, and 6 APM/DTD; this is word-level
+        logic, not phone diarization or aggregate provenance.
+      - [ ] harden adversarial KWS-ledger resources/lifetimes separately: cap
+        chunk objects independently of sample count; hard-cap window/feed only
+        if configuration trust changes; test blocked native-embed shutdown and
+        backpressure; drop word-region/decision references before the external
+        callback; and remove the redundant interval copy. Current shipped/default
+        bounds are safe; ADR-0183 does not complete this follow-up.
+      - [ ] run the paired owner bare-speaker A/B for an ambiguous owner talk-over
+        and matched own-TTS/no-talk control. No live acceptance follows until
+        that retained physical evidence is reviewed. A raw-KWS experiment must
+        still begin as a separate-stream aggregate-only shadow before any effect.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default
         pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a

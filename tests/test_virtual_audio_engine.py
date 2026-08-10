@@ -15,7 +15,10 @@ from core.engines.sherpa import (
     SherpaOnnxEngine,
     _CaptureBlockRejected,
     _KwsControlAuthority,
+    _KwsFeedRoute,
+    _SpeakerPcmStatus,
 )
+from core.engines.speaker_gate import SpeakerGate, SpeakerSimilarityBatchReceipt
 from core.kws_contract import KWS_STOP_PHRASES, KwsPhraseBinding
 from core.media_session import CaptureBlockContext, CapturedBlock
 
@@ -225,11 +228,15 @@ class _FixedKws:
     def reset_stream(self, _stream):
         self.resets += 1
 
+    def create_stream(self):
+        return _NullKwsStream()
+
 
 _PLAYBACK_KWS_TOKENS = tuple(phrase.tokens for phrase in KWS_STOP_PHRASES)
 _PLAYBACK_KWS_BINDINGS = tuple(
     KwsPhraseBinding(
         tokens=tokens,
+        word_token_counts=phrase.word_token_counts,
         surface=phrase.surface,
         result_label=phrase.result_label,
     )
@@ -247,14 +254,19 @@ class _TokenKws(_FixedKws):
         keyword,
         tokens,
         *,
+        timestamps=(),
         before_result=None,
         before_tokens=None,
+        before_timestamps=None,
     ):
         super().__init__(keyword)
         self._tokens = tokens
+        self._timestamps = timestamps
         self._before_result = before_result
         self._before_tokens = before_tokens
+        self._before_timestamps = before_timestamps
         self.token_calls = 0
+        self.timestamp_calls = 0
 
     def get_result(self, stream):
         if self._before_result is not None:
@@ -267,10 +279,21 @@ class _TokenKws(_FixedKws):
             self._before_tokens()
         return self._tokens
 
+    def timestamps(self, _stream):
+        self.timestamp_calls += 1
+        if self._before_timestamps is not None:
+            self._before_timestamps()
+        return self._timestamps
+
 
 class _NullKwsStream:
+    def __init__(self):
+        self.sample_rates: list[int] = []
+        self.blocks: list[np.ndarray] = []
+
     def accept_waveform(self, _sample_rate, _samples):
-        pass
+        self.sample_rates.append(_sample_rate)
+        self.blocks.append(np.asarray(_samples, dtype="float32").copy())
 
 
 class _BoundedKwsStream:
@@ -353,13 +376,17 @@ def _authority_kws_engine(
     os_echo_route_verified: bool = False,
     before_result=None,
     before_tokens=None,
+    timestamps=(),
+    before_timestamps=None,
 ):
     engine = SherpaOnnxEngine(SherpaConfig())
     spotter = _TokenKws(
         keyword,
         _PLAYBACK_KWS_TOKENS[phrase_index],
+        timestamps=timestamps,
         before_result=before_result,
         before_tokens=before_tokens,
+        before_timestamps=before_timestamps,
     )
     engine._kws = spotter
     engine._kws_stream = _NullKwsStream()
@@ -381,19 +408,849 @@ def _authority_kws_engine(
         engine._speaking.set()
     else:
         engine._speaking.clear()
+    route_owner = None
+    if not speaking:
+        route = _KwsFeedRoute.IDLE
+    elif os_echo_route_verified:
+        route = _KwsFeedRoute.VERIFIED_OS_ECHO
+    else:
+        route = _KwsFeedRoute.IN_APP_AEC
+        route_owner = object()
+        engine._aec = route_owner
     authority = _KwsControlAuthority(
         capture_epoch=2,
         capture_generation=5,
+        capture_sequence=1,
         source_generation=3,
         source_device="mic-a",
+        source_sample_rate_hz=16_000,
+        source_sample_count=1600,
+        source_sample_start=0,
+        source_sample_end=1600,
+        source_domain=engine._capture_resolution,
+        kws_sample_rate_hz=16_000,
         authority_source_generation=3,
         authority_source_device="mic-a",
         os_echo_route_verified=os_echo_route_verified,
+        route=route,
+        route_owner=route_owner,
+        speaker_authority_available=False,
+        speaker_authority=None,
         speaking=speaking,
         speak_generation=7,
         playback_generation=11,
     )
     return engine, spotter, authority
+
+
+def _bind_kws_test_pcm(
+    engine: SherpaOnnxEngine,
+    authority: _KwsControlAuthority,
+    pcm,
+) -> _KwsControlAuthority:
+    if authority.speaker_authority is None:
+        gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+        gate.enroll_embedding([1.0, 0.0])
+        engine._replace_speaker_gate(gate)
+        assert engine._warm_speaker_gate()
+        speaker_authority = engine._snapshot_kws_speaker_authority()
+        assert speaker_authority is not None
+        authority = replace(
+            authority,
+            speaker_authority_available=True,
+            speaker_authority=speaker_authority,
+        )
+    owned = np.array(pcm, dtype="float32", order="C", copy=True).reshape(-1)
+    authority = replace(
+        authority,
+        source_sample_count=owned.size,
+        source_sample_end=authority.source_sample_start + owned.size,
+    )
+    assert engine._prepare_kws_submission(authority)
+    engine._append_kws_submitted_pcm(owned, authority)
+    return authority
+
+
+def test_kws_word_regions_use_exact_40ms_phone_grid_without_feed_tail() -> None:
+    engine, _spotter, authority = _authority_kws_engine(
+        "stop",
+        phrase_index=1,
+    )
+    pcm = np.arange(8_000, dtype="float32")
+    _bind_kws_test_pcm(engine, authority, pcm)
+    timestamps = [0.00, 0.04, 0.08, 0.12, 0.20, 0.24, 0.28, 0.32, 0.36]
+
+    regions = engine._kws_word_pcm_regions(
+        _PLAYBACK_KWS_BINDINGS[1],
+        timestamps,
+    )
+
+    assert regions is not None
+    assert len(regions) == 2
+    np.testing.assert_array_equal(regions[0], pcm[:3_200])
+    np.testing.assert_array_equal(regions[1], pcm[3_200:6_400])
+    assert all(not region.flags.writeable for region in regions)
+
+
+def test_kws_word_regions_accept_float32_timestamp_rounding_within_half_sample():
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    pcm = np.arange(30_000, dtype="float32")
+    _bind_kws_test_pcm(engine, authority, pcm)
+    timestamps = [float(np.float32(value)) for value in (1.44, 1.48, 1.52, 1.56)]
+
+    regions = engine._kws_word_pcm_regions(
+        _PLAYBACK_KWS_BINDINGS[0],
+        timestamps,
+    )
+
+    assert regions is not None
+    assert len(regions) == 1
+    np.testing.assert_array_equal(regions[0], pcm[23_040:25_600])
+
+
+@pytest.mark.parametrize("offset_samples", [0.51, 1.0])
+def test_kws_word_regions_reject_more_than_half_sample_off_grid(
+    offset_samples,
+) -> None:
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    _bind_kws_test_pcm(engine, authority, np.arange(3_200, dtype="float32"))
+    timestamps = [0.00, 0.04, 0.08, 0.12 + offset_samples / 16_000]
+
+    assert (
+        engine._kws_word_pcm_regions(
+            _PLAYBACK_KWS_BINDINGS[0],
+            timestamps,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "timestamps",
+    [
+        (0.00, 0.04, 0.08, 0.12),
+        [0.00, 0.04, 0.08],
+        [0, 0.04, 0.08, 0.12],
+        [np.float64(0.00), 0.04, 0.08, 0.12],
+        [float("nan"), 0.04, 0.08, 0.12],
+        [float("inf"), 0.04, 0.08, 0.12],
+        [0.00, 0.04, 0.08, 1e308],
+        [-0.04, 0.00, 0.04, 0.08],
+        [0.00, 0.04, 0.04, 0.08],
+        [0.00, 0.08, 0.04, 0.12],
+        [0.00, 0.04, 0.08, 0.121],
+        [0.20, 0.24, 0.28, 0.32],
+    ],
+    ids=(
+        "not-list",
+        "wrong-count",
+        "integer-timestamp",
+        "numpy-float",
+        "nan",
+        "infinity",
+        "finite-overflow",
+        "negative",
+        "duplicate",
+        "decreasing",
+        "off-grid",
+        "outside-ledger",
+    ),
+)
+def test_kws_word_regions_reject_malformed_or_unretained_timestamps(
+    timestamps,
+) -> None:
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    _bind_kws_test_pcm(engine, authority, np.arange(3_200, dtype="float32"))
+
+    assert (
+        engine._kws_word_pcm_regions(
+            _PLAYBACK_KWS_BINDINGS[0],
+            timestamps,
+        )
+        is None
+    )
+
+
+def test_kws_word_regions_reject_token_frames_trimmed_from_bounded_ledger() -> None:
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    _bind_kws_test_pcm(engine, authority, np.ones(40_000, dtype="float32"))
+
+    assert engine._kws_pcm_ledger.retained_start == 8_000
+    assert (
+        engine._kws_word_pcm_regions(
+            _PLAYBACK_KWS_BINDINGS[0],
+            [0.00, 0.04, 0.08, 0.12],
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("cold_gate", [False, True], ids=("unavailable", "cold"))
+def test_kws_unavailable_scope_keeps_clock_without_pcm_or_timestamps(
+    cold_gate,
+) -> None:
+    engine, spotter, authority = _authority_kws_engine(
+        "",
+        timestamps=[0.00, 0.04, 0.08, 0.12],
+    )
+    if cold_gate:
+        gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+        gate.enroll_embedding([1.0, 0.0])
+        engine._replace_speaker_gate(gate)
+        assert not engine._speaker_gate_warmed
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    def unexpected_score(*_args, **_kwargs):
+        raise AssertionError("unavailable/cold KWS must not score speaker PCM")
+
+    engine._score_explicit_speaker_pcm_batch = unexpected_score
+
+    assert not engine._poll_keywords(
+        np.full(1_600, 0.25, dtype="float32"),
+        control_authority=authority,
+    )
+
+    ledger = engine._kws_pcm_ledger
+    assert ledger.scope is authority
+    assert ledger.submitted_end == 1_600
+    assert ledger.retained_start == 1_600
+    assert ledger.last_capture_sequence == 1
+    assert ledger.last_source_sample_end == 1_600
+    assert tuple(ledger.chunks) == ()
+
+    engine._now_playing = "I will stop now."
+    spotter.keyword = "stop"
+    second_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1_600,
+        source_sample_end=3_200,
+    )
+    assert not engine._poll_keywords(
+        np.full(1_600, 0.25, dtype="float32"),
+        control_authority=second_authority,
+    )
+
+    assert stop_results == []
+    assert spotter.timestamp_calls == 0
+    assert engine._kws_own_echo_suppressions == 1
+
+
+def test_kws_speaker_availability_transition_starts_fresh_retained_scope() -> None:
+    engine, spotter, authority = _authority_kws_engine("")
+    engine._cb = EngineCallbacks(on_control_stop_result=lambda _result: None)
+    unavailable_stream = engine._kws_stream
+    unavailable_pcm = np.full(1_600, 0.25, dtype="float32")
+
+    assert not engine._poll_keywords(
+        unavailable_pcm,
+        control_authority=authority,
+    )
+    assert len(unavailable_stream.blocks) == 1
+    assert tuple(engine._kws_pcm_ledger.chunks) == ()
+    assert engine._kws_pcm_ledger.submitted_end == 1_600
+
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    available_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1_600,
+        source_sample_end=3_200,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    available_pcm = np.full(1_600, 0.75, dtype="float32")
+
+    assert not engine._poll_keywords(
+        available_pcm,
+        control_authority=available_authority,
+    )
+
+    available_stream = engine._kws_stream
+    assert available_stream is not unavailable_stream
+    assert spotter.resets == 1
+    assert len(available_stream.blocks) == 1
+    np.testing.assert_array_equal(available_stream.blocks[0], available_pcm)
+    ledger = engine._kws_pcm_ledger
+    assert ledger.scope is available_authority
+    assert ledger.submitted_end == 1_600
+    assert ledger.retained_start == 0
+    assert len(ledger.chunks) == 1
+    np.testing.assert_array_equal(ledger.chunks[0].pcm, available_pcm)
+
+
+def test_kws_allow_publish_false_skips_prefix_then_rotates_for_fresh_suffix() -> None:
+    engine, spotter, authority = _authority_kws_engine("")
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    authority = replace(
+        authority,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    engine._cb = EngineCallbacks(on_control_stop_result=lambda _result: None)
+    old_stream = engine._kws_stream
+    prefix = np.full(1_600, 0.25, dtype="float32")
+    suffix = np.full(1_600, 0.75, dtype="float32")
+
+    assert not engine._poll_keywords(
+        prefix,
+        allow_publish=False,
+        control_authority=authority,
+    )
+    assert old_stream.blocks == []
+    assert spotter.resets == 0
+    assert engine._kws_continuity_dirty
+    assert engine._kws_pcm_ledger.scope is None
+
+    second_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1_600,
+        source_sample_end=3_200,
+    )
+    assert not engine._poll_keywords(
+        suffix,
+        control_authority=second_authority,
+    )
+
+    fresh_stream = engine._kws_stream
+    assert fresh_stream is not old_stream
+    assert spotter.resets == 1
+    assert old_stream.blocks == []
+    assert len(fresh_stream.blocks) == 1
+    np.testing.assert_array_equal(fresh_stream.blocks[0], suffix)
+    ledger = engine._kws_pcm_ledger
+    assert ledger.scope is second_authority
+    assert ledger.submitted_end == 1_600
+    assert ledger.retained_start == 0
+    assert len(ledger.chunks) == 1
+    np.testing.assert_array_equal(ledger.chunks[0].pcm, suffix)
+
+
+@pytest.mark.parametrize(
+    "discontinuity",
+    [
+        "capture-epoch",
+        "capture-generation",
+        "source-generation",
+        "source-device",
+        "source-rate",
+        "source-domain",
+        "kws-rate",
+        "authority-generation",
+        "authority-device",
+        "os-route",
+        "feed-route",
+        "speaker-authority",
+        "speaking",
+        "speak-generation",
+        "playback-generation",
+        "capture-sequence-gap",
+        "source-sample-gap",
+    ],
+)
+def test_kws_every_scope_or_adjacency_change_rotates_native_and_ledger(
+    discontinuity,
+) -> None:
+    engine, spotter, authority = _authority_kws_engine("")
+    authority = _bind_kws_test_pcm(
+        engine,
+        authority,
+        np.full(1_600, 0.25, dtype="float32"),
+    )
+    old_stream = engine._kws_stream
+    next_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1_600,
+        source_sample_end=3_200,
+        source_sample_count=1_600,
+    )
+    changes = {
+        "capture-epoch": {"capture_epoch": 3},
+        "capture-generation": {"capture_generation": 6},
+        "source-generation": {"source_generation": 4},
+        "source-device": {"source_device": "mic-b"},
+        "source-rate": {"source_sample_rate_hz": 48_000},
+        "source-domain": {"source_domain": object()},
+        "kws-rate": {"kws_sample_rate_hz": 8_000},
+        "authority-generation": {"authority_source_generation": 4},
+        "authority-device": {"authority_source_device": "mic-b"},
+        "os-route": {"os_echo_route_verified": True},
+        "feed-route": {
+            "route": _KwsFeedRoute.IDLE,
+            "route_owner": None,
+        },
+        "speaker-authority": {
+            "speaker_authority_available": False,
+            "speaker_authority": None,
+        },
+        "speaking": {"speaking": False},
+        "speak-generation": {"speak_generation": 8},
+        "playback-generation": {"playback_generation": 12},
+        "capture-sequence-gap": {"capture_sequence": 3},
+        "source-sample-gap": {
+            "source_sample_start": 1_601,
+            "source_sample_end": 3_201,
+        },
+    }
+    next_authority = replace(next_authority, **changes[discontinuity])
+
+    assert engine._prepare_kws_submission(next_authority)
+
+    assert spotter.resets == 1
+    assert engine._kws_stream is not old_stream
+    ledger = engine._kws_pcm_ledger
+    assert ledger.scope is next_authority
+    assert ledger.submitted_end == 0
+    assert ledger.retained_start == 0
+    assert tuple(ledger.chunks) == ()
+    assert ledger.last_capture_sequence is None
+    assert ledger.last_source_sample_end is None
+
+
+def test_kws_tiny_feed_ledger_chunk_count_is_bounded() -> None:
+    engine, _spotter, authority = _authority_kws_engine("")
+    engine.config.barge_word_cut_speaker_window_sec = 0.10
+    authority = _bind_kws_test_pcm(
+        engine,
+        authority,
+        np.ones(1, dtype="float32"),
+    )
+
+    for index in range(1, 3_200):
+        block_authority = replace(
+            authority,
+            capture_sequence=index + 1,
+            source_sample_start=index,
+            source_sample_end=index + 1,
+            source_sample_count=1,
+        )
+        engine._append_kws_submitted_pcm(
+            np.ones(1, dtype="float32"),
+            block_authority,
+        )
+
+    ledger = engine._kws_pcm_ledger
+    assert ledger.submitted_end == 3_200
+    assert ledger.retained_start == 1_600
+    assert len(ledger.chunks) == 1_600
+    assert ledger.last_capture_sequence == 3_200
+    assert ledger.last_source_sample_end == 3_200
+
+
+def _warmed_speaker_scoring_engine(embed_fn):
+    engine = SherpaOnnxEngine(SherpaConfig())
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed_fn)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    authority = engine._snapshot_kws_speaker_authority()
+    assert authority is not None
+    return engine, gate, authority
+
+
+@pytest.mark.parametrize(
+    ("levels", "statuses"),
+    [
+        ((0.25,), (_SpeakerPcmStatus.ACCEPT,)),
+        (
+            (0.25, 0.5),
+            (_SpeakerPcmStatus.ACCEPT, _SpeakerPcmStatus.ACCEPT),
+        ),
+        (
+            (0.25, -0.5),
+            (_SpeakerPcmStatus.ACCEPT, _SpeakerPcmStatus.REJECT),
+        ),
+        (
+            (-0.25, 0.5),
+            (_SpeakerPcmStatus.REJECT, _SpeakerPcmStatus.ACCEPT),
+        ),
+    ],
+    ids=("one-owner", "two-owner", "owner-then-nonowner", "nonowner-then-owner"),
+)
+def test_explicit_speaker_batch_scores_every_word_independently(levels, statuses):
+    embedded: list[np.ndarray] = []
+
+    def embed(samples, _sample_rate):
+        clip = np.asarray(samples, dtype="float32").copy()
+        embedded.append(clip)
+        return [1.0, 0.0] if float(np.mean(clip)) > 0.0 else [0.0, 1.0]
+
+    engine, _gate, authority = _warmed_speaker_scoring_engine(embed)
+    embedded.clear()
+    regions = tuple(np.full(1_920, level, dtype="float32") for level in levels)
+
+    decisions = engine._score_explicit_speaker_pcm_batch(
+        regions,
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+
+    assert tuple(decision.status for decision in decisions) == statuses
+    assert len(embedded) == len(regions) <= 2
+    for decision, region, scored in zip(
+        decisions,
+        regions,
+        embedded,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(decision.identity_pcm, region)
+        np.testing.assert_array_equal(scored, region)
+
+
+def test_explicit_speaker_batch_unavailable_cold_and_insufficient_abstain() -> None:
+    regions = (
+        np.full(1_600, 0.25, dtype="float32"),
+        np.full(1_600, 0.5, dtype="float32"),
+    )
+    unavailable = SherpaOnnxEngine(SherpaConfig())
+    assert (
+        tuple(
+            decision.status
+            for decision in unavailable._score_explicit_speaker_pcm_batch(
+                regions,
+                min_sec=0.10,
+            )
+        )
+        == (_SpeakerPcmStatus.UNAVAILABLE,) * 2
+    )
+
+    cold = SherpaOnnxEngine(SherpaConfig())
+    cold_gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    cold_gate.enroll_embedding([1.0, 0.0])
+    cold._replace_speaker_gate(cold_gate)
+    assert (
+        tuple(
+            decision.status
+            for decision in cold._score_explicit_speaker_pcm_batch(
+                regions,
+                min_sec=0.10,
+            )
+        )
+        == (_SpeakerPcmStatus.COLD,) * 2
+    )
+
+    warmed, _gate, authority = _warmed_speaker_scoring_engine(
+        lambda _samples, _sample_rate: [1.0, 0.0]
+    )
+    insufficient = warmed._score_explicit_speaker_pcm_batch(
+        (
+            np.full(1_599, 0.25, dtype="float32"),
+            np.zeros(1_600, dtype="float32"),
+        ),
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+    assert tuple(item.status for item in insufficient) == (
+        _SpeakerPcmStatus.INSUFFICIENT,
+        _SpeakerPcmStatus.INSUFFICIENT,
+    )
+
+
+def test_explicit_speaker_batch_busy_error_and_stale_fail_closed() -> None:
+    fail_embedding = False
+
+    def embed(_samples, _sample_rate):
+        if fail_embedding:
+            raise RuntimeError("injected KWS speaker failure")
+        return [1.0, 0.0]
+
+    engine, gate, authority = _warmed_speaker_scoring_engine(embed)
+    region = (np.full(1_600, 0.25, dtype="float32"),)
+
+    assert gate._inference_lock.acquire(blocking=False)
+    try:
+        busy = engine._score_explicit_speaker_pcm_batch(
+            region,
+            min_sec=0.10,
+            expected_authority=authority,
+        )
+    finally:
+        gate._inference_lock.release()
+    assert tuple(item.status for item in busy) == (_SpeakerPcmStatus.BUSY,)
+
+    fail_embedding = True
+    error = engine._score_explicit_speaker_pcm_batch(
+        region,
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+    assert tuple(item.status for item in error) == (_SpeakerPcmStatus.ERROR,)
+
+    fail_embedding = False
+    gate.enroll_embedding([1.0, 0.0])
+    stale = engine._score_explicit_speaker_pcm_batch(
+        region,
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+    assert tuple(item.status for item in stale) == (_SpeakerPcmStatus.STALE,)
+
+
+@pytest.mark.parametrize(
+    "similarity",
+    [float("nan"), float("inf"), float("-inf"), 1.001, -1.001, np.float64(1.0)],
+    ids=("nan", "positive-inf", "negative-inf", "high", "low", "numpy-float"),
+)
+def test_explicit_speaker_batch_rejects_nonfinite_out_of_range_or_typed_scores(
+    monkeypatch,
+    similarity,
+) -> None:
+    engine, gate, authority = _warmed_speaker_scoring_engine(
+        lambda _samples, _sample_rate: [1.0, 0.0]
+    )
+
+    def forged_batch(_gate, _samples, _sample_rate):
+        return SpeakerSimilarityBatchReceipt(
+            authority=authority.gate_authority,
+            similarities=(similarity,),
+        )
+
+    monkeypatch.setattr(SpeakerGate, "try_similarity_batch", forged_batch)
+
+    decisions = engine._score_explicit_speaker_pcm_batch(
+        (np.full(1_600, 0.25, dtype="float32"),),
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+
+    assert tuple(item.status for item in decisions) == (_SpeakerPcmStatus.ERROR,)
+    assert engine._kws_speaker_authority_is_current(authority)
+    assert gate.authority_is_current(authority.gate_authority)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("barge_word_cut_speaker_threshold", float("nan")),
+        ("barge_word_cut_speaker_threshold", float("inf")),
+        ("barge_word_cut_speaker_reject_threshold", float("nan")),
+        ("barge_word_cut_speaker_reject_threshold", float("-inf")),
+    ],
+)
+def test_explicit_speaker_batch_marks_nonfinite_mutated_policy_stale(field, value):
+    engine, _gate, authority = _warmed_speaker_scoring_engine(
+        lambda _samples, _sample_rate: [1.0, 0.0]
+    )
+    setattr(engine.config, field, value)
+
+    decisions = engine._score_explicit_speaker_pcm_batch(
+        (np.full(1_600, 0.25, dtype="float32"),),
+        min_sec=0.10,
+        expected_authority=authority,
+    )
+
+    assert tuple(item.status for item in decisions) == (_SpeakerPcmStatus.STALE,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("barge_word_cut_speaker_threshold", 0.75),
+        ("barge_word_cut_speaker_reject_threshold", 0.10),
+    ],
+)
+def test_explicit_speaker_batch_policy_mutation_during_inference_is_stale(
+    field,
+    value,
+) -> None:
+    inference_started = threading.Event()
+    release_inference = threading.Event()
+    block_inference = False
+
+    def embed(_samples, _sample_rate):
+        if block_inference:
+            inference_started.set()
+            assert release_inference.wait(timeout=2.0)
+        return [1.0, 0.0]
+
+    engine, _gate, authority = _warmed_speaker_scoring_engine(embed)
+    block_inference = True
+    decisions = []
+    worker = threading.Thread(
+        target=lambda: decisions.extend(
+            engine._score_explicit_speaker_pcm_batch(
+                (np.full(1_600, 0.25, dtype="float32"),),
+                min_sec=0.10,
+                expected_authority=authority,
+            )
+        )
+    )
+
+    worker.start()
+    assert inference_started.wait(timeout=2.0)
+    setattr(engine.config, field, value)
+    release_inference.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert tuple(item.status for item in decisions) == (_SpeakerPcmStatus.STALE,)
+    assert not engine._kws_speaker_authority_is_current(authority)
+
+
+def _ambiguous_two_word_kws_case(levels: tuple[float, float]):
+    timestamps = [0.00, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32]
+    engine, spotter, authority = _authority_kws_engine(
+        "",
+        phrase_index=1,
+        timestamps=timestamps,
+    )
+    embedded: list[np.ndarray] = []
+
+    def embed(samples, _sample_rate):
+        clip = np.asarray(samples, dtype="float32").copy()
+        embedded.append(clip)
+        return [1.0, 0.0] if float(np.mean(clip)) > 0.0 else [0.0, 1.0]
+
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    embedded.clear()
+    authority = replace(
+        authority,
+        source_sample_count=3_200,
+        source_sample_end=3_200,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    pcm = np.concatenate(
+        (
+            np.full(2_560, levels[0], dtype="float32"),
+            np.full(3_200, levels[1], dtype="float32"),
+            np.full(640, levels[1], dtype="float32"),
+        )
+    )
+    return engine, spotter, gate, authority, pcm, embedded
+
+
+@pytest.mark.parametrize(
+    ("levels", "accepted"),
+    [
+        ((0.25, 0.50), True),
+        ((0.25, -0.50), False),
+        ((-0.25, 0.50), False),
+    ],
+    ids=("both-owner", "owner-then-nonowner", "nonowner-then-owner"),
+)
+def test_ambiguous_two_word_kws_requires_every_word_from_same_owner(
+    levels,
+    accepted,
+) -> None:
+    engine, spotter, _gate, authority, pcm, embedded = _ambiguous_two_word_kws_case(
+        levels
+    )
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+    engine._now_playing = "Please stop talking while I finish this sentence."
+    engine._word_cut_base = "untouched word-cut base"
+    engine._word_cut_candidate_samples = 37
+    engine._wc_stats = {"sentinel": 9}
+    word_cut_state = (
+        engine._word_cut_base,
+        engine._word_cut_candidate_samples,
+        dict(engine._wc_stats),
+    )
+
+    assert not engine._poll_keywords(
+        pcm[:3_200],
+        control_authority=authority,
+    )
+    spotter.keyword = "stop"
+    second_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=3_200,
+        source_sample_end=6_400,
+    )
+    consumed = engine._poll_keywords(
+        pcm[3_200:],
+        control_authority=second_authority,
+    )
+
+    assert consumed is accepted
+    assert [result.text for result in stop_results] == (["stop"] if accepted else [])
+    assert len(embedded) == 2
+    np.testing.assert_array_equal(embedded[0], pcm[:2_560])
+    np.testing.assert_array_equal(embedded[1], pcm[2_560:5_760])
+    assert engine._playback_kws_claim is None
+    assert engine._kws_own_echo_suppressions == (0 if accepted else 1)
+    assert (
+        engine._word_cut_base,
+        engine._word_cut_candidate_samples,
+        engine._wc_stats,
+    ) == word_cut_state
+
+
+def test_post_score_speaker_mutation_at_claim_install_abstains_and_releases() -> None:
+    ledger_state_during_score = []
+    scoring = False
+
+    def embed(_samples, _sample_rate):
+        if scoring:
+            ledger = engine._kws_pcm_ledger
+            ledger_state_during_score.append(
+                (ledger.scope, tuple(ledger.chunks), ledger.submitted_end)
+            )
+        return [1.0, 0.0]
+
+    engine, spotter, authority = _authority_kws_engine(
+        "stop",
+        timestamps=[0.00, 0.04, 0.08, 0.12],
+    )
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    authority = replace(
+        authority,
+        source_sample_count=3_200,
+        source_sample_end=3_200,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    engine._now_playing = "I will stop after this sentence."
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+    original_current = engine._kws_control_authority_is_current
+    mutated = False
+
+    def mutate_after_claim(candidate):
+        nonlocal mutated
+        if engine._playback_kws_claim is not None and not mutated:
+            mutated = True
+            gate.enroll_embedding([1.0, 0.0])
+        return original_current(candidate)
+
+    engine._kws_control_authority_is_current = mutate_after_claim
+    scoring = True
+
+    assert not engine._poll_keywords(
+        np.full(3_200, 0.25, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert spotter.timestamp_calls == 1
+    assert mutated
+    assert ledger_state_during_score == [(None, (), 0)]
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
 
 
 def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
@@ -473,6 +1330,11 @@ def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
         on_control_stop_result=stop_results.append,
     )
 
+    def unexpected_score(*_args, **_kwargs):
+        raise AssertionError("novel STOP must not score speaker PCM")
+
+    engine._score_explicit_speaker_pcm_batch = unexpected_score
+
     consumed = engine._poll_keywords(
         np.zeros(1600, dtype="float32"),
         control_authority=authority,
@@ -483,6 +1345,7 @@ def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
     assert generic_results == []
     assert [result.text for result in stop_results] == ["stop"]
     assert spotter.token_calls == 1
+    assert spotter.timestamp_calls == 0
     assert engine._playback_kws_claim is None
 
 
@@ -516,6 +1379,11 @@ def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> N
         on_control_stop_result=idle_stop.append,
     )
 
+    def unexpected_idle_score(*_args, **_kwargs):
+        raise AssertionError("idle generic KWS must not score speaker PCM")
+
+    idle._score_explicit_speaker_pcm_batch = unexpected_idle_score
+
     assert idle._poll_keywords(
         np.zeros(1600, dtype="float32"),
         control_authority=idle_authority,
@@ -523,6 +1391,72 @@ def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> N
     assert [result.text for result in idle_generic] == ["command mode"]
     assert idle_stop == []
     assert idle_spotter.token_calls == 0
+    assert idle_spotter.timestamp_calls == 0
+
+
+def test_playback_kws_uses_stop_callback_captured_before_native_tokens() -> None:
+    original_results = []
+    replacement_results = []
+    engine = None
+
+    def replace_callback() -> None:
+        engine._cb = EngineCallbacks(
+            on_control_stop_result=replacement_results.append,
+        )
+
+    engine, spotter, authority = _authority_kws_engine(
+        "stop",
+        before_tokens=replace_callback,
+    )
+    engine._now_playing = "A sentence with no control words."
+    engine._cb = EngineCallbacks(on_control_stop_result=original_results.append)
+
+    assert engine._poll_keywords(
+        np.zeros(1_600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert [result.text for result in original_results] == ["stop"]
+    assert replacement_results == []
+    assert spotter.token_calls == 1
+    assert spotter.timestamp_calls == 0
+
+
+def test_ambiguous_kws_uses_stop_callback_captured_before_timestamps() -> None:
+    engine, spotter, _gate, authority, pcm, _embedded = _ambiguous_two_word_kws_case(
+        (0.25, 0.50)
+    )
+    original_results = []
+    replacement_results = []
+
+    def replace_callback() -> None:
+        engine._cb = EngineCallbacks(
+            on_control_stop_result=replacement_results.append,
+        )
+
+    spotter._before_timestamps = replace_callback
+    engine._now_playing = "Please stop talking while I finish this sentence."
+    engine._cb = EngineCallbacks(on_control_stop_result=original_results.append)
+    assert not engine._poll_keywords(
+        pcm[:3_200],
+        control_authority=authority,
+    )
+    spotter.keyword = "stop"
+    second_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=3_200,
+        source_sample_end=6_400,
+    )
+
+    assert engine._poll_keywords(
+        pcm[3_200:],
+        control_authority=second_authority,
+    )
+
+    assert [result.text for result in original_results] == ["stop"]
+    assert replacement_results == []
+    assert spotter.timestamp_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -594,6 +1528,7 @@ def test_playback_kws_collapsed_alias_ambiguity_abstains(
 
     assert stop_results == []
     assert engine._kws_own_echo_suppressions == 1
+    assert _spotter.timestamp_calls == 0
 
 
 def test_playback_kws_token_label_mismatch_abstains() -> None:
@@ -791,7 +1726,11 @@ def test_kws_authority_snapshot_does_not_coerce_forged_capture_types() -> None:
         playback_generation=np.int64(11),
     )
 
-    authority = engine._kws_control_authority(captured, context)
+    authority = engine._kws_control_authority(
+        captured,
+        context,
+        route=_KwsFeedRoute.IDLE,
+    )
 
     assert authority.capture_epoch is True
     assert type(authority.source_generation) is np.int64
@@ -1200,7 +2139,7 @@ def test_kws_callback_exception_is_not_reclassified_as_native_failure() -> None:
 
     assert spotter.result_calls == 1
     assert spotter.reset_calls == 1  # the ordinary hit reset, not recovery
-    assert spotter.create_calls == 1
+    assert spotter.create_calls == 2
 
 
 def _one_block_kws_capture() -> tuple[SherpaOnnxEngine, object]:
@@ -1284,7 +2223,7 @@ def test_legacy_kws_exhaustion_recreates_stream_then_preserves_same_block_asr():
     assert spotter.ready_calls == 65
     assert spotter.decode_calls == 64
     assert spotter.result_calls == 0
-    assert spotter.reset_calls == 1
+    assert spotter.reset_calls == 2
     assert spotter.create_calls == 2
     assert len(recognizer.stream.blocks) == 1
     assert np.array_equal(
@@ -1314,6 +2253,165 @@ def test_oversize_kws_capture_block_is_rejected_without_normal_asr_laundering():
     assert spotter.ready_calls == 0
     assert spotter.result_calls == 0
     assert recognizer.stream.blocks == []
+
+
+def test_stale_no_hit_skips_asr_and_forces_fresh_native_time_origin() -> None:
+    engine, recognizer = _one_block_kws_capture()
+
+    class _TwoBlockInput:
+        generation = 0
+        actual_device = None
+
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self, _frames):
+            self.reads += 1
+            if self.reads == 1:
+                return np.full(1_600, 0.25, dtype="float32"), False
+            self.generation = 0
+            engine._running.clear()
+            return np.full(1_600, 2.0, dtype="float32"), False
+
+    class _StaleStream:
+        def __init__(self) -> None:
+            self.low = False
+            self.high = False
+            self.accepted: list[float] = []
+
+        def accept_waveform(self, _sample_rate, samples) -> None:
+            mean = float(np.mean(samples))
+            self.accepted.append(mean)
+            self.low |= mean <= 1.0
+            self.high |= mean > 1.0
+
+    class _StalingNoHitSpotter:
+        def __init__(self) -> None:
+            self.streams: list[_StaleStream] = []
+            self.result_calls = 0
+            self.resets = 0
+
+        def create_stream(self) -> _StaleStream:
+            stream = _StaleStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, _stream) -> bool:
+            return False
+
+        def decode_stream(self, _stream) -> None:
+            pass
+
+        def get_result(self, stream: _StaleStream) -> str:
+            self.result_calls += 1
+            if self.result_calls == 1:
+                engine._stream_in.generation = 1
+            return "stop" if stream.low and stream.high else ""
+
+        def reset_stream(self, stream: _StaleStream) -> None:
+            self.resets += 1
+            stream.low = False
+            stream.high = False
+
+    source = _TwoBlockInput()
+    spotter = _StalingNoHitSpotter()
+    engine._stream_in = source
+    engine._kws = spotter
+    engine._kws_stream = spotter.create_stream()
+    dirty_marks = []
+    mark_dirty = engine._mark_keyword_continuity_dirty
+
+    def record_dirty() -> None:
+        mark_dirty()
+        dirty_marks.append(
+            (
+                engine._kws_continuity_dirty,
+                engine._kws_pcm_ledger.scope,
+                tuple(engine._kws_pcm_ledger.chunks),
+            )
+        )
+
+    engine._mark_keyword_continuity_dirty = record_dirty
+    commands = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+
+    engine._running.set()
+    engine._capture_loop()
+
+    assert commands == []
+    assert spotter.result_calls == 2
+    assert len(spotter.streams) == 2
+    assert spotter.streams[0].accepted == [0.25]
+    assert spotter.streams[1].accepted == [2.0]
+    assert spotter.resets == 2  # stale-prefix rotation, then capture retirement
+    assert dirty_marks == [(True, None, ()), (True, None, ())]
+    assert len(recognizer.stream.blocks) == 1
+    np.testing.assert_array_equal(
+        recognizer.stream.blocks[0],
+        np.full(1_600, 2.0, dtype="float32"),
+    )
+
+
+def test_kws_ledger_and_speaker_regions_use_exact_post_frontend_pcm() -> None:
+    engine, recognizer = _one_block_kws_capture()
+    raw = np.linspace(0.20, 0.40, 3_200, dtype="float32")
+
+    class _OneExactBlock:
+        generation = 0
+        actual_device = None
+
+        def read(self, _frames):
+            engine._running.clear()
+            return raw.copy(), False
+
+    class _Scale:
+        def process(self, samples):
+            return np.asarray(samples, dtype="float32") * np.float32(2.0)
+
+    class _Offset:
+        def process_16k(self, samples):
+            return np.asarray(samples, dtype="float32") + np.float32(0.125)
+
+    scored: list[np.ndarray] = []
+
+    def embed(samples, _sample_rate):
+        scored.append(np.asarray(samples, dtype="float32").copy())
+        return [1.0, 0.0]
+
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    scored.clear()
+    stream = _NullKwsStream()
+    spotter = _TokenKws(
+        "stop",
+        _PLAYBACK_KWS_TOKENS[0],
+        timestamps=[0.00, 0.04, 0.08, 0.12],
+    )
+    engine._stream_in = _OneExactBlock()
+    engine._input_agc = _Scale()
+    engine._denoiser = _Offset()
+    engine._kws = spotter
+    engine._kws_stream = stream
+    engine._kws_phrase_bindings = _PLAYBACK_KWS_BINDINGS
+    engine._os_echo_route_verified = True
+    engine._speaking.set()
+    engine._now_playing = "I will stop after this sentence."
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+    expected = raw * np.float32(2.0) + np.float32(0.125)
+
+    engine._running.set()
+    engine._capture_loop()
+
+    assert recognizer.stream.blocks == []
+    assert len(stream.blocks) == 1
+    np.testing.assert_array_equal(stream.blocks[0], expected)
+    assert len(scored) == 1
+    np.testing.assert_array_equal(scored[0], expected[:2_560])
+    assert [result.text for result in stop_results] == ["stop"]
+    assert spotter.timestamp_calls == 1
 
 
 def test_capture_kws_terminal_closes_open_confirm_window() -> None:
@@ -1348,7 +2446,7 @@ def test_capture_kws_terminal_closes_open_confirm_window() -> None:
 
     assert recognizer.reset_calls == 1
     assert recognizer.stream.blocks == []
-    assert engine._kws.resets == 1
+    assert engine._kws.resets == 2
     assert [result.text for result in stop_results] == ["stop"]
     assert barges == []
     assert not engine._barge_confirm_active()

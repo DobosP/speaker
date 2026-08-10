@@ -82,6 +82,7 @@ _CAPTURE_FORCE_JOIN_TIMEOUT_SEC = 1.0
 # The final readiness probe distinguishes an exactly-full, successfully drained
 # budget from a stream that still asks for a 65th decode call.
 _MAX_NATIVE_DECODE_STEPS_PER_FEED = 64
+_KWS_TOKEN_FRAME_MS = 40
 
 
 class _NativeDecodeStepLimitExceeded(RuntimeError):
@@ -108,6 +109,85 @@ class _BargeConfirmWorkLimits:
     feed_samples: int
     domain_samples: int
     invocations: int
+
+
+class _KwsFeedRoute(str, Enum):
+    """Exact echo-safety route under which KWS PCM was submitted."""
+
+    IDLE = "idle"
+    IN_APP_AEC = "in_app_aec"
+    VERIFIED_OS_ECHO = "verified_os_echo"
+
+
+@dataclass(frozen=True, slots=True)
+class _KwsSpeakerAuthority:
+    """Reader-time compatible/warm speaker gate generation."""
+
+    gate: object = field(repr=False, compare=False)
+    gate_authority: object = field(repr=False)
+    policy: "_KwsSpeakerPolicy"
+    gate_incarnation: int
+    warm_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _KwsSpeakerPolicy:
+    """Exact effective config policy used by an ambiguous KWS receipt."""
+
+    sample_rate: int
+    min_sec: float
+    window_sec: float
+    accept_threshold: float
+    reject_threshold: float
+
+
+@dataclass(frozen=True, slots=True)
+class _KwsPcmChunk:
+    """One exact submitted KWS sample interval."""
+
+    start: int
+    end: int
+    pcm: np.ndarray = field(repr=False, compare=False)
+
+
+@dataclass(slots=True)
+class _KwsPcmLedger:
+    """Capture-owner continuity ledger for one fresh native KWS stream."""
+
+    scope: Optional["_KwsControlAuthority"] = None
+    chunks: deque = field(default_factory=deque)
+    retained_start: int = 0
+    submitted_end: int = 0
+    last_capture_sequence: Optional[int] = None
+    last_source_sample_end: Optional[int] = None
+
+
+class _SpeakerPcmStatus(str, Enum):
+    """Closed result of one explicit-PCM speaker comparison."""
+
+    ACCEPT = "accept"
+    REJECT = "reject"
+    DEFER = "defer"
+    UNAVAILABLE = "unavailable"
+    COLD = "cold"
+    INSUFFICIENT = "insufficient"
+    BUSY = "busy"
+    STALE = "stale"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeakerPcmDecision:
+    """Side-effect-free decision for one caller-owned PCM region."""
+
+    status: _SpeakerPcmStatus
+    identity_pcm: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
+    similarity: Optional[float] = None
+    threshold: Optional[float] = None
+    reject_threshold: Optional[float] = None
+    raw_samples: int = 0
+    voiced_samples: int = 0
+    authority: object = field(default=None, repr=False, compare=False)
 
 
 def _drain_native_ready_bounded(recognizer, stream) -> int:
@@ -183,11 +263,25 @@ class _KwsControlAuthority:
 
     capture_epoch: int
     capture_generation: int
+    capture_sequence: int
     source_generation: int
     source_device: object = field(repr=False, compare=False)
+    source_sample_rate_hz: int
+    source_sample_count: int
+    source_sample_start: int
+    source_sample_end: int
+    source_domain: object = field(repr=False, compare=False)
+    kws_sample_rate_hz: int
     authority_source_generation: int
     authority_source_device: object = field(repr=False, compare=False)
     os_echo_route_verified: bool
+    route: _KwsFeedRoute
+    route_owner: object = field(repr=False, compare=False)
+    speaker_authority_available: bool
+    speaker_authority: Optional[_KwsSpeakerAuthority] = field(
+        repr=False,
+        compare=False,
+    )
     speaking: bool
     speak_generation: int
     playback_generation: int
@@ -293,7 +387,7 @@ from ..kws_contract import (
     KwsPhraseBinding,
     collapsed_label_surfaces,
     load_kws_phrase_bindings,
-    resolve_kws_stop_phrase,
+    resolve_kws_stop_binding,
 )
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
@@ -380,6 +474,8 @@ from ._sherpa_models import (
 )
 from .speaker_gate import (
     SpeakerGate,
+    SpeakerGateAuthority,
+    SpeakerSimilarityBatchReceipt,
     loudness_admits,
     passes_output_margin,
     resolve_speaker_identity_activation,
@@ -2084,6 +2180,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts = None
         self._kws = None
         self._kws_stream = None
+        self._kws_pcm_ledger = _KwsPcmLedger()
+        self._kws_continuity_dirty = False
         self._kws_phrase_bindings: tuple[KwsPhraseBinding, ...] = ()
         # Diagnostic count of KWS hits dropped by the own-echo guard in
         # _poll_keywords (the assistant's own TTS saying "stop"/"wait" leaking
@@ -2231,11 +2329,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._playback_generation = 0
         self._gen_lock = threading.Lock()
         self._gen_condition = threading.Condition(self._gen_lock)
+        self._speaker_gate_state_lock = threading.Lock()
         self._speaker_gate: Optional[SpeakerGate] = None
+        self._speaker_gate_incarnation: int = 0
         # Set only after the background engine warm pass completes a real
         # similarity call. Word-cut never pays cold ONNX construction on the
         # 100 ms capture thread; it defers identity-gated authority until this is true.
         self._speaker_gate_warmed: bool = False
+        self._speaker_gate_warm_generation: int = 0
+        self._speaker_gate_warm_model_generation: Optional[int] = None
         # Sink-attested playback callbacks never run on PortAudio's hard-real-
         # time thread. PlaybackFIFO appends only tiny ownership events; this
         # dispatcher consumes them on a normal daemon thread and invokes the
@@ -3016,8 +3118,7 @@ class SherpaOnnxEngine(AudioEngine):
         # Re-evaluate optional identity from the current files/config on every
         # build.  A removed enrollment reference must not retain a previously
         # allocated gate (or its lazy native extractor) across engine restarts.
-        self._speaker_gate = None
-        self._speaker_gate_warmed = False
+        self._replace_speaker_gate(None)
         self._recognizer = build_recognizer(c)
         # Optional offline second-pass recognizer for the final transcript.
         self._final_recognizer = build_final_recognizer(c)
@@ -3186,8 +3287,11 @@ class SherpaOnnxEngine(AudioEngine):
                     ),
                 )
         # KWS is command authority, not selected-final STT evidence.
+        self._retire_keyword_stream()
         self._kws = None if capture_only else build_keyword_spotter(c)
         self._kws_stream = None
+        self._kws_pcm_ledger = _KwsPcmLedger()
+        self._kws_continuity_dirty = False
         self._kws_phrase_bindings = ()
         if self._kws is not None:
             try:
@@ -3225,11 +3329,13 @@ class SherpaOnnxEngine(AudioEngine):
             barge_word_cut_require_speaker=c.barge_word_cut_require_speaker,
         )
         if not capture_only and speaker_identity.active and c.speaker_embedding_model:
-            self._speaker_gate = sherpa_speaker_gate(
-                c.speaker_embedding_model,
-                threshold=c.speaker_threshold,
-                num_threads=c.resolved_asr_threads,
-                provider=c.provider,
+            self._replace_speaker_gate(
+                sherpa_speaker_gate(
+                    c.speaker_embedding_model,
+                    threshold=c.speaker_threshold,
+                    num_threads=c.resolved_asr_threads,
+                    provider=c.provider,
+                )
             )
 
     def _enroll_speaker_gate(self) -> None:
@@ -5664,6 +5770,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self._diagnostic_bundle.invalidate("receipt_timeout")
         self._stop_receipt_dispatcher()
         if not self._capture_resource_hold.is_set():
+            self._retire_keyword_stream()
             self._close_recorders(
                 log_completed=not self._capture_startup_rollback.is_set()
             )
@@ -5987,25 +6094,133 @@ class SherpaOnnxEngine(AudioEngine):
         # before capture. Keep this idempotent retry for optional input gating.
         self._warm_speaker_gate()
 
+    def _replace_speaker_gate(self, gate: Optional[SpeakerGate]) -> None:
+        """Install one gate incarnation and retire every prior warm receipt."""
+
+        lock = getattr(self, "_speaker_gate_state_lock", None)
+        if lock is None:  # narrow ``__new__`` fixtures
+            lock = threading.Lock()
+            self._speaker_gate_state_lock = lock
+        with lock:
+            self._speaker_gate = gate
+            self._speaker_gate_incarnation = (
+                int(getattr(self, "_speaker_gate_incarnation", 0)) + 1
+            )
+            self._speaker_gate_warm_generation = (
+                int(getattr(self, "_speaker_gate_warm_generation", 0)) + 1
+            )
+            self._speaker_gate_warmed = False
+            self._speaker_gate_warm_model_generation = None
+
+    def _publish_speaker_gate_warm(
+        self,
+        gate: SpeakerGate,
+        incarnation: int,
+        warmed: bool,
+        model_generation: Optional[int],
+    ) -> bool:
+        """Publish only if the model warmed is still the installed gate."""
+
+        if (
+            type(incarnation) is not int
+            or type(warmed) is not bool
+            or (model_generation is not None and type(model_generation) is not int)
+            or (warmed and model_generation is None)
+        ):
+            return False
+        lock = getattr(self, "_speaker_gate_state_lock", None)
+        if lock is None:
+            return False
+        with lock:
+            if (
+                self._speaker_gate is not gate
+                or self._speaker_gate_incarnation != incarnation
+            ):
+                return False
+            if self._speaker_gate_warmed is not warmed:
+                self._speaker_gate_warm_generation += 1
+            self._speaker_gate_warmed = warmed
+            self._speaker_gate_warm_model_generation = (
+                model_generation if warmed else None
+            )
+            return warmed
+
     def _warm_speaker_gate(self) -> bool:
         """Construct/JIT speaker embedding off the real-time capture thread."""
-        if self._speaker_gate_warmed:
-            return True
-        gate = self._speaker_gate
-        if gate is None:
-            return False
+        lock = getattr(self, "_speaker_gate_state_lock", None)
+        if lock is None:  # narrow ``__new__`` fixtures
+            lock = threading.Lock()
+            self._speaker_gate_state_lock = lock
+        with lock:
+            gate = self._speaker_gate
+            incarnation = int(getattr(self, "_speaker_gate_incarnation", 0))
+            if gate is None:
+                return False
+            warmed = bool(self._speaker_gate_warmed)
+            warm_model_generation = getattr(
+                self,
+                "_speaker_gate_warm_model_generation",
+                None,
+            )
+        if warmed:
+            try:
+                current_authority = SpeakerGate.authority_state(gate)
+            except Exception:  # noqa: BLE001 - retry the real warm below
+                current_authority = None
+            if (
+                type(current_authority) is SpeakerGateAuthority
+                and current_authority.model_generation == warm_model_generation
+            ):
+                with lock:
+                    if (
+                        self._speaker_gate is gate
+                        and self._speaker_gate_incarnation == incarnation
+                        and self._speaker_gate_warmed
+                        and self._speaker_gate_warm_model_generation
+                        == warm_model_generation
+                    ):
+                        return True
+            self._publish_speaker_gate_warm(
+                gate,
+                incarnation,
+                False,
+                None,
+            )
         try:
+            before_warm = SpeakerGate.authority_state(gate)
             silence = np.zeros(int(self.config.sample_rate * 0.3), dtype="float32")
             embedding = gate.embed(silence, self.config.sample_rate)
-            self._speaker_gate_warmed = embedding is not None
-            if self._speaker_gate_warmed:
+            warm_authority = SpeakerGate.authority_state(gate)
+            warmed = bool(
+                embedding is not None
+                and type(before_warm) is SpeakerGateAuthority
+                and type(warm_authority) is SpeakerGateAuthority
+                and before_warm.gate_token is warm_authority.gate_token
+                and before_warm.model_generation == warm_authority.model_generation
+            )
+            published = self._publish_speaker_gate_warm(
+                gate,
+                incarnation,
+                warmed,
+                (
+                    warm_authority.model_generation
+                    if type(warm_authority) is SpeakerGateAuthority
+                    else None
+                ),
+            )
+            if published:
                 log.info("speaker-ID warm-up complete")
-            else:
+            elif not warmed:
                 log.warning("speaker-ID warm-up produced no embedding")
         except Exception:  # noqa: BLE001 - caller decides optional vs required
-            self._speaker_gate_warmed = False
+            published = self._publish_speaker_gate_warm(
+                gate,
+                incarnation,
+                False,
+                None,
+            )
             log.warning("speaker-ID warm-up failed", exc_info=True)
-        return self._speaker_gate_warmed
+        return published
 
     # --- ASR text helpers ---
     def _claim_streaming_decode_session(
@@ -7407,6 +7622,13 @@ class SherpaOnnxEngine(AudioEngine):
             )
         except Exception:  # noqa: BLE001 - reader context must fail closed
             speaker_authority = False
+        speaker_authority_scope = (
+            self._snapshot_kws_speaker_authority()
+            if authority_matches and speaker_authority
+            else None
+        )
+        if isinstance(gate, SpeakerGate):
+            speaker_authority = speaker_authority_scope is not None
         return CaptureBlockContext(
             source_domain=self._capture_resolution,
             authority_source_generation=context_authority_generation,
@@ -7418,6 +7640,7 @@ class SherpaOnnxEngine(AudioEngine):
                 authority_matches and self._word_cut_route_verified
             ),
             speaker_authority_available=speaker_authority,
+            speaker_authority=speaker_authority_scope,
             speaking=speaking,
             barge_watch_active=self._barge_watch_active_at(
                 stamp.captured_at,
@@ -7436,6 +7659,250 @@ class SherpaOnnxEngine(AudioEngine):
             far_reference_delayed=self._readonly_capture_reference(far_delayed),
             coherence_reference=self._readonly_capture_reference(far0),
         )
+
+    @staticmethod
+    def _kws_speaker_policy_is_valid(policy: object) -> bool:
+        if type(policy) is not _KwsSpeakerPolicy:
+            return False
+        return bool(
+            type(policy.sample_rate) is int
+            and policy.sample_rate > 0
+            and type(policy.min_sec) is float
+            and math.isfinite(policy.min_sec)
+            and policy.min_sec >= 0.10
+            and type(policy.window_sec) is float
+            and math.isfinite(policy.window_sec)
+            and policy.window_sec > 0.0
+            and type(policy.accept_threshold) is float
+            and math.isfinite(policy.accept_threshold)
+            and 0.0 <= policy.accept_threshold <= 1.0
+            and type(policy.reject_threshold) is float
+            and math.isfinite(policy.reject_threshold)
+            and 0.0 <= policy.reject_threshold <= policy.accept_threshold
+        )
+
+    def _snapshot_kws_speaker_policy(
+        self,
+        gate_authority: SpeakerGateAuthority,
+    ) -> Optional[_KwsSpeakerPolicy]:
+        """Freeze the unchanged effective word-cut STOP speaker policy."""
+
+        sample_rate = getattr(self.config, "sample_rate", None)
+        gate_input = getattr(self.config, "speaker_gate_input", True)
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+            or type(gate_input) is not bool
+            or type(gate_authority) is not SpeakerGateAuthority
+            or type(gate_authority.threshold) is not float
+            or not math.isfinite(gate_authority.threshold)
+            or not 0.0 <= gate_authority.threshold <= 1.0
+        ):
+            return None
+        raw_min_sec = getattr(
+            self.config,
+            "barge_word_cut_stop_speaker_min_sec",
+            0.10,
+        )
+        raw_block_sec = self.config.block_sec
+        raw_window = getattr(
+            self.config,
+            "barge_word_cut_speaker_window_sec",
+            2.0,
+        )
+        raw_threshold = getattr(
+            self.config,
+            "barge_word_cut_speaker_threshold",
+            gate_authority.threshold,
+        )
+        raw_reject_threshold = getattr(
+            self.config,
+            "barge_word_cut_speaker_reject_threshold",
+            0.22,
+        )
+        if any(
+            isinstance(value, bool)
+            for value in (
+                raw_min_sec,
+                raw_block_sec,
+                raw_window,
+                raw_threshold,
+                raw_reject_threshold,
+            )
+        ):
+            return None
+        try:
+            configured_min_sec = float(raw_min_sec)
+            block_sec = float(raw_block_sec)
+            configured_window = float(raw_window)
+            raw_threshold_float = float(raw_threshold)
+            raw_reject_threshold_float = float(raw_reject_threshold)
+            raw_values = (
+                configured_min_sec,
+                block_sec,
+                configured_window,
+                raw_threshold_float,
+                raw_reject_threshold_float,
+            )
+            if any(not math.isfinite(value) for value in raw_values):
+                return None
+            min_sec = max(0.10, configured_min_sec)
+            configured_threshold = max(
+                0.0,
+                min(1.0, raw_threshold_float),
+            )
+            accept_threshold = (
+                max(gate_authority.threshold, configured_threshold)
+                if gate_input
+                else configured_threshold
+            )
+            reject_threshold = max(
+                0.0,
+                min(
+                    accept_threshold,
+                    raw_reject_threshold_float,
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            min_sec < 0.0
+            or block_sec <= 0.0
+            or configured_window <= 0.0
+            or not 0.0 <= accept_threshold <= 1.0
+            or not 0.0 <= reject_threshold <= accept_threshold
+        ):
+            return None
+        policy = _KwsSpeakerPolicy(
+            sample_rate=sample_rate,
+            min_sec=min_sec,
+            window_sec=max(block_sec, configured_window),
+            accept_threshold=accept_threshold,
+            reject_threshold=reject_threshold,
+        )
+        return policy if self._kws_speaker_policy_is_valid(policy) else None
+
+    def _snapshot_kws_speaker_authority(
+        self,
+    ) -> Optional[_KwsSpeakerAuthority]:
+        """Capture one compatible, enrolled, warmed gate generation."""
+
+        lock = getattr(self, "_speaker_gate_state_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            gate = getattr(self, "_speaker_gate", None)
+            gate_incarnation = getattr(self, "_speaker_gate_incarnation", None)
+            warm_generation = getattr(
+                self,
+                "_speaker_gate_warm_generation",
+                None,
+            )
+            warm_model_generation = getattr(
+                self,
+                "_speaker_gate_warm_model_generation",
+                None,
+            )
+            warmed = getattr(self, "_speaker_gate_warmed", False)
+        if not isinstance(gate, SpeakerGate):
+            return None
+        try:
+            if (
+                type(gate_incarnation) is not int
+                or type(warm_generation) is not int
+                or type(warm_model_generation) is not int
+                or type(warmed) is not bool
+                or not warmed
+            ):
+                return None
+            gate_authority = SpeakerGate.authority_state(gate)
+            if type(gate_authority) is not SpeakerGateAuthority:
+                return None
+            policy = self._snapshot_kws_speaker_policy(gate_authority)
+            if policy is None:
+                return None
+            with lock:
+                state_current = bool(
+                    self._speaker_gate is gate
+                    and self._speaker_gate_incarnation == gate_incarnation
+                    and self._speaker_gate_warm_generation == warm_generation
+                    and self._speaker_gate_warm_model_generation
+                    == warm_model_generation
+                    and self._speaker_gate_warmed
+                )
+            if (
+                not state_current
+                or not gate_authority.enrolled
+                or gate_authority.model_generation != warm_model_generation
+                or not SpeakerGate.authority_is_current(gate, gate_authority)
+            ):
+                return None
+        except Exception:  # noqa: BLE001 - reader authority fails closed
+            return None
+        return _KwsSpeakerAuthority(
+            gate=gate,
+            gate_authority=gate_authority,
+            policy=policy,
+            gate_incarnation=gate_incarnation,
+            warm_generation=warm_generation,
+        )
+
+    def _kws_speaker_authority_is_current(
+        self,
+        authority: Optional[_KwsSpeakerAuthority],
+    ) -> bool:
+        """Recheck the exact gate/model/enrollment/policy/warm generation."""
+
+        if authority is None:
+            return self._snapshot_kws_speaker_authority() is None
+        if type(authority) is not _KwsSpeakerAuthority:
+            return False
+        lock = getattr(self, "_speaker_gate_state_lock", None)
+        if lock is None:
+            return False
+        with lock:
+            gate = getattr(self, "_speaker_gate", None)
+            gate_incarnation = getattr(self, "_speaker_gate_incarnation", None)
+            warm_generation = getattr(
+                self,
+                "_speaker_gate_warm_generation",
+                None,
+            )
+            warm_model_generation = getattr(
+                self,
+                "_speaker_gate_warm_model_generation",
+                None,
+            )
+            warmed = getattr(self, "_speaker_gate_warmed", False)
+        if gate is not authority.gate or not isinstance(gate, SpeakerGate):
+            return False
+        if (
+            type(authority.gate_incarnation) is not int
+            or type(authority.warm_generation) is not int
+            or type(authority.gate_authority) is not SpeakerGateAuthority
+            or not self._kws_speaker_policy_is_valid(authority.policy)
+            or type(gate_incarnation) is not int
+            or type(warm_generation) is not int
+            or type(warm_model_generation) is not int
+            or type(warmed) is not bool
+            or authority.gate_incarnation != gate_incarnation
+            or authority.warm_generation != warm_generation
+            or authority.gate_authority.model_generation != warm_model_generation
+            or not warmed
+        ):
+            return False
+        try:
+            return bool(
+                SpeakerGate.authority_is_current(
+                    gate,
+                    authority.gate_authority,
+                )
+                and self._snapshot_kws_speaker_policy(authority.gate_authority)
+                == authority.policy
+            )
+        except Exception:  # noqa: BLE001 - authority recheck fails closed
+            return False
 
     def _capture_source_identity(self) -> tuple[int, object]:
         source = self._stream_in
@@ -7482,21 +7949,35 @@ class SherpaOnnxEngine(AudioEngine):
             and context.playback_generation == current_playback_generation
         )
 
-    @staticmethod
     def _kws_control_authority(
+        self,
         captured: CapturedBlock,
         context: CaptureBlockContext,
+        *,
+        route: _KwsFeedRoute,
+        route_owner=None,
     ) -> _KwsControlAuthority:
         """Freeze the exact block/playback scope a KWS result may consume."""
 
         return _KwsControlAuthority(
             capture_epoch=captured.capture_epoch,
             capture_generation=captured.capture_generation,
+            capture_sequence=captured.sequence,
             source_generation=captured.source_generation,
             source_device=captured.source_device,
+            source_sample_rate_hz=captured.sample_rate_hz,
+            source_sample_count=int(captured.pcm.size),
+            source_sample_start=captured.source_sample_start,
+            source_sample_end=captured.source_sample_end,
+            source_domain=context.source_domain,
+            kws_sample_rate_hz=self.config.sample_rate,
             authority_source_generation=context.authority_source_generation,
             authority_source_device=context.authority_source_device,
             os_echo_route_verified=context.os_echo_route_verified,
+            route=route,
+            route_owner=route_owner,
+            speaker_authority_available=context.speaker_authority_available,
+            speaker_authority=context.speaker_authority,
             speaking=context.speaking,
             speak_generation=context.speak_generation,
             playback_generation=context.playback_generation,
@@ -7520,15 +8001,43 @@ class SherpaOnnxEngine(AudioEngine):
         if (
             type(authority.capture_epoch) is not int
             or type(authority.capture_generation) is not int
+            or type(authority.capture_sequence) is not int
             or type(authority.source_generation) is not int
+            or type(authority.source_sample_rate_hz) is not int
+            or type(authority.source_sample_count) is not int
+            or type(authority.source_sample_start) is not int
+            or type(authority.source_sample_end) is not int
+            or type(authority.kws_sample_rate_hz) is not int
             or type(authority.authority_source_generation) is not int
             or type(authority.os_echo_route_verified) is not bool
+            or type(authority.route) is not _KwsFeedRoute
+            or type(authority.speaker_authority_available) is not bool
             or type(authority.speaking) is not bool
             or type(authority.speak_generation) is not int
             or type(authority.playback_generation) is not int
         ):
             return False
+        if authority.speaker_authority_available is not (
+            authority.speaker_authority is not None
+        ):
+            return False
+        if (
+            authority.capture_sequence <= 0
+            or authority.source_sample_rate_hz <= 0
+            or authority.source_sample_count <= 0
+            or authority.kws_sample_rate_hz <= 0
+            or authority.source_sample_start < 0
+            or authority.source_sample_end <= authority.source_sample_start
+            or authority.source_sample_end - authority.source_sample_start
+            != authority.source_sample_count
+        ):
+            return False
         if type(self._capture_epoch) is not int:
+            return False
+        if (
+            type(getattr(self.config, "sample_rate", None)) is not int
+            or self.config.sample_rate != authority.kws_sample_rate_hz
+        ):
             return False
         if not self._capture_callback_is_current(authority.capture_epoch):
             return False
@@ -7584,6 +8093,9 @@ class SherpaOnnxEngine(AudioEngine):
                 source_generation == authority.source_generation
                 and source_device == authority.source_device
             )
+            source_domain_matches = bool(
+                getattr(self, "_capture_resolution", None) == authority.source_domain
+            )
             captured_authority_matches = bool(
                 authority.authority_source_generation == authority.source_generation
                 and authority.authority_source_device == authority.source_device
@@ -7595,13 +8107,38 @@ class SherpaOnnxEngine(AudioEngine):
         except Exception:  # noqa: BLE001 - identity proof fails closed
             return False
         if not (
-            source_matches and captured_authority_matches and live_authority_matches
+            source_matches
+            and source_domain_matches
+            and captured_authority_matches
+            and live_authority_matches
         ):
             return False
         if (
             type(self._os_echo_route_verified) is not bool
             or self._os_echo_route_verified is not authority.os_echo_route_verified
         ):
+            return False
+        if authority.route is _KwsFeedRoute.IDLE:
+            if authority.speaking or authority.route_owner is not None:
+                return False
+        elif authority.route is _KwsFeedRoute.IN_APP_AEC:
+            if (
+                not authority.speaking
+                or authority.route_owner is None
+                or self._aec is not authority.route_owner
+            ):
+                return False
+        elif authority.route is _KwsFeedRoute.VERIFIED_OS_ECHO:
+            if (
+                not authority.speaking
+                or authority.route_owner is not None
+                or self._aec is not None
+                or not authority.os_echo_route_verified
+            ):
+                return False
+        else:
+            return False
+        if not self._kws_speaker_authority_is_current(authority.speaker_authority):
             return False
         with self._gen_lock:
             if (
@@ -7641,7 +8178,13 @@ class SherpaOnnxEngine(AudioEngine):
                 return None
             claim = _PlaybackKwsClaim(authority=authority, stop_only=stop_only)
             self._playback_kws_claim = claim
-            return claim
+        # Installing the claim first closes playback-start admission. Recheck
+        # every source/route/speaker generation after that barrier before the
+        # callback can consume it.
+        if not self._kws_control_authority_is_current(authority):
+            self._release_playback_kws_claim(claim)
+            return None
+        return claim
 
     def _release_playback_kws_claim(self, claim: _PlaybackKwsClaim) -> None:
         """Release only the exact callback-complete KWS barrier."""
@@ -7651,7 +8194,129 @@ class SherpaOnnxEngine(AudioEngine):
                 self._playback_kws_claim = None
                 self._gen_condition.notify_all()
 
+    @staticmethod
+    def _kws_authority_has_same_scope(
+        left: _KwsControlAuthority,
+        right: _KwsControlAuthority,
+    ) -> bool:
+        """Compare every continuity field except per-block coordinates."""
+
+        if (
+            type(left) is not _KwsControlAuthority
+            or type(right) is not _KwsControlAuthority
+        ):
+            return False
+        try:
+            devices_match = bool(
+                left.source_device == right.source_device
+                and left.authority_source_device == right.authority_source_device
+            )
+            domains_match = bool(left.source_domain == right.source_domain)
+        except Exception:  # noqa: BLE001 - opaque identity fails closed
+            return False
+        left_speaker = left.speaker_authority
+        right_speaker = right.speaker_authority
+        if left_speaker is None or right_speaker is None:
+            speakers_match = left_speaker is right_speaker
+        else:
+            speakers_match = bool(
+                type(left_speaker) is _KwsSpeakerAuthority
+                and type(right_speaker) is _KwsSpeakerAuthority
+                and SherpaOnnxEngine._kws_speaker_policy_is_valid(left_speaker.policy)
+                and SherpaOnnxEngine._kws_speaker_policy_is_valid(right_speaker.policy)
+                and left_speaker.gate is right_speaker.gate
+                and left_speaker.gate_authority == right_speaker.gate_authority
+                and left_speaker.policy == right_speaker.policy
+                and left_speaker.gate_incarnation == right_speaker.gate_incarnation
+                and left_speaker.warm_generation == right_speaker.warm_generation
+            )
+        return bool(
+            devices_match
+            and domains_match
+            and speakers_match
+            and left.capture_epoch == right.capture_epoch
+            and left.capture_generation == right.capture_generation
+            and left.source_generation == right.source_generation
+            and left.source_sample_rate_hz == right.source_sample_rate_hz
+            and left.kws_sample_rate_hz == right.kws_sample_rate_hz
+            and left.authority_source_generation == right.authority_source_generation
+            and left.os_echo_route_verified is right.os_echo_route_verified
+            and left.route is right.route
+            and left.route_owner is right.route_owner
+            and left.speaker_authority_available is right.speaker_authority_available
+            and left.speaking is right.speaking
+            and left.speak_generation == right.speak_generation
+            and left.playback_generation == right.playback_generation
+        )
+
+    def _kws_pcm_window_sample_limit(
+        self,
+        authority: Optional[_KwsControlAuthority] = None,
+    ) -> Optional[int]:
+        """Return the unchanged word-cut speaker window in model samples."""
+
+        speaker_authority = (
+            authority.speaker_authority
+            if type(authority) is _KwsControlAuthority
+            else None
+        )
+        if type(
+            speaker_authority
+        ) is _KwsSpeakerAuthority and self._kws_speaker_policy_is_valid(
+            speaker_authority.policy
+        ):
+            sample_rate = speaker_authority.policy.sample_rate
+            block_sec = speaker_authority.policy.window_sec
+            window_sec = speaker_authority.policy.window_sec
+        else:
+            sample_rate = getattr(self.config, "sample_rate", None)
+            block_sec = getattr(self.config, "block_sec", None)
+            window_sec = getattr(
+                self.config,
+                "barge_word_cut_speaker_window_sec",
+                2.0,
+            )
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+            or isinstance(block_sec, bool)
+            or isinstance(window_sec, bool)
+        ):
+            return None
+        try:
+            seconds = max(float(block_sec), float(window_sec))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(seconds) or seconds <= 0.0:
+            return None
+        samples = _checked_ceil_size(float(sample_rate) * seconds)
+        return samples if samples is not None and samples > 0 else None
+
+    def _ensure_kws_pcm_ledger(self) -> _KwsPcmLedger:
+        ledger = getattr(self, "_kws_pcm_ledger", None)
+        if type(ledger) is not _KwsPcmLedger:
+            ledger = _KwsPcmLedger()
+            self._kws_pcm_ledger = ledger
+        return ledger
+
+    def _retire_keyword_stream(self) -> None:
+        """Capture-owner terminal retirement for stop/finally/rebuild."""
+
+        self._kws_pcm_ledger = _KwsPcmLedger()
+        self._kws_continuity_dirty = False
+        kws = getattr(self, "_kws", None)
+        old_stream = getattr(self, "_kws_stream", None)
+        self._kws_stream = None
+        if kws is not None and old_stream is not None:
+            try:
+                kws.reset_stream(old_stream)
+            except Exception:  # noqa: BLE001 - retirement remains authoritative
+                pass
+
     def _reset_keyword_stream_after_discontinuity(self) -> None:
+        self._kws_pcm_ledger = _KwsPcmLedger()
+        self._kws_continuity_dirty = False
         kws = self._kws
         old_stream = self._kws_stream
         if kws is None:
@@ -7667,6 +8332,243 @@ class SherpaOnnxEngine(AudioEngine):
         except Exception:  # noqa: BLE001 - fail closed until next restart
             self._kws_stream = None
             log.exception("could not recreate KWS stream after capture gap")
+
+    def _mark_keyword_continuity_dirty(self) -> None:
+        """Retire PCM now and defer native rotation until an eligible feed."""
+
+        self._kws_pcm_ledger = _KwsPcmLedger()
+        self._kws_continuity_dirty = True
+
+    def _retire_keyword_continuity_if_active(self) -> None:
+        """Rotate once when an ineligible block interrupts KWS continuity."""
+
+        ledger = self._ensure_kws_pcm_ledger()
+        if (
+            ledger.scope is not None
+            or ledger.submitted_end != 0
+            or ledger.chunks
+            or ledger.last_capture_sequence is not None
+            or ledger.last_source_sample_end is not None
+        ):
+            self._mark_keyword_continuity_dirty()
+
+    def _prepare_kws_submission(
+        self,
+        authority: _KwsControlAuthority,
+    ) -> bool:
+        """Bind one exact adjacent reader block to a fresh native stream."""
+
+        if type(authority) is not _KwsControlAuthority:
+            self._retire_keyword_continuity_if_active()
+            return False
+        if bool(getattr(self, "_kws_continuity_dirty", False)):
+            self._reset_keyword_stream_after_discontinuity()
+        ledger = self._ensure_kws_pcm_ledger()
+        same_scope = bool(
+            ledger.scope is not None
+            and self._kws_authority_has_same_scope(ledger.scope, authority)
+        )
+        adjacent = bool(
+            same_scope
+            and ledger.last_capture_sequence is not None
+            and ledger.last_source_sample_end is not None
+            and authority.capture_sequence == ledger.last_capture_sequence + 1
+            and authority.source_sample_start == ledger.last_source_sample_end
+        )
+        if ledger.scope is not None and not adjacent:
+            self._reset_keyword_stream_after_discontinuity()
+            ledger = self._ensure_kws_pcm_ledger()
+        if self._kws_stream is None:
+            return False
+        if ledger.scope is None:
+            ledger.scope = authority
+            ledger.retained_start = 0
+            ledger.submitted_end = 0
+        return True
+
+    def _append_kws_submitted_pcm(
+        self,
+        pcm: np.ndarray,
+        authority: _KwsControlAuthority,
+    ) -> None:
+        """Record the exact owned buffer successfully submitted to native KWS."""
+
+        ledger = self._ensure_kws_pcm_ledger()
+        if ledger.scope is None or not self._kws_authority_has_same_scope(
+            ledger.scope,
+            authority,
+        ):
+            raise ValueError("KWS PCM scope changed during native submission")
+        count = int(pcm.size)
+        if count <= 0 or ledger.submitted_end > sys.maxsize - count:
+            raise ValueError("KWS submitted-sample clock overflow")
+        start = ledger.submitted_end
+        end = start + count
+        ledger.submitted_end = end
+        ledger.last_capture_sequence = authority.capture_sequence
+        ledger.last_source_sample_end = authority.source_sample_end
+        if authority.speaker_authority is None:
+            # Keep only the exact native clock/adjacency proof while speaker
+            # authority is unavailable.  A transition to an available receipt
+            # changes scope and starts a fresh stream, so unavailable PCM can
+            # never become eligible later and need not occupy the capture ring.
+            ledger.chunks.clear()
+            ledger.retained_start = end
+            return
+        pcm.setflags(write=False)
+        ledger.chunks.append(_KwsPcmChunk(start=start, end=end, pcm=pcm))
+        limit = self._kws_pcm_window_sample_limit(authority)
+        if limit is None:
+            raise ValueError("KWS speaker PCM window is invalid")
+        retain_from = max(0, end - limit)
+        while ledger.chunks and ledger.chunks[0].end <= retain_from:
+            ledger.chunks.popleft()
+        if ledger.chunks and ledger.chunks[0].start < retain_from:
+            first = ledger.chunks.popleft()
+            offset = retain_from - first.start
+            retained = np.array(
+                first.pcm[offset:],
+                dtype="float32",
+                order="C",
+                copy=True,
+            ).reshape(-1)
+            retained.setflags(write=False)
+            ledger.chunks.appendleft(
+                _KwsPcmChunk(start=retain_from, end=first.end, pcm=retained)
+            )
+        ledger.retained_start = (
+            ledger.chunks[0].start if ledger.chunks else ledger.submitted_end
+        )
+        if len(ledger.chunks) > limit:
+            raise ValueError("KWS PCM ledger exceeded its bounded chunk count")
+
+    def _copy_kws_pcm_interval(self, start: int, end: int) -> Optional[np.ndarray]:
+        """Copy one exact hole-free interval from the submitted-sample ledger."""
+
+        if type(start) is not int or type(end) is not int or not 0 <= start < end:
+            return None
+        ledger = self._ensure_kws_pcm_ledger()
+        if start < ledger.retained_start or end > ledger.submitted_end:
+            return None
+        pieces: list[np.ndarray] = []
+        cursor = start
+        for chunk in ledger.chunks:
+            if chunk.end <= cursor:
+                continue
+            if chunk.start > cursor:
+                return None
+            take_end = min(end, chunk.end)
+            pieces.append(chunk.pcm[cursor - chunk.start : take_end - chunk.start])
+            cursor = take_end
+            if cursor == end:
+                break
+        if cursor != end:
+            return None
+        owned = np.array(
+            np.concatenate(pieces),
+            dtype="float32",
+            order="C",
+            copy=True,
+        ).reshape(-1)
+        if owned.size != end - start:
+            return None
+        owned.setflags(write=False)
+        return owned
+
+    def _kws_word_pcm_regions(
+        self,
+        binding: KwsPhraseBinding,
+        timestamps,
+    ) -> Optional[tuple[np.ndarray, ...]]:
+        """Resolve strict pinned decoder frames to one exact PCM region per word."""
+
+        if (
+            type(binding) is not KwsPhraseBinding
+            or type(timestamps) is not list
+            or len(timestamps) != len(binding.tokens)
+            or not timestamps
+        ):
+            return None
+        ledger = self._ensure_kws_pcm_ledger()
+        sample_rate = (
+            ledger.scope.kws_sample_rate_hz
+            if type(ledger.scope) is _KwsControlAuthority
+            else None
+        )
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+            or (sample_rate * _KWS_TOKEN_FRAME_MS) % 1000
+        ):
+            return None
+        frame_samples = (sample_rate * _KWS_TOKEN_FRAME_MS) // 1000
+        half_sample_sec = 0.5 / float(sample_rate)
+        frame_sec = _KWS_TOKEN_FRAME_MS / 1000.0
+        frames: list[int] = []
+        previous = -1
+        for timestamp in timestamps:
+            if type(timestamp) is not float or not math.isfinite(timestamp):
+                return None
+            frame_float = timestamp / frame_sec
+            if (
+                not math.isfinite(frame_float)
+                or frame_float < 0.0
+                or frame_float > sys.maxsize // frame_samples
+            ):
+                return None
+            frame = round(frame_float)
+            if (
+                frame < 0
+                or frame <= previous
+                # sherpa-onnx exposes a Python float but its timestamp may have
+                # traversed float32 storage.  Accept only the pinned 40 ms grid,
+                # with at most half one model sample of representation error.
+                or abs(timestamp - frame * frame_sec) > half_sample_sec
+                or frame > sys.maxsize // frame_samples
+            ):
+                return None
+            frames.append(frame)
+            previous = frame
+        token_samples = [frame * frame_samples for frame in frames]
+        if any(
+            sample < ledger.retained_start or sample >= ledger.submitted_end
+            for sample in token_samples
+        ):
+            return None
+        counts = binding.word_token_counts
+        if (
+            type(counts) is not tuple
+            or not 0 < len(counts) <= 2
+            or any(type(count) is not int or count <= 0 for count in counts)
+            or sum(counts) != len(token_samples)
+        ):
+            return None
+        regions: list[np.ndarray] = []
+        token_offset = 0
+        for word_index, token_count in enumerate(counts):
+            word_start = token_samples[token_offset]
+            last_token = token_offset + token_count - 1
+            if word_index + 1 < len(counts):
+                word_end = token_samples[token_offset + token_count]
+            else:
+                last_frame = frames[last_token]
+                if last_frame >= sys.maxsize // frame_samples:
+                    return None
+                word_end = (last_frame + 1) * frame_samples
+            if (
+                word_start < ledger.retained_start
+                or word_end > ledger.submitted_end
+                or word_start >= word_end
+                or token_samples[last_token] >= word_end
+            ):
+                return None
+            region = self._copy_kws_pcm_interval(word_start, word_end)
+            if region is None:
+                return None
+            regions.append(region)
+            token_offset += token_count
+        return tuple(regions)
 
     def _drain_capture_control_events(self, capture_epoch: int) -> None:
         lane = self._capture_control_lane
@@ -8561,8 +9463,10 @@ class SherpaOnnxEngine(AudioEngine):
                 ):
                     # This PCM was captured from an older playback run. It is
                     # neither normal user input nor authority to cut a newer run.
+                    self._retire_keyword_continuity_if_active()
                     continue
                 if not self._captured_source_is_current(captured):
+                    self._retire_keyword_continuity_if_active()
                     continue
 
                 # Command fast-path: normal listening is always eligible. During
@@ -8570,6 +9474,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # is enabled only behind a live in-app AEC or a verified OS echo
                 # route. A failed AEC build/recovery therefore fails closed.
                 if not self._capture_epoch_is_current(capture_epoch):
+                    self._retire_keyword_continuity_if_active()
                     continue
                 # Consume the one-shot discontinuity guard only after this block
                 # has survived every source/playback/epoch fence. A queued block
@@ -8584,20 +9489,32 @@ class SherpaOnnxEngine(AudioEngine):
                     == captured.source_generation
                     and block_context.authority_source_device == captured.source_device
                 )
-                kws_authority = self._kws_control_authority(captured, block_context)
-                kws_authority_was_current = self._kws_control_authority_is_current(
-                    kws_authority
+                kws_route = None
+                kws_route_owner = None
+                if not speaking_for_kws:
+                    kws_route = _KwsFeedRoute.IDLE
+                elif self._aec is not None:
+                    kws_route = _KwsFeedRoute.IN_APP_AEC
+                    kws_route_owner = self._aec
+                elif context_authority_current and block_context.os_echo_route_verified:
+                    kws_route = _KwsFeedRoute.VERIFIED_OS_ECHO
+                kws_authority = (
+                    self._kws_control_authority(
+                        captured,
+                        block_context,
+                        route=kws_route,
+                        route_owner=kws_route_owner,
+                    )
+                    if kws_route is not None
+                    else None
+                )
+                kws_authority_was_current = bool(
+                    kws_authority is not None
+                    and self._kws_control_authority_is_current(kws_authority)
                 )
                 command_consumed = False
                 kws_participated = False
-                if (
-                    not speaking_for_kws
-                    or self._aec is not None
-                    or (
-                        context_authority_current
-                        and block_context.os_echo_route_verified
-                    )
-                ):
+                if kws_authority is not None:
                     kws_participated = bool(
                         self._kws is not None and self._kws_stream is not None
                     )
@@ -8627,6 +9544,8 @@ class SherpaOnnxEngine(AudioEngine):
                     except _CaptureBlockRejected as exc:
                         reject_capture_block(exc, captured)
                         continue
+                else:
+                    self._retire_keyword_continuity_if_active()
                 if command_consumed:
                     # KWS publication is a terminal for this exact acoustic
                     # turn. Retire every normal-ASR owner in the same capture
@@ -8678,7 +9597,11 @@ class SherpaOnnxEngine(AudioEngine):
                     and not self._kws_control_authority_is_current(kws_authority)
                 ):
                     # A transition that defeated the result-stage claim also
-                    # makes this queued PCM stale for word-cut/normal ASR.
+                    # makes this queued PCM stale for word-cut/normal ASR.  It
+                    # was already submitted to KWS, so retire that prefix too:
+                    # an ABA back to the same visible scope must not let the
+                    # stale block bridge into a later keyword.
+                    self._mark_keyword_continuity_dirty()
                     continue
 
                 # Track the ambient noise floor for the optional loudness gate
@@ -9866,6 +10789,7 @@ class SherpaOnnxEngine(AudioEngine):
                         asr_errors,
                         exc_info=(asr_errors == 1),
                     )
+                    self._reset_keyword_stream_after_discontinuity()
                     last_partial = ""
                     last_published_partial = ""
                     segment.reset()
@@ -9937,6 +10861,10 @@ class SherpaOnnxEngine(AudioEngine):
             if isinstance(recognizer, SherpaStreamingDecodeOwner):
                 raise
         finally:
+            # The native stream and its exact submitted-sample ledger have one
+            # capture owner and one lifetime. No stopped/restarted run may
+            # inherit either half, including re-entrant stop retention.
+            self._retire_keyword_stream()
             if effects_admitted:
                 self._leave_capture_effects()
             if captured_in_flight is not None and callable(media_finish):
@@ -9986,6 +10914,7 @@ class SherpaOnnxEngine(AudioEngine):
     def _reset_decode_frontends_after_native_error(self) -> None:
         """Drop DSP and playback-decode state without changing capture authority."""
 
+        self._reset_keyword_stream_after_discontinuity()
         vad_reset = getattr(self._vad, "reset", None)
         if callable(vad_reset):
             try:
@@ -10571,13 +11500,13 @@ class SherpaOnnxEngine(AudioEngine):
         helper calls retain the legacy no-token path for deterministic fixtures.
         """
         kws = self._kws
-        ks = self._kws_stream
-        if kws is None or ks is None:
+        if kws is None or self._kws_stream is None:
             return False
         if (
             control_authority is not None
             and type(control_authority) is not _KwsControlAuthority
         ):
+            self._mark_keyword_continuity_dirty()
             return False
         playback_scoped = (
             control_authority.speaking
@@ -10588,6 +11517,7 @@ class SherpaOnnxEngine(AudioEngine):
         if playback_scoped:
             playback_stop_callback = self._cb.on_control_stop_result
             if not callable(playback_stop_callback):
+                self._mark_keyword_continuity_dirty()
                 return False
         if detected_at is not None:
             if isinstance(detected_at, bool) or not isinstance(
@@ -10602,25 +11532,67 @@ class SherpaOnnxEngine(AudioEngine):
                 raise _CaptureBlockRejected("KWS detection time is invalid")
         feed_limit = self._native_capture_feed_sample_limit()
         try:
-            sample_count = int(np.asarray(samples).size)
+            source_pcm = np.asarray(samples)
+            if source_pcm.ndim != 1:
+                raise ValueError("KWS PCM must be one-dimensional")
+            sample_count = int(source_pcm.size)
+            if feed_limit is None or sample_count <= 0 or sample_count > feed_limit:
+                raise _CaptureBlockRejected(
+                    "KWS feed is empty or exceeds its capture-work limit"
+                )
+            owned_pcm = np.array(
+                source_pcm,
+                dtype="float32",
+                order="C",
+                copy=True,
+            ).reshape(-1)
+            if owned_pcm.size != sample_count or not bool(
+                np.all(np.isfinite(owned_pcm))
+            ):
+                raise ValueError("KWS PCM must be finite")
+        except _CaptureBlockRejected:
+            log.warning("KWS feed rejected: invalid or oversized capture block")
+            raise
         except Exception as exc:  # noqa: BLE001 - reject the whole capture block
             raise _CaptureBlockRejected("KWS feed has invalid PCM") from exc
-        if feed_limit is None or sample_count <= 0 or sample_count > feed_limit:
-            log.warning("KWS feed rejected: invalid or oversized capture block")
-            raise _CaptureBlockRejected(
-                "KWS feed is empty or exceeds its capture-work limit"
-            )
+        if not allow_publish:
+            # A guarded/stale block is a real hole in the submitted clock. It is
+            # skipped entirely and forces a new native+ledger time origin even
+            # when the preceding gap already left an empty fresh stream.
+            self._mark_keyword_continuity_dirty()
+            return False
+        if control_authority is not None:
+            if not self._kws_control_authority_is_current(control_authority):
+                self._mark_keyword_continuity_dirty()
+                return False
+            if not self._prepare_kws_submission(control_authority):
+                return False
+        else:
+            self._retire_keyword_continuity_if_active()
+        # Scope/adjacency preparation may have replaced the native stream.
+        ks = self._kws_stream
+        if ks is None:
+            return False
         keyword = ""
         decoded_tokens = None
+        resolved_binding = None
+        own_tts_ambiguous = False
+        speaker_regions = None
         try:
-            ks.accept_waveform(self.config.sample_rate, samples)
+            feed_sample_rate = (
+                control_authority.kws_sample_rate_hz
+                if control_authority is not None
+                else self.config.sample_rate
+            )
+            ks.accept_waveform(feed_sample_rate, owned_pcm)
+            if control_authority is not None:
+                self._append_kws_submitted_pcm(owned_pcm, control_authority)
             _drain_native_ready_bounded(kws, ks)
             keyword = kws.get_result(ks)
             if type(keyword) is not str:
                 raise TypeError("KWS result must be an exact string")
             if (
                 keyword
-                and allow_publish
                 and playback_scoped
                 and control_authority is not None
                 and bool(getattr(self, "_kws_phrase_bindings", ()))
@@ -10630,7 +11602,50 @@ class SherpaOnnxEngine(AudioEngine):
                     raise TypeError("KWS token binding is unavailable")
                 decoded_tokens = token_reader(ks)
             if keyword:
-                kws.reset_stream(ks)
+                normalized_hit = (
+                    keyword if playback_scoped else normalize_command(keyword)
+                )
+                if (
+                    playback_scoped
+                    and control_authority is not None
+                    and normalized_hit in {"stop", "wait"}
+                ):
+                    resolved_binding = resolve_kws_stop_binding(
+                        getattr(self, "_kws_phrase_bindings", ()),
+                        result_label=normalized_hit,
+                        tokens=decoded_tokens,
+                    )
+                    if resolved_binding is not None:
+                        ambiguity_surfaces = tuple(
+                            dict.fromkeys(
+                                (
+                                    resolved_binding.surface,
+                                    *collapsed_label_surfaces(normalized_hit),
+                                )
+                            )
+                        )
+                        own_tts_ambiguous = bool(
+                            ambiguity_surfaces
+                            and any(
+                                self._reads_like_own_speech(text)
+                                for text in ambiguity_surfaces
+                            )
+                        )
+                        if (
+                            own_tts_ambiguous
+                            and control_authority.speaker_authority_available
+                            and control_authority.speaker_authority is not None
+                        ):
+                            timestamp_reader = getattr(kws, "timestamps", None)
+                            if not callable(timestamp_reader):
+                                raise TypeError("KWS token timestamps are unavailable")
+                            speaker_regions = self._kws_word_pcm_regions(
+                                resolved_binding,
+                                timestamp_reader(ks),
+                            )
+                self._reset_keyword_stream_after_discontinuity()
+                if self._kws_stream is None:
+                    return False
         except Exception:  # noqa: BLE001 - KWS is independent command authority
             log.warning(
                 "KWS native decode failed or exceeded its work limit; "
@@ -10639,7 +11654,16 @@ class SherpaOnnxEngine(AudioEngine):
             )
             self._reset_keyword_stream_after_discontinuity()
             return False
-        if not keyword or not allow_publish:
+        if not keyword:
+            # This block was already accepted by native KWS.  If its exact
+            # authority was lost while decode ran, retire the prefix here;
+            # callers must not be required to notice the transient before a
+            # later apparently-equal scope resumes feeding.
+            if (
+                control_authority is not None
+                and not self._kws_control_authority_is_current(control_authority)
+            ):
+                self._mark_keyword_continuity_dirty()
             return False
         if control_authority is not None and not self._kws_control_authority_is_current(
             control_authority
@@ -10647,7 +11671,6 @@ class SherpaOnnxEngine(AudioEngine):
             return False
 
         normalized_label = keyword if playback_scoped else normalize_command(keyword)
-        resolved_surface = None
         if playback_scoped:
             # During playback KWS is a closed STOP/WAIT interrupt floor. Generic
             # configured labels retain their established idle behavior, but may
@@ -10656,33 +11679,59 @@ class SherpaOnnxEngine(AudioEngine):
             if normalized_label not in {"stop", "wait"}:
                 return False
             if control_authority is not None:
-                resolved_surface = resolve_kws_stop_phrase(
-                    getattr(self, "_kws_phrase_bindings", ()),
-                    result_label=normalized_label,
-                    tokens=decoded_tokens,
-                )
-                if resolved_surface is None:
+                if resolved_binding is None:
                     return False
 
             # A collapsed result label hides aliases such as BE QUIET -> stop
             # and HOLD ON -> wait. Fail closed if the exact row OR any sibling
-            # alias reads like current/recent TTS. Speaker-gated resolution stays
-            # on the independent word-cut path (ADR-0042/0082).
+            # alias reads like current/recent TTS. The exact phrase PCM is
+            # speaker-scored below; word-cut keeps its independent evidence.
             ambiguity_surfaces = collapsed_label_surfaces(normalized_label)
-            if resolved_surface is not None:
+            if resolved_binding is not None:
                 ambiguity_surfaces = tuple(
-                    dict.fromkeys((resolved_surface, *ambiguity_surfaces))
+                    dict.fromkeys((resolved_binding.surface, *ambiguity_surfaces))
                 )
             if not ambiguity_surfaces:
                 return False
-            if any(self._reads_like_own_speech(text) for text in ambiguity_surfaces):
-                self._kws_own_echo_suppressions += 1
-                log.info(
-                    "KWS hit %r suppressed: shipped phrase group matches own "
-                    "TTS (own-echo ambiguity, ADR-0042/0082)",
-                    keyword,
+            if own_tts_ambiguous or any(
+                self._reads_like_own_speech(text) for text in ambiguity_surfaces
+            ):
+                speaker_authority = (
+                    control_authority.speaker_authority
+                    if control_authority is not None
+                    else None
                 )
-                return False
+                decisions = ()
+                if (
+                    speaker_authority is not None
+                    and speaker_regions is not None
+                    and len(speaker_regions) == len(resolved_binding.word_token_counts)
+                    and control_authority.speaker_authority_available
+                ):
+                    policy = speaker_authority.policy
+                    decisions = self._score_explicit_speaker_pcm_batch(
+                        speaker_regions,
+                        min_sec=policy.min_sec,
+                        window_sec=policy.window_sec,
+                        expected_authority=speaker_authority,
+                    )
+                if (
+                    not decisions
+                    or len(decisions) != len(speaker_regions or ())
+                    or any(
+                        decision.status is not _SpeakerPcmStatus.ACCEPT
+                        for decision in decisions
+                    )
+                    or control_authority is None
+                    or not self._kws_control_authority_is_current(control_authority)
+                ):
+                    self._kws_own_echo_suppressions += 1
+                    log.info(
+                        "KWS hit %r suppressed: own-TTS ambiguity lacked "
+                        "current per-word speaker authority",
+                        keyword,
+                    )
+                    return False
 
         route_guard = (
             self._virtual_route_failure_lock
@@ -12899,6 +13948,295 @@ class SherpaOnnxEngine(AudioEngine):
             reads_like_own_speech=bool(reads_like_own_speech or tts_contains_stop),
         )
 
+    def _prepare_explicit_speaker_pcm(
+        self,
+        pcm,
+        *,
+        min_sec: float,
+        window_sec: Optional[float] = None,
+        sample_rate: Optional[int] = None,
+    ) -> _SpeakerPcmDecision:
+        """Prepare caller-owned PCM with the unchanged word-cut voiced rule."""
+
+        sample_rate = (
+            getattr(self.config, "sample_rate", None)
+            if sample_rate is None
+            else sample_rate
+        )
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate <= 0
+            or isinstance(min_sec, bool)
+        ):
+            return _SpeakerPcmDecision(_SpeakerPcmStatus.ERROR)
+        try:
+            required_sec = float(min_sec)
+            candidate = np.array(
+                pcm,
+                dtype="float32",
+                order="C",
+                copy=True,
+            ).reshape(-1)
+            block_sec = float(self.config.block_sec)
+            configured_window_sec = (
+                float(window_sec)
+                if window_sec is not None
+                else float(
+                    getattr(
+                        self.config,
+                        "barge_word_cut_speaker_window_sec",
+                        2.0,
+                    )
+                )
+            )
+        except (TypeError, ValueError, OverflowError, MemoryError):
+            return _SpeakerPcmDecision(_SpeakerPcmStatus.ERROR)
+        if (
+            not math.isfinite(required_sec)
+            or not math.isfinite(block_sec)
+            or not math.isfinite(configured_window_sec)
+        ):
+            return _SpeakerPcmDecision(_SpeakerPcmStatus.ERROR)
+        required_sec = max(0.0, required_sec)
+        min_samples = max(0, int(sample_rate * required_sec))
+        raw_samples = int(candidate.size)
+        if raw_samples <= 0 or (min_samples > 0 and raw_samples < min_samples):
+            return _SpeakerPcmDecision(
+                _SpeakerPcmStatus.INSUFFICIENT,
+                raw_samples=raw_samples,
+            )
+        window_samples = max(
+            1,
+            int(sample_rate * max(block_sec, configured_window_sec)),
+        )
+        if candidate.size > window_samples:
+            candidate = candidate[-window_samples:].copy()
+        identity = np.array(
+            trim_to_voiced_region(candidate, sample_rate),
+            dtype="float32",
+            order="C",
+            copy=True,
+        ).reshape(-1)
+        frame = max(1, int(round(sample_rate * 0.02)))
+        framed = (candidate.size // frame) * frame
+        voiced_samples = 0
+        if framed:
+            frames = candidate[:framed].reshape(-1, frame).astype("float64")
+            energies = np.sqrt(np.mean(frames * frames, axis=1))
+            peak = float(np.max(energies)) if energies.size else 0.0
+            if peak > 1e-8:
+                voiced_samples = (
+                    int(np.count_nonzero(energies >= max(1e-5, peak * 0.15))) * frame
+                )
+        identity.setflags(write=False)
+        if min_samples > 0 and voiced_samples < min_samples:
+            return _SpeakerPcmDecision(
+                _SpeakerPcmStatus.INSUFFICIENT,
+                identity_pcm=identity,
+                raw_samples=raw_samples,
+                voiced_samples=voiced_samples,
+            )
+        return _SpeakerPcmDecision(
+            _SpeakerPcmStatus.DEFER,
+            identity_pcm=identity,
+            raw_samples=raw_samples,
+            voiced_samples=voiced_samples,
+        )
+
+    def _score_explicit_speaker_pcm_batch(
+        self,
+        pcm_regions: tuple[np.ndarray, ...],
+        *,
+        min_sec: float,
+        window_sec: Optional[float] = None,
+        expected_authority: Optional[_KwsSpeakerAuthority] = None,
+    ) -> tuple[_SpeakerPcmDecision, ...]:
+        """Score one/two explicit regions without caller-state mutation or wait."""
+
+        if type(pcm_regions) is not tuple or not 0 < len(pcm_regions) <= 2:
+            return (_SpeakerPcmDecision(_SpeakerPcmStatus.ERROR),)
+        if expected_authority is not None:
+            if type(
+                expected_authority
+            ) is not _KwsSpeakerAuthority or not self._kws_speaker_policy_is_valid(
+                expected_authority.policy
+            ):
+                return tuple(
+                    _SpeakerPcmDecision(_SpeakerPcmStatus.STALE) for _ in pcm_regions
+                )
+            min_sec = expected_authority.policy.min_sec
+            window_sec = expected_authority.policy.window_sec
+            score_sample_rate = expected_authority.policy.sample_rate
+        else:
+            score_sample_rate = getattr(self.config, "sample_rate", None)
+        gate = getattr(self, "_speaker_gate", None)
+        if gate is None:
+            return tuple(
+                _SpeakerPcmDecision(_SpeakerPcmStatus.UNAVAILABLE) for _ in pcm_regions
+            )
+        try:
+            enrolled = bool(gate.is_enrolled)
+        except Exception:  # noqa: BLE001 - authority fails closed
+            enrolled = False
+        if not enrolled:
+            return tuple(
+                _SpeakerPcmDecision(_SpeakerPcmStatus.UNAVAILABLE) for _ in pcm_regions
+            )
+        if not bool(getattr(self, "_speaker_gate_warmed", False)):
+            return tuple(
+                _SpeakerPcmDecision(_SpeakerPcmStatus.COLD) for _ in pcm_regions
+            )
+        prepared = tuple(
+            self._prepare_explicit_speaker_pcm(
+                region,
+                min_sec=min_sec,
+                window_sec=window_sec,
+                sample_rate=score_sample_rate,
+            )
+            for region in pcm_regions
+        )
+        if any(item.status is not _SpeakerPcmStatus.DEFER for item in prepared):
+            return prepared
+        if expected_authority is not None:
+            if (
+                type(expected_authority) is not _KwsSpeakerAuthority
+                or gate is not expected_authority.gate
+                or not isinstance(gate, SpeakerGate)
+                or not self._kws_speaker_authority_is_current(expected_authority)
+            ):
+                return tuple(
+                    replace(item, status=_SpeakerPcmStatus.STALE) for item in prepared
+                )
+        identities = tuple(item.identity_pcm for item in prepared)
+        try:
+            if expected_authority is not None:
+                receipt = SpeakerGate.try_similarity_batch(
+                    gate,
+                    identities,
+                    score_sample_rate,
+                )
+                if receipt is None:
+                    return tuple(
+                        replace(item, status=_SpeakerPcmStatus.BUSY)
+                        for item in prepared
+                    )
+                if type(receipt) is not SpeakerSimilarityBatchReceipt:
+                    raise TypeError("speaker batch receipt has an invalid type")
+                similarities = receipt.similarities
+                gate_threshold = receipt.authority.threshold
+                if (
+                    type(receipt.authority) is not SpeakerGateAuthority
+                    or type(similarities) is not tuple
+                    or len(similarities) != len(prepared)
+                    or type(gate_threshold) is not float
+                    or not math.isfinite(gate_threshold)
+                    or not 0.0 <= gate_threshold <= 1.0
+                    or not SpeakerGate.authority_is_current(
+                        gate,
+                        receipt.authority,
+                    )
+                ):
+                    return tuple(
+                        replace(item, status=_SpeakerPcmStatus.STALE)
+                        for item in prepared
+                    )
+                if (
+                    receipt.authority != expected_authority.gate_authority
+                    or not self._kws_speaker_authority_is_current(expected_authority)
+                ):
+                    return tuple(
+                        replace(item, status=_SpeakerPcmStatus.STALE)
+                        for item in prepared
+                    )
+            else:
+                if len(prepared) != 1:
+                    return tuple(
+                        replace(item, status=_SpeakerPcmStatus.UNAVAILABLE)
+                        for item in prepared
+                    )
+                try_similarity = getattr(gate, "try_similarity", None)
+                raw_similarity = (
+                    try_similarity(identities[0], score_sample_rate)
+                    if callable(try_similarity)
+                    else gate.similarity(identities[0], score_sample_rate)
+                )
+                if raw_similarity is None:
+                    return (replace(prepared[0], status=_SpeakerPcmStatus.BUSY),)
+                similarities = (float(raw_similarity),)
+                gate_threshold = float(gate.threshold)
+                receipt = None
+            if expected_authority is not None:
+                threshold = expected_authority.policy.accept_threshold
+                reject_threshold = expected_authority.policy.reject_threshold
+            else:
+                configured_threshold = max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_speaker_threshold",
+                                gate_threshold,
+                            )
+                        ),
+                    ),
+                )
+                threshold = (
+                    max(gate_threshold, configured_threshold)
+                    if bool(getattr(self.config, "speaker_gate_input", True))
+                    else configured_threshold
+                )
+                reject_threshold = max(
+                    0.0,
+                    min(
+                        threshold,
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_speaker_reject_threshold",
+                                0.22,
+                            )
+                        ),
+                    ),
+                )
+            if (
+                not math.isfinite(threshold)
+                or not 0.0 <= threshold <= 1.0
+                or not math.isfinite(reject_threshold)
+                or not 0.0 <= reject_threshold <= threshold
+            ):
+                raise ValueError("speaker policy threshold is invalid")
+            decisions: list[_SpeakerPcmDecision] = []
+            for item, raw_similarity in zip(prepared, similarities, strict=True):
+                if type(raw_similarity) is not float:
+                    raise TypeError("speaker similarity must be an exact float")
+                similarity = raw_similarity
+                if not math.isfinite(similarity) or not -1.0 <= similarity <= 1.0:
+                    raise ValueError("speaker similarity is out of range")
+                if similarity >= threshold:
+                    status = _SpeakerPcmStatus.ACCEPT
+                elif similarity > reject_threshold:
+                    status = _SpeakerPcmStatus.DEFER
+                else:
+                    status = _SpeakerPcmStatus.REJECT
+                decisions.append(
+                    replace(
+                        item,
+                        status=status,
+                        similarity=similarity,
+                        threshold=threshold,
+                        reject_threshold=reject_threshold,
+                        authority=receipt,
+                    )
+                )
+            return tuple(decisions)
+        except Exception:  # noqa: BLE001 - explicit authority fails closed
+            return tuple(
+                replace(item, status=_SpeakerPcmStatus.ERROR) for item in prepared
+            )
+
     def _word_cut_speaker_decision(
         self,
         *,
@@ -12983,60 +14321,6 @@ class SherpaOnnxEngine(AudioEngine):
             return "defer"
         try:
             candidate = np.concatenate(list(self._word_cut_candidate_pcm))
-            window_samples = max(
-                1,
-                int(
-                    self.config.sample_rate
-                    * max(
-                        float(self.config.block_sec),
-                        float(
-                            getattr(
-                                self.config,
-                                "barge_word_cut_speaker_window_sec",
-                                2.0,
-                            )
-                        ),
-                    )
-                ),
-            )
-            if candidate.size > window_samples:
-                candidate = candidate[-window_samples:]
-            identity = trim_to_voiced_region(candidate, self.config.sample_rate)
-            frame = max(1, int(round(self.config.sample_rate * 0.02)))
-            framed = (candidate.size // frame) * frame
-            voiced_samples = 0
-            if framed:
-                frames = candidate[:framed].reshape(-1, frame).astype("float64")
-                energies = np.sqrt(np.mean(frames * frames, axis=1))
-                peak = float(np.max(energies)) if energies.size else 0.0
-                if peak > 1e-8:
-                    voiced_samples = (
-                        int(np.count_nonzero(energies >= max(1e-5, peak * 0.15)))
-                        * frame
-                    )
-            if min_samples > 0 and voiced_samples < min_samples:
-                st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
-                return "defer"
-            try_similarity = getattr(gate, "try_similarity", None)
-            raw_similarity = (
-                try_similarity(identity, self.config.sample_rate)
-                if callable(try_similarity)
-                else gate.similarity(identity, self.config.sample_rate)
-            )
-            if raw_similarity is None:
-                st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
-                st["speaker_busy_deferred"] = st.get("speaker_busy_deferred", 0) + 1
-                return "defer"
-            similarity = float(raw_similarity)
-            if not math.isfinite(similarity):
-                raise ValueError("speaker similarity is not finite")
-            lst = st.setdefault("speaker_similarities", [])
-            lst.append(round(similarity, 4))
-            if len(lst) > 300:  # a very long reply can't grow unbounded
-                del lst[:100]
-            self._word_cut_speaker_last_decision_observed_samples = int(
-                self._word_cut_candidate_observed_samples
-            )
         except Exception:  # noqa: BLE001 - enrolled authority fails closed
             st["_speaker_error"] = True
             st["speaker_errors"] = st.get("speaker_errors", 0) + 1
@@ -13045,43 +14329,48 @@ class SherpaOnnxEngine(AudioEngine):
                 exc_info=True,
             )
             return "defer"
-        # A clean final and an OS-cancelled double-talk slice are different
-        # acoustic domains. When normal finals are not identity-gated, use the
-        # purpose-specific barge threshold measured for double-talk. If normal
-        # input gating is on, never authorize below its threshold: that would cut
-        # playback only to have the same request rejected at final dispatch.
-        configured_threshold = max(
-            0.0,
-            min(
-                1.0,
-                float(
-                    getattr(
-                        self.config,
-                        "barge_word_cut_speaker_threshold",
-                        gate.threshold,
-                    )
-                ),
-            ),
+        decision = self._score_explicit_speaker_pcm_batch(
+            (candidate,),
+            min_sec=required_sec,
+        )[0]
+        if decision.status in (
+            _SpeakerPcmStatus.INSUFFICIENT,
+            _SpeakerPcmStatus.COLD,
+            _SpeakerPcmStatus.UNAVAILABLE,
+            _SpeakerPcmStatus.BUSY,
+        ):
+            st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+            if decision.status is _SpeakerPcmStatus.BUSY:
+                st["speaker_busy_deferred"] = st.get("speaker_busy_deferred", 0) + 1
+            return "defer"
+        if decision.status is _SpeakerPcmStatus.ERROR:
+            st["_speaker_error"] = True
+            st["speaker_errors"] = st.get("speaker_errors", 0) + 1
+            log.warning("word-cut speaker decision failed; identity-gated cut deferred")
+            return "defer"
+        if decision.status is _SpeakerPcmStatus.STALE:
+            return "defer"
+        similarity = decision.similarity
+        threshold = decision.threshold
+        reject_threshold = decision.reject_threshold
+        identity = decision.identity_pcm
+        if (
+            similarity is None
+            or threshold is None
+            or reject_threshold is None
+            or identity is None
+        ):
+            st["_speaker_error"] = True
+            st["speaker_errors"] = st.get("speaker_errors", 0) + 1
+            return "defer"
+        lst = st.setdefault("speaker_similarities", [])
+        lst.append(round(similarity, 4))
+        if len(lst) > 300:  # a very long reply can't grow unbounded
+            del lst[:100]
+        self._word_cut_speaker_last_decision_observed_samples = int(
+            self._word_cut_candidate_observed_samples
         )
-        threshold = (
-            max(float(gate.threshold), configured_threshold)
-            if bool(getattr(self.config, "speaker_gate_input", True))
-            else configured_threshold
-        )
-        reject_threshold = max(
-            0.0,
-            min(
-                threshold,
-                float(
-                    getattr(
-                        self.config,
-                        "barge_word_cut_speaker_reject_threshold",
-                        0.22,
-                    )
-                ),
-            ),
-        )
-        accepted = similarity >= threshold
+        accepted = decision.status is _SpeakerPcmStatus.ACCEPT
         if accepted:
             # Identity authorizes only the exact voiced/model-bounded PCM it saw.
             # Never let an older echo prefix or trimmed silence ride into normal
@@ -13093,7 +14382,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._word_cut_candidate_speaker_authorized = True
             if trimmed:
                 st["pcm_trimmed_samples"] = st.get("pcm_trimmed_samples", 0) + trimmed
-        ambiguous = not accepted and similarity > reject_threshold
+        ambiguous = decision.status is _SpeakerPcmStatus.DEFER
         if ambiguous:
             st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
             st["speaker_ambiguous"] = st.get("speaker_ambiguous", 0) + 1

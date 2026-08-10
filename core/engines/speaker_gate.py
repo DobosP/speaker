@@ -22,6 +22,26 @@ class SpeakerIdentityActivation:
         return self.enrollment_reference_available or self.word_cut_requires_speaker
 
 
+@dataclass(frozen=True, slots=True)
+class SpeakerGateAuthority:
+    """Opaque generation receipt for one enrolled speaker policy."""
+
+    gate_token: object
+    model_generation: int
+    enrollment_generation: int
+    policy_generation: int
+    enrolled: bool
+    threshold: float
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerSimilarityBatchReceipt:
+    """Scores produced under one nonblocking model/enrollment snapshot."""
+
+    authority: SpeakerGateAuthority
+    similarities: tuple[float, ...]
+
+
 def resolve_speaker_identity_activation(
     *,
     speaker_enroll_embedding: str = "",
@@ -167,8 +187,12 @@ class SpeakerGate:
     """
 
     def __init__(self, *, threshold: float = 0.5, embed_fn: Optional[EmbedFn] = None):
-        self.threshold = threshold
+        self._authority_token = object()
+        self._policy_lock = threading.Lock()
+        self._threshold = float(threshold)
+        self._policy_generation = 0
         self._embed_fn = embed_fn
+        self._model_generation = 0
         self._enrolled: Optional[list[float]] = None
         # Embedding inference may run on the async final worker while capture
         # recovery clears/reloads enrollment. Keep mutations short and versioned:
@@ -183,7 +207,21 @@ class SpeakerGate:
 
     def set_embed_fn(self, embed_fn: EmbedFn) -> None:
         with self._inference_lock:
-            self._embed_fn = embed_fn
+            with self._policy_lock:
+                self._embed_fn = embed_fn
+                self._model_generation += 1
+
+    @property
+    def threshold(self) -> float:
+        with self._policy_lock:
+            return self._threshold
+
+    @threshold.setter
+    def threshold(self, value: float) -> None:
+        threshold = float(value)
+        with self._policy_lock:
+            self._threshold = threshold
+            self._policy_generation += 1
 
     @property
     def is_enrolled(self) -> bool:
@@ -214,6 +252,56 @@ class SpeakerGate:
                 self._enrollment_generation == generation
                 and self._enrolled is enrolled
             )
+
+    def authority_state(self) -> SpeakerGateAuthority:
+        """Return the current gate/model/enrollment/policy generation tuple."""
+
+        with self._enrollment_lock:
+            enrolled = self._enrolled
+            enrollment_generation = self._enrollment_generation
+            with self._policy_lock:
+                threshold = self._threshold
+                policy_generation = self._policy_generation
+                model_generation = self._model_generation
+        return SpeakerGateAuthority(
+            gate_token=self._authority_token,
+            model_generation=model_generation,
+            enrollment_generation=enrollment_generation,
+            policy_generation=policy_generation,
+            enrolled=enrolled is not None,
+            threshold=threshold,
+        )
+
+    def authority_is_current(self, authority: SpeakerGateAuthority) -> bool:
+        """Revalidate an opaque authority receipt without running the model."""
+
+        if type(authority) is not SpeakerGateAuthority:
+            return False
+        if (
+            type(authority.model_generation) is not int
+            or type(authority.enrollment_generation) is not int
+            or type(authority.policy_generation) is not int
+            or type(authority.enrolled) is not bool
+            or type(authority.threshold) is not float
+            or not math.isfinite(authority.threshold)
+            or not 0.0 <= authority.threshold <= 1.0
+        ):
+            return False
+        with self._enrollment_lock:
+            enrolled = self._enrolled
+            enrollment_generation = self._enrollment_generation
+            with self._policy_lock:
+                threshold = self._threshold
+                policy_generation = self._policy_generation
+                model_generation = self._model_generation
+        return bool(
+            authority.gate_token is self._authority_token
+            and authority.model_generation == model_generation
+            and authority.enrollment_generation == enrollment_generation
+            and authority.policy_generation == policy_generation
+            and authority.enrolled is (enrolled is not None)
+            and authority.threshold == threshold
+        )
 
     def enroll(self, samples: Sequence[float], sample_rate: int) -> bool:
         embedding = self._embed(samples, sample_rate)
@@ -304,6 +392,65 @@ class SpeakerGate:
         if not self._enrollment_is_current(enrolled, generation):
             return 0.0
         return cosine_similarity(embedding, enrolled)
+
+    def try_similarity_batch(
+        self,
+        samples: tuple[Sequence[float], ...],
+        sample_rate: int,
+    ) -> Optional[SpeakerSimilarityBatchReceipt]:
+        """Score one or two clips under one nonblocking authority snapshot.
+
+        ``None`` retains :meth:`try_similarity`'s exact busy meaning. An
+        unusable embedding produces ``0.0``; the caller must additionally
+        revalidate the returned receipt before acting.
+        """
+
+        if type(samples) is not tuple or not 0 < len(samples) <= 2:
+            raise ValueError("speaker batch must contain one or two clips")
+        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int):
+            raise TypeError("speaker sample rate must be an integer")
+        if sample_rate <= 0:
+            raise ValueError("speaker sample rate must be positive")
+        if not self._inference_lock.acquire(blocking=False):
+            return None
+        try:
+            with self._enrollment_lock:
+                enrolled = self._enrolled
+                enrollment_generation = self._enrollment_generation
+                with self._policy_lock:
+                    threshold = self._threshold
+                    policy_generation = self._policy_generation
+                    model_generation = self._model_generation
+            authority = SpeakerGateAuthority(
+                gate_token=self._authority_token,
+                model_generation=model_generation,
+                enrollment_generation=enrollment_generation,
+                policy_generation=policy_generation,
+                enrolled=enrolled is not None,
+                threshold=threshold,
+            )
+            similarities: list[float] = []
+            for clip in samples:
+                if enrolled is None:
+                    similarities.append(0.0)
+                    continue
+                embedding = self._embed_unlocked(clip, sample_rate)
+                similarities.append(
+                    0.0
+                    if embedding is None
+                    else float(cosine_similarity(embedding, enrolled))
+                )
+        finally:
+            self._inference_lock.release()
+        if enrolled is not None and not self._enrollment_is_current(
+            enrolled,
+            enrollment_generation,
+        ):
+            similarities = [0.0] * len(samples)
+        return SpeakerSimilarityBatchReceipt(
+            authority=authority,
+            similarities=tuple(similarities),
+        )
 
     def embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
         """Public embedding accessor used by the enrollment flow (core.enroll).

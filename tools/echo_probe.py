@@ -33,6 +33,7 @@ import math
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 SENTENCES = [
     "This is a live audio calibration test of the speaker assistant.",
@@ -69,6 +70,85 @@ def _capture_quiesced_after_stop(engine, *, stop_completed: bool) -> bool:
         return not bool(running_is_set()) and not bool(retained_is_set())
     except Exception:
         return False
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ProbeLifecycleResult:
+    """Closed outcome of one start/probe/stop ownership attempt."""
+
+    start_error_type: str | None = None
+    probe_error_type: str | None = None
+    stop_error_type: str | None = None
+
+    @property
+    def stop_completed(self) -> bool:
+        return self.stop_error_type is None
+
+    @property
+    def report_allowed(self) -> bool:
+        return (
+            self.start_error_type is None
+            and self.probe_error_type is None
+            and self.stop_error_type is None
+        )
+
+
+def _run_probe_lifecycle(
+    start: Callable[[], None],
+    probe: Callable[[], None],
+    stop: Callable[[], None],
+) -> _ProbeLifecycleResult:
+    """Invoke one start and exactly one stop, preserving Ctrl-C precedence."""
+    start_error_type = None
+    probe_error_type = None
+    stop_error_type = None
+    primary_interrupt: KeyboardInterrupt | None = None
+    stop_interrupt: KeyboardInterrupt | None = None
+
+    try:
+        try:
+            start()
+        except KeyboardInterrupt as exc:
+            primary_interrupt = exc
+        except BaseException as exc:  # SystemExit(0) must not become success.
+            start_error_type = type(exc).__name__
+        else:
+            try:
+                probe()
+            except KeyboardInterrupt as exc:
+                primary_interrupt = exc
+            except BaseException as exc:  # SystemExit(0) must not become success.
+                probe_error_type = type(exc).__name__
+    finally:
+        try:
+            stop()
+        except KeyboardInterrupt as exc:
+            stop_interrupt = exc
+        except BaseException as exc:  # SystemExit(0) must not become success.
+            stop_error_type = type(exc).__name__
+
+    if primary_interrupt is not None:
+        raise primary_interrupt
+    if stop_interrupt is not None:
+        raise stop_interrupt
+    return _ProbeLifecycleResult(
+        start_error_type=start_error_type,
+        probe_error_type=probe_error_type,
+        stop_error_type=stop_error_type,
+    )
+
+
+def _emit_probe_result(payload: object, *, success: bool) -> int:
+    """Write one strict terminal JSON object with exit/report coherence."""
+    try:
+        encoded = json.dumps(payload, indent=2, allow_nan=False)
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        encoded = json.dumps({"error": "probe-result-serialization-failed"})
+        success = False
+    sys.stdout.write(encoded + "\n")
+    return 0 if success else 1
 
 
 def _aec_reference_delay_summary(engine, sherpa_cfg, *, stop_completed: bool) -> dict:
@@ -253,8 +333,15 @@ def main() -> int:
             sherpa_cfg = dataclasses.replace(sherpa_cfg, **{k: v})
 
     if not getattr(sherpa_cfg, "tts_model", ""):
-        print(json.dumps({"error": "no sherpa.tts_model configured; run `python -m tools.setup_models`"}))
-        return 1
+        return _emit_probe_result(
+            {
+                "error": (
+                    "no sherpa.tts_model configured; run "
+                    "`python -m tools.setup_models`"
+                )
+            },
+            success=False,
+        )
 
     engine = SherpaOnnxEngine(sherpa_cfg)
 
@@ -320,45 +407,36 @@ def main() -> int:
         on_barge_in=lambda: barge_ins.append(time.monotonic()),
     )
 
-    try:
-        engine.start(cb)
-    except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"error": f"engine.start failed: {type(exc).__name__}: {exc}"}))
-        return 1
-
-    # Post-AEC ERLE: with the probe never talking, the near-end during playback
-    # is echo-only, so the energy drop across the canceller IS the echo return
-    # loss enhancement. Accumulated only over frames where the far-end (echo ref)
-    # is active. Positive dB = cancellation; ~0 = no-op; negative = misaligned
-    # (the AEC is adding energy -> bad operating alignment; with auto-delay on,
-    # that may differ from the configured seed). The engine builds
-    # ``_aec`` inside start(), so this wrap must come AFTER start().
     erle_acc = {"near2": 0.0, "post2": 0.0, "far_frames": 0}
-    if getattr(engine, "_aec", None) is not None:
-        import numpy as _np
-
-        _orig_proc = engine._aec.process_16k
-
-        def _erle_proc(near, far):
-            post = _orig_proc(near, far)
-            try:
-                n = _np.asarray(near, dtype="float32").reshape(-1)
-                f = _np.asarray(far, dtype="float32").reshape(-1)
-                p = _np.asarray(post, dtype="float32").reshape(-1)
-                if f.size and float(_np.sqrt(_np.mean(f * f))) > 1e-4:
-                    erle_acc["far_frames"] += 1
-                    erle_acc["near2"] += float(_np.sum(n * n))
-                    erle_acc["post2"] += float(_np.sum(p * p))
-            except Exception:
-                pass
-            return post
-
-        engine._aec.process_16k = _erle_proc  # type: ignore[assignment]
-
-    time.sleep(1.0)  # let the capture loop spin up
     spoken = 0
-    stop_completed = False
-    try:
+
+    def _probe_body() -> None:
+        nonlocal peak_playback, spoken
+
+        # The engine builds ``_aec`` inside start(), so the ERLE wrapper and
+        # every later warm/body/tail action belong inside the cleanup owner.
+        if getattr(engine, "_aec", None) is not None:
+            import numpy as _np
+
+            _orig_proc = engine._aec.process_16k
+
+            def _erle_proc(near, far):
+                post = _orig_proc(near, far)
+                try:
+                    n = _np.asarray(near, dtype="float32").reshape(-1)
+                    f = _np.asarray(far, dtype="float32").reshape(-1)
+                    p = _np.asarray(post, dtype="float32").reshape(-1)
+                    if f.size and float(_np.sqrt(_np.mean(f * f))) > 1e-4:
+                        erle_acc["far_frames"] += 1
+                        erle_acc["near2"] += float(_np.sum(n * n))
+                        erle_acc["post2"] += float(_np.sum(p * p))
+                except Exception:
+                    pass
+                return post
+
+            engine._aec.process_16k = _erle_proc  # type: ignore[assignment]
+
+        time.sleep(1.0)  # let the capture loop spin up
         for i in range(max(1, args.sentences)):
             done = threading.Event()
             engine.speak(SENTENCES[i % len(SENTENCES)], on_done=done.set)
@@ -372,18 +450,27 @@ def main() -> int:
             spoken += 1
             time.sleep(0.4)
         time.sleep(0.5)
-    finally:
-        try:
-            engine.stop()
-        except Exception:
-            pass
-        else:
-            stop_completed = True
+
+    lifecycle = _run_probe_lifecycle(
+        lambda: engine.start(cb),
+        _probe_body,
+        engine.stop,
+    )
+    if not lifecycle.report_allowed:
+        return _emit_probe_result(
+            {
+                "error": "probe-lifecycle-failed",
+                "start_error_type": lifecycle.start_error_type,
+                "probe_error_type": lifecycle.probe_error_type,
+                "stop_error_type": lifecycle.stop_error_type,
+            },
+            success=False,
+        )
 
     aec_reference_delay = _aec_reference_delay_summary(
         engine,
         sherpa_cfg,
-        stop_completed=stop_completed,
+        stop_completed=lifecycle.stop_completed,
     )
 
     ratios = [
@@ -505,8 +592,7 @@ def main() -> int:
             "the final delay snapshot."
         ),
     }
-    print(json.dumps(out, indent=2))
-    return 0
+    return _emit_probe_result(out, success=True)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from core.engines._aec import AecDelaySnapshot
-from tools.echo_probe import _aec_reference_delay_summary
+from tools.echo_probe import (
+    _ProbeLifecycleResult,
+    _aec_reference_delay_summary,
+    _emit_probe_result,
+    _run_probe_lifecycle,
+)
 from tools.interrupt_suite import summarize
 
 
@@ -279,3 +284,304 @@ def test_interrupt_suite_summary_ignores_additive_delay_block():
         "mic_over_play_dB": -12.0,
         "error": None,
     }
+
+
+def _step(calls, name, fault=None):
+    def run():
+        calls.append(name)
+        if fault is not None:
+            raise fault
+
+    return run
+
+
+def _assert_lifecycle_result(
+    result,
+    *,
+    start_error_type=None,
+    probe_error_type=None,
+    stop_error_type=None,
+    stop_completed,
+    report_allowed,
+):
+    assert type(result) is _ProbeLifecycleResult
+    assert result.start_error_type == start_error_type
+    assert result.probe_error_type == probe_error_type
+    assert result.stop_error_type == stop_error_type
+    assert result.stop_completed is stop_completed
+    assert result.report_allowed is report_allowed
+
+
+def _decode_exactly_one_json_object(stdout):
+    stripped = stdout.lstrip()
+    value, end = json.JSONDecoder().raw_decode(stripped)
+    assert stripped[end:].strip() == ""
+    assert type(value) is dict
+    return value
+
+
+def _lifecycle_error_payload(result):
+    return {
+        "error": "probe-lifecycle-failed",
+        "start_error_type": result.start_error_type,
+        "probe_error_type": result.probe_error_type,
+        "stop_error_type": result.stop_error_type,
+    }
+
+
+def test_probe_lifecycle_success_orders_start_probe_stop_once():
+    calls = []
+
+    result = _run_probe_lifecycle(
+        _step(calls, "start"),
+        _step(calls, "probe"),
+        _step(calls, "stop"),
+    )
+
+    assert calls == ["start", "probe", "stop"]
+    _assert_lifecycle_result(
+        result,
+        stop_completed=True,
+        report_allowed=True,
+    )
+
+
+def test_probe_lifecycle_stop_runtime_error_disallows_report():
+    calls = []
+
+    result = _run_probe_lifecycle(
+        _step(calls, "start"),
+        _step(calls, "probe"),
+        _step(calls, "stop", RuntimeError("stop-fault")),
+    )
+
+    assert calls == ["start", "probe", "stop"]
+    _assert_lifecycle_result(
+        result,
+        stop_error_type="RuntimeError",
+        stop_completed=False,
+        report_allowed=False,
+    )
+
+
+@pytest.mark.parametrize("fault_phase", ["start", "probe"])
+def test_probe_lifecycle_runtime_error_fails_closed_and_stops_once(fault_phase):
+    calls = []
+    fault = RuntimeError(f"{fault_phase}-fault")
+    start = _step(calls, "start", fault if fault_phase == "start" else None)
+    probe = _step(calls, "probe", fault if fault_phase == "probe" else None)
+
+    result = _run_probe_lifecycle(start, probe, _step(calls, "stop"))
+
+    assert calls == (
+        ["start", "stop"] if fault_phase == "start" else ["start", "probe", "stop"]
+    )
+    _assert_lifecycle_result(
+        result,
+        start_error_type="RuntimeError" if fault_phase == "start" else None,
+        probe_error_type="RuntimeError" if fault_phase == "probe" else None,
+        stop_completed=True,
+        report_allowed=False,
+    )
+
+
+@pytest.mark.parametrize("fault_phase", ["start", "probe"])
+def test_probe_lifecycle_keeps_primary_and_stop_ordinary_failure_types(fault_phase):
+    calls = []
+    primary = RuntimeError("primary")
+    start = _step(calls, "start", primary if fault_phase == "start" else None)
+    probe = _step(calls, "probe", primary if fault_phase == "probe" else None)
+
+    result = _run_probe_lifecycle(
+        start,
+        probe,
+        _step(calls, "stop", ValueError("secondary")),
+    )
+
+    assert calls == (
+        ["start", "stop"] if fault_phase == "start" else ["start", "probe", "stop"]
+    )
+    _assert_lifecycle_result(
+        result,
+        start_error_type="RuntimeError" if fault_phase == "start" else None,
+        probe_error_type="RuntimeError" if fault_phase == "probe" else None,
+        stop_error_type="ValueError",
+        stop_completed=False,
+        report_allowed=False,
+    )
+
+
+@pytest.mark.parametrize("fault_phase", ["start", "probe", "stop"])
+def test_probe_lifecycle_keyboard_interrupt_preserves_identity_after_cleanup(
+    fault_phase,
+):
+    calls = []
+    interrupt = KeyboardInterrupt(fault_phase)
+    start = _step(calls, "start", interrupt if fault_phase == "start" else None)
+    probe = _step(calls, "probe", interrupt if fault_phase == "probe" else None)
+    stop = _step(calls, "stop", interrupt if fault_phase == "stop" else None)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run_probe_lifecycle(start, probe, stop)
+
+    assert raised.value is interrupt
+    assert calls == (
+        ["start", "stop"] if fault_phase == "start" else ["start", "probe", "stop"]
+    )
+
+
+def test_warmup_keyboard_interrupt_still_stops_once_and_preserves_interrupt():
+    calls = []
+    interrupt = KeyboardInterrupt("warmup")
+
+    def warmup_analogue():
+        calls.append("warmup")
+        raise interrupt
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run_probe_lifecycle(
+            _step(calls, "start"),
+            warmup_analogue,
+            _step(calls, "stop"),
+        )
+
+    assert raised.value is interrupt
+    assert calls == ["start", "warmup", "stop"]
+
+
+@pytest.mark.parametrize(
+    "stop_fault",
+    [RuntimeError("stop"), KeyboardInterrupt("secondary-stop")],
+)
+def test_primary_keyboard_interrupt_wins_over_any_stop_failure(stop_fault):
+    calls = []
+    interrupt = KeyboardInterrupt("primary")
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run_probe_lifecycle(
+            _step(calls, "start"),
+            _step(calls, "probe", interrupt),
+            _step(calls, "stop", stop_fault),
+        )
+
+    assert raised.value is interrupt
+    assert calls == ["start", "probe", "stop"]
+
+
+def test_stop_keyboard_interrupt_wins_over_ordinary_primary_failure():
+    calls = []
+    interrupt = KeyboardInterrupt("stop")
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run_probe_lifecycle(
+            _step(calls, "start"),
+            _step(calls, "probe", RuntimeError("probe")),
+            _step(calls, "stop", interrupt),
+        )
+
+    assert raised.value is interrupt
+    assert calls == ["start", "probe", "stop"]
+
+
+@pytest.mark.parametrize("fault_phase", ["start", "probe", "stop"])
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_system_exit_is_a_lifecycle_error_and_never_false_success(
+    fault_phase,
+    exit_code,
+    capsys,
+):
+    calls = []
+    fault = SystemExit(exit_code)
+    result = _run_probe_lifecycle(
+        _step(calls, "start", fault if fault_phase == "start" else None),
+        _step(calls, "probe", fault if fault_phase == "probe" else None),
+        _step(calls, "stop", fault if fault_phase == "stop" else None),
+    )
+
+    assert calls == (
+        ["start", "stop"] if fault_phase == "start" else ["start", "probe", "stop"]
+    )
+    _assert_lifecycle_result(
+        result,
+        start_error_type="SystemExit" if fault_phase == "start" else None,
+        probe_error_type="SystemExit" if fault_phase == "probe" else None,
+        stop_error_type="SystemExit" if fault_phase == "stop" else None,
+        stop_completed=fault_phase != "stop",
+        report_allowed=False,
+    )
+
+    error_payload = _lifecycle_error_payload(result)
+    rc = _emit_probe_result(error_payload, success=result.report_allowed)
+    assert rc == 1
+    assert _decode_exactly_one_json_object(capsys.readouterr().out) == error_payload
+
+
+def test_returned_stop_with_retained_hold_allows_report_but_not_aec_snapshot():
+    calls = []
+    engine = _engine(aec_active=True, calibrator=_ForbiddenSnapshot())
+    engine._capture_resource_hold.set()
+
+    result = _run_probe_lifecycle(
+        _step(calls, "start"),
+        _step(calls, "probe"),
+        _step(calls, "stop"),
+    )
+    report = _aec_reference_delay_summary(
+        engine,
+        _config(),
+        stop_completed=result.stop_completed,
+    )
+
+    assert calls == ["start", "probe", "stop"]
+    _assert_lifecycle_result(
+        result,
+        stop_completed=True,
+        report_allowed=True,
+    )
+    assert report["measurement_state"] == "snapshot_unavailable"
+    assert report["runtime_snapshot_available"] is False
+    assert report["runtime_estimate_accepted"] is None
+    assert report["operating_delay_samples"] is None
+
+
+def test_emit_probe_result_success_is_one_json_object_and_returns_zero(capsys):
+    payload = {"label": "probe", "self_interruptions": 0}
+
+    rc = _emit_probe_result(payload, success=True)
+
+    assert rc == 0
+    assert _decode_exactly_one_json_object(capsys.readouterr().out) == payload
+
+
+def test_emit_probe_result_lifecycle_error_is_one_json_object_and_returns_one(
+    capsys,
+):
+    payload = {
+        "error": "probe-lifecycle-failed",
+        "start_error_type": None,
+        "probe_error_type": "RuntimeError",
+        "stop_error_type": None,
+    }
+
+    rc = _emit_probe_result(payload, success=False)
+
+    assert rc == 1
+    assert _decode_exactly_one_json_object(capsys.readouterr().out) == payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"value": float("nan")},
+        {"value": object()},
+    ],
+)
+def test_emit_probe_result_invalid_success_falls_back_to_one_error_object(
+    payload,
+    capsys,
+):
+    rc = _emit_probe_result(payload, success=True)
+
+    assert rc == 1
+    emitted = _decode_exactly_one_json_object(capsys.readouterr().out)
+    assert emitted == {"error": "probe-result-serialization-failed"}

@@ -531,6 +531,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       strategy seed and adds a quiesced scalar state that distinguishes inactive,
       fail-open, fixed, pending, accepted, and unavailable runtime evidence. It
       neither rewrites config nor revives a static auto-suggestion.
+- [x] **Own echo-probe teardown and fail closed on lifecycle/result errors — DONE
+      2026-08-10 (ADR-0177).** Every invoked start now owns one bounded stop
+      attempt across post-start setup, warm-up, body, and tail. Failed stop or
+      result serialization cannot publish a normal diagnostic or runtime snapshot;
+      active-AEC bounded retention still reports `snapshot_unavailable` without
+      claiming native cleanup.
 - [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
       `tools/turn_detect_check` real-voice validation tool + an adaptive
       confidence-tiered endpoint floor all LANDED on main from the voice batch below;

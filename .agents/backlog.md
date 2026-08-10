@@ -313,12 +313,25 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         next fresh stream. Headless receipts: 607 focused, 280 adjacent with two
         SWIG warnings, 516 complete-Sherpa, and 6 APM/DTD; this is word-level
         logic, not phone diarization or aggregate provenance.
-      - [ ] harden adversarial KWS-ledger resources/lifetimes separately: cap
-        chunk objects independently of sample count; hard-cap window/feed only
-        if configuration trust changes; test blocked native-embed shutdown and
-        backpressure; drop word-region/decision references before the external
-        callback; and remove the redundant interval copy. Current shipped/default
-        bounds are safe; ADR-0183 does not complete this follow-up.
+      - [x] bound default KWS-ledger object and callback PCM lifetimes separately
+        (ADR-0184). A speaker-evidence ledger retains at most 256 chunks after
+        ordinary sample-window trim plus oldest-whole-chunk trim; the current
+        chunk and native stream survive, while ambiguous timestamps into the
+        shortened prefix abstain. One owned phrase allocation backs read-only
+        word views; geometry is validated before allocation; speaker
+        normalization may reuse matching float32/C input but voiced identity
+        remains independent. Old-stream/feed/phrase/decision Python references
+        are cleared before the typed STOP callback. The isolated virtual gate
+        passes 156, including `sys.maxsize - 1` exact acceptance, next-sample
+        reset/abstention, and later fresh-zero-origin recovery; focused KWS,
+        adjacent owner/activation, complete-Sherpa, and APM/DTD gates pass
+        613/280/522/6. Scoped static checks are green, whole-Sherpa lint retains
+        the same 23 `main` findings, and formatter debt improves 34 to 33 hunks
+        with zero changed-line overlap.
+      - [ ] if configuration trust changes, separately hard-cap hostile finite
+        window/feed bytes; test blocked native-embed shutdown/backpressure; and
+        retain the existing rule that an entered native inference call is not
+        Python-preemptible. ADR-0184 does not complete these follow-ups.
       - [ ] run the paired owner bare-speaker A/B for an ambiguous owner talk-over
         and matched own-TTS/no-talk control. No live acceptance follows until
         that retained physical evidence is reviewed. A raw-KWS experiment must

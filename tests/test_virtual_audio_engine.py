@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import gc
+import sys
 import threading
 import time
 import types
+import weakref
 
 import numpy as np
 import pytest
@@ -16,6 +19,7 @@ from core.engines.sherpa import (
     _CaptureBlockRejected,
     _KwsControlAuthority,
     _KwsFeedRoute,
+    _MAX_KWS_PCM_LEDGER_CHUNKS,
     _SpeakerPcmStatus,
 )
 from core.engines.speaker_gate import SpeakerGate, SpeakerSimilarityBatchReceipt
@@ -471,13 +475,50 @@ def _bind_kws_test_pcm(
     return authority
 
 
-def test_kws_word_regions_use_exact_40ms_phone_grid_without_feed_tail() -> None:
+def _array_storage_root(array: np.ndarray) -> np.ndarray:
+    root = array
+    while isinstance(root.base, np.ndarray):
+        root = root.base
+    return root
+
+
+def _speaker_available_idle_kws_case(
+    *,
+    block_sec: float | None = None,
+    window_sec: float | None = None,
+):
+    engine, spotter, authority = _authority_kws_engine("", speaking=False)
+    if block_sec is not None:
+        engine.config.block_sec = block_sec
+    if window_sec is not None:
+        engine.config.barge_word_cut_speaker_window_sec = window_sec
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    return (
+        engine,
+        spotter,
+        replace(
+            authority,
+            source_sample_count=1,
+            source_sample_end=1,
+            speaker_authority_available=True,
+            speaker_authority=speaker_authority,
+        ),
+    )
+
+
+def test_kws_word_regions_share_one_owned_read_only_phrase_copy() -> None:
     engine, _spotter, authority = _authority_kws_engine(
         "stop",
         phrase_index=1,
     )
     pcm = np.arange(8_000, dtype="float32")
     _bind_kws_test_pcm(engine, authority, pcm)
+    retained = tuple(chunk.pcm for chunk in engine._kws_pcm_ledger.chunks)
     timestamps = [0.00, 0.04, 0.08, 0.12, 0.20, 0.24, 0.28, 0.32, 0.36]
 
     regions = engine._kws_word_pcm_regions(
@@ -489,7 +530,49 @@ def test_kws_word_regions_use_exact_40ms_phone_grid_without_feed_tail() -> None:
     assert len(regions) == 2
     np.testing.assert_array_equal(regions[0], pcm[:3_200])
     np.testing.assert_array_equal(regions[1], pcm[3_200:6_400])
+    phrase_root = _array_storage_root(regions[0])
+    assert phrase_root is _array_storage_root(regions[1])
+    assert phrase_root.base is None
+    assert phrase_root.flags.owndata
+    assert phrase_root.size == 6_400
+    np.testing.assert_array_equal(phrase_root, pcm[:6_400])
+    assert not phrase_root.flags.writeable
     assert all(not region.flags.writeable for region in regions)
+    assert not np.shares_memory(regions[0], regions[1])
+    assert not np.shares_memory(phrase_root, pcm)
+    assert all(not np.shares_memory(phrase_root, chunk) for chunk in retained)
+
+
+def test_kws_interval_rejects_forged_geometry_before_output_allocation(
+    monkeypatch,
+) -> None:
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    _bind_kws_test_pcm(engine, authority, np.arange(3_200, dtype="float32"))
+    ledger = engine._kws_pcm_ledger
+    original_chunk = ledger.chunks[0]
+    allocations = 0
+
+    def unexpected_empty(*_args, **_kwargs):
+        nonlocal allocations
+        allocations += 1
+        raise AssertionError("invalid ledger geometry must not allocate output")
+
+    monkeypatch.setattr(np, "empty", unexpected_empty)
+    ledger.chunks[0] = replace(original_chunk, end=original_chunk.end - 1)
+
+    assert engine._copy_kws_pcm_interval(0, 640) is None
+    assert allocations == 0
+
+    ledger.chunks[0] = original_chunk
+    speaker_authority = ledger.scope.speaker_authority
+    short_policy = replace(speaker_authority.policy, window_sec=0.10)
+    ledger.scope = replace(
+        ledger.scope,
+        speaker_authority=replace(speaker_authority, policy=short_policy),
+    )
+
+    assert engine._copy_kws_pcm_interval(0, 3_200) is None
+    assert allocations == 0
 
 
 def test_kws_word_regions_accept_float32_timestamp_rounding_within_half_sample():
@@ -820,34 +903,265 @@ def test_kws_every_scope_or_adjacency_change_rotates_native_and_ledger(
     assert ledger.last_source_sample_end is None
 
 
-def test_kws_tiny_feed_ledger_chunk_count_is_bounded() -> None:
-    engine, _spotter, authority = _authority_kws_engine("")
-    engine.config.barge_word_cut_speaker_window_sec = 0.10
-    authority = _bind_kws_test_pcm(
-        engine,
-        authority,
-        np.ones(1, dtype="float32"),
-    )
+def test_kws_tiny_feed_chunk_cap_keeps_current_without_native_reset() -> None:
+    engine, spotter, authority = _speaker_available_idle_kws_case()
+    callbacks = []
+    engine._cb = EngineCallbacks(on_command_result=callbacks.append)
+    stream = engine._kws_stream
 
-    for index in range(1, 3_200):
+    for index in range(_MAX_KWS_PCM_LEDGER_CHUNKS):
         block_authority = replace(
             authority,
             capture_sequence=index + 1,
             source_sample_start=index,
             source_sample_end=index + 1,
-            source_sample_count=1,
         )
-        engine._append_kws_submitted_pcm(
-            np.ones(1, dtype="float32"),
-            block_authority,
+        assert not engine._poll_keywords(
+            np.array([index], dtype="float32"),
+            control_authority=block_authority,
         )
 
     ledger = engine._kws_pcm_ledger
-    assert ledger.submitted_end == 3_200
-    assert ledger.retained_start == 1_600
-    assert len(ledger.chunks) == 1_600
-    assert ledger.last_capture_sequence == 3_200
-    assert ledger.last_source_sample_end == 3_200
+    assert engine._kws_stream is stream
+    assert len(ledger.chunks) == _MAX_KWS_PCM_LEDGER_CHUNKS
+    assert ledger.retained_start == 0
+    assert ledger.submitted_end == _MAX_KWS_PCM_LEDGER_CHUNKS
+    assert spotter.resets == 0
+
+    overflow_index = _MAX_KWS_PCM_LEDGER_CHUNKS
+    overflow_authority = replace(
+        authority,
+        capture_sequence=overflow_index + 1,
+        source_sample_start=overflow_index,
+        source_sample_end=overflow_index + 1,
+    )
+    assert not engine._poll_keywords(
+        np.array([overflow_index], dtype="float32"),
+        control_authority=overflow_authority,
+    )
+
+    ledger = engine._kws_pcm_ledger
+    assert engine._kws_stream is stream
+    assert len(stream.blocks) == _MAX_KWS_PCM_LEDGER_CHUNKS + 1
+    assert spotter.resets == 0
+    assert callbacks == []
+    assert len(ledger.chunks) == _MAX_KWS_PCM_LEDGER_CHUNKS
+    assert ledger.retained_start == 1
+    assert ledger.submitted_end == _MAX_KWS_PCM_LEDGER_CHUNKS + 1
+    assert (ledger.chunks[0].start, ledger.chunks[0].end) == (1, 2)
+    assert (ledger.chunks[-1].start, ledger.chunks[-1].end) == (
+        _MAX_KWS_PCM_LEDGER_CHUNKS,
+        _MAX_KWS_PCM_LEDGER_CHUNKS + 1,
+    )
+    np.testing.assert_array_equal(
+        ledger.chunks[-1].pcm,
+        np.array([overflow_index], dtype="float32"),
+    )
+    assert ledger.last_capture_sequence == _MAX_KWS_PCM_LEDGER_CHUNKS + 1
+    assert ledger.last_source_sample_end == _MAX_KWS_PCM_LEDGER_CHUNKS + 1
+
+
+def test_kws_sample_window_expiry_precedes_chunk_cap_eviction() -> None:
+    engine, spotter, authority = _speaker_available_idle_kws_case(
+        block_sec=_MAX_KWS_PCM_LEDGER_CHUNKS / 16_000,
+        window_sec=_MAX_KWS_PCM_LEDGER_CHUNKS / 16_000,
+    )
+    stream = engine._kws_stream
+    assert engine._kws_pcm_window_sample_limit(authority) == 256
+
+    for index in range(_MAX_KWS_PCM_LEDGER_CHUNKS + 1):
+        block_authority = replace(
+            authority,
+            capture_sequence=index + 1,
+            source_sample_start=index,
+            source_sample_end=index + 1,
+        )
+        assert not engine._poll_keywords(
+            np.ones(1, dtype="float32"),
+            control_authority=block_authority,
+        )
+
+    ledger = engine._kws_pcm_ledger
+    assert engine._kws_stream is stream
+    assert spotter.resets == 0
+    assert ledger.retained_start == 1
+    assert ledger.submitted_end == 257
+    assert len(ledger.chunks) == 256
+    assert (ledger.chunks[0].start, ledger.chunks[0].end) == (1, 2)
+
+
+def test_kws_word_regions_reject_chunk_cap_prefix_but_keep_retained_tail() -> None:
+    engine, spotter, authority = _speaker_available_idle_kws_case(window_sec=20.0)
+    block_samples = 640
+
+    for index in range(_MAX_KWS_PCM_LEDGER_CHUNKS + 1):
+        start = index * block_samples
+        block_authority = replace(
+            authority,
+            capture_sequence=index + 1,
+            source_sample_start=start,
+            source_sample_end=start + block_samples,
+            source_sample_count=block_samples,
+        )
+        assert not engine._poll_keywords(
+            np.arange(start, start + block_samples, dtype="float32"),
+            control_authority=block_authority,
+        )
+
+    ledger = engine._kws_pcm_ledger
+    assert spotter.resets == 0
+    assert len(ledger.chunks) == _MAX_KWS_PCM_LEDGER_CHUNKS
+    assert ledger.retained_start == block_samples
+    assert ledger.submitted_end == ((_MAX_KWS_PCM_LEDGER_CHUNKS + 1) * block_samples)
+    assert (
+        engine._kws_word_pcm_regions(
+            _PLAYBACK_KWS_BINDINGS[0],
+            [0.00, 0.04, 0.08, 0.12],
+        )
+        is None
+    )
+
+    retained = engine._kws_word_pcm_regions(
+        _PLAYBACK_KWS_BINDINGS[0],
+        [0.04, 0.08, 0.12, 0.16],
+    )
+
+    assert retained is not None
+    assert len(retained) == 1
+    np.testing.assert_array_equal(
+        retained[0],
+        np.arange(640, 3_200, dtype="float32"),
+    )
+    assert retained[0].flags.owndata
+    assert not retained[0].flags.writeable
+
+
+def test_kws_forged_over_cap_abstains_then_recovers_at_fresh_origin() -> None:
+    engine, spotter, authority = _speaker_available_idle_kws_case()
+    callbacks = []
+    engine._cb = EngineCallbacks(on_command_result=callbacks.append)
+    assert not engine._poll_keywords(
+        np.ones(1, dtype="float32"),
+        control_authority=authority,
+    )
+    stale_stream = engine._kws_stream
+    chunk = engine._kws_pcm_ledger.chunks[0]
+    engine._kws_pcm_ledger.chunks.extend(
+        chunk for _ in range(_MAX_KWS_PCM_LEDGER_CHUNKS)
+    )
+    assert len(engine._kws_pcm_ledger.chunks) == 257
+
+    forged_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1,
+        source_sample_end=2,
+    )
+    assert not engine._poll_keywords(
+        np.ones(1, dtype="float32"),
+        control_authority=forged_authority,
+    )
+
+    fresh_stream = engine._kws_stream
+    assert fresh_stream is not stale_stream
+    assert fresh_stream.blocks == []
+    assert spotter.resets == 1
+    assert callbacks == []
+    assert engine._kws_pcm_ledger.scope is None
+    assert engine._kws_pcm_ledger.submitted_end == 0
+    assert tuple(engine._kws_pcm_ledger.chunks) == ()
+
+    recovery_authority = replace(
+        authority,
+        capture_sequence=3,
+        source_sample_start=2,
+        source_sample_end=3,
+    )
+    assert not engine._poll_keywords(
+        np.array([3.0], dtype="float32"),
+        control_authority=recovery_authority,
+    )
+
+    recovered = engine._kws_pcm_ledger
+    assert engine._kws_stream is fresh_stream
+    assert len(fresh_stream.blocks) == 1
+    assert callbacks == []
+    assert recovered.scope is recovery_authority
+    assert recovered.retained_start == 0
+    assert recovered.submitted_end == 1
+    assert len(recovered.chunks) == 1
+    assert (recovered.chunks[0].start, recovered.chunks[0].end) == (0, 1)
+    assert recovered.last_capture_sequence == 3
+    assert recovered.last_source_sample_end == 3
+
+
+def test_kws_submitted_clock_overflow_abstains_then_recovers() -> None:
+    engine, spotter, authority = _speaker_available_idle_kws_case()
+    callbacks = []
+    engine._cb = EngineCallbacks(on_command_result=callbacks.append)
+    assert not engine._poll_keywords(
+        np.ones(1, dtype="float32"),
+        control_authority=authority,
+    )
+    stale_stream = engine._kws_stream
+    engine._kws_pcm_ledger.submitted_end = sys.maxsize - 1
+
+    boundary_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=1,
+        source_sample_end=2,
+    )
+    assert not engine._poll_keywords(
+        np.ones(1, dtype="float32"),
+        control_authority=boundary_authority,
+    )
+    assert engine._kws_stream is stale_stream
+    assert engine._kws_pcm_ledger.submitted_end == sys.maxsize
+    assert spotter.resets == 0
+
+    overflow_authority = replace(
+        authority,
+        capture_sequence=3,
+        source_sample_start=2,
+        source_sample_end=3,
+    )
+    assert not engine._poll_keywords(
+        np.ones(1, dtype="float32"),
+        control_authority=overflow_authority,
+    )
+
+    fresh_stream = engine._kws_stream
+    assert fresh_stream is not stale_stream
+    assert fresh_stream.blocks == []
+    assert spotter.resets == 1
+    assert callbacks == []
+    assert engine._kws_pcm_ledger.scope is None
+    assert engine._kws_pcm_ledger.submitted_end == 0
+    assert tuple(engine._kws_pcm_ledger.chunks) == ()
+
+    recovery_authority = replace(
+        authority,
+        capture_sequence=4,
+        source_sample_start=3,
+        source_sample_end=4,
+    )
+    assert not engine._poll_keywords(
+        np.array([3.0], dtype="float32"),
+        control_authority=recovery_authority,
+    )
+
+    recovered = engine._kws_pcm_ledger
+    assert engine._kws_stream is fresh_stream
+    assert len(fresh_stream.blocks) == 1
+    assert callbacks == []
+    assert recovered.scope is recovery_authority
+    assert recovered.retained_start == 0
+    assert recovered.submitted_end == 1
+    assert len(recovered.chunks) == 1
+    assert (recovered.chunks[0].start, recovered.chunks[0].end) == (0, 1)
+    assert recovered.last_capture_sequence == 4
+    assert recovered.last_source_sample_end == 4
 
 
 def _warmed_speaker_scoring_engine(embed_fn):
@@ -1194,6 +1508,83 @@ def test_ambiguous_two_word_kws_requires_every_word_from_same_owner(
         engine._word_cut_candidate_samples,
         engine._wc_stats,
     ) == word_cut_state
+
+
+def test_ambiguous_kws_releases_pcm_and_native_stream_before_stop_callback() -> None:
+    engine, spotter, _gate, authority, pcm, _embedded = _ambiguous_two_word_kws_case(
+        (0.25, 0.50)
+    )
+    fed_pcm_refs: list[weakref.ReferenceType[np.ndarray]] = []
+    heavy_pcm_refs: list[weakref.ReferenceType[np.ndarray]] = []
+
+    class _RetainingKwsStream:
+        def __init__(self) -> None:
+            self.blocks: list[np.ndarray] = []
+
+        def accept_waveform(self, _sample_rate, samples) -> None:
+            fed_pcm_refs.append(weakref.ref(samples))
+            self.blocks.append(samples)
+
+    retaining_stream = _RetainingKwsStream()
+    engine._kws_stream = retaining_stream
+    old_stream_ref = weakref.ref(retaining_stream)
+    del retaining_stream
+
+    original_score = engine._score_explicit_speaker_pcm_batch
+
+    def observe_heavy_pcm(pcm_regions, **kwargs):
+        decisions = original_score(pcm_regions, **kwargs)
+        observed: list[np.ndarray] = [*pcm_regions]
+        roots = {
+            id(root): root
+            for root in (_array_storage_root(region) for region in pcm_regions)
+        }
+        observed.extend(roots.values())
+        observed.extend(
+            decision.identity_pcm
+            for decision in decisions
+            if decision.identity_pcm is not None
+        )
+        heavy_pcm_refs.extend(weakref.ref(array) for array in observed)
+        return decisions
+
+    engine._score_explicit_speaker_pcm_batch = observe_heavy_pcm
+    stop_results = []
+
+    def assert_released_then_stop(result) -> None:
+        gc.collect()
+        assert old_stream_ref() is None
+        assert len(fed_pcm_refs) == 2
+        assert all(reference() is None for reference in fed_pcm_refs)
+        assert len(heavy_pcm_refs) >= 5
+        assert all(reference() is None for reference in heavy_pcm_refs)
+        ledger = engine._kws_pcm_ledger
+        assert ledger.scope is None
+        assert ledger.submitted_end == 0
+        assert tuple(ledger.chunks) == ()
+        stop_results.append(result)
+
+    engine._cb = EngineCallbacks(on_control_stop_result=assert_released_then_stop)
+    engine._now_playing = "Please stop talking while I finish this sentence."
+    assert not engine._poll_keywords(
+        pcm[:3_200],
+        control_authority=authority,
+    )
+    spotter.keyword = "stop"
+    second_authority = replace(
+        authority,
+        capture_sequence=2,
+        source_sample_start=3_200,
+        source_sample_end=6_400,
+    )
+
+    assert engine._poll_keywords(
+        pcm[3_200:],
+        control_authority=second_authority,
+    )
+
+    assert [result.text for result in stop_results] == ["stop"]
+    assert engine._playback_kws_claim is None
 
 
 def test_post_score_speaker_mutation_at_claim_install_abstains_and_releases() -> None:

@@ -82,6 +82,11 @@ _CAPTURE_FORCE_JOIN_TIMEOUT_SEC = 1.0
 # The final readiness probe distinguishes an exactly-full, successfully drained
 # budget from a stream that still asks for a 65th decode call.
 _MAX_NATIVE_DECODE_STEPS_PER_FEED = 64
+# Retained PCM bytes stay bounded by the config-derived speaker window. Bound
+# the independent Python-object cost as well: the committed default needs only
+# twenty normal capture blocks, while pathological tiny feeds retain at most
+# the newest 256 chunks and make older timestamp evidence unavailable.
+_MAX_KWS_PCM_LEDGER_CHUNKS = 256
 _KWS_TOKEN_FRAME_MS = 40
 
 
@@ -8404,26 +8409,51 @@ class SherpaOnnxEngine(AudioEngine):
             raise ValueError("KWS submitted-sample clock overflow")
         start = ledger.submitted_end
         end = start + count
-        ledger.submitted_end = end
-        ledger.last_capture_sequence = authority.capture_sequence
-        ledger.last_source_sample_end = authority.source_sample_end
+        if len(ledger.chunks) > _MAX_KWS_PCM_LEDGER_CHUNKS:
+            raise ValueError("KWS PCM ledger exceeded its bounded chunk count")
         if authority.speaker_authority is None:
             # Keep only the exact native clock/adjacency proof while speaker
             # authority is unavailable.  A transition to an available receipt
             # changes scope and starts a fresh stream, so unavailable PCM can
             # never become eligible later and need not occupy the capture ring.
+            ledger.submitted_end = end
+            ledger.last_capture_sequence = authority.capture_sequence
+            ledger.last_source_sample_end = authority.source_sample_end
             ledger.chunks.clear()
             ledger.retained_start = end
             return
-        pcm.setflags(write=False)
-        ledger.chunks.append(_KwsPcmChunk(start=start, end=end, pcm=pcm))
         limit = self._kws_pcm_window_sample_limit(authority)
         if limit is None:
             raise ValueError("KWS speaker PCM window is invalid")
         retain_from = max(0, end - limit)
+
+        # Prepare the current retained edge before destructively advancing the
+        # deque. The block can exceed the configured window only in direct
+        # fixtures; production's independent feed cap is smaller.
+        current_start = max(start, retain_from)
+        if current_start > start:
+            current_pcm = np.array(
+                pcm[current_start - start :],
+                dtype="float32",
+                order="C",
+                copy=True,
+            ).reshape(-1)
+        else:
+            current_pcm = pcm
+        current_pcm.setflags(write=False)
+        current_chunk = _KwsPcmChunk(
+            start=current_start,
+            end=end,
+            pcm=current_pcm,
+        )
+
         while ledger.chunks and ledger.chunks[0].end <= retain_from:
             ledger.chunks.popleft()
-        if ledger.chunks and ledger.chunks[0].start < retain_from:
+        if (
+            ledger.chunks
+            and ledger.chunks[0].start < retain_from
+            and len(ledger.chunks) < _MAX_KWS_PCM_LEDGER_CHUNKS
+        ):
             first = ledger.chunks.popleft()
             offset = retain_from - first.start
             retained = np.array(
@@ -8436,10 +8466,16 @@ class SherpaOnnxEngine(AudioEngine):
             ledger.chunks.appendleft(
                 _KwsPcmChunk(start=retain_from, end=first.end, pcm=retained)
             )
+        while len(ledger.chunks) >= _MAX_KWS_PCM_LEDGER_CHUNKS:
+            ledger.chunks.popleft()
+        ledger.chunks.append(current_chunk)
+        ledger.submitted_end = end
+        ledger.last_capture_sequence = authority.capture_sequence
+        ledger.last_source_sample_end = authority.source_sample_end
         ledger.retained_start = (
             ledger.chunks[0].start if ledger.chunks else ledger.submitted_end
         )
-        if len(ledger.chunks) > limit:
+        if len(ledger.chunks) > _MAX_KWS_PCM_LEDGER_CHUNKS:
             raise ValueError("KWS PCM ledger exceeded its bounded chunk count")
 
     def _copy_kws_pcm_interval(self, start: int, end: int) -> Optional[np.ndarray]:
@@ -8450,9 +8486,28 @@ class SherpaOnnxEngine(AudioEngine):
         ledger = self._ensure_kws_pcm_ledger()
         if start < ledger.retained_start or end > ledger.submitted_end:
             return None
+        limit = self._kws_pcm_window_sample_limit(ledger.scope)
+        if limit is None or end - start > limit:
+            return None
         pieces: list[np.ndarray] = []
         cursor = start
+        expected_chunk_start = ledger.retained_start
         for chunk in ledger.chunks:
+            if (
+                type(chunk) is not _KwsPcmChunk
+                or type(chunk.start) is not int
+                or type(chunk.end) is not int
+                or chunk.start != expected_chunk_start
+                or not 0 <= chunk.start < chunk.end <= ledger.submitted_end
+                or type(chunk.pcm) is not np.ndarray
+                or chunk.pcm.ndim != 1
+                or chunk.pcm.dtype != np.dtype("float32")
+                or not chunk.pcm.flags.c_contiguous
+                or chunk.pcm.flags.writeable
+                or int(chunk.pcm.size) != chunk.end - chunk.start
+            ):
+                return None
+            expected_chunk_start = chunk.end
             if chunk.end <= cursor:
                 continue
             if chunk.start > cursor:
@@ -8462,15 +8517,18 @@ class SherpaOnnxEngine(AudioEngine):
             cursor = take_end
             if cursor == end:
                 break
-        if cursor != end:
+        if cursor != end or sum(int(piece.size) for piece in pieces) != end - start:
             return None
-        owned = np.array(
-            np.concatenate(pieces),
-            dtype="float32",
-            order="C",
-            copy=True,
-        ).reshape(-1)
-        if owned.size != end - start:
+        try:
+            owned = np.empty(end - start, dtype="float32")
+        except (MemoryError, OverflowError, ValueError):
+            return None
+        offset = 0
+        for piece in pieces:
+            piece_end = offset + int(piece.size)
+            owned[offset:piece_end] = piece
+            offset = piece_end
+        if offset != owned.size:
             return None
         owned.setflags(write=False)
         return owned
@@ -8544,7 +8602,7 @@ class SherpaOnnxEngine(AudioEngine):
             or sum(counts) != len(token_samples)
         ):
             return None
-        regions: list[np.ndarray] = []
+        word_spans: list[tuple[int, int]] = []
         token_offset = 0
         for word_index, token_count in enumerate(counts):
             word_start = token_samples[token_offset]
@@ -8563,12 +8621,26 @@ class SherpaOnnxEngine(AudioEngine):
                 or token_samples[last_token] >= word_end
             ):
                 return None
-            region = self._copy_kws_pcm_interval(word_start, word_end)
-            if region is None:
-                return None
-            regions.append(region)
+            word_spans.append((word_start, word_end))
             token_offset += token_count
-        return tuple(regions)
+        if token_offset != len(token_samples) or any(
+            left[1] != right[0] for left, right in zip(word_spans, word_spans[1:])
+        ):
+            return None
+        phrase_start = word_spans[0][0]
+        phrase_end = word_spans[-1][1]
+        phrase_pcm = self._copy_kws_pcm_interval(phrase_start, phrase_end)
+        if phrase_pcm is None:
+            return None
+        if len(word_spans) == 1:
+            return (phrase_pcm,)
+        regions = tuple(
+            phrase_pcm[start - phrase_start : end - phrase_start]
+            for start, end in word_spans
+        )
+        if any(region.flags.writeable for region in regions):
+            return None
+        return regions
 
     def _drain_capture_control_events(self, capture_epoch: int) -> None:
         lane = self._capture_control_lane
@@ -11578,6 +11650,7 @@ class SherpaOnnxEngine(AudioEngine):
         resolved_binding = None
         own_tts_ambiguous = False
         speaker_regions = None
+        decisions = ()
         try:
             feed_sample_rate = (
                 control_authority.kws_sample_rate_hz
@@ -11701,7 +11774,6 @@ class SherpaOnnxEngine(AudioEngine):
                     if control_authority is not None
                     else None
                 )
-                decisions = ()
                 if (
                     speaker_authority is not None
                     and speaker_regions is not None
@@ -11733,23 +11805,28 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                     return False
 
+        # Native KWS has consumed the feed, and ambiguous speaker authority has
+        # been reduced to immutable status above. Release every extra KWS-owned
+        # PCM reference before an external typed STOP callback can re-enter.
+        ks = None
+        source_pcm = None
+        owned_pcm = None
+        speaker_regions = None
+        decisions = ()
+
         route_guard = (
-            self._virtual_route_failure_lock
-            if guard_private_route
-            else nullcontext()
+            self._virtual_route_failure_lock if guard_private_route else nullcontext()
         )
         with route_guard:
             if guard_private_route and (
-                self._virtual_route_failure
-                or self._virtual_route_failure_in_progress
+                self._virtual_route_failure or self._virtual_route_failure_in_progress
             ):
                 return False
             if require_os_echo_route:
                 captured_route_verified = (
                     bool(getattr(self, "_os_echo_route_verified", False))
                     if os_echo_route_verified is None
-                    else type(os_echo_route_verified) is bool
-                    and os_echo_route_verified
+                    else type(os_echo_route_verified) is bool and os_echo_route_verified
                 )
                 if not (
                     captured_route_verified
@@ -13972,11 +14049,10 @@ class SherpaOnnxEngine(AudioEngine):
             return _SpeakerPcmDecision(_SpeakerPcmStatus.ERROR)
         try:
             required_sec = float(min_sec)
-            candidate = np.array(
+            candidate = np.asarray(
                 pcm,
                 dtype="float32",
                 order="C",
-                copy=True,
             ).reshape(-1)
             block_sec = float(self.config.block_sec)
             configured_window_sec = (
@@ -14011,7 +14087,7 @@ class SherpaOnnxEngine(AudioEngine):
             int(sample_rate * max(block_sec, configured_window_sec)),
         )
         if candidate.size > window_samples:
-            candidate = candidate[-window_samples:].copy()
+            candidate = candidate[-window_samples:]
         identity = np.array(
             trim_to_voiced_region(candidate, sample_rate),
             dtype="float32",

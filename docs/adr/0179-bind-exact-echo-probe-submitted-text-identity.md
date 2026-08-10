@@ -1,7 +1,7 @@
 # ADR-0179: Bind exact echo-probe submitted-text identity
 
 Date: 2026-08-10
-Status: accepted
+Status: superseded-by ADR-0180
 
 ## Decision
 

@@ -31,13 +31,13 @@ _EXPECTED_SENTENCE_BYTES = (
     b"This is a live audio calibration test of the speaker assistant.",
     b"I am checking whether my own voice is captured back by the microphone.",
     b"The barge in gate should not interrupt me while I am still speaking.",
-    b"If you hear this whole message without it cutting off, suppression works.",
+    b"This final sentence completes the quiet playback portion of the diagnostic.",
 )
 _EXPECTED_STIMULUS_DIGESTS = {
     1: "f6d8f6a9701c09d8d87307e9884bb2ad7ddd8aec16b9353732ba03cf9b75f3fd",
     3: "27c744fbb14bbcb74f9256a2a4db2af25c6e7ad6c70e5ea224c3c8708a06a3c6",
-    4: "be277009edac56b0473730c1e5326a1b765976386aca9f26c500eab9f00822eb",
-    5: "f0081f8d64016b2695774fce8be8cdc4cf98b3cb2e09d23166bd8e72468a5cca",
+    4: "4366d6a869714ed767964bda1dc682b5264c109d5d3f12260f6e07276c502704",
+    5: "b17929f5d51bb8ece730dcfb2094ec85ab195e6a451c79a63fdd955bd59875fb",
 }
 
 
@@ -172,15 +172,31 @@ def test_stimulus_id_binds_order_repetition_and_utf8_byte_length():
     assert expected != character_length
 
 
-def test_fourth_sentence_mutation_changes_n4_but_not_n3(monkeypatch):
-    baseline_n3 = _built_stimulus_id(_build_stimulus_plan(3))
-    baseline_n4 = _built_stimulus_id(_build_stimulus_plan(4))
-    changed = list(echo_probe_module.SENTENCES)
-    changed[3] = "A deliberately different fourth sentence."
-    monkeypatch.setattr(echo_probe_module, "SENTENCES", changed)
+def test_neutral_fourth_sentence_changes_n4_without_changing_n3():
+    current = tuple(value.decode("utf-8") for value in _EXPECTED_SENTENCE_BYTES)
+    legacy = (
+        *current[:3],
+        "If you hear this whole message without it cutting off, suppression works.",
+    )
+    current_n3 = _independent_stimulus_id(current[:3])
+    legacy_n3 = _independent_stimulus_id(legacy[:3])
+    current_n4 = _independent_stimulus_id(current)
+    legacy_n4 = _independent_stimulus_id(legacy)
 
-    assert _built_stimulus_id(_build_stimulus_plan(3)) == baseline_n3
-    assert _built_stimulus_id(_build_stimulus_plan(4)) != baseline_n4
+    assert current_n3 == (
+        _STIMULUS_ID_PREFIX
+        + "27c744fbb14bbcb74f9256a2a4db2af25c6e7ad6c70e5ea224c3c8708a06a3c6"
+    )
+    assert legacy_n3 == current_n3
+    assert legacy_n4 == (
+        _STIMULUS_ID_PREFIX
+        + "be277009edac56b0473730c1e5326a1b765976386aca9f26c500eab9f00822eb"
+    )
+    assert current_n4 == (
+        _STIMULUS_ID_PREFIX
+        + "4366d6a869714ed767964bda1dc682b5264c109d5d3f12260f6e07276c502704"
+    )
+    assert current_n4 != legacy_n4
 
 
 def test_main_hashes_the_same_lazy_plan_text_only_after_speak_returns():

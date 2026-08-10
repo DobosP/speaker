@@ -45,7 +45,7 @@ SENTENCES = [
     "This is a live audio calibration test of the speaker assistant.",
     "I am checking whether my own voice is captured back by the microphone.",
     "The barge in gate should not interrupt me while I am still speaking.",
-    "If you hear this whole message without it cutting off, suppression works.",
+    "This final sentence completes the quiet playback portion of the diagnostic.",
 ]
 
 _STIMULUS_HASH_DOMAIN = b"speaker.echo-probe.spoken-text.v1\0"

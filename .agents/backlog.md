@@ -546,13 +546,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       length-framed scalar `stimulus_id` from the same frozen normalized cyclic
       text plan submitted to `engine.speak`. Errors stay identity-free, suite raw
       rows preserve the self-attested value without validating it, and missing or
-      unequal identifiers are not poolable. The current four sentence bytes and
-      playback behavior are unchanged.
-- [ ] **Neutralize echo-probe's fourth `suppression works` sentence only after
-      ADR-0179 lands.** Use a separate ADR and branch, preserve every DSP/runtime/
-      default/authority boundary, update the exact four-sentence identity vector,
-      and do not pool the changed `N=4` population with the prior one. The suite's
-      default `N=3` plan does not submit that fourth sentence and remains unchanged.
+      unequal identifiers are not poolable. At that landing it deliberately left
+      the then-current four-sentence stimulus untouched for the versioned change
+      below.
+- [x] **Neutralize echo-probe's fourth `suppression works` sentence — DONE
+      2026-08-10 (ADR-0180).** The exact replacement is descriptive completion
+      text, not a suppression verdict. The default `N=3` interrupt-suite plan and
+      identity remain unchanged; the changed `N=4` population receives its own
+      identity and is not poolable with the prior four-sentence population. Every
+      DSP/runtime-control-path/config/default/backend/authority and live-gate
+      boundary remains.
 - [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
       `tools/turn_detect_check` real-voice validation tool + an adaptive
       confidence-tiered endpoint floor all LANDED on main from the voice batch below;

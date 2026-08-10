@@ -334,16 +334,11 @@ def test_always_on_apm_feeds_asr_cleaned_block_and_skips_denoiser():
     assert out.size > 0 and np.all(np.isfinite(out))
 
 
-def test_apm_owns_ns_requires_always_on_and_noise_suppression(monkeypatch):
-    import core.engines.sherpa as sherpa_mod
-
-    class _FakeAEC:
-        always_on = False
-        suppresses_noise = True
-
+def _stub_optional_sherpa_builders(monkeypatch, sherpa_mod) -> None:
     for name in (
         "build_recognizer",
         "build_final_recognizer",
+        "build_final_verifier",
         "build_vad",
         "build_tts",
         "build_denoiser",
@@ -351,22 +346,206 @@ def test_apm_owns_ns_requires_always_on_and_noise_suppression(monkeypatch):
         "build_punctuation",
     ):
         monkeypatch.setattr(sherpa_mod, name, lambda c: None)
-    monkeypatch.setattr(sherpa_mod, "build_aec", lambda c: _FakeAEC())
+
+
+@pytest.mark.parametrize(
+    (
+        "always_on",
+        "suppresses_noise",
+        "suppresses_nearend",
+        "relax_enabled",
+        "expected_owns_ns",
+        "expected_resid_blind",
+        "expected_relaxed_tap",
+    ),
+    (
+        (False, False, False, True, False, False, False),
+        (False, False, True, True, False, True, False),
+        (False, True, False, True, False, False, False),
+        (False, True, True, True, False, True, False),
+        (True, False, False, True, False, False, False),
+        (True, False, True, True, False, True, False),
+        (True, True, False, True, True, True, True),
+        (True, True, True, True, True, True, True),
+        (True, True, False, False, True, True, False),
+    ),
+)
+def test_apm_ownership_is_derived_from_current_primary_aec(
+    monkeypatch,
+    always_on,
+    suppresses_noise,
+    suppresses_nearend,
+    relax_enabled,
+    expected_owns_ns,
+    expected_resid_blind,
+    expected_relaxed_tap,
+):
+    import core.engines.sherpa as sherpa_mod
+
+    class _FakeAEC:
+        def __init__(self):
+            self.always_on = always_on
+            self.suppresses_noise = suppresses_noise
+            self.suppresses_nearend = suppresses_nearend
+
+    primary = _FakeAEC()
+    relaxed = object()
+    build_calls = []
+
+    def _build_aec(_config, *, ns_override=None):
+        build_calls.append(ns_override)
+        return relaxed if ns_override is False else primary
+
+    _stub_optional_sherpa_builders(monkeypatch, sherpa_mod)
+    monkeypatch.setattr(sherpa_mod, "build_aec", _build_aec)
 
     eng = SherpaOnnxEngine(
         SherpaConfig.from_dict(
             {
                 "aec_enabled": True,
+                "aec_auto_delay": False,
                 "coherence_barge_in_enabled": False,
-                "apm_always_on": False,
-                "apm_noise_suppression": True,
+                "dtd_enabled": False,
+                "apm_asr_relax_ns": relax_enabled,
             }
         )
     )
     eng._build()
 
+    assert eng._apm_always_on is always_on
+    assert eng._apm_owns_ns is expected_owns_ns
+    assert eng._resid_blind is expected_resid_blind
+    assert (eng._aec_asr is relaxed) is expected_relaxed_tap
+    assert build_calls == ([None, False] if expected_relaxed_tap else [None])
+
+
+def test_rebuild_clears_optional_audio_state_after_primary_aec_fails_open(
+    monkeypatch,
+):
+    import core.engines.sherpa as sherpa_mod
+
+    class _PrimaryAEC:
+        always_on = True
+        suppresses_noise = True
+        suppresses_nearend = True
+
+    class _Detector:
+        def __init__(self, available):
+            self.available = available
+
+    primary = _PrimaryAEC()
+    relaxed = object()
+    first_detector = _Detector(True)
+    unavailable_detector = _Detector(False)
+    first_dtd = object()
+    primary_builds = 0
+    detectors = iter((first_detector, unavailable_detector))
+
+    def _build_aec(_config, *, ns_override=None):
+        nonlocal primary_builds
+        if ns_override is False:
+            return relaxed
+        primary_builds += 1
+        return primary if primary_builds == 1 else None
+
+    _stub_optional_sherpa_builders(monkeypatch, sherpa_mod)
+    monkeypatch.setattr(sherpa_mod, "build_aec", _build_aec)
+    monkeypatch.setattr(
+        sherpa_mod,
+        "EchoCoherenceDetector",
+        lambda *_args, **_kwargs: next(detectors),
+    )
+    monkeypatch.setattr(
+        sherpa_mod,
+        "AdaptiveDTD",
+        lambda **_kwargs: first_dtd,
+    )
+
+    eng = SherpaOnnxEngine(
+        SherpaConfig.from_dict(
+            {
+                "aec_enabled": True,
+                "aec_auto_delay": True,
+                "coherence_barge_in_enabled": True,
+                "dtd_enabled": True,
+                "apm_asr_relax_ns": True,
+            }
+        )
+    )
+    eng._build()
+
+    first_playback_ref = eng._playback_ref
+    assert eng._aec is primary
+    assert eng._echo_coherence is first_detector
+    assert eng._dtd is first_dtd
+    assert eng._apm_owns_ns is True
+    assert eng._resid_blind is True
+    assert eng._aec_asr is relaxed
+    assert eng._aec_delay_cal is not None
+    assert eng._aec_ref_delay > 0
+
+    eng._build()
+
+    assert eng._aec is None
+    assert eng._playback_ref is not first_playback_ref
+    assert eng._far_ref is None
+    assert eng._echo_coherence is None
+    assert eng._dtd is None
     assert eng._apm_always_on is False
     assert eng._apm_owns_ns is False
+    assert eng._resid_blind is False
+    assert eng._aec_asr is None
+    assert eng._aec_delay_cal is None
+    assert eng._aec_ref_delay == 0
+
+
+def test_rebuild_drops_disabled_relaxed_tap_and_auto_delay(monkeypatch):
+    import core.engines.sherpa as sherpa_mod
+
+    class _PrimaryAEC:
+        always_on = True
+        suppresses_noise = True
+        suppresses_nearend = True
+
+    primary = _PrimaryAEC()
+    relaxed = object()
+    build_calls = []
+
+    def _build_aec(_config, *, ns_override=None):
+        build_calls.append(ns_override)
+        return relaxed if ns_override is False else primary
+
+    _stub_optional_sherpa_builders(monkeypatch, sherpa_mod)
+    monkeypatch.setattr(sherpa_mod, "build_aec", _build_aec)
+
+    eng = SherpaOnnxEngine(
+        SherpaConfig.from_dict(
+            {
+                "aec_enabled": True,
+                "aec_auto_delay": True,
+                "coherence_barge_in_enabled": False,
+                "dtd_enabled": False,
+                "apm_asr_relax_ns": True,
+            }
+        )
+    )
+    eng._build()
+    assert eng._aec_asr is relaxed
+    assert eng._aec_delay_cal is not None
+
+    eng.config.apm_asr_relax_ns = False
+    eng.config.aec_auto_delay = False
+    eng._build()
+
+    assert eng._aec is primary
+    assert eng._apm_owns_ns is True
+    assert eng._resid_blind is True
+    assert eng._aec_asr is None
+    assert eng._aec_delay_cal is None
+    assert eng._aec_ref_delay == int(
+        eng.config.sample_rate * eng.config.aec_ref_delay_ms / 1000
+    )
+    assert build_calls == [None, False, None]
 
 
 def test_aec_auto_delay_wires_calibrator_into_ref_delay():

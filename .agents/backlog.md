@@ -420,10 +420,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       "Skiper" for "keeper" fed weak/confabulated replies): raise mic capture
       level/gain, live-tune SenseVoice + prosody thresholds, consider the AT2020
       when docked. Garble also weakens turn-merge joins.
-- [ ] **Fast-tier shallowness on contextful turns** ("That sounds lovely!" to a
-      detail-laden follow-up): the roadmap P3 quality axis (route
-      content-bearing follow-ups to main when recent context is rich) — see
-      docs/review_2026-06-10_gap_analysis.md.
+- [x] **Fast-tier shallowness on contextful turns — DONE on main
+      (`5323c76`, `7a6bc8a`; truth-up 2026-08-10).** The heuristic router adds
+      a bounded main-tier nudge only when real recent conversation exists and
+      the current text carries an explicit follow-up/referent marker. Desktop
+      crosses its threshold for a contextful follow-up, phone stays fast at its
+      higher threshold, and an unrelated current ask is not escalated.
 
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
 - [x] **★ HARD REQUIREMENT (owner): open-speaker barge-in WITHOUT headphones —
@@ -451,19 +453,19 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > Two P1s already FIXED + merged this session (commit on fix/apm-review-followups):
 > the AEC reset()/process_16k cross-thread data race (core/engines/_aec.py lock) and
 > the doctor false-fail on clean clones (tools/doctor.py active-vs-defined backend).
-> The items below are the UNFIXED findings — left for a focused/live session because
-> they change the hard-requirement barge gate (must validate at the mic) or are Dart
-> (no SDK on the desktop box). Full review: logs of run wf_6f5da8f6 / session handoff.
+> The items below preserve the remaining live/Dart work and the headless findings
+> later closed on main. Full review: logs of run wf_6f5da8f6 / session handoff.
 - [~] **★★ P1 — DTD barge gate under `open_speaker`/`_apm_owns_ns` — CODE FIX LANDED
       2026-07-04, LIVE A/B STILL OPEN (wording refreshed 2026-07-06 after a verified
       recon caught this entry stale).** The originally-proposed fix — feed the DTD
       `resid` feature + the floor gate from a NON-NS source when the canceller blinds
-      the residual — **is implemented**: `_apm_owns_ns`/`_resid_blind` are derived at
-      sherpa.py ~1410 and the DTD residual feature + floor read `mic_raw` under
-      `_resid_blind` (sherpa.py ~3623-3653, ~3712-3718; commits 3b994b7/55dfdb9).
-      REMAINING: (a) the live-mic A/B on the APM profile that validates it (risks
-      re-opening self-interrupt — cannot be judged headless); (b) the P2 double-talk
-      regression below. NOTE the open-speaker barge authority is now the ADR-0013
+      the residual — **is implemented**: `_build` derives `_apm_owns_ns`
+      (`53c9a42`) and `_resid_blind` (`e9877b2`), while
+      `_dtd_residual_level` and `_looks_like_user` select `mic_raw` when the
+      current canceller is residual-blind (`e6ab79a`/`e9877b2`).
+      REMAINING: the live-mic A/B on the APM profile that validates it (risks
+      re-opening self-interrupt — cannot be judged headless). The shipped-NS
+      double-talk regression is now covered below. NOTE the open-speaker barge authority is now the ADR-0013
       OS-capture + word-cut path (aec_enabled=false → the DTD never runs); this item
       only governs the in-app-APM FALLBACK path (`open_speaker` profile).
 - [ ] **P2 — Mobile BargeCalibrator ambient floor is contaminated** (mobile/lib/assistant.dart):
@@ -473,20 +475,21 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       a real talk-over gets harder to trigger over a session. Fix: gate `observeQuiet` on a
       genuinely-idle window (no ASR partial in flight + ~300-500 ms cooldown after playback)
       and add an upper clamp. Dart — validate with `flutter test barge_calibrator_test`.
-- [ ] **P2 — No double-talk test at the SHIPPED APM config** (tests/test_apm.py): the only
-      user-voice-survival test builds the APM with NS=FALSE (opposite of `open_speaker`).
-      Add a NS=true echo+near-end mix test asserting the residual the DTD reads keeps enough
-      near-end energy — this is the headless guardrail for the P1 above.
-- [~] **P2/P3 — test gaps locking the APM behavior** (live-unvalidated code, tests are the
-      only net; statuses refreshed 2026-07-06): (a) `aec_auto_delay` — the calibrator
-      accept/reject + wiring ARE covered (tests/test_aec_seam.py:621-680,
-      tests/test_denoise.py:366-407) but the single engine-level capture-loop test the
-      original wording asked for (≥10 playback blocks → `_aec_ref_delay` updates /
-      out-of-range ignored / no-op when off) is still missing; (b) `_apm_owns_ns`
-      AND-guard derivation in `start()` still bypassed — OPEN; (c) `apm_stream_delay_ms`
-      call order still untested — OPEN; (d) `tts_target_rms` streaming pin: STALE — the
-      shipped behavior changed (streams once a carried gain exists, sherpa.py ~3413) and
-      is pinned by tests/test_sherpa_playback.py:671-720; drop this sub-item.
+- [x] **P2 — Shipped-APM double-talk headless guard — DONE.**
+      `tests/test_apm_double_talk.py` drives the real gate with the shipped
+      always-on/NS-owning source policy, proves modeled near-end talk-over survives, and
+      separately proves echo-only playback does not self-interrupt. It remains
+      component evidence; the physical APM-profile A/B above is still required.
+- [x] **P2/P3 — APM behavior contracts — DONE (ADR-0174 truth-up).**
+      `AecDelayCalibrator` accept/reject, bounded tracking, capture-loop
+      observe/adopt, reader-time current-block reference, disabled hold, and
+      same/changed-domain recovery were already covered; a fixed block count
+      would duplicate that contract, and estimates are bounded/clamped rather
+      than “out-of-range ignored.” `test_apm_process_orders_render_delay_then_capture`
+      already pins render → stream-delay → capture order. The current-primary
+      APM ownership/residual matrix and positive-to-disabled/fail-open rebuilds
+      now retire stale relaxed-ASR, delay, coherence, and DTD state. The carried
+      `tts_target_rms` streaming behavior remains pinned separately.
 - [ ] **P3 — defaults-safe / doc nits:** `barge_fade_ms=4.0` is a SECOND clean-clone default
       deviation beyond `tts_target_rms` (de-click on barge flush) — either sanction it in the
       invariant doc or default the dataclass to 0.0 and set 4.0 only in config.json.
@@ -517,8 +520,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"`. Calibrate
       `aec_ref_delay_ms` with `tools/echo_probe.py`. Confirm no self-interrupt AND a
       real interrupt still cuts through; then optionally try `aec_backend="dtln"`.
-- [ ] **Extend `tools/echo_probe.py`** to print post-AEC **ERLE (dB)** and auto-suggest
-      `aec_ref_delay_ms` via cross-correlation (no mic needed to write it).
+- [~] **Expose the accepted runtime delay in `tools/echo_probe.py`.** ERLE
+      reporting already landed in `3bdacea`; `tools.aec_probe` already sweeps
+      recorded mic/reference pairs, and runtime `AecDelayCalibrator` already
+      cross-correlates and owns the operating delay. The remaining diagnostic
+      gap is to report configured seed versus accepted runtime operating delay
+      honestly; do not revive a static “auto-suggest” write when auto-delay is on.
 - [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
       `tools/turn_detect_check` real-voice validation tool + an adaptive
       confidence-tiered endpoint floor all LANDED on main from the voice batch below;

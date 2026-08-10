@@ -2959,6 +2959,18 @@ class SherpaOnnxEngine(AudioEngine):
                     "cannot rebuild while the streaming decode owner is live"
                 )
             self._streaming_decode_session = None
+        # Every admitted build derives optional audio roles from the builders
+        # that succeed for THIS run.  A current AEC/detector fail-open (or a
+        # disabled option) must not inherit ownership, masking, calibration, or
+        # detector state from the previous run.
+        self._echo_coherence = None
+        self._dtd = None
+        self._aec_ref_delay = 0
+        self._aec_delay_cal = None
+        self._apm_always_on = False
+        self._apm_owns_ns = False
+        self._resid_blind = False
+        self._aec_asr = None
         # Re-evaluate optional identity from the current files/config on every
         # build.  A removed enrollment reference must not retain a previously
         # allocated gate (or its lazy native extractor) across engine restarts.
@@ -8112,8 +8124,9 @@ class SherpaOnnxEngine(AudioEngine):
                     # Auto-calibrate the far->near delay from the true-playback-
                     # aligned far (read at delay 0) vs the raw mic: the calibrator
                     # self-gates on far energy + correlation, so idle/uncorrelated
-                    # blocks leave the operating delay unchanged. Drives the read
-                    # below, so a mis-set seed self-corrects within ~1 window.
+                    # blocks leave the operating delay unchanged. The accepted
+                    # value drives the NEXT reader snapshot, so a mis-set seed
+                    # self-corrects without changing this block's captured context.
                     far0 = self._align_recording_frame(
                         (
                             block_context.far_reference_zero

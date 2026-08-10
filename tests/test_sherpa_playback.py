@@ -22,6 +22,7 @@ from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import (
     SherpaConfig,
     SherpaOnnxEngine,
+    _KwsControlAuthority,
     _resample_linear,
     _resample_playback,
 )
@@ -916,6 +917,138 @@ def test_claim_utterance_accepts_current_and_clears_stop():
     g = eng._speak_gen
     assert eng._claim_utterance(g) == g  # current generation -> claimed
     assert not eng._stop_speaking.is_set()  # cleared for this fresh utterance
+
+
+def _kws_authority(
+    eng: SherpaOnnxEngine,
+    *,
+    speaking: bool,
+) -> _KwsControlAuthority:
+    eng._stream_in = SimpleNamespace(generation=0, actual_device=None)
+    eng._capture_authority_source_generation = 0
+    eng._capture_authority_source_device = None
+    if speaking:
+        eng._speaking.set()
+    else:
+        eng._speaking.clear()
+    return _KwsControlAuthority(
+        capture_epoch=eng._capture_epoch,
+        capture_generation=0,
+        source_generation=0,
+        source_device=None,
+        authority_source_generation=0,
+        authority_source_device=None,
+        os_echo_route_verified=eng._os_echo_route_verified,
+        speaking=speaking,
+        speak_generation=eng._speak_gen,
+        playback_generation=eng._playback_generation,
+    )
+
+
+def _idle_kws_authority(eng: SherpaOnnxEngine) -> _KwsControlAuthority:
+    return _kws_authority(eng, speaking=False)
+
+
+def test_kws_claim_winning_before_playback_start_defers_then_rejects_stopped_item():
+    eng = _engine(_StreamingTts())
+    item_gen = eng._speak_gen
+    claim = eng._claim_playback_kws_if_current(_idle_kws_authority(eng))
+    assert claim is not None
+    entered = threading.Event()
+    finished = threading.Event()
+    results = []
+
+    def begin_playback() -> None:
+        entered.set()
+        results.append(eng._begin_playback_run_if_current(item_gen))
+        finished.set()
+
+    worker = threading.Thread(target=begin_playback)
+    worker.start()
+    assert entered.wait(timeout=1.0)
+    assert not finished.wait(timeout=0.05)
+
+    # The accepted typed STOP callback re-enters this effect while its claim is
+    # live. The playback starter must observe the new generation only after the
+    # callback releases the barrier.
+    eng.stop_speaking()
+    eng._release_playback_kws_claim(claim)
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert results == [None]
+    assert not eng._speaking.is_set()
+    assert eng._playback_generation == 0
+
+
+def test_playback_start_winning_first_invalidates_idle_kws_authority_atomically():
+    eng = _engine(_StreamingTts())
+    authority = _idle_kws_authority(eng)
+    item_gen = eng._speak_gen
+
+    assert eng._begin_playback_run_if_current(item_gen) is False
+
+    assert eng._speaking.is_set()
+    assert eng._playback_generation == authority.playback_generation + 1
+    assert eng._claim_playback_kws_if_current(authority) is None
+    assert eng._playback_kws_claim is None
+
+
+def test_playback_start_waits_for_non_stopping_kws_callback_then_publishes_run():
+    eng = _engine(_StreamingTts())
+    claim = eng._claim_playback_kws_if_current(_idle_kws_authority(eng))
+    assert claim is not None
+    assert claim.stop_only is False
+    eng._enqueue_play("generic idle response", None)
+    item = eng._play_q.get_nowait()
+    assert item[0] == "generic idle response"
+    item_gen = item[2]
+    finished = threading.Event()
+    results = []
+
+    def begin_playback() -> None:
+        results.append(eng._begin_playback_run_if_current(item_gen))
+        finished.set()
+
+    worker = threading.Thread(target=begin_playback)
+    worker.start()
+    assert not finished.wait(timeout=0.05)
+
+    eng._release_playback_kws_claim(claim)
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert results == [False]
+    assert eng._speaking.is_set()
+    assert eng._playback_generation == 1
+
+
+def test_active_playback_stop_claim_rejects_reentrant_enqueue() -> None:
+    eng = _engine(_StreamingTts())
+    claimed_generation = eng._speak_gen
+    claim = eng._claim_playback_kws_if_current(_kws_authority(eng, speaking=True))
+    assert claim is not None
+    assert claim.stop_only is True
+    completed = []
+
+    # A separate stop can win after the KWS hit claimed generation G. Speech
+    # submitted before the claimed callback catches up must still be rejected,
+    # not stamped G+1 and then swept away by that older callback.
+    eng.stop_speaking()
+    assert eng._speak_gen == claimed_generation + 1
+    eng._enqueue_play("must not survive STOP", lambda: completed.append(True))
+
+    assert eng._play_q.empty()
+    assert completed == [True]
+    assert "must not survive STOP" not in tuple(eng._recent_spoken)
+    eng.stop_speaking()
+    eng._release_playback_kws_claim(claim)
+
+    eng._enqueue_play("fresh after STOP claim", None)
+    fresh = eng._play_q.get_nowait()
+    assert fresh[0] == "fresh after STOP claim"
+    assert fresh[2] == eng._speak_gen
+    assert "fresh after STOP claim" in tuple(eng._recent_spoken)
 
 
 def test_synthesize_streaming_aborts_on_generation_mismatch():

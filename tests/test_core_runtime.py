@@ -22,7 +22,7 @@ from always_on_agent.session_actor import AdmissionRejected, TaskIdentity
 
 from core.engines.scripted import ScriptedEngine
 from core.engines.sherpa import SherpaConfig
-from core.engine import SpeechStyle
+from core.engine import CommandDetection, SpeechStyle
 from core.intents import LocalIntentHandler
 from core.llm import EchoLLM
 from core.metrics import HANDLED_LOCAL, LLM_FIRST_TOKEN, TTS_REQUESTED
@@ -653,6 +653,56 @@ def test_command_fast_path_stop_halts_playback_without_llm():
     engine.command("stop")  # spotted keyword, not a transcript
     runtime.wait_idle()
     assert not engine.is_speaking
+
+
+def test_typed_playback_stop_bypasses_hostile_generic_command_mapping() -> None:
+    runtime, engine = _runtime(
+        hold_speech=True,
+        reply="a long winded answer",
+        command_map={"stop": "confirm"},
+    )
+    try:
+        engine.final("tell me a story")
+        assert runtime.wait_idle(include_playback=False)
+        assert engine.is_speaking
+        published = []
+        publish = runtime.bus.publish
+
+        def record(event):
+            published.append(event)
+            return publish(event)
+
+        runtime.bus.publish = record
+        callback = engine._cb.on_control_stop_result
+        assert callback is not None
+        callback(CommandDetection("stop"))
+
+        assert runtime.wait_idle()
+        assert not engine.is_speaking
+        assert EventKind.CONTROL_STOP in {event.kind for event in published}
+        assert EventKind.CONTROL_CONFIRM not in {event.kind for event in published}
+    finally:
+        runtime.stop()
+
+
+def test_idle_generic_kws_still_uses_configured_command_mapping() -> None:
+    runtime, engine = _runtime(command_map={"stop": "confirm"})
+    try:
+        published = []
+        publish = runtime.bus.publish
+
+        def record(event):
+            published.append(event)
+            return publish(event)
+
+        runtime.bus.publish = record
+        engine.command("stop")
+
+        assert runtime.wait_idle()
+        assert EventKind.CONTROL_CONFIRM in {event.kind for event in published}
+        assert EventKind.CONTROL_STOP not in {event.kind for event in published}
+    finally:
+        runtime.stop()
 
 
 def test_command_fast_path_switches_mode():

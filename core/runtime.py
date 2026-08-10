@@ -704,6 +704,7 @@ class VoiceRuntime:
                 on_barge_in_result=self._on_barge_in_result,
                 on_command=self._on_command,
                 on_command_result=self._on_command_result,
+                on_control_stop_result=self._on_control_stop_result,
                 on_transcript_abort=self._on_transcript_abort,
                 on_metric=self.metrics.mark,
                 on_heartbeat=self._watchdog.note_heartbeat,
@@ -2549,6 +2550,30 @@ class VoiceRuntime:
             acoustic=result.acoustic,
             revision=result.revision,
         )
+
+    def _on_control_stop_result(self, result: CommandDetection) -> None:
+        """Apply one engine-attested STOP without consulting command aliases."""
+
+        if type(result) is not CommandDetection or type(result.text) is not str:
+            return
+        try:
+            CommandDetection.__post_init__(result)
+        except (TypeError, ValueError):
+            return
+        if not is_stop_command(result.text) or self._stopping:
+            return
+        with self._terminal_effect_lock:
+            if self._stopping or not self._acoustic_revisions.accept(
+                result.acoustic,
+                result.revision,
+                final=True,
+            ):
+                return
+            self._apply_mapped_command(
+                "stop",
+                acoustic=result.acoustic,
+                revision=result.revision,
+            )
 
     def _on_command(
         self,

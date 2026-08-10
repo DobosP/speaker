@@ -177,6 +177,30 @@ class _ConfirmedBargeClaim:
     claimed_speak_generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class _KwsControlAuthority:
+    """Reader-captured authority that one KWS result must still own."""
+
+    capture_epoch: int
+    capture_generation: int
+    source_generation: int
+    source_device: object = field(repr=False, compare=False)
+    authority_source_generation: int
+    authority_source_device: object = field(repr=False, compare=False)
+    os_echo_route_verified: bool
+    speaking: bool
+    speak_generation: int
+    playback_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PlaybackKwsClaim:
+    """Short-lived barrier around one generation-current KWS callback."""
+
+    authority: _KwsControlAuthority
+    stop_only: bool
+
+
 @dataclass(frozen=True)
 class _FinalWorkItem:
     """One immutable endpoint handoff to the final-ASR worker."""
@@ -265,6 +289,12 @@ def _validate_semantic_hold_reset_config(config: "SherpaConfig") -> None:
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
 from ..asr_verifier import AsrConsensusOutcome, verify_asr_consensus
 from ..contract import is_stop_command, normalize_command
+from ..kws_contract import (
+    KwsPhraseBinding,
+    collapsed_label_surfaces,
+    load_kws_phrase_bindings,
+    resolve_kws_stop_phrase,
+)
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
@@ -2054,6 +2084,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts = None
         self._kws = None
         self._kws_stream = None
+        self._kws_phrase_bindings: tuple[KwsPhraseBinding, ...] = ()
         # Diagnostic count of KWS hits dropped by the own-echo guard in
         # _poll_keywords (the assistant's own TTS saying "stop"/"wait" leaking
         # back through imperfect AEC). Plain attribute, GIL-safe for a counter.
@@ -2199,6 +2230,7 @@ class SherpaOnnxEngine(AudioEngine):
         # are captured to fence queued PCM from a later playback run.
         self._playback_generation = 0
         self._gen_lock = threading.Lock()
+        self._gen_condition = threading.Condition(self._gen_lock)
         self._speaker_gate: Optional[SpeakerGate] = None
         # Set only after the background engine warm pass completes a real
         # similarity call. Word-cut never pays cold ONNX construction on the
@@ -2364,6 +2396,11 @@ class SherpaOnnxEngine(AudioEngine):
         # lets callbacks (including a reentrant stop_speaking()) run without
         # holding _gen_lock while still preventing them from cutting a later run.
         self._confirmed_barge_claim: Optional[_ConfirmedBargeClaim] = None
+        # KWS callbacks can re-enter runtime/playback code, so they cannot hold
+        # _gen_lock. This separate claim does not itself stop or advance speech;
+        # it only defers a silent->speaking transition until the exact callback
+        # returns. Confirmed barges retain their stronger pre-stop claim above.
+        self._playback_kws_claim: Optional[_PlaybackKwsClaim] = None
         # A confirmed duck-window command is deliberately left in the normal
         # recognizer stream as its next-final head. The first post-playback VAD
         # block adopts its exact bounded PCM into the ASR segment instead of
@@ -3151,7 +3188,21 @@ class SherpaOnnxEngine(AudioEngine):
         # KWS is command authority, not selected-final STT evidence.
         self._kws = None if capture_only else build_keyword_spotter(c)
         self._kws_stream = None
+        self._kws_phrase_bindings = ()
         if self._kws is not None:
+            try:
+                self._kws_phrase_bindings = load_kws_phrase_bindings(
+                    c.kws_keywords_file
+                )
+            except (OSError, ValueError):
+                # Custom/legacy KWS remains available while idle, but cannot
+                # acquire playback-time STOP authority without an exact phrase
+                # binding. Normal ASR and the word-cut fallback stay available.
+                log.warning(
+                    "KWS keyword file is outside the shipped STOP-only phrase "
+                    "contract; playback-time KWS effects will abstain",
+                    exc_info=True,
+                )
             self._kws_stream = self._kws.create_stream()
         # Optional punctuation restorer for finals (None -> casing only).
         self._punct = build_punctuation(c)
@@ -3996,29 +4047,48 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         detected_at: Optional[float] = None,
         capture_epoch: Optional[int] = None,
+        stop_only: bool = False,
+        control_stop_callback=None,
     ) -> bool:
         detected_at = time.perf_counter() if detected_at is None else float(detected_at)
-        tracker = self._acoustic_turn_tracker
+        stop_callback = None
+        if stop_only:
+            stop_callback = control_stop_callback
+            if not callable(stop_callback):
+                return False
         acoustic = None
         revision = 0
-        if tracker is not None:
-            acoustic, revision = tracker.terminal(emitted_at=detected_at)
-        if self._cb.on_command_result is not None:
-            delivered = self._emit_capture_callback(
-                self._cb.on_command_result,
-                CommandDetection(
-                    keyword,
-                    acoustic=acoustic,
-                    revision=revision,
-                ),
-                capture_epoch=capture_epoch,
-            )
-        else:
-            delivered = self._emit_capture_callback(
-                self._cb.on_command,
-                keyword,
-                capture_epoch=capture_epoch,
-            )
+
+        def publish_command() -> None:
+            # Terminalization and delivery are one admitted capture effect. If
+            # stop/source recovery wins at the callback seam, neither may occur.
+            nonlocal acoustic, revision
+            tracker = self._acoustic_turn_tracker
+            if tracker is not None:
+                acoustic, revision = tracker.terminal(emitted_at=detected_at)
+            if stop_callback is not None:
+                stop_callback(
+                    CommandDetection(
+                        keyword,
+                        acoustic=acoustic,
+                        revision=revision,
+                    )
+                )
+            elif self._cb.on_command_result is not None:
+                self._cb.on_command_result(
+                    CommandDetection(
+                        keyword,
+                        acoustic=acoustic,
+                        revision=revision,
+                    )
+                )
+            else:
+                self._cb.on_command(keyword)
+
+        delivered = self._emit_capture_callback(
+            publish_command,
+            capture_epoch=capture_epoch,
+        )
         key = self._diagnostic_acoustic_key(acoustic)
         if delivered and key is not None and key in self._diagnostic_spans:
             # A semantic HOLD binds its endpoint span until the logical turn
@@ -5321,6 +5391,8 @@ class SherpaOnnxEngine(AudioEngine):
 
     def stop(self) -> None:
         self._playback_stopping.set()
+        with self._gen_condition:
+            self._gen_condition.notify_all()
         self._virtual_route_stop.set()
         self._word_cut_energy_run = 0
         self._virtual_near_end_above = False
@@ -5702,14 +5774,6 @@ class SherpaOnnxEngine(AudioEngine):
                 return
         if ticket is not None:
             ticket.sink_text = text
-        # Echo filter feed for the duck-then-confirm barge gate: what is about to
-        # be synthesized is what a confirm-window partial may transcribe back as
-        # the assistant's own (ducked) echo. Cheap ring; inert unless
-        # barge_confirm_enabled consults it. getattr: markup fixtures build the
-        # engine bypassing __init__, where the ring doesn't exist.
-        spoken_ring = getattr(self, "_recent_spoken", None)
-        if spoken_ring is not None:
-            spoken_ring.append(text)
         with self._receipt_lock:
             if self._playback_stopping.is_set():
                 if on_done:
@@ -7284,7 +7348,7 @@ class SherpaOnnxEngine(AudioEngine):
         with self._gen_lock:
             speak_generation = self._speak_gen
             playback_generation = self._playback_generation
-        speaking = self._speaking.is_set()
+            speaking = self._speaking.is_set()
         first_audio_pending = bool(self._first_audio_pending)
         playback_level = float(self._playback_level)
         playback_onset_at = float(self._playback_onset_at)
@@ -7417,6 +7481,175 @@ class SherpaOnnxEngine(AudioEngine):
             context.speaking
             and context.playback_generation == current_playback_generation
         )
+
+    @staticmethod
+    def _kws_control_authority(
+        captured: CapturedBlock,
+        context: CaptureBlockContext,
+    ) -> _KwsControlAuthority:
+        """Freeze the exact block/playback scope a KWS result may consume."""
+
+        return _KwsControlAuthority(
+            capture_epoch=captured.capture_epoch,
+            capture_generation=captured.capture_generation,
+            source_generation=captured.source_generation,
+            source_device=captured.source_device,
+            authority_source_generation=context.authority_source_generation,
+            authority_source_device=context.authority_source_device,
+            os_echo_route_verified=context.os_echo_route_verified,
+            speaking=context.speaking,
+            speak_generation=context.speak_generation,
+            playback_generation=context.playback_generation,
+        )
+
+    def _kws_control_authority_is_current(
+        self,
+        authority: _KwsControlAuthority,
+    ) -> bool:
+        """Recheck capture/source freshness after native KWS decode.
+
+        A media-session block already owns its exact in-flight effect lease. A
+        recovery ordered before that lease makes admission fail; a later recovery
+        is ordered after the claimed block. The live identity comparison below is
+        an additional conservative freshness check, while inline capture cannot
+        recover concurrently because read/decode share this owner thread.
+        """
+
+        if type(authority) is not _KwsControlAuthority:
+            return False
+        if (
+            type(authority.capture_epoch) is not int
+            or type(authority.capture_generation) is not int
+            or type(authority.source_generation) is not int
+            or type(authority.authority_source_generation) is not int
+            or type(authority.os_echo_route_verified) is not bool
+            or type(authority.speaking) is not bool
+            or type(authority.speak_generation) is not int
+            or type(authority.playback_generation) is not int
+        ):
+            return False
+        if type(self._capture_epoch) is not int:
+            return False
+        if not self._capture_callback_is_current(authority.capture_epoch):
+            return False
+        current_capture_generation = getattr(
+            self._capture_callback_context,
+            "capture_generation",
+            authority.capture_generation,
+        )
+        if (
+            type(current_capture_generation) is not int
+            or current_capture_generation != authority.capture_generation
+        ):
+            return False
+        media_session = getattr(self, "_capture_media_session", None)
+        if media_session is not None:
+            try:
+                live_capture_generation = media_session.generation
+            except Exception:  # noqa: BLE001 - freshness proof fails closed
+                return False
+            if (
+                type(live_capture_generation) is not int
+                or live_capture_generation != authority.capture_generation
+            ):
+                return False
+        effect_lease = getattr(
+            self._capture_callback_context,
+            "capture_effect_lease",
+            None,
+        )
+        if effect_lease is not None and not effect_lease.claimed_by_current_thread:
+            return False
+        source = self._stream_in
+        try:
+            source_generation = source.generation
+            source_device = source.actual_device
+        except (AttributeError, RuntimeError):
+            return False
+        if (
+            type(source_generation) is not int
+            or type(self._capture_authority_source_generation) is not int
+        ):
+            return False
+        live_authority_generation = self._capture_authority_source_generation
+        live_authority_device = self._capture_authority_source_device
+        if live_authority_generation < 0 and media_session is None:
+            # Inline capture has no queued reader/processor split. Preserve the
+            # same compatibility rule used by _snapshot_capture_context while
+            # still requiring the live source identity below.
+            live_authority_generation = source_generation
+            live_authority_device = source_device
+        try:
+            source_matches = bool(
+                source_generation == authority.source_generation
+                and source_device == authority.source_device
+            )
+            captured_authority_matches = bool(
+                authority.authority_source_generation == authority.source_generation
+                and authority.authority_source_device == authority.source_device
+            )
+            live_authority_matches = bool(
+                live_authority_generation == authority.authority_source_generation
+                and live_authority_device == authority.authority_source_device
+            )
+        except Exception:  # noqa: BLE001 - identity proof fails closed
+            return False
+        if not (
+            source_matches and captured_authority_matches and live_authority_matches
+        ):
+            return False
+        if (
+            type(self._os_echo_route_verified) is not bool
+            or self._os_echo_route_verified is not authority.os_echo_route_verified
+        ):
+            return False
+        with self._gen_lock:
+            if (
+                type(self._speak_gen) is not int
+                or type(self._playback_generation) is not int
+            ):
+                return False
+            return bool(
+                authority.speak_generation == self._speak_gen
+                and authority.playback_generation == self._playback_generation
+                and authority.speaking is self._speaking.is_set()
+            )
+
+    def _claim_playback_kws_if_current(
+        self,
+        authority: _KwsControlAuthority,
+        *,
+        stop_only: Optional[bool] = None,
+    ) -> Optional[_PlaybackKwsClaim]:
+        """Atomically claim one callback against every playback-run transition."""
+
+        if not self._kws_control_authority_is_current(authority):
+            return None
+        if stop_only is None:
+            stop_only = authority.speaking
+        if type(stop_only) is not bool:
+            return None
+        with self._gen_condition:
+            current_speaking = self._speaking.is_set()
+            if (
+                self._playback_kws_claim is not None
+                or self._confirmed_barge_claim is not None
+                or authority.speak_generation != self._speak_gen
+                or authority.playback_generation != self._playback_generation
+                or authority.speaking is not current_speaking
+            ):
+                return None
+            claim = _PlaybackKwsClaim(authority=authority, stop_only=stop_only)
+            self._playback_kws_claim = claim
+            return claim
+
+    def _release_playback_kws_claim(self, claim: _PlaybackKwsClaim) -> None:
+        """Release only the exact callback-complete KWS barrier."""
+
+        with self._gen_condition:
+            if self._playback_kws_claim is claim:
+                self._playback_kws_claim = None
+                self._gen_condition.notify_all()
 
     def _reset_keyword_stream_after_discontinuity(self) -> None:
         kws = self._kws
@@ -8351,7 +8584,12 @@ class SherpaOnnxEngine(AudioEngine):
                     == captured.source_generation
                     and block_context.authority_source_device == captured.source_device
                 )
+                kws_authority = self._kws_control_authority(captured, block_context)
+                kws_authority_was_current = self._kws_control_authority_is_current(
+                    kws_authority
+                )
                 command_consumed = False
+                kws_participated = False
                 if (
                     not speaking_for_kws
                     or self._aec is not None
@@ -8360,6 +8598,9 @@ class SherpaOnnxEngine(AudioEngine):
                         and block_context.os_echo_route_verified
                     )
                 ):
+                    kws_participated = bool(
+                        self._kws is not None and self._kws_stream is not None
+                    )
                     try:
                         command_consumed = self._poll_keywords(
                             samples,
@@ -8367,9 +8608,7 @@ class SherpaOnnxEngine(AudioEngine):
                                 self._virtual_audio_binder is not None
                             ),
                             require_os_echo_route=bool(
-                                self._virtual_audio_binder is not None
-                                and speaking_for_kws
-                                and self._aec is None
+                                speaking_for_kws and self._aec is None
                             ),
                             speaking=speaking_for_kws,
                             allow_publish=bool(
@@ -8383,6 +8622,7 @@ class SherpaOnnxEngine(AudioEngine):
                                 context_authority_current
                                 and block_context.os_echo_route_verified
                             ),
+                            control_authority=kws_authority,
                         )
                     except _CaptureBlockRejected as exc:
                         reject_capture_block(exc, captured)
@@ -8430,6 +8670,15 @@ class SherpaOnnxEngine(AudioEngine):
                     barge_sustain.reset()
                     rejected_run = 0.0
                     rejected_flagged = False
+                    continue
+
+                if (
+                    kws_participated
+                    and kws_authority_was_current
+                    and not self._kws_control_authority_is_current(kws_authority)
+                ):
+                    # A transition that defeated the result-stage claim also
+                    # makes this queued PCM stale for word-cut/normal ASR.
                     continue
 
                 # Track the ambient noise floor for the optional loudness gate
@@ -10312,12 +10561,34 @@ class SherpaOnnxEngine(AudioEngine):
         allow_publish: bool = True,
         detected_at: Optional[float] = None,
         os_echo_route_verified: Optional[bool] = None,
+        control_authority: Optional[_KwsControlAuthority] = None,
     ) -> bool:
-        """Publish one mapped keyword and report that its acoustic turn ended."""
+        """Publish one current, playback-safe keyword terminal.
+
+        Production capture supplies ``control_authority`` from the reader-time
+        block context.  A hit may outlive native decode, so callback admission
+        rechecks and atomically claims that exact source/playback scope. Direct
+        helper calls retain the legacy no-token path for deterministic fixtures.
+        """
         kws = self._kws
         ks = self._kws_stream
         if kws is None or ks is None:
             return False
+        if (
+            control_authority is not None
+            and type(control_authority) is not _KwsControlAuthority
+        ):
+            return False
+        playback_scoped = (
+            control_authority.speaking
+            if control_authority is not None
+            else (self._speaking.is_set() if speaking is None else bool(speaking))
+        )
+        playback_stop_callback = None
+        if playback_scoped:
+            playback_stop_callback = self._cb.on_control_stop_result
+            if not callable(playback_stop_callback):
+                return False
         if detected_at is not None:
             if isinstance(detected_at, bool) or not isinstance(
                 detected_at, (int, float)
@@ -10339,10 +10610,25 @@ class SherpaOnnxEngine(AudioEngine):
             raise _CaptureBlockRejected(
                 "KWS feed is empty or exceeds its capture-work limit"
             )
+        keyword = ""
+        decoded_tokens = None
         try:
             ks.accept_waveform(self.config.sample_rate, samples)
             _drain_native_ready_bounded(kws, ks)
             keyword = kws.get_result(ks)
+            if type(keyword) is not str:
+                raise TypeError("KWS result must be an exact string")
+            if (
+                keyword
+                and allow_publish
+                and playback_scoped
+                and control_authority is not None
+                and bool(getattr(self, "_kws_phrase_bindings", ()))
+            ):
+                token_reader = getattr(kws, "tokens", None)
+                if not callable(token_reader):
+                    raise TypeError("KWS token binding is unavailable")
+                decoded_tokens = token_reader(ks)
             if keyword:
                 kws.reset_stream(ks)
         except Exception:  # noqa: BLE001 - KWS is independent command authority
@@ -10353,60 +10639,101 @@ class SherpaOnnxEngine(AudioEngine):
             )
             self._reset_keyword_stream_after_discontinuity()
             return False
-        if keyword:
-            if not allow_publish:
+        if not keyword or not allow_publish:
+            return False
+        if control_authority is not None and not self._kws_control_authority_is_current(
+            control_authority
+        ):
+            return False
+
+        normalized_label = keyword if playback_scoped else normalize_command(keyword)
+        resolved_surface = None
+        if playback_scoped:
+            # During playback KWS is a closed STOP/WAIT interrupt floor. Generic
+            # configured labels retain their established idle behavior, but may
+            # never reach confirmation/mode/tool/final routing from TTS-bearing
+            # audio. The exact six-row token binding is mandatory in production.
+            if normalized_label not in {"stop", "wait"}:
                 return False
-            route_guard = (
-                self._virtual_route_failure_lock
-                if guard_private_route
-                else nullcontext()
-            )
-            with route_guard:
-                if guard_private_route:
-                    if (
-                        self._virtual_route_failure
-                        or self._virtual_route_failure_in_progress
-                        or (
-                            require_os_echo_route
-                            and not (
-                                self._os_echo_route_verified
-                                if os_echo_route_verified is None
-                                else os_echo_route_verified
-                            )
-                        )
-                    ):
-                        return False
-                # Own-echo suppression: if the assistant is speaking and the
-                # spotted control word appears (whole-word) in the currently-
-                # playing sentence OR the recently-enqueued sentence ring,
-                # this is the assistant hearing its own TTS ("stop", "wait")
-                # through imperfect AEC, not the user -- drop it so it cannot
-                # self-interrupt. Whole-word over now-playing + _recent_spoken
-                # mirrors the word-cut echo filter (a bare substring check
-                # false-positives on containing words, and now-playing alone
-                # misses the tail of a sentence that just finished). Same
-                # own-TTS control-ambiguity concern as ADR-0042.
-                if self._speaking.is_set() if speaking is None else speaking:
-                    spotted_words = set(normalize_command(keyword).split())
-                    recent = [str(getattr(self, "_now_playing", "") or "")]
-                    recent.extend(str(t) for t in getattr(self, "_recent_spoken", ()))
-                    echo_words: set[str] = set()
-                    for sent in recent:
-                        echo_words.update(normalize_command(sent).split())
-                    if spotted_words and spotted_words <= echo_words:
-                        self._kws_own_echo_suppressions += 1
-                        log.info(
-                            "KWS hit %r suppressed: matches own TTS now playing/"
-                            "recently spoken (own-echo guard, ADR-0042)",
-                            keyword,
-                        )
-                        return False
-                if self._capture_callback_is_current():
-                    return self._emit_command_callback(
-                        keyword,
-                        detected_at=detected_at,
-                    )
-        return False
+            if control_authority is not None:
+                resolved_surface = resolve_kws_stop_phrase(
+                    getattr(self, "_kws_phrase_bindings", ()),
+                    result_label=normalized_label,
+                    tokens=decoded_tokens,
+                )
+                if resolved_surface is None:
+                    return False
+
+            # A collapsed result label hides aliases such as BE QUIET -> stop
+            # and HOLD ON -> wait. Fail closed if the exact row OR any sibling
+            # alias reads like current/recent TTS. Speaker-gated resolution stays
+            # on the independent word-cut path (ADR-0042/0082).
+            ambiguity_surfaces = collapsed_label_surfaces(normalized_label)
+            if resolved_surface is not None:
+                ambiguity_surfaces = tuple(
+                    dict.fromkeys((resolved_surface, *ambiguity_surfaces))
+                )
+            if not ambiguity_surfaces:
+                return False
+            if any(self._reads_like_own_speech(text) for text in ambiguity_surfaces):
+                self._kws_own_echo_suppressions += 1
+                log.info(
+                    "KWS hit %r suppressed: shipped phrase group matches own "
+                    "TTS (own-echo ambiguity, ADR-0042/0082)",
+                    keyword,
+                )
+                return False
+
+        route_guard = (
+            self._virtual_route_failure_lock
+            if guard_private_route
+            else nullcontext()
+        )
+        with route_guard:
+            if guard_private_route and (
+                self._virtual_route_failure
+                or self._virtual_route_failure_in_progress
+            ):
+                return False
+            if require_os_echo_route:
+                captured_route_verified = (
+                    bool(getattr(self, "_os_echo_route_verified", False))
+                    if os_echo_route_verified is None
+                    else type(os_echo_route_verified) is bool
+                    and os_echo_route_verified
+                )
+                if not (
+                    captured_route_verified
+                    and bool(getattr(self, "_os_echo_route_verified", False))
+                ):
+                    return False
+
+            claim = None
+            if control_authority is not None:
+                claim = self._claim_playback_kws_if_current(
+                    control_authority,
+                    stop_only=playback_scoped,
+                )
+                if claim is None:
+                    return False
+            elif not self._capture_callback_is_current():
+                return False
+            published_keyword = "stop" if playback_scoped else keyword
+            try:
+                return self._emit_command_callback(
+                    published_keyword,
+                    detected_at=detected_at,
+                    capture_epoch=(
+                        control_authority.capture_epoch
+                        if control_authority is not None
+                        else None
+                    ),
+                    stop_only=playback_scoped,
+                    control_stop_callback=playback_stop_callback,
+                )
+            finally:
+                if claim is not None:
+                    self._release_playback_kws_claim(claim)
 
     def _enqueue_play(
         self,
@@ -10419,17 +10746,38 @@ class SherpaOnnxEngine(AudioEngine):
         # the generation before this sentence is dequeued, the worker drops it.
         # ``directives`` (opt-in expressive markup) rides alongside to _synthesize.
         with self._gen_lock:
-            claim_pending = getattr(self, "_confirmed_barge_claim", None) is not None
+            kws_claim = getattr(self, "_playback_kws_claim", None)
+            claim_pending = bool(
+                getattr(self, "_confirmed_barge_claim", None) is not None
+                or (
+                    kws_claim is not None
+                    and (
+                        type(kws_claim) is not _PlaybackKwsClaim
+                        or type(kws_claim.stop_only) is not bool
+                        or kws_claim.stop_only
+                    )
+                )
+            )
             gen = self._speak_gen
         if claim_pending:
-            # Runtime cancellation runs inside the confirmed-barge callback.
-            # Reject reentrant/new speech until that callback and its stop effect
-            # complete; otherwise an item stamped with the claimed generation
-            # could become a new playback run immediately after the claim lifts.
+            # Runtime cancellation runs inside confirmed-barge/playback-STOP
+            # callbacks. Reject reentrant/new speech until that callback and its
+            # stop effect complete; otherwise a sentence stamped after another
+            # concurrent stop could be drained by this older claimed KWS hit.
+            # Idle generic KWS claims are not STOP authority and may enqueue a
+            # response; _begin_playback_run_if_current defers its actual start.
             if on_done:
                 on_done()
             self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
             return
+        # Echo-filter provenance begins only after the generation claim admits
+        # this sentence. A STOP-claim rejection was never enqueued or spoken and
+        # must not poison later own-TTS ambiguity checks. Append before queue
+        # publication so a fast playback worker cannot expose the sentence first.
+        # getattr keeps markup fixtures that bypass __init__ compatible.
+        spoken_ring = getattr(self, "_recent_spoken", None)
+        if spoken_ring is not None:
+            spoken_ring.append(text)
         item = (text, on_done, gen, directives, ticket)
         try:
             self._play_q.put_nowait(item)
@@ -10476,6 +10824,38 @@ class SherpaOnnxEngine(AudioEngine):
                 return None
             self._stop_speaking.clear()
             return item_gen
+
+    def _begin_playback_run_if_current(self, item_gen: int) -> Optional[bool]:
+        """Atomically publish speaking state or reject a stale sentence.
+
+        Returns the prior speaking state when accepted. A KWS callback may have
+        claimed either an idle or active generation after dequeue; wait outside
+        ``_receipt_lock`` until that callback resolves, then compare its STOP
+        generation and publish ``_playback_generation`` + ``_speaking`` in the
+        same critical section. This closes both the dequeue/start seam and the
+        idle-token versus new-run transition gap.
+        """
+
+        if type(item_gen) is not int:
+            return None
+        with self._gen_condition:
+            while (
+                self._playback_kws_claim is not None
+                and not self._playback_stopping.is_set()
+            ):
+                self._gen_condition.wait()
+            if (
+                self._playback_kws_claim is not None
+                or self._confirmed_barge_claim is not None
+                or item_gen != self._speak_gen
+                or self._playback_stopping.is_set()
+            ):
+                return None
+            was_speaking = self._speaking.is_set()
+            if not was_speaking:
+                self._playback_generation += 1
+                self._speaking.set()
+            return was_speaking
 
     def _audio_cb(self, outdata, frames, time_info, status) -> None:
         """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
@@ -10658,20 +11038,12 @@ class SherpaOnnxEngine(AudioEngine):
                 # queue drains (below), so an unconditional reset would reopen
                 # firing mid-reply and reintroduce the self-storm. A fresh
                 # interruption after the assistant goes idle still re-enables.
-                was_speaking = self._speaking.is_set()
-                if not was_speaking:
-                    with self._gen_lock:
-                        playback_start_allowed = bool(
-                            getattr(self, "_confirmed_barge_claim", None) is None
-                            and my_gen == self._speak_gen
-                        )
-                        if playback_start_allowed:
-                            self._playback_generation += 1
-                    if not playback_start_allowed:
-                        if on_done:
-                            on_done()
-                        self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
-                        continue
+                was_speaking = self._begin_playback_run_if_current(my_gen)
+                if was_speaking is None:
+                    if on_done:
+                        on_done()
+                    self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
+                    continue
                 # What is audibly playing RIGHT NOW -- the primary reference for
                 # the barge-confirm echo filter. The _recent_spoken ring holds
                 # ENQUEUED sentences, and a long reply queues more than the ring
@@ -10679,7 +11051,6 @@ class SherpaOnnxEngine(AudioEngine):
                 # run-20260702-223217: the current sentence's garbled echo passed
                 # the filter and false-confirmed a barge. Bare str write.
                 self._now_playing = text
-                self._speaking.set()
                 # A sentence is now being produced: arm the dry-gap window for the
                 # audio callback (cleared in the finally once the queue drains,
                 # BEFORE the drain wait, so the natural tail drain never counts).
@@ -11876,6 +12247,7 @@ class SherpaOnnxEngine(AudioEngine):
             origin_playback = self._confirm_playback_generation
             if (
                 self._confirmed_barge_claim is not None
+                or getattr(self, "_playback_kws_claim", None) is not None
                 or origin_speak != self._speak_gen
                 or origin_playback != self._playback_generation
             ):

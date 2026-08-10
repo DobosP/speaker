@@ -13,12 +13,17 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from core.engine import EngineCallbacks
-from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.sherpa import (
+    SherpaConfig,
+    SherpaOnnxEngine,
+    _KwsControlAuthority,
+)
 
 
 class _FakeStream:
@@ -326,6 +331,64 @@ def test_generation_change_at_old_confirm_seam_cannot_callback_or_cut():
     assert "barge_in_confirmed" not in metrics
     assert eng._confirmed_barge_claim is None
     assert r.resets == 1
+
+
+def _current_kws_authority(eng: SherpaOnnxEngine) -> _KwsControlAuthority:
+    eng._stream_in = SimpleNamespace(generation=0, actual_device=None)
+    eng._capture_authority_source_generation = 0
+    eng._capture_authority_source_device = None
+    return _KwsControlAuthority(
+        capture_epoch=eng._capture_epoch,
+        capture_generation=0,
+        source_generation=0,
+        source_device=None,
+        authority_source_generation=0,
+        authority_source_device=None,
+        os_echo_route_verified=eng._os_echo_route_verified,
+        speaking=eng._speaking.is_set(),
+        speak_generation=eng._speak_gen,
+        playback_generation=eng._playback_generation,
+    )
+
+
+def test_kws_claim_blocks_confirm_claim_for_same_playback_generation() -> None:
+    eng = _engine()
+    eng._speak_gen = 4
+    eng._playback_generation = 7
+    eng._speaking.set()
+    eng._confirm_speak_generation = 4
+    eng._confirm_playback_generation = 7
+    kws_claim = eng._claim_playback_kws_if_current(_current_kws_authority(eng))
+    assert kws_claim is not None
+
+    assert eng._claim_barge_confirm_if_current(now=10.0) is None
+
+    assert eng._speak_gen == 4
+    assert not eng._stop_speaking.is_set()
+    assert eng._confirmed_barge_claim is None
+    eng._release_playback_kws_claim(kws_claim)
+
+
+def test_confirm_claim_blocks_kws_claim_even_with_post_claim_current_authority() -> (
+    None
+):
+    eng = _engine()
+    eng._speak_gen = 4
+    eng._playback_generation = 7
+    eng._speaking.set()
+    eng._confirm_speak_generation = 4
+    eng._confirm_playback_generation = 7
+    confirm_claim = eng._claim_barge_confirm_if_current(now=10.0)
+    assert confirm_claim is not None
+    # Build the KWS authority after confirm advanced the stop generation. It is
+    # otherwise current, so rejection specifically proves mutual exclusion.
+    authority = _current_kws_authority(eng)
+
+    assert eng._claim_playback_kws_if_current(authority) is None
+
+    assert eng._playback_kws_claim is None
+    assert eng._confirmed_barge_claim is confirm_claim
+    eng._release_barge_confirm_claim(confirm_claim)
 
 
 def test_current_generation_claim_allows_reentrant_callback_stop():

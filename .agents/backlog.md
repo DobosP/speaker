@@ -280,11 +280,24 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         KWS faults/exhaustion recreate and abstain; malformed capture PCM becomes
         a controlled gap; confirm structural/native failures close and discard
         before whole-continuity recovery without acoustic/effect side effects.
-      - [ ] before changing playback-time KWS authority, atomically bind its
-        callback to the captured playback/source generation and route exact STOP
-        ambiguity through ADR-0042's own-TTS/speaker rule. A raw-KWS experiment
-        must begin as separate-stream aggregate-only shadow evidence and still
-        needs owner bare-speaker A/B before effects.
+      - [x] fence playback-time KWS effects to the code-pinned exact shipped
+        six-row phone-token binding and the captured capture/media/source/
+        authority-source/route/speak/playback generations (ADR-0182). Closed
+        raw `stop`/`wait` labels canonicalize to the
+        typed STOP callback without the mutable command map; all aliases behind
+        a collapsed label participate in conservative own-TTS ambiguity, idle
+        generic KWS is unchanged, and terminalization shares callback admission.
+        Missing typed callback abstains before native work/claim; a live STOP
+        claim rejects new playback admission without recording it as own-TTS.
+        Headless receipts: 349 focused, 218 adjacent, 449 complete-Sherpa, 6
+        APM/DTD; scoped static/changed-region format/whitespace/STATUS gates and
+        an independent adversarial audit are green.
+      - [ ] separately evaluate speaker-authorized resolution of an own-TTS-
+        ambiguous KWS hit. ADR-0182 preserves ADR-0082's abstention and the
+        independent word-cut fallback; any future KWS acceptance needs dedicated
+        generation-scoped PCM, compatible warmed speaker evidence, a new ADR,
+        and owner bare-speaker A/B. A raw-KWS experiment must still begin as a
+        separate-stream aggregate-only shadow before any effect.
       - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
         the interplay only bites in profiles that opt the gate ON, so the default
         pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import threading
 import time
 import types
@@ -13,7 +14,10 @@ from core.engines.sherpa import (
     SherpaConfig,
     SherpaOnnxEngine,
     _CaptureBlockRejected,
+    _KwsControlAuthority,
 )
+from core.kws_contract import KWS_STOP_PHRASES, KwsPhraseBinding
+from core.media_session import CaptureBlockContext, CapturedBlock
 
 
 class _Binder:
@@ -127,6 +131,7 @@ def test_rearmed_duplex_grant_initializes_word_cut_in_same_reply():
 
     class _OneBlockInput:
         generation = 0
+        actual_device = None
 
         def __init__(self, engine):
             self.engine = engine
@@ -142,6 +147,10 @@ def test_rearmed_duplex_grant_initializes_word_cut_in_same_reply():
     engine._vad = _Vad()
     engine._capture_sr = engine.config.sample_rate
     engine._stream_in = _OneBlockInput(engine)
+    # This fixture bypasses the normal capture-domain resolution that binds the
+    # live source identity before virtual-route authorization.
+    engine._capture_authority_source_generation = 0
+    engine._capture_authority_source_device = None
     engine._speaking.set()
     # Model the race: the reply reset was already consumed with capture-only
     # authority, so no detector stream exists yet.
@@ -215,6 +224,48 @@ class _FixedKws:
 
     def reset_stream(self, _stream):
         self.resets += 1
+
+
+_PLAYBACK_KWS_TOKENS = tuple(phrase.tokens for phrase in KWS_STOP_PHRASES)
+_PLAYBACK_KWS_BINDINGS = tuple(
+    KwsPhraseBinding(
+        tokens=tokens,
+        surface=phrase.surface,
+        result_label=phrase.result_label,
+    )
+    for tokens, phrase in zip(
+        _PLAYBACK_KWS_TOKENS,
+        KWS_STOP_PHRASES,
+        strict=True,
+    )
+)
+
+
+class _TokenKws(_FixedKws):
+    def __init__(
+        self,
+        keyword,
+        tokens,
+        *,
+        before_result=None,
+        before_tokens=None,
+    ):
+        super().__init__(keyword)
+        self._tokens = tokens
+        self._before_result = before_result
+        self._before_tokens = before_tokens
+        self.token_calls = 0
+
+    def get_result(self, stream):
+        if self._before_result is not None:
+            self._before_result()
+        return super().get_result(stream)
+
+    def tokens(self, _stream):
+        self.token_calls += 1
+        if self._before_tokens is not None:
+            self._before_tokens()
+        return self._tokens
 
 
 class _NullKwsStream:
@@ -294,6 +345,57 @@ def _kws_engine(keyword):
     return engine, commands
 
 
+def _authority_kws_engine(
+    keyword: str,
+    *,
+    phrase_index: int = 0,
+    speaking: bool = True,
+    os_echo_route_verified: bool = False,
+    before_result=None,
+    before_tokens=None,
+):
+    engine = SherpaOnnxEngine(SherpaConfig())
+    spotter = _TokenKws(
+        keyword,
+        _PLAYBACK_KWS_TOKENS[phrase_index],
+        before_result=before_result,
+        before_tokens=before_tokens,
+    )
+    engine._kws = spotter
+    engine._kws_stream = _NullKwsStream()
+    engine._kws_phrase_bindings = _PLAYBACK_KWS_BINDINGS
+    engine._stream_in = types.SimpleNamespace(
+        generation=3,
+        actual_device="mic-a",
+    )
+    engine._capture_epoch = 2
+    engine._capture_callback_context.epoch = 2
+    engine._capture_callback_context.capture_generation = 5
+    engine._capture_media_session = types.SimpleNamespace(generation=5)
+    engine._capture_authority_source_generation = 3
+    engine._capture_authority_source_device = "mic-a"
+    engine._os_echo_route_verified = os_echo_route_verified
+    engine._speak_gen = 7
+    engine._playback_generation = 11
+    if speaking:
+        engine._speaking.set()
+    else:
+        engine._speaking.clear()
+    authority = _KwsControlAuthority(
+        capture_epoch=2,
+        capture_generation=5,
+        source_generation=3,
+        source_device="mic-a",
+        authority_source_generation=3,
+        authority_source_device="mic-a",
+        os_echo_route_verified=os_echo_route_verified,
+        speaking=speaking,
+        speak_generation=7,
+        playback_generation=11,
+    )
+    return engine, spotter, authority
+
+
 def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
     # The assistant's own TTS ("I'll stop now") leaks back through imperfect AEC
     # and the spotter fires on it -- the own-echo guard must drop the hit so it
@@ -301,10 +403,16 @@ def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
     engine, commands = _kws_engine("stop")
     engine._speaking.set()
     engine._now_playing = "Okay, I will stop now."
+    stop_results = []
+    engine._cb = EngineCallbacks(
+        on_command=commands.append,
+        on_control_stop_result=stop_results.append,
+    )
 
     consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
     assert commands == []
+    assert stop_results == []
     assert consumed is False
     assert engine._kws_own_echo_suppressions == 1
     assert engine._kws.resets == 1  # stream is still reset after the hit
@@ -329,12 +437,509 @@ def test_kws_hit_passes_when_now_playing_does_not_contain_keyword():
     engine, commands = _kws_engine("stop")
     engine._speaking.set()
     engine._now_playing = "The weather is nice today."
+    stop_commands = []
+    engine._cb = EngineCallbacks(
+        on_command=commands.append,
+        on_control_stop_result=stop_commands.append,
+    )
 
     consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
-    assert commands == ["stop"]
+    assert commands == []
+    assert [result.text for result in stop_commands] == ["stop"]
     assert consumed is True
     assert engine._kws_own_echo_suppressions == 0
+
+
+@pytest.mark.parametrize(
+    "keyword,phrase_index",
+    [("stop", 0), ("wait", 4)],
+)
+def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
+    keyword,
+    phrase_index,
+) -> None:
+    engine, spotter, authority = _authority_kws_engine(
+        keyword,
+        phrase_index=phrase_index,
+    )
+    engine._now_playing = "The weather is pleasant today."
+    generic_commands = []
+    generic_results = []
+    stop_results = []
+    engine._cb = EngineCallbacks(
+        on_command=generic_commands.append,
+        on_command_result=generic_results.append,
+        on_control_stop_result=stop_results.append,
+    )
+
+    consumed = engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert consumed is True
+    assert generic_commands == []
+    assert generic_results == []
+    assert [result.text for result in stop_results] == ["stop"]
+    assert spotter.token_calls == 1
+    assert engine._playback_kws_claim is None
+
+
+def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> None:
+    playback, playback_spotter, playback_authority = _authority_kws_engine(
+        "command mode"
+    )
+    playback_generic = []
+    playback_stop = []
+    playback._cb = EngineCallbacks(
+        on_command_result=playback_generic.append,
+        on_control_stop_result=playback_stop.append,
+    )
+
+    assert not playback._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=playback_authority,
+    )
+    assert playback_generic == []
+    assert playback_stop == []
+    assert playback_spotter.token_calls == 1
+
+    idle, idle_spotter, idle_authority = _authority_kws_engine(
+        "command mode",
+        speaking=False,
+    )
+    idle_generic = []
+    idle_stop = []
+    idle._cb = EngineCallbacks(
+        on_command_result=idle_generic.append,
+        on_control_stop_result=idle_stop.append,
+    )
+
+    assert idle._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=idle_authority,
+    )
+    assert [result.text for result in idle_generic] == ["command mode"]
+    assert idle_stop == []
+    assert idle_spotter.token_calls == 0
+
+
+@pytest.mark.parametrize(
+    "stop_callback", [None, object()], ids=("missing", "noncallable")
+)
+def test_playback_kws_without_callable_typed_stop_callback_abstains_before_native(
+    stop_callback,
+) -> None:
+    engine, spotter, authority = _authority_kws_engine("stop")
+    engine._now_playing = "A sentence with no control words."
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    generic = []
+    engine._cb = EngineCallbacks(
+        on_command_result=generic.append,
+        on_control_stop_result=stop_callback,
+    )
+
+    def unexpected_claim(*_args, **_kwargs):
+        raise AssertionError("missing STOP callback must not claim playback")
+
+    engine._claim_playback_kws_if_current = unexpected_claim
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert generic == []
+    assert spotter.resets == 0
+    assert spotter.token_calls == 0
+    assert engine._playback_kws_claim is None
+    engine._enqueue_play("new speech remains admissible", None)
+    assert engine._play_q.get_nowait()[0] == "new speech remains admissible"
+
+
+@pytest.mark.parametrize(
+    "phrase_index,own_speech",
+    [
+        (3, "Please be quiet while I explain."),
+        (0, "Please be quiet while I explain."),
+        (4, "I need you to hold on for a moment."),
+    ],
+    ids=("exact-be-quiet", "collapsed-stop-sibling", "collapsed-wait-sibling"),
+)
+def test_playback_kws_collapsed_alias_ambiguity_abstains(
+    phrase_index,
+    own_speech,
+) -> None:
+    keyword = KWS_STOP_PHRASES[phrase_index].result_label
+    engine, _spotter, authority = _authority_kws_engine(
+        keyword,
+        phrase_index=phrase_index,
+    )
+    engine._now_playing = own_speech
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert stop_results == []
+    assert engine._kws_own_echo_suppressions == 1
+
+
+def test_playback_kws_token_label_mismatch_abstains() -> None:
+    engine, _spotter, authority = _authority_kws_engine(
+        "stop",
+        phrase_index=4,
+    )
+    engine._now_playing = "A sentence with no control words."
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+    assert stop_results == []
+
+
+@pytest.mark.parametrize("native_label", ["STOP", "STOP!!!", " stop", "wait "])
+def test_playback_kws_requires_raw_exact_native_label(native_label) -> None:
+    phrase_index = 4 if native_label.startswith("wait") else 0
+    engine, _spotter, authority = _authority_kws_engine(
+        native_label,
+        phrase_index=phrase_index,
+    )
+    engine._now_playing = "A sentence with no control words."
+    generic = []
+    stop_results = []
+    engine._cb = EngineCallbacks(
+        on_command_result=generic.append,
+        on_control_stop_result=stop_results.append,
+    )
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert generic == []
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+def test_playback_kws_without_exact_phrase_binding_abstains() -> None:
+    engine, spotter, authority = _authority_kws_engine("stop")
+    engine._kws_phrase_bindings = ()
+    engine._now_playing = "A sentence with no control words."
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert spotter.token_calls == 0
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+@pytest.mark.parametrize(
+    "stale_case",
+    [
+        "capture_epoch",
+        "capture_generation",
+        "media_generation",
+        "source_generation",
+        "source_device",
+        "authority_source_generation",
+        "authority_source_device",
+        "os_echo_route_authority",
+        "speak_generation",
+        "playback_generation",
+        "speaking_state",
+    ],
+)
+def test_stale_kws_authority_cannot_callback_or_terminal_lineage(stale_case) -> None:
+    holder = {}
+
+    def make_stale() -> None:
+        engine = holder["engine"]
+        if stale_case == "capture_epoch":
+            engine._capture_epoch += 1
+        elif stale_case == "capture_generation":
+            engine._capture_callback_context.capture_generation += 1
+        elif stale_case == "media_generation":
+            engine._capture_media_session.generation += 1
+        elif stale_case == "source_generation":
+            engine._stream_in.generation += 1
+        elif stale_case == "source_device":
+            engine._stream_in.actual_device = "mic-b"
+        elif stale_case == "authority_source_generation":
+            engine._capture_authority_source_generation += 1
+        elif stale_case == "authority_source_device":
+            engine._capture_authority_source_device = "mic-b"
+        elif stale_case == "os_echo_route_authority":
+            engine._os_echo_route_verified = True
+        elif stale_case == "speak_generation":
+            engine._speak_gen += 1
+        elif stale_case == "playback_generation":
+            engine._playback_generation += 1
+        else:
+            engine._speaking.clear()
+
+    engine, spotter, authority = _authority_kws_engine(
+        "stop",
+        before_tokens=make_stale,
+    )
+    holder["engine"] = engine
+    engine._now_playing = "A sentence with no control words."
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    generic = []
+    stop_results = []
+    engine._cb = EngineCallbacks(
+        on_command_result=generic.append,
+        on_control_stop_result=stop_results.append,
+    )
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert generic == []
+    assert stop_results == []
+    assert spotter.resets == 1
+    assert engine._playback_kws_claim is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("capture_epoch", True),
+        ("capture_generation", np.int64(5)),
+        ("source_generation", True),
+        ("authority_source_generation", np.int64(3)),
+        ("os_echo_route_verified", 0),
+        ("speaking", 1),
+        ("speak_generation", np.int64(7)),
+        ("playback_generation", True),
+    ],
+)
+def test_forged_coercible_kws_authority_abstains_without_terminal(
+    field,
+    value,
+) -> None:
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    authority = replace(authority, **{field: value})
+    engine._now_playing = "A sentence with no control words."
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+def test_kws_authority_snapshot_does_not_coerce_forged_capture_types() -> None:
+    engine, _spotter, _authority = _authority_kws_engine("stop")
+    captured = CapturedBlock(
+        pcm=np.zeros(1, dtype="float32"),
+        sample_rate_hz=16_000,
+        sequence=1,
+        captured_at=1.0,
+        capture_epoch=True,
+        source_generation=np.int64(3),
+        capture_generation=np.int64(5),
+        source_device="mic-a",
+    )
+    context = CaptureBlockContext(
+        authority_source_generation=np.int64(3),
+        authority_source_device="mic-a",
+        os_echo_route_verified=1,
+        speaking=1,
+        speak_generation=np.int64(7),
+        playback_generation=np.int64(11),
+    )
+
+    authority = engine._kws_control_authority(captured, context)
+
+    assert authority.capture_epoch is True
+    assert type(authority.source_generation) is np.int64
+    assert type(authority.capture_generation) is np.int64
+    assert type(authority.authority_source_generation) is np.int64
+    assert authority.os_echo_route_verified == 1
+    assert type(authority.os_echo_route_verified) is int
+    assert authority.speaking == 1
+    assert type(authority.speaking) is int
+    assert type(authority.speak_generation) is np.int64
+    assert type(authority.playback_generation) is np.int64
+    assert not engine._kws_control_authority_is_current(authority)
+
+
+@pytest.mark.parametrize("route_case", ["virtual-route", "os-echo-route"])
+def test_revoked_playback_route_cannot_callback_or_terminal_lineage(route_case) -> None:
+    holder = {}
+
+    def revoke_route() -> None:
+        engine = holder["engine"]
+        if route_case == "virtual-route":
+            engine._virtual_route_failure_in_progress = True
+        else:
+            engine._os_echo_route_verified = False
+
+    engine, _spotter, authority = _authority_kws_engine(
+        "stop",
+        os_echo_route_verified=True,
+        before_tokens=revoke_route,
+    )
+    holder["engine"] = engine
+    engine._now_playing = "A sentence with no control words."
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        guard_private_route=route_case == "virtual-route",
+        require_os_echo_route=route_case == "os-echo-route",
+        os_echo_route_verified=True,
+        control_authority=authority,
+    )
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+@pytest.mark.parametrize("initially_speaking", [False, True], ids=("idle", "active"))
+def test_kws_authority_rejects_playback_state_aba(initially_speaking) -> None:
+    holder = {}
+
+    def cycle_playback_state() -> None:
+        engine = holder["engine"]
+        if initially_speaking:
+            engine.stop_speaking()
+            assert engine._begin_playback_run_if_current(engine._speak_gen) is False
+        else:
+            assert engine._begin_playback_run_if_current(engine._speak_gen) is False
+            engine.stop_speaking()
+        assert engine._speaking.is_set() is initially_speaking
+
+    keyword = "stop" if initially_speaking else "command mode"
+    engine, _spotter, authority = _authority_kws_engine(
+        keyword,
+        speaking=initially_speaking,
+        before_result=cycle_playback_state,
+    )
+    holder["engine"] = engine
+    engine._now_playing = "A sentence with no control words."
+    generic = []
+    stop_results = []
+    engine._cb = EngineCallbacks(
+        on_command_result=generic.append,
+        on_control_stop_result=stop_results.append,
+    )
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    assert generic == []
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+def test_capture_callback_admission_failure_does_not_terminalize_or_leak_claim() -> (
+    None
+):
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    engine._now_playing = "A sentence with no control words."
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    stop_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=stop_results.append)
+    claim_current = engine._claim_playback_kws_if_current
+
+    def claim_then_stop_capture(control_authority, *, stop_only=None):
+        claim = claim_current(control_authority, stop_only=stop_only)
+        assert claim is not None
+        engine._capture_epoch += 1
+        return claim
+
+    engine._claim_playback_kws_if_current = claim_then_stop_capture
+
+    assert not engine._poll_keywords(
+        np.zeros(1600, dtype="float32"),
+        control_authority=authority,
+    )
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert stop_results == []
+    assert engine._playback_kws_claim is None
+
+
+def test_kws_callback_exception_releases_playback_claim() -> None:
+    class _CallbackFailure(RuntimeError):
+        pass
+
+    engine, _spotter, authority = _authority_kws_engine("stop")
+    engine._now_playing = "A sentence with no control words."
+
+    def fail_callback(_result):
+        assert engine._playback_kws_claim is not None
+        raise _CallbackFailure("typed STOP callback failed")
+
+    engine._cb = EngineCallbacks(on_control_stop_result=fail_callback)
+
+    with pytest.raises(_CallbackFailure, match="typed STOP callback failed"):
+        engine._poll_keywords(
+            np.zeros(1600, dtype="float32"),
+            control_authority=authority,
+        )
+
+    assert engine._playback_kws_claim is None
 
 
 def test_typed_kws_hit_closes_source_acoustic_turn() -> None:
@@ -428,6 +1033,33 @@ def test_kws_decode_exhaustion_abstains_before_result_and_preserves_lineage() ->
     assert spotter.reset_calls == 1
     assert spotter.create_calls == 2
     assert engine._kws_stream is spotter.streams[-1]
+    assert engine._kws_stream is not old_stream
+
+
+@pytest.mark.parametrize("native_result", [None, False, 0, (), []])
+def test_kws_falsey_non_string_result_is_native_fault_and_preserves_lineage(
+    native_result,
+) -> None:
+    spotter = _BoundedKws(ready_decodes=0, keyword=native_result)
+    engine = _bounded_kws_engine(spotter)
+    old_stream = engine._kws_stream
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=3)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    commands = []
+    engine._cb = EngineCallbacks(on_command_result=commands.append)
+
+    assert not engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert commands == []
+    assert spotter.result_calls == 1
+    assert spotter.reset_calls == 1
+    assert spotter.create_calls == 2
     assert engine._kws_stream is not old_stream
 
 
@@ -601,6 +1233,7 @@ def _one_block_kws_capture() -> tuple[SherpaOnnxEngine, object]:
 
     class _OneBlockInput:
         generation = 0
+        actual_device = None
 
         def __init__(self, engine) -> None:
             self.engine = engine
@@ -619,6 +1252,9 @@ def _one_block_kws_capture() -> tuple[SherpaOnnxEngine, object]:
     engine._recognizer = recognizer
     engine._capture_sr = engine.config.sample_rate
     engine._stream_in = _OneBlockInput(engine)
+    # Inline fixture equivalent of production's capture-domain authority bind.
+    engine._capture_authority_source_generation = 0
+    engine._capture_authority_source_device = None
     return engine, recognizer
 
 
@@ -685,12 +1321,13 @@ def test_capture_kws_terminal_closes_open_confirm_window() -> None:
     engine._capture_authority_source_generation = 0
     engine._capture_authority_source_device = None
     engine._os_echo_route_verified = True
-    engine._kws = _FixedKws("custom label")
+    engine._kws = _TokenKws("stop", _PLAYBACK_KWS_TOKENS[0])
     engine._kws_stream = _NullKwsStream()
-    commands: list[str] = []
+    engine._kws_phrase_bindings = _PLAYBACK_KWS_BINDINGS
+    stop_results = []
     barges: list[str] = []
     engine._cb = EngineCallbacks(
-        on_command=commands.append,
+        on_control_stop_result=stop_results.append,
         on_barge_in=lambda: barges.append("barge"),
     )
     engine._speaking.set()
@@ -712,7 +1349,7 @@ def test_capture_kws_terminal_closes_open_confirm_window() -> None:
     assert recognizer.reset_calls == 1
     assert recognizer.stream.blocks == []
     assert engine._kws.resets == 1
-    assert commands == ["custom label"]
+    assert [result.text for result in stop_results] == ["stop"]
     assert barges == []
     assert not engine._barge_confirm_active()
     assert engine._duck_gain == 1.0

@@ -322,6 +322,10 @@ class EngineCallbacks:
     on_barge_in_result: Optional[Callable[[AcousticSignal], None]] = None
     on_command_result: Optional[Callable[[CommandDetection], None]] = None
     on_transcript_abort: Optional[Callable[[TranscriptAbort], None]] = None
+    # Closed playback-time STOP path. Unlike ``on_command_result``, this callback
+    # is never dispatched through a mutable command map; engines must abstain if
+    # the runtime does not bind it.
+    on_control_stop_result: Optional[Callable[[CommandDetection], None]] = None
 
 
 class AudioEngine(ABC):

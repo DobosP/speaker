@@ -42,6 +42,7 @@ import tempfile
 from typing import Callable, Iterable, Literal
 
 from core.engines._sherpa_models import read_onnx_custom_metadata
+from core.kws_contract import KWS_STOP_PHRASES
 
 DEST = os.path.join("pretrained_models", "sherpa")
 # On-device LLM weights (llamacpp backend) live here; the phone/phone_lite device
@@ -343,13 +344,8 @@ KWS_BARGE_BOOST = 2.0
 # authority check (it IS the interrupt floor). Lowering thresholds is a
 # deliberate live-A/B decision AFTER the OS mic level is fixed, never a
 # default (ADR-0082).
-KWS_BARGE_PHRASES: tuple[tuple[tuple[str, ...], str, float], ...] = (
-    (("STOP",), "stop", 0.25),
-    (("STOP", "TALKING"), "stop", 0.25),
-    (("STOP", "SPEAKING"), "stop", 0.25),
-    (("BE", "QUIET"), "stop", 0.25),
-    (("WAIT",), "wait", 0.30),
-    (("HOLD", "ON"), "wait", 0.30),
+KWS_BARGE_PHRASES: tuple[tuple[tuple[str, ...], str, float], ...] = tuple(
+    (phrase.words, phrase.result_label, phrase.threshold) for phrase in KWS_STOP_PHRASES
 )
 # Model members we keep (chunk-16 variant, int8 preferred for encoder/joiner);
 # the decoder ships fp32 only. tokens.txt + en.phone drive keyword generation.
@@ -1548,7 +1544,11 @@ def generate_barge_keywords(lexicon_path: str, out_path: str) -> str:
                 lex[parts[0]] = " ".join(parts[1:])
 
     lines: list[str] = []
-    for words, label, threshold in KWS_BARGE_PHRASES:
+    for (words, label, threshold), expected in zip(
+        KWS_BARGE_PHRASES,
+        KWS_STOP_PHRASES,
+        strict=True,
+    ):
         try:
             phones = " ".join(lex[word] for word in words)
         except KeyError as exc:
@@ -1556,6 +1556,11 @@ def generate_barge_keywords(lexicon_path: str, out_path: str) -> str:
                 f"word {exc.args[0]!r} for keyword {' '.join(words)!r} not in "
                 f"{os.path.basename(lexicon_path)}"
             ) from exc
+        if tuple(phones.split()) != expected.tokens:
+            raise ValueError(
+                f"keyword {' '.join(words)!r} does not match the pinned "
+                "phone-token contract"
+            )
         lines.append(f"{phones} :{KWS_BARGE_BOOST} #{threshold} @{label}")
 
     os.makedirs(os.path.dirname(out_path) or os.curdir, exist_ok=True)

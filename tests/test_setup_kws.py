@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from core.kws_contract import KWS_STOP_PHRASES, load_kws_phrase_bindings
 from tools.setup_models import (
     KWS_BARGE_PHRASES,
     fetch_kws_package,
@@ -156,6 +157,10 @@ def test_generate_barge_keywords_uses_lexicon_phonemes(tmp_path):
     assert lines[0] == f"S T AA1 P :2.0 #{stop_thr:g} @stop"
     # HOLD ON: two-word phrase, phonemes concatenated, soft-stop label.
     assert lines[-1] == f"HH OW1 L D AA1 N :2.0 #{wait_thr:g} @wait"
+    bindings = load_kws_phrase_bindings(str(out))
+    assert tuple(binding.tokens for binding in bindings) == tuple(
+        phrase.tokens for phrase in KWS_STOP_PHRASES
+    )
     # Every emitted label normalizes to a control the runtime resolves to stop.
     from core.contract import STOP_COMMANDS, normalize_command
 
@@ -170,6 +175,17 @@ def test_generate_barge_keywords_rejects_missing_word(tmp_path):
     lexicon.write_text("STOP S T AA1 P\n", encoding="utf-8")  # missing TALKING, ...
     with pytest.raises(KeyError):
         generate_barge_keywords(str(lexicon), str(tmp_path / "kw.txt"))
+
+
+def test_generate_barge_keywords_rejects_lexicon_phone_drift(tmp_path):
+    lexicon = tmp_path / "en.phone"
+    lexicon.write_bytes(_LEXICON.replace(b"STOP S T AA1 P", b"STOP S T OW1 P", 1))
+    out = tmp_path / "keywords_barge.txt"
+
+    with pytest.raises(ValueError, match="pinned phone-token contract"):
+        generate_barge_keywords(str(lexicon), str(out))
+
+    assert not out.exists()
 
 
 def test_unpacks_selected_members_and_resolves_config_paths(tmp_path):

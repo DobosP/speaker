@@ -14,6 +14,7 @@ import pytest
 
 from core.engines._aec import (
     AecDelayCalibrator,
+    AecDelaySnapshot,
     EchoCanceller,
     FarEndRing,
     PlaybackFIFO,
@@ -990,6 +991,28 @@ def test_calibrator_recovers_known_lag_and_leaves_the_seed():
     got = cal.current_delay_samples()
     assert abs(got - 120) <= int(0.002 * _SR)  # within ~2 ms of the true lag
     assert got != seed  # the measured value replaced the seed
+    assert cal.snapshot() == AecDelaySnapshot(
+        sample_rate_hz=_SR,
+        seed_delay_samples=seed,
+        operating_delay_samples=got,
+        accepted_estimate=True,
+    )
+
+
+def test_calibrator_snapshot_reset_and_continuity_provenance():
+    seed = 320
+    cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
+    assert cal.snapshot() == AecDelaySnapshot(_SR, seed, seed, False)
+
+    cal._estimate_delay = lambda _far, _mic: (seed, 1.0)
+    cal._recalc_now()
+    assert cal.snapshot() == AecDelaySnapshot(_SR, seed, seed, True)
+
+    cal.reset_continuity()
+    assert cal.snapshot() == AecDelaySnapshot(_SR, seed, seed, True)
+
+    cal.reset()
+    assert cal.snapshot() == AecDelaySnapshot(_SR, seed, seed, False)
 
 
 def test_calibrator_rejects_low_correlation_and_holds_the_seed():

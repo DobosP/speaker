@@ -306,8 +306,9 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       residual is echo-heavy and the DTD fires on echo (coherence veto correctly
       rejected 4). Not a trustworthy barge-miss signal. A real human talk-over on
       real hardware is required to verdict the cut (the loopback stress-tests the
-      echo veto, not the cut). `aec_ref_delay_ms` stays echo-probe-calibrated per
-      ADR-0005 (do NOT set it from a loopback run).
+      echo veto, not the cut). With auto-delay enabled, treat
+      `aec_ref_delay_ms` only as the configured seed under ADR-0012/0175; never
+      set it from a loopback run.
 - [ ] **★★★ REAL-USAGE FORENSICS (2026-07-04): the STT/barge bottleneck is the
       AEC/APM pipeline, NOT the mic — partly REFUTES the "raise mic level" STT
       to-do.** Analyzed 7 real recordings (trace + an A/B replay); see
@@ -517,15 +518,19 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       to streaming-only in config.local.json because the unguarded 2nd pass
       hallucinated.)
 - [ ] **Enable + validate AEC on real hardware** (needs the mic). `config.local.json`
-      → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"`. Calibrate
-      `aec_ref_delay_ms` with `tools/echo_probe.py`. Confirm no self-interrupt AND a
-      real interrupt still cuts through; then optionally try `aec_backend="dtln"`.
-- [~] **Expose the accepted runtime delay in `tools/echo_probe.py`.** ERLE
+      → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"` with auto-delay
+      enabled, then inspect the probe's accepted/current runtime-delay fields.
+      Confirm no self-interrupt AND a real interrupt still cuts through; then
+      optionally try `aec_backend="dtln"`. Auto-delay-off fixed-seed operation is
+      not the supported self-calibrating path and needs separate live qualification.
+- [x] **Expose the accepted runtime delay in `tools/echo_probe.py` — DONE
+      2026-08-10 (ADR-0175).** ERLE
       reporting already landed in `3bdacea`; `tools.aec_probe` already sweeps
       recorded mic/reference pairs, and runtime `AecDelayCalibrator` already
-      cross-correlates and owns the operating delay. The remaining diagnostic
-      gap is to report configured seed versus accepted runtime operating delay
-      honestly; do not revive a static “auto-suggest” write when auto-delay is on.
+      cross-correlates and owns the operating delay. The probe now keeps the legacy
+      strategy seed and adds a quiesced scalar state that distinguishes inactive,
+      fail-open, fixed, pending, accepted, and unavailable runtime evidence. It
+      neither rewrites config nor revives a static auto-suggestion.
 - [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
       `tools/turn_detect_check` real-voice validation tool + an adaptive
       confidence-tiered endpoint floor all LANDED on main from the voice batch below;

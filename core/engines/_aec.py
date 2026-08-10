@@ -135,6 +135,21 @@ class FarEndRing:
             self._written = 0
 
 
+@dataclass(frozen=True, slots=True)
+class AecDelaySnapshot:
+    """Scalar diagnostic state for one quiesced delay calibrator.
+
+    The rolling mic/reference arrays remain private.  Callers outside the
+    capture owner must first prove that owner has stopped before taking this
+    snapshot; the calibrator deliberately has no hot-path lock.
+    """
+
+    sample_rate_hz: int
+    seed_delay_samples: int
+    operating_delay_samples: int
+    accepted_estimate: bool
+
+
 class AecDelayCalibrator:
     """Runtime self-calibration of the far->near echo delay for the AEC reference.
 
@@ -226,6 +241,15 @@ class AecDelayCalibrator:
         accepted estimate, then the measured (median) value -- always clamped to
         ``[0, max_delay]``."""
         return self._operating
+
+    def snapshot(self) -> AecDelaySnapshot:
+        """Return the scalar seed/operating provenance after writer quiescence."""
+        return AecDelaySnapshot(
+            sample_rate_hz=int(self.sample_rate),
+            seed_delay_samples=int(self._seed),
+            operating_delay_samples=int(self._operating),
+            accepted_estimate=bool(self._acquired),
+        )
 
     def reset(self) -> None:
         """Drop the rolling window + measurement history and fall back to the seed.

@@ -19,8 +19,11 @@ echo can exceed the buffer reference even though it is "just" the assistant.
 Prints a JSON summary so a run is interpretable even if nothing coupled:
 ``self_interruptions`` (barge-ins fired during the assistant's own speech),
 the (mic_rms, playback_level, gate_passed) samples the gate evaluated, the
-mic/playback ratio in dB, and the peak playback level.
+mic/playback ratio in dB, the peak playback level, and an additive
+``aec_reference_delay`` block separating the configured seed from the final
+accepted/current operating delay when shutdown proves the capture writer stopped.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,6 +51,135 @@ def _rms(samples) -> float:
     return float(np.sqrt(np.mean(a * a)))
 
 
+def _samples_to_ms(samples: int, sample_rate_hz: int) -> float:
+    return round(1000.0 * int(samples) / int(sample_rate_hz), 3)
+
+
+def _capture_quiesced_after_stop(engine, *, stop_completed: bool) -> bool:
+    """Whether bounded shutdown proved the capture-only calibrator is stable."""
+    if not stop_completed:
+        return False
+    running = getattr(engine, "_running", None)
+    retained = getattr(engine, "_capture_resource_hold", None)
+    running_is_set = getattr(running, "is_set", None)
+    retained_is_set = getattr(retained, "is_set", None)
+    if not callable(running_is_set) or not callable(retained_is_set):
+        return False
+    try:
+        return not bool(running_is_set()) and not bool(retained_is_set())
+    except Exception:
+        return False
+
+
+def _aec_reference_delay_summary(engine, sherpa_cfg, *, stop_completed: bool) -> dict:
+    """Build the additive seed-versus-runtime delay diagnostic.
+
+    The capture thread is the calibrator's sole writer.  A bounded ``stop`` may
+    retain that owner, so no calibrator or operating-delay field is read unless
+    shutdown proved quiescence.  The legacy strategy field remains the configured
+    seed; this block reports actual AEC construction and explicit acceptance.
+    """
+    sample_rate_hz = int(getattr(sherpa_cfg, "sample_rate"))
+    configured_seed_ms = getattr(sherpa_cfg, "aec_ref_delay_ms")
+    configured_seed_samples = int(sample_rate_hz * float(configured_seed_ms) / 1000.0)
+    aec_enabled_configured = bool(getattr(sherpa_cfg, "aec_enabled", False))
+    auto_delay_enabled = bool(getattr(sherpa_cfg, "aec_auto_delay", False))
+    aec_active = getattr(engine, "_aec", None) is not None
+    calibrator = getattr(engine, "_aec_delay_cal", None)
+    auto_delay_active = bool(
+        aec_active and auto_delay_enabled and calibrator is not None
+    )
+
+    out = {
+        "measurement_state": None,
+        "configured_seed_ms": configured_seed_ms,
+        "configured_seed_samples": configured_seed_samples,
+        "sample_rate_hz": sample_rate_hz,
+        "aec_enabled_configured": aec_enabled_configured,
+        "aec_active": aec_active,
+        "auto_delay_enabled": auto_delay_enabled,
+        "auto_delay_active": auto_delay_active,
+        "runtime_snapshot_available": False,
+        "runtime_estimate_accepted": False,
+        "effective_seed_samples": None,
+        "operating_delay_samples": None,
+        "operating_delay_ms": None,
+    }
+    if not aec_active:
+        out["measurement_state"] = (
+            "aec_unavailable" if aec_enabled_configured else "aec_disabled"
+        )
+        return out
+
+    if not _capture_quiesced_after_stop(engine, stop_completed=stop_completed):
+        out["measurement_state"] = "snapshot_unavailable"
+        out["runtime_estimate_accepted"] = None
+        return out
+
+    if not auto_delay_enabled:
+        try:
+            operating = int(getattr(engine, "_aec_ref_delay"))
+            if operating < 0 or operating != configured_seed_samples:
+                raise ValueError("inconsistent fixed delay")
+        except Exception:
+            out["measurement_state"] = "snapshot_unavailable"
+            out["runtime_estimate_accepted"] = None
+            return out
+        out.update(
+            {
+                "measurement_state": "fixed_configured_delay",
+                "runtime_snapshot_available": True,
+                "effective_seed_samples": configured_seed_samples,
+                "operating_delay_samples": operating,
+                "operating_delay_ms": _samples_to_ms(operating, sample_rate_hz),
+            }
+        )
+        return out
+
+    if calibrator is None:
+        out["measurement_state"] = "calibrator_unavailable"
+        out["runtime_estimate_accepted"] = None
+        return out
+
+    try:
+        snapshot = calibrator.snapshot()
+        snapshot_rate = int(snapshot.sample_rate_hz)
+        effective_seed = int(snapshot.seed_delay_samples)
+        operating = int(snapshot.operating_delay_samples)
+        engine_operating = int(getattr(engine, "_aec_ref_delay"))
+        if type(snapshot.accepted_estimate) is not bool:
+            raise ValueError("invalid delay snapshot acceptance state")
+        accepted = snapshot.accepted_estimate
+        if (
+            snapshot_rate <= 0
+            or snapshot_rate != sample_rate_hz
+            or effective_seed < 0
+            or operating < 0
+            or (not accepted and operating != effective_seed)
+            or engine_operating != operating
+        ):
+            raise ValueError("inconsistent delay snapshot")
+    except Exception:
+        out["measurement_state"] = "snapshot_unavailable"
+        out["runtime_estimate_accepted"] = None
+        return out
+
+    out.update(
+        {
+            "measurement_state": (
+                "accepted_measurement" if accepted else "awaiting_measurement"
+            ),
+            "sample_rate_hz": snapshot_rate,
+            "runtime_snapshot_available": True,
+            "runtime_estimate_accepted": accepted,
+            "effective_seed_samples": effective_seed,
+            "operating_delay_samples": operating,
+            "operating_delay_ms": _samples_to_ms(operating, snapshot_rate),
+        }
+    )
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Live TTS-echo / self-interruption probe.")
     ap.add_argument("--margin-db", type=float, default=0.0, help="barge_in_output_margin_db override")
@@ -62,7 +194,12 @@ def main() -> int:
     ap.add_argument("--coherence", choices=["on", "off"], default=None, help="force coherence_barge_in_enabled")
     ap.add_argument("--confirm-frames", type=int, default=None, help="coherence_confirm_frames override")
     ap.add_argument("--aec", choices=["on", "off"], default=None, help="force aec_enabled")
-    ap.add_argument("--ref-delay-ms", type=int, default=None, help="aec_ref_delay_ms override (sweep this to maximize ERLE)")
+    ap.add_argument(
+        "--ref-delay-ms",
+        type=int,
+        default=None,
+        help="aec_ref_delay_ms configured-seed override; runtime auto-delay may replace it after accepting a measurement",
+    )
     ap.add_argument("--relaxed-margin-db", type=float, default=None, help="aec_relaxed_margin_db override (level gate margin when AEC is on)")
     ap.add_argument("--speaker-gate", choices=["on", "off"], default=None, help="force speaker_gate_input (identity/user-detection gate in the barge path)")
     ap.add_argument("--min-speech-sec", type=float, default=None, help="barge_in_min_speech_sec override (sustained-speech needed to fire -- slower/higher confidence)")
@@ -193,7 +330,8 @@ def main() -> int:
     # is echo-only, so the energy drop across the canceller IS the echo return
     # loss enhancement. Accumulated only over frames where the far-end (echo ref)
     # is active. Positive dB = cancellation; ~0 = no-op; negative = misaligned
-    # (the AEC is adding energy -> wrong aec_ref_delay_ms). The engine builds
+    # (the AEC is adding energy -> bad operating alignment; with auto-delay on,
+    # that may differ from the configured seed). The engine builds
     # ``_aec`` inside start(), so this wrap must come AFTER start().
     erle_acc = {"near2": 0.0, "post2": 0.0, "far_frames": 0}
     if getattr(engine, "_aec", None) is not None:
@@ -219,6 +357,7 @@ def main() -> int:
 
     time.sleep(1.0)  # let the capture loop spin up
     spoken = 0
+    stop_completed = False
     try:
         for i in range(max(1, args.sentences)):
             done = threading.Event()
@@ -238,6 +377,14 @@ def main() -> int:
             engine.stop()
         except Exception:
             pass
+        else:
+            stop_completed = True
+
+    aec_reference_delay = _aec_reference_delay_summary(
+        engine,
+        sherpa_cfg,
+        stop_completed=stop_completed,
+    )
 
     ratios = [
         round(20.0 * math.log10(mic / pb), 1)
@@ -334,6 +481,7 @@ def main() -> int:
             "aec_ref_delay_ms": getattr(sherpa_cfg, "aec_ref_delay_ms", None),
             "margin_db": args.margin_db,
         },
+        "aec_reference_delay": aec_reference_delay,
         "erle_db": erle_db,
         "aec_far_active_frames": erle_acc["far_frames"],
         "gain": args.gain,
@@ -351,7 +499,10 @@ def main() -> int:
         "note": (
             "self_interruptions>0 means the assistant's own TTS tripped barge-in. "
             "peak_playback_level~0 or vad_flagged_during_play==0 means little/no echo "
-            "coupled (volume low/muted or headphones) -- not conclusive; raise the volume."
+            "coupled (volume low/muted or headphones) -- not conclusive; raise the volume. "
+            "erle_db aggregates all AEC-active frames and may span the configured seed "
+            "plus multiple accepted operating delays; it is not attributable only to "
+            "the final delay snapshot."
         ),
     }
     print(json.dumps(out, indent=2))

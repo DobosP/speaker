@@ -2463,8 +2463,9 @@ def main(argv: list[str] | None = None) -> int:
         help="also download the DTLN-aec echo-canceller tflite models and CONVERT "
         "them to ONNX (the AEC 'dtln' quality tier) + wire aec_model in config; off "
         "by default. Needs tf2onnx + tensorflow-cpu (dev-time only). After fetching, "
-        "set sherpa.aec_enabled=true + aec_backend='dtln' (and calibrate "
-        "aec_ref_delay_ms) to activate it.",
+        "set sherpa.aec_enabled=true + aec_backend='dtln' to activate it; "
+        "tools/echo_probe.py reports whether auto-delay accepted a runtime value "
+        "or is still using the configured aec_ref_delay_ms seed.",
     )
     parser.add_argument(
         "--aec-model-size",
@@ -3036,8 +3037,10 @@ def main(argv: list[str] | None = None) -> int:
     if sherpa.get("aec_model"):
         print(
             "\nDTLN-aec model ready. To ACTIVATE the deep echo-canceller tier, set "
-            "sherpa.aec_enabled=true + sherpa.aec_backend='dtln' (OFF by default) and "
-            "CALIBRATE sherpa.aec_ref_delay_ms with tools/echo_probe.py. The "
+            "sherpa.aec_enabled=true + sherpa.aec_backend='dtln' (OFF by default). "
+            "Use tools/echo_probe.py to inspect the configured delay seed and any "
+            "accepted runtime operating delay. Turning auto-delay off leaves the "
+            "seed fixed and requires separate live qualification. The "
             "dependency-free aec_backend='nlms' filter needs no model."
         )
     print(f"\nNow run:  {normal_voice_entry()}")

@@ -861,7 +861,8 @@ def _transcribe_final_text(
 # cancellation, so this engine adds its own optional AEC front-end (core/engines/
 # _aec.py, OFF by default via sherpa.aec_enabled) -- a NumPy adaptive filter that
 # subtracts the played TTS (far-end, teed from the playback thread into a ring and
-# read at sherpa.aec_ref_delay_ms) from the mic block before any consumer. Barge-in
+# read at the current operating delay, seeded by sherpa.aec_ref_delay_ms until an
+# accepted auto-delay estimate) from the mic block before any consumer. Barge-in
 # must work on the OPEN laptop speaker (no headphones -- HARD REQUIREMENT). The
 # PRIMARY trigger is scale-invariant reference COHERENCE on the RAW pre-AEC mic
 # (sees the user, volume-independent); the level gates (residual-floor / output-
@@ -1120,8 +1121,11 @@ class SherpaConfig:
     # (aec_enabled=False -> build_aec returns None, capture path byte-identical).
     # Backends: "nlms" (dependency-free NumPy adaptive filter, ships now) or "dtln"
     # (deep ONNX tier, deferred -> currently no-op). aec_ref_delay_ms is the
-    # speaker->mic delay used to time-align the far-end reference (CALIBRATE per
-    # device with tools/echo_probe.py). aec_filter_taps is the modeled echo tail
+    # configured speaker->mic seed used to time-align the far-end reference; with
+    # auto-delay on, tools/echo_probe.py reports whether a runtime estimate replaced
+    # it. Turning auto-delay off leaves the seed fixed and requires separate live
+    # qualification; it is not the supported self-calibrating path.
+    # aec_filter_taps is the modeled echo tail
     # (rounded to a power of two; also the added capture latency in samples).
     # aec_doubletalk_freeze stops the filter diverging onto the user's voice during
     # talk-over. aec_relaxed_margin_db is the smaller barge-in output-margin used
@@ -2885,8 +2889,9 @@ class SherpaOnnxEngine(AudioEngine):
 
         When AEC is on the FarEndRing exists: read it at delay 0 -- the EXACT
         true-playback-aligned far-end the canceller reads -- so a replay can sweep
-        the delay and recover the LIVE ``aec_ref_delay_ms`` (calibratable headless;
-        the coherence-queue accumulator's timeline can't). Without AEC, fall back
+        the delay and recover the live operating reference delay (the configured
+        seed until an auto-delay estimate is accepted; calibratable headlessly).
+        The coherence-queue accumulator's timeline cannot do that. Without AEC, fall back
         to the accumulator (the coherence reference, for barge replay)."""
         import numpy as np
 
@@ -11577,7 +11582,8 @@ class SherpaOnnxEngine(AudioEngine):
         # ONLY as that fallback, for the moments coherence cannot decide. The barge
         # gate does NOT re-align the AEC reference from coherence's delay estimate:
         # on a nonlinear speaker that peak is noisy and re-aligning every block
-        # destabilises the canceller. The reference stays pinned at aec_ref_delay_ms.
+        # destabilises the canceller. The reference stays at the current AEC
+        # operating delay; AecDelayCalibrator alone may replace its configured seed.
         if mic_raw is None:
             mic_raw = samples  # single-arg callers (legacy/tests): no separate raw tee
         # DEVICE-ADAPTIVE PRIMARY (open speaker, AEC on): the fused z-score DTD.

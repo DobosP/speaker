@@ -1,7 +1,7 @@
 # ADR-0178: Align echo-probe guidance with bare-speaker acceptance
 
 Date: 2026-08-10
-Status: accepted
+Status: superseded-by ADR-0179
 
 ## Decision
 

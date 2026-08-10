@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import math
 import sys
@@ -46,6 +47,54 @@ SENTENCES = [
     "The barge in gate should not interrupt me while I am still speaking.",
     "If you hear this whole message without it cutting off, suppression works.",
 ]
+
+_STIMULUS_HASH_DOMAIN = b"speaker.echo-probe.spoken-text.v1\0"
+_STIMULUS_ID_PREFIX = "echo-probe-spoken-text-v1:sha256:"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _StimulusPlan:
+    """Frozen sentence cycle and effective count for one probe invocation."""
+
+    cycle: tuple[str, ...]
+    count: int
+
+    def __iter__(self):
+        for index in range(self.count):
+            yield self.cycle[index % len(self.cycle)]
+
+
+def _build_stimulus_plan(requested_count: int) -> _StimulusPlan:
+    if type(requested_count) is not int:
+        raise TypeError("stimulus sentence count must be an exact int")
+    cycle = tuple(SENTENCES)
+    if not cycle:
+        raise ValueError("echo probe requires at least one stimulus sentence")
+    if any(type(text) is not str for text in cycle):
+        raise TypeError("stimulus sentences must be exact strings")
+    return _StimulusPlan(cycle=cycle, count=max(1, requested_count))
+
+
+class _StimulusIdBuilder:
+    """Incrementally bind the exact text of normally returned speak calls."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256(_STIMULUS_HASH_DOMAIN)
+        self._recorded_count = 0
+
+    def record(self, text: str) -> None:
+        if type(text) is not str:
+            raise TypeError("stimulus text must be an exact str")
+        encoded = text.encode("utf-8")
+        self._digest.update(len(encoded).to_bytes(8, byteorder="big", signed=False))
+        self._digest.update(encoded)
+        self._recorded_count += 1
+
+    def stimulus_id(self) -> str:
+        if self._recorded_count == 0:
+            raise ValueError("cannot identify an empty stimulus sequence")
+        return _STIMULUS_ID_PREFIX + self._digest.hexdigest()
+
 
 _PHYSICAL_ACCEPTANCE_GUIDANCE = (
     "Physical acceptance requires a bare-speaker session started with `./live.sh`; "
@@ -372,6 +421,8 @@ def main() -> int:
     # statistic D and whether the detector fired.
     dtd_samples: list[tuple[float, float, float, float, object]] = []
     peak_playback = 0.0
+    stimulus_plan = _build_stimulus_plan(args.sentences)
+    stimulus_id_builder = _StimulusIdBuilder()
 
     # Instrument the unenrolled echo gate to record exactly what it compares.
     _orig_llu = engine._looks_like_user
@@ -452,9 +503,10 @@ def main() -> int:
             engine._aec.process_16k = _erle_proc  # type: ignore[assignment]
 
         time.sleep(1.0)  # let the capture loop spin up
-        for i in range(max(1, args.sentences)):
+        for text in stimulus_plan:
             done = threading.Event()
-            engine.speak(SENTENCES[i % len(SENTENCES)], on_done=done.set)
+            engine.speak(text, on_done=done.set)
+            stimulus_id_builder.record(text)
             deadline = time.monotonic() + 20.0
             while not done.wait(0.05):
                 lvl = float(engine._playback_level)
@@ -589,6 +641,7 @@ def main() -> int:
         "gain": args.gain,
         "device": device,
         "sentences_spoken": spoken,
+        "stimulus_id": stimulus_id_builder.stimulus_id(),
         "self_interruptions": len(barge_ins),
         "vad_flagged_during_play": len(gate_samples),
         "gate_passed_count": sum(1 for (_, _, p) in gate_samples if p),

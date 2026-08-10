@@ -18,6 +18,12 @@ from tools.interrupt_suite import (
 )
 
 
+_STIMULUS_ID = (
+    "echo-probe-spoken-text-v1:sha256:"
+    "27c744fbb14bbcb74f9256a2a4db2af25c6e7ad6c70e5ea224c3c8708a06a3c6"
+)
+
+
 def _summary_row(
     label: str,
     *,
@@ -115,6 +121,14 @@ def test_classify_valid_uncoupled_zero_is_inconclusive_but_not_an_error():
     assert outcome.uncoupled_zero_cells == 1
     assert outcome.error_cells == 0
     assert outcome.matrix_partial is False
+
+
+def test_classify_ignores_additive_stimulus_identity():
+    row = _summary_row("quiet")
+
+    assert classify_outcome([{**row, "stimulus_id": _STIMULUS_ID}]) == (
+        classify_outcome([row])
+    )
 
 
 class _DictSubclass(dict):
@@ -253,6 +267,7 @@ def test_run_cell_uses_exact_echo_probe_arguments_and_accepts_object_json():
     calls: list[tuple[list[str], dict[str, object]]] = []
     payload = {
         "self_interruptions": 0,
+        "stimulus_id": _STIMULUS_ID,
         "coherence": {
             "hint": "Quiet echo-only observation is inconclusive.",
             "note": "Diagnostic context only.",

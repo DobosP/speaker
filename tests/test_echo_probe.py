@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
+import re
+import struct
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +15,46 @@ from core.engines._aec import AecDelaySnapshot
 from tools import echo_probe as echo_probe_module
 from tools.echo_probe import (
     _ProbeLifecycleResult,
+    _StimulusIdBuilder,
+    _StimulusPlan,
     _aec_reference_delay_summary,
+    _build_stimulus_plan,
     _emit_probe_result,
     _run_probe_lifecycle,
 )
 from tools.interrupt_suite import summarize
+
+
+_STIMULUS_ID_PREFIX = "echo-probe-spoken-text-v1:sha256:"
+_STIMULUS_DOMAIN = b"speaker.echo-probe.spoken-text.v1\0"
+_EXPECTED_SENTENCE_BYTES = (
+    b"This is a live audio calibration test of the speaker assistant.",
+    b"I am checking whether my own voice is captured back by the microphone.",
+    b"The barge in gate should not interrupt me while I am still speaking.",
+    b"If you hear this whole message without it cutting off, suppression works.",
+)
+_EXPECTED_STIMULUS_DIGESTS = {
+    1: "f6d8f6a9701c09d8d87307e9884bb2ad7ddd8aec16b9353732ba03cf9b75f3fd",
+    3: "27c744fbb14bbcb74f9256a2a4db2af25c6e7ad6c70e5ea224c3c8708a06a3c6",
+    4: "be277009edac56b0473730c1e5326a1b765976386aca9f26c500eab9f00822eb",
+    5: "f0081f8d64016b2695774fce8be8cdc4cf98b3cb2e09d23166bd8e72468a5cca",
+}
+
+
+def _independent_stimulus_id(texts) -> str:
+    digest = hashlib.new("sha256", _STIMULUS_DOMAIN)
+    for text in texts:
+        encoded = text.encode("utf-8")
+        digest.update(struct.pack(">Q", len(encoded)))
+        digest.update(encoded)
+    return _STIMULUS_ID_PREFIX + digest.hexdigest()
+
+
+def _built_stimulus_id(plan: _StimulusPlan) -> str:
+    builder = _StimulusIdBuilder()
+    for text in plan:
+        builder.record(text)
+    return builder.stimulus_id()
 
 
 class _SnapshotCalibrator:
@@ -62,6 +101,151 @@ def _engine(*, aec_active: bool, calibrator=None, operating: int = 1280):
         _aec_ref_delay=operating,
         _running=_event(),
         _capture_resource_hold=_event(),
+    )
+
+
+def test_stimulus_catalog_bytes_are_exactly_locked():
+    assert tuple(text.encode("utf-8") for text in echo_probe_module.SENTENCES) == (
+        _EXPECTED_SENTENCE_BYTES
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested_count", "effective_count"),
+    [(-7, 1), (0, 1), (1, 1), (3, 3), (4, 4), (5, 5)],
+)
+def test_stimulus_plan_and_id_match_independent_vectors(
+    requested_count, effective_count
+):
+    plan = _build_stimulus_plan(requested_count)
+    expected_texts = tuple(
+        _EXPECTED_SENTENCE_BYTES[index % len(_EXPECTED_SENTENCE_BYTES)].decode("utf-8")
+        for index in range(effective_count)
+    )
+
+    assert type(plan) is _StimulusPlan
+    assert type(plan.cycle) is tuple
+    assert plan.count == effective_count
+    assert tuple(plan) == expected_texts
+    assert _built_stimulus_id(plan) == (
+        _STIMULUS_ID_PREFIX + _EXPECTED_STIMULUS_DIGESTS[effective_count]
+    )
+    assert _built_stimulus_id(plan) == _independent_stimulus_id(expected_texts)
+
+
+def test_stimulus_plan_is_lazy_frozen_and_preserves_text_object_identity(monkeypatch):
+    first = "".join(("first", " sentence"))
+    second = "".join(("second", " sentence"))
+    monkeypatch.setattr(echo_probe_module, "SENTENCES", [first, second])
+    plan = _build_stimulus_plan(5)
+    iterator = iter(plan)
+
+    monkeypatch.setattr(echo_probe_module, "SENTENCES", ["later mutation"])
+    yielded = tuple(iterator)
+
+    assert yielded == (first, second, first, second, first)
+    assert yielded[0] is first
+    assert yielded[1] is second
+    assert yielded[2] is first
+
+
+def test_stimulus_id_binds_order_repetition_and_utf8_byte_length():
+    first = _EXPECTED_SENTENCE_BYTES[0].decode("utf-8")
+    second = _EXPECTED_SENTENCE_BYTES[1].decode("utf-8")
+    forward = _independent_stimulus_id((first, second))
+
+    assert forward != _independent_stimulus_id((second, first))
+    assert forward != _independent_stimulus_id((first, second, first))
+
+    multibyte = "caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+    encoded = multibyte.encode("utf-8")
+    builder = _StimulusIdBuilder()
+    builder.record(multibyte)
+    expected = hashlib.sha256(
+        _STIMULUS_DOMAIN + struct.pack(">Q", len(encoded)) + encoded
+    ).hexdigest()
+    character_length = hashlib.sha256(
+        _STIMULUS_DOMAIN + struct.pack(">Q", len(multibyte)) + encoded
+    ).hexdigest()
+
+    assert builder.stimulus_id() == _STIMULUS_ID_PREFIX + expected
+    assert expected != character_length
+
+
+def test_fourth_sentence_mutation_changes_n4_but_not_n3(monkeypatch):
+    baseline_n3 = _built_stimulus_id(_build_stimulus_plan(3))
+    baseline_n4 = _built_stimulus_id(_build_stimulus_plan(4))
+    changed = list(echo_probe_module.SENTENCES)
+    changed[3] = "A deliberately different fourth sentence."
+    monkeypatch.setattr(echo_probe_module, "SENTENCES", changed)
+
+    assert _built_stimulus_id(_build_stimulus_plan(3)) == baseline_n3
+    assert _built_stimulus_id(_build_stimulus_plan(4)) != baseline_n4
+
+
+def test_main_hashes_the_same_lazy_plan_text_only_after_speak_returns():
+    tree = ast.parse(Path(echo_probe_module.__file__).read_text(encoding="utf-8"))
+    main_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    loop = next(
+        node
+        for node in ast.walk(main_node)
+        if isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "text"
+        and isinstance(node.iter, ast.Name)
+        and node.iter.id == "stimulus_plan"
+    )
+    calls = [node for node in ast.walk(loop) if isinstance(node, ast.Call)]
+    speak = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "speak"
+    )
+    record = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "record"
+    )
+
+    assert isinstance(speak.args[0], ast.Name)
+    assert isinstance(record.args[0], ast.Name)
+    assert speak.args[0].id == record.args[0].id == loop.target.id
+    assert speak.lineno < record.lineno
+
+
+def test_main_has_one_success_only_stimulus_scalar():
+    tree = ast.parse(Path(echo_probe_module.__file__).read_text(encoding="utf-8"))
+    main_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    stimulus_keys = [
+        key
+        for node in ast.walk(main_node)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and key.value == "stimulus_id"
+    ]
+    normal_out = next(
+        node.value
+        for node in ast.walk(main_node)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "out"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Dict)
+    )
+
+    assert len(stimulus_keys) == 1
+    assert any(
+        isinstance(key, ast.Constant) and key.value == "stimulus_id"
+        for key in normal_out.keys
     )
 
 
@@ -305,6 +489,7 @@ def test_interrupt_suite_summary_ignores_additive_delay_and_guidance():
     cell = {
         "label": "mic/strategy",
         "self_interruptions": 0,
+        "stimulus_id": (_STIMULUS_ID_PREFIX + _EXPECTED_STIMULUS_DIGESTS[3]),
         "coherence": {
             "coherence_fired_on_own_tts": 0,
             "hint": "Quiet echo-only observation is inconclusive.",
@@ -562,6 +747,7 @@ def test_system_exit_is_a_lifecycle_error_and_never_false_success(
     )
 
     error_payload = _lifecycle_error_payload(result)
+    assert "stimulus_id" not in error_payload
     rc = _emit_probe_result(error_payload, success=result.report_allowed)
     assert rc == 1
     assert _decode_exactly_one_json_object(capsys.readouterr().out) == error_payload
@@ -596,12 +782,23 @@ def test_returned_stop_with_retained_hold_allows_report_but_not_aec_snapshot():
 
 
 def test_emit_probe_result_success_is_one_json_object_and_returns_zero(capsys):
-    payload = {"label": "probe", "self_interruptions": 0}
+    stimulus_id = _STIMULUS_ID_PREFIX + _EXPECTED_STIMULUS_DIGESTS[4]
+    payload = {
+        "label": "probe",
+        "self_interruptions": 0,
+        "stimulus_id": stimulus_id,
+    }
 
     rc = _emit_probe_result(payload, success=True)
 
     assert rc == 0
-    assert _decode_exactly_one_json_object(capsys.readouterr().out) == payload
+    emitted = _decode_exactly_one_json_object(capsys.readouterr().out)
+    assert emitted == payload
+    assert type(emitted["stimulus_id"]) is str
+    assert re.fullmatch(
+        r"echo-probe-spoken-text-v1:sha256:[0-9a-f]{64}",
+        emitted["stimulus_id"],
+    )
 
 
 def test_emit_probe_result_lifecycle_error_is_one_json_object_and_returns_one(
@@ -617,7 +814,9 @@ def test_emit_probe_result_lifecycle_error_is_one_json_object_and_returns_one(
     rc = _emit_probe_result(payload, success=False)
 
     assert rc == 1
-    assert _decode_exactly_one_json_object(capsys.readouterr().out) == payload
+    emitted = _decode_exactly_one_json_object(capsys.readouterr().out)
+    assert emitted == payload
+    assert "stimulus_id" not in emitted
 
 
 @pytest.mark.parametrize(

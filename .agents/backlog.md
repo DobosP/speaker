@@ -519,10 +519,14 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       hallucinated.)
 - [ ] **Enable + validate AEC on real hardware** (needs the mic). `config.local.json`
       → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"` with auto-delay
-      enabled, then inspect the probe's accepted/current runtime-delay fields.
-      Confirm no self-interrupt AND a real interrupt still cuts through; then
-      optionally try `aec_backend="dtln"`. Auto-delay-off fixed-seed operation is
-      not the supported self-calibrating path and needs separate live qualification.
+      enabled, then inspect the probe's accepted/current runtime-delay fields as
+      diagnostics only; one run does not authorize per-machine threshold or config
+      tuning. For physical acceptance, launch the real assistant through `./live.sh`,
+      talk over bare-speaker playback, retain that exact run log, and run
+      `python -m tools.live_audio_ab logs/runs/run-<id>.txt` against it. Confirm no
+      self-interrupt AND that a real interrupt still cuts through; then optionally
+      try `aec_backend="dtln"`. Auto-delay-off fixed-seed operation is not the
+      supported self-calibrating path and needs separate live qualification.
 - [x] **Expose the accepted runtime delay in `tools/echo_probe.py` — DONE
       2026-08-10 (ADR-0175).** ERLE
       reporting already landed in `3bdacea`; `tools.aec_probe` already sweeps

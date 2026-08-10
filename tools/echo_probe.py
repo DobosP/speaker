@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Live audio self-interruption (TTS-echo) probe -- PLAYS AUDIO OUT LOUD.
+"""Live audio self-interruption (TTS-echo) diagnostic -- PLAYS AUDIO OUT LOUD.
 
 Drives the REAL ``sherpa`` engine (mic + speakers) to measure whether the
 assistant's own TTS, played through the speakers, is re-captured by the mic
 strongly enough to trip a barge-in (a *self-interruption*), and how the
 unenrolled output-margin gate (``barge_in_output_margin_db``) responds.
 
-This is the on-device calibration the P1 review deferred (we shipped
-``barge_in_output_margin_db = 0`` -- suppression OFF -- pending real data). The
-gate compares mic RMS (post speaker-volume + room coupling) against
-``_playback_level`` (the pre-volume TTS *buffer* RMS), so the OS output volume
-is exactly what can break that comparison: crank the speaker and the captured
-echo can exceed the buffer reference even though it is "just" the assistant.
+This is a quiet echo-only diagnostic: it observes assistant playback while the
+operator remains silent. It does not select or tune a configuration, demonstrate
+a real human talk-over, or complete physical acceptance. The gate compares mic
+RMS (post speaker-volume + room coupling) against ``_playback_level`` (the
+pre-volume TTS *buffer* RMS), so the observed relationship includes the active
+speaker route, output level, and room coupling.
+
+Diagnostic-only examples (neither command supplies acceptance evidence):
 
     python -m tools.echo_probe --margin-db 0 --sentences 4
     python -m tools.echo_probe --margin-db 6 --gain 1.0
@@ -22,6 +24,9 @@ the (mic_rms, playback_level, gate_passed) samples the gate evaluated, the
 mic/playback ratio in dB, the peak playback level, and an additive
 ``aec_reference_delay`` block separating the configured seed from the final
 accepted/current operating delay when shutdown proves the capture writer stopped.
+Physical acceptance requires a bare-speaker session started with ``./live.sh``;
+talk over playback on the bare speaker, then analyze that exact retained run with
+``python -m tools.live_audio_ab logs/runs/run-<id>.txt``.
 """
 
 from __future__ import annotations
@@ -41,6 +46,16 @@ SENTENCES = [
     "The barge in gate should not interrupt me while I am still speaking.",
     "If you hear this whole message without it cutting off, suppression works.",
 ]
+
+_PHYSICAL_ACCEPTANCE_GUIDANCE = (
+    "Physical acceptance requires a bare-speaker session started with `./live.sh`; "
+    "talk over playback on the bare speaker, then analyze that exact retained run with "
+    "`python -m tools.live_audio_ab logs/runs/run-<id>.txt`."
+)
+_NO_COUPLING_GUIDANCE = (
+    "Without measured echo coupling, this quiet echo-only diagnostic is "
+    "inconclusive and does not select or tune a configuration."
+)
 
 
 def _rms(samples) -> float:
@@ -349,12 +364,12 @@ def main() -> int:
     gate_samples: list[tuple[float, float, bool]] = []
     # Coherence diagnostics per frame: (incoherent_fraction, baseline,
     # effective_margin, delay_ms, decided). The probe never talks back, so EVERY
-    # frame is echo-only -- the run shows what margin the detector SELF-CALIBRATED
-    # to on this hardware and whether it ever wrongly fired on the assistant.
+    # frame is echo-only -- the run records the detector's effective margin and
+    # whether it ever fired on the assistant.
     coh_samples: list[tuple[float, float, float, float, object]] = []
     # Adaptive-DTD diagnostics per frame: (D, z_raw, z_resid, z_coh, fired). The
-    # probe never talks back, so EVERY frame is echo-only -- this shows the fused
-    # statistic D the detector self-calibrated to, and whether it wrongly fired.
+    # probe never talks back, so EVERY frame is echo-only -- this records the fused
+    # statistic D and whether the detector fired.
     dtd_samples: list[tuple[float, float, float, float, object]] = []
     peak_playback = 0.0
 
@@ -480,11 +495,9 @@ def main() -> int:
     ]
     ratios_sorted = sorted(ratios)
 
-    # Coherence calibration block. All frames are echo-only (the probe never talks
-    # over itself), so a HEALTHY result is: detector active, coherence_fired_on_own_tts
-    # == 0, and the margin SELF-CALIBRATED so the echo-only fraction sits below the
-    # learned bar (baseline + effective_margin). The effective margin is what the
-    # detector chose for THIS room; coherence_margin_delta is only its floor.
+    # Coherence diagnostic block. All frames are quiet echo-only because the probe
+    # never talks over itself. Record fires and descriptive margin/headroom values;
+    # they do not select a configuration or demonstrate a real talk-over.
     coh = None
     det = getattr(engine, "_echo_coherence", None)
     if coh_samples:
@@ -494,14 +507,14 @@ def main() -> int:
         delays = sorted(s[3] for s in coh_samples)
         p95 = echo_only[max(0, int(0.95 * (len(echo_only) - 1)))] if echo_only else None
         settled_baseline = coh_samples[-1][1]
-        settled_margin = coh_samples[-1][2]  # the SELF-CALIBRATED effective margin
+        settled_margin = coh_samples[-1][2]  # detector's effective margin
         floor = float(getattr(sherpa_cfg, "coherence_margin_delta", 0.08))
         coh = {
             "active": det is not None,
             "frames": len(coh_samples),
             "coherence_fired_on_own_tts": coh_fired,  # >0 = self-interrupt risk
             "margin_floor": floor,
-            "self_calibrated_margin": settled_margin,  # what the room actually got
+            "self_calibrated_margin": settled_margin,
             "margin_widened_by_room": (settled_margin > floor + 1e-6),
             "settled_baseline": settled_baseline,
             "echo_only_incoherent_p50": (echo_only[len(echo_only) // 2] if echo_only else None),
@@ -510,22 +523,22 @@ def main() -> int:
             "median_delay_ms": (delays[len(delays) // 2] if delays else None),
             "incoherent_fraction_samples": fr[:40],
             "hint": (
-                "coherence_fired_on_own_tts == 0 and headroom_p95 > 0 -> the margin "
-                "self-calibrated safely for this room (no enrollment, no tuning). "
-                "self_calibrated_margin is what it chose; coherence_margin_delta is only "
-                "the floor -- raise the floor only if it ever self-interrupts, lower it "
-                "only if a real barge is missed in a clean room. Confirm a real barge with "
-                "`python -m core --session local` (talk over a long answer)."
+                "coherence_fired_on_own_tts, headroom_p95, and "
+                "self_calibrated_margin are descriptive quiet echo-only measurements. "
+                "This diagnostic does not select or tune a configuration. "
+                + _PHYSICAL_ACCEPTANCE_GUIDANCE
             ),
         }
     elif det is not None:
-        coh = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
+        coh = {
+            "active": True,
+            "frames": 0,
+            "note": f"{_NO_COUPLING_GUIDANCE} {_PHYSICAL_ACCEPTANCE_GUIDANCE}",
+        }
 
-    # Adaptive-DTD calibration block -- the device-adaptive barge trigger. All frames
-    # are echo-only here, so a HEALTHY result is dtd_fired_on_own_tts == 0 and the
-    # echo-only D well BELOW K (large positive K - p95(D) headroom). To set K on a
-    # NEW machine: run this (echo-only) for echo D, then talk over a reply once and
-    # read the live 'adaptive barge:' D in logs/runs/*.txt -- pick K between them.
+    # Adaptive-DTD diagnostic block. All frames are quiet echo-only because the
+    # probe never talks over itself. Record D, K, headroom, and fires descriptively;
+    # these measurements do not pick K or demonstrate a real talk-over.
     dtd_blk = None
     dtd = getattr(engine, "_dtd", None)
     if dtd_samples:
@@ -541,18 +554,20 @@ def main() -> int:
             "echo_only_D_p50": Ds[len(Ds) // 2],
             "echo_only_D_p95": p95D,
             "echo_only_D_max": Ds[-1],
-            "headroom_K_minus_p95D": round(K - p95D, 3),  # >0 and large = safe on echo
+            "headroom_K_minus_p95D": round(K - p95D, 3),
             "D_samples": Ds[-40:],
             "hint": (
-                "dtd_fired_on_own_tts == 0 with a large headroom_K_minus_p95D means the "
-                "echo never approaches the bar. K is dimensionless/device-independent: "
-                "raise dtd_k if it self-interrupts, lower it if a real talk-over (whose "
-                "live D prints as 'adaptive barge: D=..' in the run .txt) is missed. "
-                "Confirm a real barge with `python -m core --session local`."
+                "dtd_fired_on_own_tts and headroom_K_minus_p95D are descriptive "
+                "quiet echo-only measurements. This diagnostic does not select or "
+                "tune a configuration. " + _PHYSICAL_ACCEPTANCE_GUIDANCE
             ),
         }
     elif dtd is not None:
-        dtd_blk = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
+        dtd_blk = {
+            "active": True,
+            "frames": 0,
+            "note": f"{_NO_COUPLING_GUIDANCE} {_PHYSICAL_ACCEPTANCE_GUIDANCE}",
+        }
 
     erle_db = None
     if erle_acc["post2"] > 0 and erle_acc["near2"] > 0:
@@ -585,11 +600,13 @@ def main() -> int:
         "adaptive_dtd": dtd_blk,
         "note": (
             "self_interruptions>0 means the assistant's own TTS tripped barge-in. "
-            "peak_playback_level~0 or vad_flagged_during_play==0 means little/no echo "
-            "coupled (volume low/muted or headphones) -- not conclusive; raise the volume. "
+            "peak_playback_level~0 or vad_flagged_during_play==0 identifies a result "
+            "without measured echo coupling. "
+            f"{_NO_COUPLING_GUIDANCE} "
             "erle_db aggregates all AEC-active frames and may span the configured seed "
             "plus multiple accepted operating delays; it is not attributable only to "
-            "the final delay snapshot."
+            "the final delay snapshot. "
+            f"{_PHYSICAL_ACCEPTANCE_GUIDANCE}"
         ),
     }
     return _emit_probe_result(out, success=True)

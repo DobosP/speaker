@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from core.engines._aec import AecDelaySnapshot
+from tools import echo_probe as echo_probe_module
 from tools.echo_probe import (
     _ProbeLifecycleResult,
     _aec_reference_delay_summary,
@@ -262,15 +264,64 @@ def test_delay_summary_is_json_native_scalar_only():
     assert json.loads(json.dumps(report)) == report
 
 
-def test_interrupt_suite_summary_ignores_additive_delay_block():
+def test_echo_probe_source_keeps_open_speaker_guidance_diagnostic_only():
+    source = Path(echo_probe_module.__file__).read_text(encoding="utf-8").lower()
+
+    forbidden = (
+        "headphone",
+        "headset",
+        "python -m core --session local",
+        "logs/runs/*.txt",
+        "self-calibrated safely",
+        "safe for this room",
+        "safe on echo",
+        "healthy result",
+        "raise the floor",
+        "lower it only",
+        "raise dtd_k",
+        "lower dtd_k",
+        "pick k between",
+        "echo never approaches",
+        "recommended",
+        "winner",
+    )
+    required = (
+        "quiet echo-only",
+        "inconclusive",
+        "does not select or tune",
+        "bare-speaker",
+        "talk over playback",
+        "./live.sh",
+        "python -m tools.live_audio_ab logs/runs/run-<id>.txt",
+    )
+
+    for fragment in forbidden:
+        assert fragment not in source
+    for fragment in required:
+        assert fragment in source
+
+
+def test_interrupt_suite_summary_ignores_additive_delay_and_guidance():
     cell = {
         "label": "mic/strategy",
         "self_interruptions": 0,
-        "coherence": {"coherence_fired_on_own_tts": 0},
+        "coherence": {
+            "coherence_fired_on_own_tts": 0,
+            "hint": "Quiet echo-only observation is inconclusive.",
+            "note": "Diagnostic context only.",
+        },
         "vad_flagged_during_play": 4,
         "peak_playback_level": 0.25,
         "median_mic_over_playback_dB": -12.0,
         "aec_reference_delay": {"measurement_state": "accepted_measurement"},
+        "adaptive_dtd": {
+            "hint": "This does not select or tune thresholds.",
+            "note": "Run the bare-speaker live acceptance separately.",
+        },
+        "note": (
+            "Use ./live.sh and inspect exactly one run with "
+            "python -m tools.live_audio_ab logs/runs/run-<id>.txt"
+        ),
     }
 
     assert summarize(cell) == {

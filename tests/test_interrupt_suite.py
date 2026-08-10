@@ -251,12 +251,27 @@ def test_coupling_is_exact_finite_and_never_coerces(vad, peak, expected):
 
 def test_run_cell_uses_exact_echo_probe_arguments_and_accepts_object_json():
     calls: list[tuple[list[str], dict[str, object]]] = []
+    payload = {
+        "self_interruptions": 0,
+        "coherence": {
+            "hint": "Quiet echo-only observation is inconclusive.",
+            "note": "Diagnostic context only.",
+        },
+        "adaptive_dtd": {
+            "hint": "This does not select or tune thresholds.",
+            "note": "Run the bare-speaker live acceptance separately.",
+        },
+        "note": (
+            "Use ./live.sh and inspect exactly one run with "
+            "python -m tools.live_audio_ab logs/runs/run-<id>.txt"
+        ),
+    }
 
     def runner(command, **kwargs):
         calls.append((command, kwargs))
         return SimpleNamespace(
             returncode=0,
-            stdout='noise before json {"self_interruptions": 0}',
+            stdout=f"noise before json {json.dumps(payload)}",
             stderr="",
         )
 
@@ -270,7 +285,7 @@ def test_run_cell_uses_exact_echo_probe_arguments_and_accepts_object_json():
         output_device="Speaker Device",
     )
 
-    assert result == {"self_interruptions": 0}
+    assert result == payload
     command, kwargs = calls[0]
     assert command[:3] == ["/exact/python", "-m", "tools.echo_probe"]
     assert command[command.index("--label") + 1] == "Mic Device/configured-aec"

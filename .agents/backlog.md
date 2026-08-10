@@ -33,6 +33,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       level first (everything downstream currently runs on noise floor),
       then one echo-probe + run-bundle pass attributing the cut via the
       word-cut funnel + playback receipts before touching thresholds again. (roadmap item 15b, analyzed 2026-07-17, ADR-0082 — P2, parked with design notes).**
+      ADR-0181 closes the probe's enqueue-callback attribution defect headlessly:
+      new probe rows wait for typed sink-terminal receipts. This owner-observed
+      tail cut remains undiagnosed and open until the bare-speaker run above; the
+      normal `VoiceRuntime` already used tracked receipts, so the tool repair is
+      not evidence that normal replies were or were not cut.
       Goal: when NO barge route exists, buffer playback-time talk-over (reusing
       the `_splice_word_cut_preroll` machinery) so it becomes the next turn's
       input instead of vanishing at the route-unverified `continue`. Parked
@@ -555,7 +560,24 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       identity remain unchanged; the changed `N=4` population receives its own
       identity and is not poolable with the prior four-sentence population. Every
       DSP/runtime-control-path/config/default/backend/authority and live-gate
-      boundary remains.
+      boundary remains. ADR-0181 supersedes its report-timing contract while
+      carrying the exact sentence and digest decisions forward.
+- [x] **Make echo probe wait for sink-terminal playback receipts — DONE
+      headlessly 2026-08-10 (ADR-0181).** Missing, malformed, or raising tracked-
+      terminal capability now yields identity-free `probe-preflight-failed` rc1
+      immediately after construction, before instrumentation/start, with no stop;
+      `KeyboardInterrupt` remains preserved. Each tracked sentence then reaches
+      one matching `COMPLETED` or receipt-attested `INTERRUPTED` terminal before
+      the next submission; dropped, failed, missing, duplicate, mismatched,
+      malformed, or timed-out terminals fail closed through the existing
+      identity-free lifecycle error and one owned stop. Successful reports version this as
+      `tracked-sink-terminal-v1`, split submitted/completed/interrupted counts,
+      and retain `sentences_spoken` only as
+      a compatibility alias for submitted—not audible completion. Old reports are
+      non-poolable even when the exact stimulus digest matches. Diagnostic callback
+      signatures are current again; no core/default/config/threshold/authority
+      change or normal-reply tail-cut proof follows. The owner bare-speaker
+      validation and playback-tail investigation above remain open.
 - [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
       `tools/turn_detect_check` real-voice validation tool + an adaptive
       confidence-tiered endpoint floor all LANDED on main from the voice batch below;

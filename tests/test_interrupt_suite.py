@@ -123,12 +123,18 @@ def test_classify_valid_uncoupled_zero_is_inconclusive_but_not_an_error():
     assert outcome.matrix_partial is False
 
 
-def test_classify_ignores_additive_stimulus_identity():
+def test_classify_ignores_additive_echo_probe_receipt_fields():
     row = _summary_row("quiet")
+    additive = {
+        "stimulus_id": _STIMULUS_ID,
+        "playback_terminal_protocol": "tracked-sink-terminal-v1",
+        "sentences_submitted": 3,
+        "sentences_completed": 2,
+        "sentences_interrupted": 1,
+        "sentences_spoken": 3,
+    }
 
-    assert classify_outcome([{**row, "stimulus_id": _STIMULUS_ID}]) == (
-        classify_outcome([row])
-    )
+    assert classify_outcome([{**row, **additive}]) == classify_outcome([row])
 
 
 class _DictSubclass(dict):
@@ -405,6 +411,46 @@ def test_main_publishes_closed_candidate_outcome_and_exact_live_gate(capsys):
     assert "python -m tools.live_audio_ab logs/runs/run-<id>.txt" in output
     forbidden = ("headphone", "dtln-aec", "works", "recommended")
     assert all(word not in output.lower() for word in forbidden)
+
+
+def test_main_preserves_additive_receipt_fields_only_in_raw():
+    published, publisher = _capture_publisher()
+    additive = {
+        "stimulus_id": _STIMULUS_ID,
+        "playback_terminal_protocol": "tracked-sink-terminal-v1",
+        "sentences_submitted": 3,
+        "sentences_completed": 2,
+        "sentences_interrupted": 1,
+        "sentences_spoken": 3,
+    }
+
+    rc = main(
+        ["--mics", "alc285", "--out", "ignored.json"],
+        mic_probe=lambda _device: (True, 0.01),
+        cell_probe=lambda *_args: {**_cell(self_int=0), **additive},
+        report_publisher=publisher,
+    )
+
+    assert rc == 0
+    report = published[0][1]
+    assert len(report["raw"]) == len(STRATEGIES)
+    assert all(
+        all(raw[key] == value for key, value in additive.items())
+        for raw in report["raw"]
+    )
+    assert all(set(row).isdisjoint(additive) for row in report["rows"])
+    assert report["diagnostic_outcome"] == {
+        "status": "quiet-control-candidate",
+        "reason": "coupled-zero-self-interruption-observed",
+        "candidate_labels": sorted(
+            f"ALC285 Analog/{strategy['label']}" for strategy in STRATEGIES
+        ),
+        "valid_coupled_cells": len(STRATEGIES),
+        "uncoupled_zero_cells": 0,
+        "error_cells": 0,
+        "matrix_partial": False,
+        "live_validation_required": True,
+    }
 
 
 def test_main_candidate_survives_other_mic_error_as_explicit_partial():

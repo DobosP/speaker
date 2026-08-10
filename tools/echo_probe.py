@@ -41,6 +41,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from core.engine import PlaybackOutcome, PlaybackReceipt, TrackedSpeech
+
 SENTENCES = [
     "This is a live audio calibration test of the speaker assistant.",
     "I am checking whether my own voice is captured back by the microphone.",
@@ -50,6 +52,7 @@ SENTENCES = [
 
 _STIMULUS_HASH_DOMAIN = b"speaker.echo-probe.spoken-text.v1\0"
 _STIMULUS_ID_PREFIX = "echo-probe-spoken-text-v1:sha256:"
+_PLAYBACK_TERMINAL_PROTOCOL = "tracked-sink-terminal-v1"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -76,7 +79,7 @@ def _build_stimulus_plan(requested_count: int) -> _StimulusPlan:
 
 
 class _StimulusIdBuilder:
-    """Incrementally bind the exact text of normally returned speak calls."""
+    """Bind the exact text of normally returned tracked submissions."""
 
     def __init__(self) -> None:
         self._digest = hashlib.sha256(_STIMULUS_HASH_DOMAIN)
@@ -94,6 +97,212 @@ class _StimulusIdBuilder:
         if self._recorded_count == 0:
             raise ValueError("cannot identify an empty stimulus sequence")
         return _STIMULUS_ID_PREFIX + self._digest.hexdigest()
+
+
+class _PlaybackTerminalProtocolError(RuntimeError):
+    """A tracked submission did not produce one valid sink-terminal receipt."""
+
+
+def _require_tracked_terminal(engine) -> None:
+    """Fail closed unless the engine explicitly attests tracked terminals."""
+    capabilities = engine.playback_capabilities
+    if getattr(capabilities, "tracked_terminal", False) is not True:
+        raise _PlaybackTerminalProtocolError
+
+
+@dataclasses.dataclass(slots=True)
+class _TerminalReceiptSlot:
+    fragment_id: str
+    event: threading.Event = dataclasses.field(default_factory=threading.Event)
+    receipt: PlaybackReceipt | None = None
+    callback_count: int = 0
+    received_at: float | None = None
+
+
+class _TerminalReceiptTracker:
+    """Thread-safe receipt validator shared across one complete stimulus run."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._fragment_ids: set[str] = set()
+        self._faulted = False
+
+    def new_slot(self, fragment_id: str) -> _TerminalReceiptSlot:
+        with self._lock:
+            if self._faulted or fragment_id in self._fragment_ids:
+                self._faulted = True
+                raise _PlaybackTerminalProtocolError
+            self._fragment_ids.add(fragment_id)
+        return _TerminalReceiptSlot(fragment_id=fragment_id)
+
+    def callback_for(
+        self, slot: _TerminalReceiptSlot
+    ) -> Callable[[PlaybackReceipt], None]:
+        def _on_terminal(receipt: PlaybackReceipt) -> None:
+            # Never throw into a synchronous/native callback owner. Poison the
+            # shared run and wake its bounded waiter instead.
+            with self._lock:
+                slot.callback_count += 1
+                if slot.callback_count != 1:
+                    self._faulted = True
+                else:
+                    slot.received_at = time.monotonic()
+                    if type(receipt) is not PlaybackReceipt:
+                        self._faulted = True
+                    elif type(receipt.fragment_id) is not str:
+                        self._faulted = True
+                    elif type(receipt.outcome) is not PlaybackOutcome:
+                        self._faulted = True
+                    elif receipt.fragment_id != slot.fragment_id:
+                        self._faulted = True
+                    else:
+                        slot.receipt = receipt
+            slot.event.set()
+
+        return _on_terminal
+
+    def poison(self) -> None:
+        with self._lock:
+            self._faulted = True
+
+    def validate(self) -> None:
+        with self._lock:
+            if self._faulted:
+                raise _PlaybackTerminalProtocolError
+
+    def wait_for_terminal(
+        self,
+        slot: _TerminalReceiptSlot,
+        *,
+        timeout_seconds: float,
+        on_wait: Callable[[], None],
+    ) -> PlaybackReceipt:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            self.validate()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            if slot.event.wait(min(0.05, remaining)):
+                break
+            on_wait()
+
+        self.validate()
+        with self._lock:
+            if slot.received_at is None or slot.received_at > deadline:
+                self._faulted = True
+                raise TimeoutError
+            if slot.callback_count != 1 or slot.receipt is None:
+                self._faulted = True
+                raise _PlaybackTerminalProtocolError
+            return slot.receipt
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _TrackedStimulusResult:
+    """Validated terminal counts for one fully submitted stimulus plan."""
+
+    submitted: int
+    completed: int
+    interrupted: int
+    _tracker: _TerminalReceiptTracker = dataclasses.field(
+        repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        counts = (self.submitted, self.completed, self.interrupted)
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("terminal counts must be non-negative exact integers")
+        if self.submitted != self.completed + self.interrupted:
+            raise ValueError("every submitted sentence must have a valid terminal")
+        if type(self._tracker) is not _TerminalReceiptTracker:
+            raise TypeError("tracker must be a terminal receipt tracker")
+        self._tracker.validate()
+
+    def validate(self) -> None:
+        """Recheck for a callback protocol fault arriving during shutdown."""
+        self._tracker.validate()
+
+
+def _run_tracked_stimulus(
+    engine,
+    stimulus_plan: _StimulusPlan,
+    stimulus_id_builder: _StimulusIdBuilder,
+    *,
+    timeout_seconds: float,
+    on_wait: Callable[[], None],
+) -> _TrackedStimulusResult:
+    """Submit each sentence only after the prior sink-terminal receipt."""
+    if (
+        type(timeout_seconds) not in (int, float)
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0.0
+    ):
+        raise ValueError("terminal receipt timeout must be finite and positive")
+    if not callable(on_wait):
+        raise TypeError("on_wait must be callable")
+    _require_tracked_terminal(engine)
+
+    tracker = _TerminalReceiptTracker()
+    submitted = 0
+    completed = 0
+    interrupted = 0
+    for ordinal, text in enumerate(stimulus_plan, start=1):
+        fragment_id = f"echo-probe-fragment-{ordinal:08d}"
+        slot = tracker.new_slot(fragment_id)
+        engine.speak_tracked(
+            TrackedSpeech(fragment_id=fragment_id, text=text),
+            on_terminal=tracker.callback_for(slot),
+        )
+        # Preserve the text-identity recipe: record the exact submitted object
+        # only after the tracked call returns normally, before receipt waiting.
+        stimulus_id_builder.record(text)
+        submitted += 1
+
+        receipt = tracker.wait_for_terminal(
+            slot,
+            timeout_seconds=float(timeout_seconds),
+            on_wait=on_wait,
+        )
+        if receipt.outcome is PlaybackOutcome.COMPLETED:
+            completed += 1
+        elif receipt.outcome is PlaybackOutcome.INTERRUPTED:
+            interrupted += 1
+        else:
+            tracker.poison()
+            raise _PlaybackTerminalProtocolError
+
+    tracker.validate()
+    if submitted != completed + interrupted:
+        tracker.poison()
+        raise _PlaybackTerminalProtocolError
+    return _TrackedStimulusResult(
+        submitted=submitted,
+        completed=completed,
+        interrupted=interrupted,
+        _tracker=tracker,
+    )
+
+
+def _make_scaled_synthesizer(
+    synthesize: Callable[..., object], gain: float
+) -> Callable[..., object]:
+    """Wrap only synthesized writes while preserving generation directives."""
+
+    def _scaled_synthesize(text, write, gen=None, directives=None):
+        def _scaled_write(samples) -> None:
+            import numpy as np
+
+            write(np.asarray(samples, dtype="float32") * gain)
+
+        return synthesize(
+            text,
+            _scaled_write,
+            gen=gen,
+            directives=directives,
+        )
+
+    return _scaled_synthesize
 
 
 _PHYSICAL_ACCEPTANCE_GUIDANCE = (
@@ -408,6 +617,18 @@ def main() -> int:
         )
 
     engine = SherpaOnnxEngine(sherpa_cfg)
+    try:
+        _require_tracked_terminal(engine)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # SystemExit(0) must not become success.
+        return _emit_probe_result(
+            {
+                "error": "probe-preflight-failed",
+                "preflight_error_type": type(exc).__name__,
+            },
+            success=False,
+        )
 
     barge_ins: list[float] = []
     gate_samples: list[tuple[float, float, bool]] = []
@@ -427,13 +648,13 @@ def main() -> int:
     # Instrument the unenrolled echo gate to record exactly what it compares.
     _orig_llu = engine._looks_like_user
 
-    def _wrapped_llu(samples, mic_raw=None):
-        # The engine now calls _looks_like_user(samples, mic_raw): post-AEC block
-        # for the level fallback + the RAW pre-AEC mic for the coherence detector.
-        # Forward both so the probe instruments the exact same path the engine runs.
-        passed = _orig_llu(samples, mic_raw)
+    def _wrapped_llu(samples, mic_raw=None, *, playback_level=None):
+        # Forward the post-AEC block, RAW pre-AEC mic, and the capture block's
+        # exact playback-level snapshot along the same path the engine runs.
+        passed = _orig_llu(samples, mic_raw, playback_level=playback_level)
         try:
-            gate_samples.append((round(_rms(samples), 5), round(float(engine._playback_level), 5), bool(passed)))
+            level_snapshot = engine._playback_level if playback_level is None else playback_level
+            gate_samples.append((round(_rms(samples), 5), round(float(level_snapshot), 5), bool(passed)))
             det = getattr(engine, "_echo_coherence", None)
             if det is not None and det.last_decided is not None:
                 coh_samples.append((
@@ -462,22 +683,20 @@ def main() -> int:
     # (note: this scales BOTH the speaker output and the _playback_level reference,
     # so it does NOT expose the OS-volume scale mismatch -- vary OS volume for that).
     if args.gain != 1.0:
-        _orig_synth = engine._synthesize
-
-        def _scaled_synth(text, write):
-            _orig_synth(text, lambda s: write(__import__("numpy").asarray(s, dtype="float32") * args.gain))
-
-        engine._synthesize = _scaled_synth  # type: ignore[assignment]
+        engine._synthesize = _make_scaled_synthesizer(  # type: ignore[assignment]
+            engine._synthesize,
+            args.gain,
+        )
 
     cb = EngineCallbacks(
         on_barge_in=lambda: barge_ins.append(time.monotonic()),
     )
 
     erle_acc = {"near2": 0.0, "post2": 0.0, "far_frames": 0}
-    spoken = 0
+    tracked_stimulus: _TrackedStimulusResult | None = None
 
     def _probe_body() -> None:
-        nonlocal peak_playback, spoken
+        nonlocal peak_playback, tracked_stimulus
 
         # The engine builds ``_aec`` inside start(), so the ERLE wrapper and
         # every later warm/body/tail action belong inside the cleanup owner.
@@ -503,25 +722,32 @@ def main() -> int:
             engine._aec.process_16k = _erle_proc  # type: ignore[assignment]
 
         time.sleep(1.0)  # let the capture loop spin up
-        for text in stimulus_plan:
-            done = threading.Event()
-            engine.speak(text, on_done=done.set)
-            stimulus_id_builder.record(text)
-            deadline = time.monotonic() + 20.0
-            while not done.wait(0.05):
-                lvl = float(engine._playback_level)
-                if lvl > peak_playback:
-                    peak_playback = lvl
-                if time.monotonic() > deadline:
-                    break
-            spoken += 1
-            time.sleep(0.4)
-        time.sleep(0.5)
+
+        def _observe_playback_level() -> None:
+            nonlocal peak_playback
+            lvl = float(engine._playback_level)
+            if lvl > peak_playback:
+                peak_playback = lvl
+
+        tracked_stimulus = _run_tracked_stimulus(
+            engine,
+            stimulus_plan,
+            stimulus_id_builder,
+            timeout_seconds=20.0,
+            on_wait=_observe_playback_level,
+        )
+
+    def _stop_probe() -> None:
+        engine.stop()
+        if tracked_stimulus is not None:
+            # stop() joins the receipt owner; this closes the window in which a
+            # delayed duplicate callback could otherwise escape normal reporting.
+            tracked_stimulus.validate()
 
     lifecycle = _run_probe_lifecycle(
         lambda: engine.start(cb),
         _probe_body,
-        engine.stop,
+        _stop_probe,
     )
     if not lifecycle.report_allowed:
         return _emit_probe_result(
@@ -530,6 +756,16 @@ def main() -> int:
                 "start_error_type": lifecycle.start_error_type,
                 "probe_error_type": lifecycle.probe_error_type,
                 "stop_error_type": lifecycle.stop_error_type,
+            },
+            success=False,
+        )
+    if tracked_stimulus is None:
+        return _emit_probe_result(
+            {
+                "error": "probe-lifecycle-failed",
+                "start_error_type": None,
+                "probe_error_type": _PlaybackTerminalProtocolError.__name__,
+                "stop_error_type": None,
             },
             success=False,
         )
@@ -640,7 +876,13 @@ def main() -> int:
         "aec_far_active_frames": erle_acc["far_frames"],
         "gain": args.gain,
         "device": device,
-        "sentences_spoken": spoken,
+        "playback_terminal_protocol": _PLAYBACK_TERMINAL_PROTOCOL,
+        "sentences_submitted": tracked_stimulus.submitted,
+        "sentences_completed": tracked_stimulus.completed,
+        "sentences_interrupted": tracked_stimulus.interrupted,
+        # Compatibility alias: submitted and terminalized, not proof that every
+        # fragment completed audibly (see the explicit outcome counters above).
+        "sentences_spoken": tracked_stimulus.submitted,
         "stimulus_id": stimulus_id_builder.stimulus_id(),
         "self_interruptions": len(barge_ins),
         "vad_flagged_during_play": len(gate_samples),
@@ -659,6 +901,8 @@ def main() -> int:
             "erle_db aggregates all AEC-active frames and may span the configured seed "
             "plus multiple accepted operating delays; it is not attributable only to "
             "the final delay snapshot. "
+            "sentences_spoken is a compatibility alias of sentences_submitted; "
+            "it is not audible-completion evidence. "
             f"{_PHYSICAL_ACCEPTANCE_GUIDANCE}"
         ),
     }

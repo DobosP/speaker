@@ -1,7 +1,7 @@
 # ADR-0180: Neutralize the echo-probe fourth stimulus
 
 Date: 2026-08-10
-Status: accepted
+Status: superseded-by ADR-0181
 
 ## Decision
 

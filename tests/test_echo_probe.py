@@ -5,22 +5,36 @@ import hashlib
 import json
 import re
 import struct
+import sys
 import threading
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from core.engine import (
+    PlaybackCapabilities,
+    PlaybackOutcome,
+    PlaybackReceipt,
+    TrackedSpeech,
+)
 from core.engines._aec import AecDelaySnapshot
 from tools import echo_probe as echo_probe_module
 from tools.echo_probe import (
+    _PLAYBACK_TERMINAL_PROTOCOL,
+    _PlaybackTerminalProtocolError,
     _ProbeLifecycleResult,
     _StimulusIdBuilder,
     _StimulusPlan,
+    _TerminalReceiptTracker,
+    _TrackedStimulusResult,
     _aec_reference_delay_summary,
     _build_stimulus_plan,
     _emit_probe_result,
+    _make_scaled_synthesizer,
+    _require_tracked_terminal,
     _run_probe_lifecycle,
+    _run_tracked_stimulus,
 )
 from tools.interrupt_suite import summarize
 
@@ -55,6 +69,73 @@ def _built_stimulus_id(plan: _StimulusPlan) -> str:
     for text in plan:
         builder.record(text)
     return builder.stimulus_id()
+
+
+def _terminal_action(
+    outcome: object = PlaybackOutcome.COMPLETED,
+    *,
+    fragment_id: str | None = None,
+    duplicate: bool = False,
+):
+    def action(speech, on_terminal):
+        receipt = PlaybackReceipt(
+            fragment_id=speech.fragment_id if fragment_id is None else fragment_id,
+            outcome=outcome,  # type: ignore[arg-type]
+        )
+        on_terminal(receipt)
+        if duplicate:
+            on_terminal(receipt)
+
+    return action
+
+
+class _ScriptedTrackedEngine:
+    def __init__(
+        self,
+        actions=(),
+        *,
+        capabilities: object = PlaybackCapabilities(tracked_terminal=True),
+    ) -> None:
+        self.playback_capabilities = capabilities
+        self.actions = list(actions)
+        self.submissions: list[TrackedSpeech] = []
+        self.callbacks = []
+        self.legacy_calls = 0
+
+    def speak(self, *_args, **_kwargs):
+        self.legacy_calls += 1
+        raise AssertionError("legacy speak must never be called")
+
+    def speak_tracked(self, speech, *, on_terminal, on_started=None):
+        assert type(speech) is TrackedSpeech
+        assert on_started is None
+        self.submissions.append(speech)
+        self.callbacks.append(on_terminal)
+        if not self.actions:
+            raise AssertionError("unexpected tracked submission")
+        action = self.actions.pop(0)
+        if isinstance(action, BaseException):
+            raise action
+        if action is not None:
+            action(speech, on_terminal)
+
+
+def _run_scripted_stimulus(
+    engine,
+    *,
+    count: int = 1,
+    timeout_seconds: float = 0.2,
+    on_wait=lambda: None,
+):
+    builder = _StimulusIdBuilder()
+    result = _run_tracked_stimulus(
+        engine,
+        _build_stimulus_plan(count),
+        builder,
+        timeout_seconds=timeout_seconds,
+        on_wait=on_wait,
+    )
+    return result, builder
 
 
 class _SnapshotCalibrator:
@@ -102,6 +183,123 @@ def _engine(*, aec_active: bool, calibrator=None, operating: int = 1280):
         _running=_event(),
         _capture_resource_hold=_event(),
     )
+
+
+class _MainTrackedEngine(_ScriptedTrackedEngine):
+    def __init__(
+        self,
+        actions=(),
+        *,
+        capabilities: object = PlaybackCapabilities(tracked_terminal=True),
+    ) -> None:
+        super().__init__(actions, capabilities=capabilities)
+        self.events: list[str] = []
+        self.stop_calls = 0
+        self._aec = None
+        self._aec_delay_cal = None
+        self._aec_ref_delay = 1280
+        self._running = _event()
+        self._capture_resource_hold = _event()
+        self._echo_coherence = None
+        self._dtd = None
+        self._playback_level = 0.9
+        self._synthesize = lambda *_args, **_kwargs: None
+        self.looks_like_user_calls = []
+        self.capture_samples = [0.25, -0.25]
+        self.raw_samples = [0.5, -0.5]
+        self.capture_playback_level = 0.125
+
+    def _looks_like_user(self, samples, mic_raw=None, *, playback_level=None):
+        self.looks_like_user_calls.append((samples, mic_raw, playback_level))
+        return True
+
+    def start(self, _callbacks):
+        self.events.append("start")
+        self._looks_like_user(
+            self.capture_samples,
+            self.raw_samples,
+            playback_level=self.capture_playback_level,
+        )
+
+    def stop(self):
+        self.stop_calls += 1
+        self.events.append("stop")
+
+    def speak_tracked(self, speech, *, on_terminal, on_started=None):
+        self.events.append(f"submit-{len(self.submissions) + 1}")
+        super().speak_tracked(
+            speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+        )
+
+
+class _TrackedTerminalAccessorFault:
+    def __init__(self, fault: BaseException) -> None:
+        self.fault = fault
+
+    @property
+    def tracked_terminal(self):
+        raise self.fault
+
+
+class _ControlledTerminalEvent:
+    def __init__(self) -> None:
+        self.wait_entered = threading.Event()
+        self.resume_waiter = threading.Event()
+        self._is_set = False
+
+    def set(self) -> None:
+        self._is_set = True
+
+    def wait(self, _timeout=None) -> bool:
+        self.wait_entered.set()
+        if not self.resume_waiter.wait(1.0):
+            raise AssertionError("terminal waiter did not resume")
+        return self._is_set
+
+
+class _ControlledClock:
+    def __init__(self, value: float) -> None:
+        self._lock = threading.Lock()
+        self._value = value
+
+    def set(self, value: float) -> None:
+        with self._lock:
+            self._value = value
+
+    def monotonic(self) -> float:
+        with self._lock:
+            return self._value
+
+
+def _install_fake_main(monkeypatch, engine, *, argv=()):
+    sherpa_cfg = SimpleNamespace(
+        tts_model="fake-model",
+        sample_rate=16000,
+        aec_ref_delay_ms=80,
+        aec_enabled=False,
+        aec_auto_delay=False,
+        input_device="fake-input",
+    )
+
+    config_module = ModuleType("core.config")
+    config_module.load_config = lambda _path: {"device": "fake-device", "sherpa": {}}
+    config_module.apply_device_profile = lambda cfg, _device: cfg
+
+    class FakeSherpaConfig:
+        @classmethod
+        def from_dict(cls, _config):
+            return sherpa_cfg
+
+    sherpa_module = ModuleType("core.engines.sherpa")
+    sherpa_module.SherpaConfig = FakeSherpaConfig
+    sherpa_module.SherpaOnnxEngine = lambda _config: engine
+    monkeypatch.setitem(sys.modules, "core.config", config_module)
+    monkeypatch.setitem(sys.modules, "core.engines.sherpa", sherpa_module)
+    monkeypatch.setattr(echo_probe_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(sys, "argv", ["echo_probe", *argv])
+    return sherpa_cfg
 
 
 def test_stimulus_catalog_bytes_are_exactly_locked():
@@ -199,38 +397,532 @@ def test_neutral_fourth_sentence_changes_n4_without_changing_n3():
     assert current_n4 != legacy_n4
 
 
-def test_main_hashes_the_same_lazy_plan_text_only_after_speak_returns():
-    tree = ast.parse(Path(echo_probe_module.__file__).read_text(encoding="utf-8"))
-    main_node = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "main"
-    )
-    loop = next(
-        node
-        for node in ast.walk(main_node)
-        if isinstance(node, ast.For)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "text"
-        and isinstance(node.iter, ast.Name)
-        and node.iter.id == "stimulus_plan"
-    )
-    calls = [node for node in ast.walk(loop) if isinstance(node, ast.Call)]
-    speak = next(
-        node
-        for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "speak"
-    )
-    record = next(
-        node
-        for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "record"
+def test_tracked_stimulus_accepts_synchronous_terminals_and_counts_outcomes():
+    engine = _ScriptedTrackedEngine(
+        [
+            _terminal_action(PlaybackOutcome.COMPLETED),
+            _terminal_action(PlaybackOutcome.INTERRUPTED),
+            _terminal_action(PlaybackOutcome.COMPLETED),
+        ]
     )
 
-    assert isinstance(speak.args[0], ast.Name)
-    assert isinstance(record.args[0], ast.Name)
-    assert speak.args[0].id == record.args[0].id == loop.target.id
-    assert speak.lineno < record.lineno
+    result, builder = _run_scripted_stimulus(engine, count=3)
+
+    assert type(result) is _TrackedStimulusResult
+    assert (result.submitted, result.completed, result.interrupted) == (3, 2, 1)
+    result.validate()
+    assert [speech.text for speech in engine.submissions] == list(
+        _build_stimulus_plan(3)
+    )
+    assert builder.stimulus_id() == (
+        _STIMULUS_ID_PREFIX + _EXPECTED_STIMULUS_DIGESTS[3]
+    )
+    assert engine.actions == []
+    assert engine.legacy_calls == 0
+
+
+def test_next_sentence_and_stop_wait_for_each_exact_terminal_receipt():
+    events: list[str] = []
+    submitted = [threading.Event(), threading.Event()]
+    callbacks = []
+
+    class BlockingEngine(_ScriptedTrackedEngine):
+        def __init__(self):
+            super().__init__(())
+
+        def speak_tracked(self, speech, *, on_terminal, on_started=None):
+            assert type(speech) is TrackedSpeech
+            assert on_started is None
+            index = len(self.submissions)
+            self.submissions.append(speech)
+            callbacks.append(on_terminal)
+            events.append(f"submit-{index + 1}")
+            submitted[index].set()
+
+    engine = BlockingEngine()
+    thread_result: list[_ProbeLifecycleResult] = []
+    thread_error: list[BaseException] = []
+
+    def run_lifecycle():
+        try:
+            thread_result.append(
+                _run_probe_lifecycle(
+                    lambda: events.append("start"),
+                    lambda: _run_scripted_stimulus(
+                        engine,
+                        count=2,
+                        timeout_seconds=2.0,
+                    ),
+                    lambda: events.append("stop"),
+                )
+            )
+        except BaseException as exc:
+            thread_error.append(exc)
+
+    worker = threading.Thread(target=run_lifecycle)
+    worker.start()
+    assert submitted[0].wait(1.0)
+    assert not submitted[1].is_set()
+    assert "stop" not in events
+
+    first = engine.submissions[0]
+    events.append("terminal-1")
+    callbacks[0](
+        PlaybackReceipt(
+            fragment_id=first.fragment_id,
+            outcome=PlaybackOutcome.COMPLETED,
+        )
+    )
+    assert submitted[1].wait(1.0)
+    assert "stop" not in events
+
+    second = engine.submissions[1]
+    events.append("terminal-2")
+    callbacks[1](
+        PlaybackReceipt(
+            fragment_id=second.fragment_id,
+            outcome=PlaybackOutcome.INTERRUPTED,
+        )
+    )
+    worker.join(1.0)
+
+    assert not worker.is_alive()
+    assert thread_error == []
+    assert len(thread_result) == 1
+    assert thread_result[0].report_allowed is True
+    assert events == [
+        "start",
+        "submit-1",
+        "terminal-1",
+        "submit-2",
+        "terminal-2",
+        "stop",
+    ]
+    assert engine.legacy_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("arrival_time", "expected_error_type"),
+    [
+        (100.75, None),
+        (101.25, TimeoutError),
+    ],
+)
+def test_terminal_deadline_uses_callback_arrival_not_delayed_waiter_observation(
+    arrival_time,
+    expected_error_type,
+    monkeypatch,
+):
+    clock = _ControlledClock(100.0)
+    monkeypatch.setattr(
+        echo_probe_module,
+        "time",
+        SimpleNamespace(monotonic=clock.monotonic),
+    )
+    tracker = _TerminalReceiptTracker()
+    slot = tracker.new_slot("opaque-fragment")
+    controlled_event = _ControlledTerminalEvent()
+    slot.event = controlled_event  # type: ignore[assignment]
+    receipt = PlaybackReceipt(
+        fragment_id=slot.fragment_id,
+        outcome=PlaybackOutcome.COMPLETED,
+    )
+    callback = tracker.callback_for(slot)
+    returned = []
+    errors: list[BaseException] = []
+
+    def wait_for_terminal():
+        try:
+            returned.append(
+                tracker.wait_for_terminal(
+                    slot,
+                    timeout_seconds=1.0,
+                    on_wait=lambda: None,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    waiter = threading.Thread(target=wait_for_terminal)
+    waiter.start()
+    assert controlled_event.wait_entered.wait(1.0)
+    clock.set(arrival_time)
+    callback(receipt)
+    clock.set(102.0)
+    controlled_event.resume_waiter.set()
+    waiter.join(1.0)
+
+    assert not waiter.is_alive()
+    assert slot.received_at == arrival_time
+    if expected_error_type is None:
+        assert returned == [receipt]
+        assert errors == []
+        tracker.validate()
+    else:
+        assert returned == []
+        assert len(errors) == 1
+        assert type(errors[0]) is expected_error_type
+        with pytest.raises(_PlaybackTerminalProtocolError):
+            tracker.validate()
+
+
+def test_fragment_ids_are_unique_ordinal_only_and_privacy_safe():
+    engine = _ScriptedTrackedEngine([_terminal_action() for _ in range(5)])
+
+    _run_scripted_stimulus(engine, count=5)
+
+    fragment_ids = [speech.fragment_id for speech in engine.submissions]
+    stimulus_terms = {
+        token.strip(".").lower()
+        for sentence in echo_probe_module.SENTENCES
+        for token in sentence.split()
+        if len(token.strip(".")) >= 4
+    }
+    assert len(fragment_ids) == len(set(fragment_ids)) == 5
+    assert all(type(fragment_id) is str and fragment_id for fragment_id in fragment_ids)
+    assert all(
+        re.fullmatch(r"[a-z0-9._:-]+", fragment_id) for fragment_id in fragment_ids
+    )
+    assert all(
+        term not in fragment_id.lower()
+        for fragment_id in fragment_ids
+        for term in stimulus_terms
+    )
+
+
+@pytest.mark.parametrize("tracked_terminal", [False, None, 0, "true"])
+def test_tracked_terminal_capability_is_exact_and_required(tracked_terminal):
+    engine = _ScriptedTrackedEngine(
+        [],
+        capabilities=SimpleNamespace(tracked_terminal=tracked_terminal),
+    )
+
+    with pytest.raises(_PlaybackTerminalProtocolError):
+        _require_tracked_terminal(engine)
+    with pytest.raises(_PlaybackTerminalProtocolError):
+        _run_scripted_stimulus(engine)
+
+    assert engine.submissions == []
+    assert engine.legacy_calls == 0
+
+
+def _faulting_tracked_engine(fault: str) -> _ScriptedTrackedEngine:
+    if fault == "missing-capability":
+        return _ScriptedTrackedEngine(
+            [], capabilities=PlaybackCapabilities(tracked_terminal=False)
+        )
+    if fault == "dropped":
+        action = _terminal_action(PlaybackOutcome.DROPPED)
+    elif fault == "failed":
+        action = _terminal_action(PlaybackOutcome.FAILED)
+    elif fault == "wrong-outcome-type":
+        action = _terminal_action("completed")
+    elif fault == "fragment-mismatch":
+        action = _terminal_action(fragment_id="different-fragment")
+    elif fault == "wrong-receipt-type":
+
+        def action(_speech, callback):
+            callback(object())
+
+    elif fault == "duplicate":
+        action = _terminal_action(duplicate=True)
+    elif fault == "timeout":
+        action = None
+    elif fault == "submission-error":
+        action = RuntimeError("submission failed")
+    else:
+        raise AssertionError(f"unknown fault fixture: {fault}")
+    return _ScriptedTrackedEngine([action])
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_error_type"),
+    [
+        ("missing-capability", "_PlaybackTerminalProtocolError"),
+        ("dropped", "_PlaybackTerminalProtocolError"),
+        ("failed", "_PlaybackTerminalProtocolError"),
+        ("wrong-outcome-type", "_PlaybackTerminalProtocolError"),
+        ("fragment-mismatch", "_PlaybackTerminalProtocolError"),
+        ("wrong-receipt-type", "_PlaybackTerminalProtocolError"),
+        ("duplicate", "_PlaybackTerminalProtocolError"),
+        ("timeout", "TimeoutError"),
+        ("submission-error", "RuntimeError"),
+    ],
+)
+def test_terminal_anomalies_fail_closed_and_lifecycle_stops_exactly_once(
+    fault,
+    expected_error_type,
+):
+    engine = _faulting_tracked_engine(fault)
+    calls: list[str] = []
+
+    lifecycle = _run_probe_lifecycle(
+        lambda: calls.append("start"),
+        lambda: _run_scripted_stimulus(
+            engine,
+            timeout_seconds=0.001,
+        ),
+        lambda: calls.append("stop"),
+    )
+
+    assert calls == ["start", "stop"]
+    assert lifecycle.probe_error_type == expected_error_type
+    assert lifecycle.stop_error_type is None
+    assert lifecycle.report_allowed is False
+    assert engine.legacy_calls == 0
+    payload = _lifecycle_error_payload(lifecycle)
+    assert set(payload).isdisjoint(
+        {
+            "stimulus_id",
+            "playback_terminal_protocol",
+            "sentences_submitted",
+            "sentences_completed",
+            "sentences_interrupted",
+            "sentences_spoken",
+        }
+    )
+
+
+def test_delayed_duplicate_during_stop_fails_closed_after_one_stop():
+    engine = _ScriptedTrackedEngine([_terminal_action()])
+    tracked: list[_TrackedStimulusResult] = []
+    stop_calls = 0
+
+    def probe():
+        result, _builder = _run_scripted_stimulus(engine)
+        tracked.append(result)
+
+    def stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        speech = engine.submissions[0]
+        engine.callbacks[0](
+            PlaybackReceipt(
+                fragment_id=speech.fragment_id,
+                outcome=PlaybackOutcome.COMPLETED,
+            )
+        )
+        tracked[0].validate()
+
+    lifecycle = _run_probe_lifecycle(lambda: None, probe, stop)
+
+    assert stop_calls == 1
+    assert lifecycle.probe_error_type is None
+    assert lifecycle.stop_error_type == "_PlaybackTerminalProtocolError"
+    assert lifecycle.report_allowed is False
+    assert engine.legacy_calls == 0
+
+
+def test_gain_wrapper_forwards_generation_and_directives_and_scales_only_audio():
+    import numpy as np
+
+    text = "exact text"
+    generation = object()
+    directives = object()
+    samples = np.asarray([0.25, -0.5, 1.0], dtype="float32")
+    original_samples = samples.copy()
+    seen = {}
+    written = []
+    sentinel = object()
+
+    def synthesize(received_text, write, *, gen=None, directives=None):
+        seen.update(
+            text=received_text,
+            gen=gen,
+            directives=directives,
+        )
+        write(samples)
+        return sentinel
+
+    scaled = _make_scaled_synthesizer(synthesize, 0.4)
+    returned = scaled(
+        text,
+        written.append,
+        gen=generation,
+        directives=directives,
+    )
+
+    assert returned is sentinel
+    assert seen["text"] is text
+    assert seen["gen"] is generation
+    assert seen["directives"] is directives
+    assert len(written) == 1
+    np.testing.assert_array_equal(samples, original_samples)
+    np.testing.assert_allclose(written[0], original_samples * 0.4, rtol=0, atol=0)
+
+
+def test_main_success_reports_exact_terminal_protocol_counts_and_wrapper_level(
+    monkeypatch,
+    capsys,
+):
+    engine = _MainTrackedEngine(
+        [
+            _terminal_action(PlaybackOutcome.COMPLETED),
+            _terminal_action(PlaybackOutcome.INTERRUPTED),
+        ]
+    )
+    _install_fake_main(
+        monkeypatch,
+        engine,
+        argv=("--sentences", "2", "--label", "fake-probe"),
+    )
+
+    rc = echo_probe_module.main()
+
+    assert rc == 0
+    report = _decode_exactly_one_json_object(capsys.readouterr().out)
+    assert report["playback_terminal_protocol"] == _PLAYBACK_TERMINAL_PROTOCOL
+    assert report["playback_terminal_protocol"] == "tracked-sink-terminal-v1"
+    assert {
+        key: report[key]
+        for key in (
+            "sentences_submitted",
+            "sentences_completed",
+            "sentences_interrupted",
+            "sentences_spoken",
+        )
+    } == {
+        "sentences_submitted": 2,
+        "sentences_completed": 1,
+        "sentences_interrupted": 1,
+        "sentences_spoken": 2,
+    }
+    assert report["stimulus_id"] == _independent_stimulus_id(
+        tuple(_build_stimulus_plan(2))
+    )
+    assert report["vad_flagged_during_play"] == 1
+    assert report["gate_passed_count"] == 1
+    assert report["median_mic_over_playback_dB"] == 6.0
+    assert engine.events == ["start", "submit-1", "submit-2", "stop"]
+    assert engine.stop_calls == 1
+    assert engine.legacy_calls == 0
+    assert len(engine.looks_like_user_calls) == 1
+    samples, mic_raw, playback_level = engine.looks_like_user_calls[0]
+    assert samples is engine.capture_samples
+    assert mic_raw is engine.raw_samples
+    assert playback_level is engine.capture_playback_level
+
+
+def test_main_missing_terminal_capability_fails_preflight_without_start_or_stop(
+    monkeypatch,
+    capsys,
+):
+    engine = _MainTrackedEngine(
+        [],
+        capabilities=PlaybackCapabilities(tracked_terminal=False),
+    )
+    _install_fake_main(monkeypatch, engine)
+
+    rc = echo_probe_module.main()
+
+    assert rc == 1
+    assert _decode_exactly_one_json_object(capsys.readouterr().out) == {
+        "error": "probe-preflight-failed",
+        "preflight_error_type": "_PlaybackTerminalProtocolError",
+    }
+    assert engine.events == []
+    assert engine.stop_calls == 0
+    assert engine.submissions == []
+    assert engine.legacy_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("fault_kind", "expected_error_type"),
+    [
+        ("malformed", "_PlaybackTerminalProtocolError"),
+        ("runtime-error", "RuntimeError"),
+        ("system-exit-zero", "SystemExit"),
+    ],
+)
+def test_main_malformed_or_faulting_capability_fails_identity_free_preflight(
+    fault_kind,
+    expected_error_type,
+    monkeypatch,
+    capsys,
+):
+    if fault_kind == "malformed":
+        capabilities = object()
+    elif fault_kind == "runtime-error":
+        capabilities = _TrackedTerminalAccessorFault(RuntimeError("capability"))
+    else:
+        capabilities = _TrackedTerminalAccessorFault(SystemExit(0))
+    engine = _MainTrackedEngine([], capabilities=capabilities)
+    _install_fake_main(monkeypatch, engine)
+
+    rc = echo_probe_module.main()
+
+    assert rc == 1
+    assert _decode_exactly_one_json_object(capsys.readouterr().out) == {
+        "error": "probe-preflight-failed",
+        "preflight_error_type": expected_error_type,
+    }
+    assert engine.events == []
+    assert engine.stop_calls == 0
+    assert engine.submissions == []
+    assert engine.legacy_calls == 0
+
+
+def test_main_capability_keyboard_interrupt_preserves_identity_without_output(
+    monkeypatch,
+    capsys,
+):
+    interrupt = KeyboardInterrupt("capability")
+    engine = _MainTrackedEngine(
+        [],
+        capabilities=_TrackedTerminalAccessorFault(interrupt),
+    )
+    _install_fake_main(monkeypatch, engine)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        echo_probe_module.main()
+
+    assert raised.value is interrupt
+    assert capsys.readouterr().out == ""
+    assert engine.events == []
+    assert engine.stop_calls == 0
+    assert engine.submissions == []
+    assert engine.legacy_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_error_type"),
+    [
+        (_terminal_action(PlaybackOutcome.DROPPED), "_PlaybackTerminalProtocolError"),
+        (RuntimeError("submission"), "RuntimeError"),
+    ],
+)
+def test_main_terminal_or_submission_failure_stops_once_and_is_identity_free(
+    action,
+    expected_error_type,
+    monkeypatch,
+    capsys,
+):
+    engine = _MainTrackedEngine([action])
+    _install_fake_main(monkeypatch, engine, argv=("--sentences", "1"))
+
+    rc = echo_probe_module.main()
+
+    assert rc == 1
+    report = _decode_exactly_one_json_object(capsys.readouterr().out)
+    assert report == {
+        "error": "probe-lifecycle-failed",
+        "start_error_type": None,
+        "probe_error_type": expected_error_type,
+        "stop_error_type": None,
+    }
+    assert set(report).isdisjoint(
+        {
+            "stimulus_id",
+            "playback_terminal_protocol",
+            "sentences_submitted",
+            "sentences_completed",
+            "sentences_interrupted",
+            "sentences_spoken",
+        }
+    )
+    assert engine.events == ["start", "submit-1", "stop"]
+    assert engine.stop_calls == 1
+    assert engine.legacy_calls == 0
 
 
 def test_main_has_one_success_only_stimulus_scalar():
@@ -506,6 +1198,11 @@ def test_interrupt_suite_summary_ignores_additive_delay_and_guidance():
         "label": "mic/strategy",
         "self_interruptions": 0,
         "stimulus_id": (_STIMULUS_ID_PREFIX + _EXPECTED_STIMULUS_DIGESTS[3]),
+        "playback_terminal_protocol": "tracked-sink-terminal-v1",
+        "sentences_submitted": 3,
+        "sentences_completed": 2,
+        "sentences_interrupted": 1,
+        "sentences_spoken": 3,
         "coherence": {
             "coherence_fired_on_own_tts": 0,
             "hint": "Quiet echo-only observation is inconclusive.",

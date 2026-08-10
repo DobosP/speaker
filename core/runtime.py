@@ -95,6 +95,29 @@ _LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"}
 # Internal marker for the legacy callback that carries text but no typed origin.
 # It is normalized back to ``unknown`` before any event leaves the runtime.
 _LEGACY_TEXT_ORIGIN = "__legacy_text__"
+_CLEANER_RECENT_USER_LIMIT = 4
+
+
+def _cleaner_recent_user_context(memory: Memory) -> list[str]:
+    """Return only canonical prior user utterances for transcript cleanup.
+
+    This is deliberately narrower than the answering model's conversation
+    history. Exact built-in field types and the sole ``("user",)`` role tuple
+    make malformed, mixed, and future channels fail closed.
+    """
+    recent: list[str] = []
+    for item in memory.all():
+        tags = item.tags
+        if (
+            type(tags) is tuple
+            and len(tags) == 1
+            and type(tags[0]) is str
+            and tags[0] == "user"
+        ):
+            item_text = item.text
+            if type(item_text) is str and item_text.strip():
+                recent.append(item_text)
+    return recent[-_CLEANER_RECENT_USER_LIMIT:]
 
 
 @dataclass(frozen=True)
@@ -2124,8 +2147,13 @@ class VoiceRuntime:
         # user can audit every rewrite in run-<id>.summary.json.
         final_text = text
         if self._cleaner is not None:
-            recent_for_cleaner = [it.text for it in self.memory.all()
-                                  if "vision" not in it.tags and "procedural" not in it.tags][-4:]
+            try:
+                recent_for_cleaner = _cleaner_recent_user_context(self.memory)
+            except Exception:  # noqa: BLE001 - context is optional
+                log.exception(
+                    "transcript cleaner context read failed; cleaning without context"
+                )
+                recent_for_cleaner = []
             try:
                 cleaned = self._cleaner.clean(text, recent=recent_for_cleaner)
             except LLMCallCancelled:

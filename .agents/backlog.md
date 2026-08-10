@@ -398,27 +398,24 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       lower `sherpa.speaker_threshold` toward 0.4 (laptop mics score 0.30-0.46
       cosine; see memory + docs/session notes). Identity-gates FINALS only (barge
       stays identity-free by design).
-- [ ] **Investigate `_speaking` clearing while audio still drains (full-sentence
-      echo mechanism).** Whole assistant sentences were transcribed as user turns,
-      which requires ASR to hear playback — plausibly the playback epilogue's
-      bounded FIFO-drain wait (`playback_fifo_sec + 0.5` deadline) expiring on long
-      sentences so `_speaking` clears while sound is still playing. Measure (log
-      fifo.count() at the deadline exit) and extend the wait/anchor on true drain.
-      The L4 text guard now masks the symptom; this is the root.
-- [ ] **Cleaner root-cause hardening:** the guards (rewrite_is_overreach + the
-      own-words drop) bound the damage, but consider REMOVING assistant replies
-      from the cleaner's recent-context entirely (only prior USER utterances are
-      legitimate correction material) so it cannot copy the assistant's sentences
-      in the first place.
+- [x] **Playback drain before `_speaking` clears — DONE 2026-06-27
+      (`5b42393`).** The bounded wait now flushes any retained FIFO tail and marks
+      its receipts failed before ASR reopens, emits `playback_drain_timeout`, and
+      has a deterministic stalled-FIFO regression in `test_sherpa_playback.py`.
+- [x] **Cleaner root-cause hardening — DONE 2026-08-10 (ADR-0173).** Only the
+      newest four exact canonical user-tagged items may enter cleanup context;
+      assistant output, ambient/non-user, mixed, future, and malformed channels
+      fail closed. Answering-model user-plus-assistant history is unchanged.
 - [ ] **Endpoint latency feels slow live** (endpoint_latency 1.8-3.6s/turn):
       once turn-merge is proven over a few sessions, lower
       `endpoint_min_silence_sec` 1.1 → ~0.7 on the Windows config.local.json and
       re-test mid-thought pauses (turn-merge now catches what the endpointer
       misses, so the safety margin can shrink).
-- [ ] **Watchdog false "llm stuck"/"tts stuck" on held/merged/INGESTed turns**
-      (review rc-5): stamp a handled_local/held metric and skip those turns in
-      watchdog._check_turns; today every live bundle carries misleading
-      stuck_hints.
+- [x] **Watchdog false "llm stuck"/"tts stuck" on held/merged/INGESTed turns —
+      DONE 2026-06-27 (`f4db950`).** Runtime stamps `HANDLED_LOCAL`/`HELD` and
+      explicit merged/superseded victims; `_check_turns` skips non-dispatched
+      holds and terminal local/merged/superseded shapes, with focused watchdog
+      and metrics regressions.
 - [ ] **STT garble is now the quality ceiling** ("conversation" for "story",
       "Skiper" for "keeper" fed weak/confabulated replies): raise mic capture
       level/gain, live-tune SenseVoice + prosody thresholds, consider the AT2020
@@ -530,16 +527,13 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       vs lexical/acoustic. (Default-off; on in the desktop profile.)
 - [ ] **DTLN follow-ups:** smaller 256/128 size for phone profiles; clock-drift over
       long utterances; consider LiveKit AEC3 if the runtime ever moves to ≥3.11.
-- [ ] **Move coherence ingest off the audio callback (real-time hardening).** The
-      callback-`OutputStream` rewrite tees the played block into the AEC far ring,
-      the level EWMA, AND `EchoCoherenceDetector.note_playback` from `_audio_cb`
-      (the PortAudio thread). `note_playback` takes the detector lock that the
-      capture thread also holds while `decide()` concatenates the reference ring —
-      the only contended lock on the audio thread. Bounded + harmless at the
-      default `coherence_ring_ms` (~38 KB / sub-100µs concat), but it MUST move
-      off the audio thread (feed coherence from a lock-free SPSC stage drained on
-      the capture/worker thread, like `FarEndRing`) before `coherence_ring_ms` is
-      raised materially. Documented inline in `_audio_cb`'s docstring.
+- [x] **Move coherence ingest off the audio callback — DONE 2026-06-17
+      (`4388828`; current reader-context mechanism `401c266`).** `_audio_cb`
+      retains its bounded FIFO/far-ring and level-EWMA bookkeeping but no longer
+      calls `EchoCoherenceDetector.note_playback`; immutable reader-time capture
+      context carries the reference to the decode owner, which performs that
+      ingest. Dedicated handoff and owner-context tests preserve order/copy
+      semantics.
 
 ## P2 — runtime robustness (2026-07-06 codex-fleet recon; every item below adversarially verified against the code)
 > Context: the 6-dimension stability recon (branch `fix/stability-recon-followups`).

@@ -16,6 +16,8 @@ import logging
 from typing import Iterator, Optional, Sequence
 
 from always_on_agent.events import Mode
+from always_on_agent.memory import MemoryItem, SessionMemory
+from always_on_agent.sqlite_memory import SqliteVecMemory
 
 from core.addressing import ACT, ScriptedAddressingClassifier
 from core.cleanup import (
@@ -27,8 +29,8 @@ from core.cleanup import (
     has_trailing_repeat,
 )
 from core.engines.scripted import ScriptedEngine
-from core.llm import EchoLLM
-from core.runtime import VoiceRuntime
+from core.llm import EchoLLM, LLMCallCancelled
+from core.runtime import VoiceRuntime, _cleaner_recent_user_context
 
 
 # --- Heuristic unit tests ----------------------------------------------------
@@ -297,7 +299,126 @@ def test_cleaner_runs_only_after_addressing_acts():
     assert cleaner.calls == []  # and the cleaner was skipped
 
 
-def test_transcript_carries_raw_and_cleaned_entries():
+def test_cleaner_context_contains_only_prior_user_utterances():
+    for memory in (SessionMemory(), SqliteVecMemory(":memory:")):
+        memory.add("old user one", tags=("user",))
+        memory.add("old user two", tags=("user",))
+        memory.add("assistant sentence must stay out", tags=("assistant_output",))
+        memory.add("old user three", tags=("user",))
+        memory.add("ambient speech must stay out", tags=("ingested",))
+        memory.add("summary must stay out", tags=("summary",))
+        memory.add("meeting note must stay out", tags=("meeting", "note"))
+        memory.add("old user four", tags=("user",))
+        memory.add("old user five", tags=("user",))
+        memory.add(
+            "ambiguous mixed-role text must stay out",
+            tags=("user", "assistant_output"),
+        )
+        memory.add("future mixed channel must stay out", tags=("user", "future"))
+        memory.add("vision text must stay out", tags=("user", "vision"))
+
+        engine = ScriptedEngine()
+        cleaner = ScriptedTranscriptCleaner()
+        runtime = VoiceRuntime(
+            engine,
+            EchoLLM(reply="ok"),
+            memory=memory,
+            start_mode=Mode.ASSISTANT,
+            cleaner=cleaner,
+        )
+        runtime.start(run_bus=False)
+        try:
+            engine.final("please repeat repeat")
+            assert runtime.wait_idle()
+            assert cleaner.calls == [
+                (
+                    "please repeat repeat",
+                    (
+                        "old user two",
+                        "old user three",
+                        "old user four",
+                        "old user five",
+                    ),
+                )
+            ]
+        finally:
+            runtime.stop()
+
+
+def test_cleaner_context_rejects_forged_field_types():
+    class _TupleSubclass(tuple):
+        pass
+
+    class _TextSubclass(str):
+        pass
+
+    class _TagSubclass(str):
+        def __eq__(self, other):
+            return other == "user"
+
+    class _PretendTags:
+        def __eq__(self, other):
+            return True
+
+    class _BrokenNonUser:
+        tags = ("assistant_output",)
+
+        @property
+        def text(self):
+            raise AssertionError("non-user text was read")
+
+    class _Memory:
+        def all(self):
+            return [
+                _BrokenNonUser(),
+                MemoryItem("canonical user", ("user",)),
+                MemoryItem("procedural", ("procedural",)),
+                MemoryItem("vision", ("vision",)),
+                MemoryItem("tuple subclass", _TupleSubclass(("user",))),
+                MemoryItem("list tags", ["user"]),
+                MemoryItem("pretend tags", _PretendTags()),
+                MemoryItem("hostile tag", (_TagSubclass("not-user"),)),
+                MemoryItem(_TextSubclass("text subclass"), ("user",)),
+                MemoryItem(b"bytes text", ("user",)),
+                MemoryItem("   ", ("user",)),
+            ]
+
+    assert _cleaner_recent_user_context(_Memory()) == ["canonical user"]
+
+
+def test_cleaner_still_runs_without_optional_memory_context():
+    class _BrokenRecentMemory(SessionMemory):
+        def __init__(self, exc):
+            super().__init__()
+            self._exc = exc
+
+        def all(self):
+            raise self._exc
+
+    for exc in (
+        RuntimeError("recent memory unavailable"),
+        LLMCallCancelled("context accessor is not the cleaner call"),
+    ):
+        engine = ScriptedEngine()
+        cleaner = ScriptedTranscriptCleaner({"please repeat repeat": "please repeat"})
+        runtime = VoiceRuntime(
+            engine,
+            EchoLLM(reply="ok"),
+            memory=_BrokenRecentMemory(exc),
+            start_mode=Mode.ASSISTANT,
+            cleaner=cleaner,
+        )
+        runtime.start(run_bus=False)
+        try:
+            engine.final("please repeat repeat")
+            assert runtime.wait_idle()
+            assert cleaner.calls == [("please repeat repeat", ())]
+            assert engine.spoken == ["ok"]
+        finally:
+            runtime.stop()
+
+
+def test_transcript_carries_raw_and_cleaned_entries(caplog):
     """The summary's transcript must show both the raw final AND the
     cleaned rewrite, with the raw retained on the cleaned entry."""
     runtime, engine, _ = _runtime_with_cleaner(
@@ -316,8 +437,9 @@ def test_transcript_carries_raw_and_cleaned_entries():
     spy = _TranscriptSpy()
     logging.getLogger("speaker.runtime").addHandler(spy)
     try:
-        engine.final("go go")
-        assert runtime.wait_idle()
+        with caplog.at_level(logging.INFO, logger="speaker.runtime"):
+            engine.final("go go")
+            assert runtime.wait_idle()
     finally:
         logging.getLogger("speaker.runtime").removeHandler(spy)
 
@@ -417,9 +539,9 @@ def test_drops_and_invents_predicate():
 
 def test_cleaner_rewrite_into_own_words_drops_the_turn():
     """Live: the cleaner rewrote noise 'Well' into the assistant's own prior
-    sentence (it sits in the cleaner's recent-context) and the assistant
-    answered itself. The rewritten text must be checked against the just-spoken
-    sentences and the turn dropped."""
+    sentence after the old mixed-role context supplied it, and the assistant
+    answered itself. The rewritten text must still be checked against the
+    just-spoken sentences and the turn dropped as defense in depth."""
     from core.resume import ResumeConfig
 
     sentence = "What would you like to know about your place?"

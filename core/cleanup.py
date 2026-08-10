@@ -55,7 +55,7 @@ def rewrite_is_overreach(raw: str, cleaned: str, *, max_extra_words: int = 2) ->
     fragment into a much longer sentence is hallucination: live
     (run-20260610-132603) the fast-tier cleaner rewrote the noise fragment
     'Well' into the assistant's own prior sentence 'What would you like to know
-    about your place?' (it sits in the cleaner's recent-context), manufacturing
+    about your place?' (the old mixed-role context supplied it), manufacturing
     a phantom user turn the assistant then answered. Rule: a raw of N words may
     grow by at most ``max_extra_words`` -- 'Ario der' -> 'are you there' (2->3)
     survives, 'Well' -> a 9-word sentence does not. A same-length rewrite that

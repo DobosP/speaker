@@ -29,7 +29,12 @@ from core.engines._sherpa_streaming_decode import (
     SherpaStreamingDecodeStream,
     SherpaStreamingDecodeStreamError,
 )
+from core.engines._kws_speaker_inference_owner import (
+    KwsSpeakerInferenceOutcome,
+    try_claim_kws_speaker_inference_owner,
+)
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.speaker_gate import SpeakerGate
 
 
 _WAIT_SECONDS = 5.0
@@ -1436,3 +1441,76 @@ def test_live_decode_owner_blocks_restart_before_shared_state_changes() -> None:
     assert engine._playback_stopping.is_set()
     assert not engine._running.is_set()
     session.close()
+
+
+@pytest.mark.parametrize("entrypoint", ["_build", "start"])
+def test_kws_speaker_native_owner_blocks_mutation_then_exact_reap_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    native_entered = Event()
+    release_native = Event()
+
+    def embed(_samples, _sample_rate):
+        native_entered.set()
+        assert release_native.wait(_WAIT_SECONDS)
+        return [1.0, 0.0]
+
+    gate = SpeakerGate(embed_fn=embed)
+    gate.enroll_embedding([1.0, 0.0])
+    clip = np.full(160, 0.25, dtype="float32")
+    clip.setflags(write=False)
+    owner = try_claim_kws_speaker_inference_owner(
+        gate,
+        (clip,),
+        16_000,
+        deadline=time.monotonic() + _WAIT_SECONDS,
+    )
+    assert owner is not None
+    owner.start()
+    assert native_entered.wait(_WAIT_SECONDS)
+
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._capture_stt_warmed = True
+    engine._capture_stopping.set()
+    engine._playback_stopping.set()
+    inner_entries = []
+
+    class _InnerEntry(RuntimeError):
+        pass
+
+    def observe_inner_entry() -> None:
+        inner_entries.append(entrypoint)
+        raise _InnerEntry("entered guarded engine mutation")
+
+    monkeypatch.setattr(
+        engine,
+        "_require_kws_speaker_inference_idle_before_mutation",
+        observe_inner_entry,
+    )
+
+    def invoke() -> None:
+        if entrypoint == "_build":
+            engine._build()
+        else:
+            engine.start(EngineCallbacks())
+
+    try:
+        with pytest.raises(RuntimeError, match="still be live"):
+            invoke()
+        assert inner_entries == []
+        assert engine._capture_stt_warmed
+        assert engine._capture_stopping.is_set()
+        assert engine._playback_stopping.is_set()
+        assert not engine._running.is_set()
+        assert owner.abandon(KwsSpeakerInferenceOutcome.STOPPED)
+        assert owner.snapshot().thread_alive
+    finally:
+        release_native.set()
+        owner._thread.join(_WAIT_SECONDS)
+        assert not owner.snapshot().thread_alive
+        assert owner.try_reap()
+
+    with pytest.raises(_InnerEntry, match="guarded engine mutation"):
+        invoke()
+    assert inner_entries == [entrypoint]

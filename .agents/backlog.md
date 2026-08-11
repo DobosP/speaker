@@ -305,9 +305,9 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         needs independent current `ACCEPT` and the unchanged 0.10-second voiced/
         threshold floor. The default config-derived ledger cap is 32,000 float32
         samples/128,000 bytes (twenty normal 100 ms chunks); unavailable retains
-        zero PCM. One inference slot is acquired without blocking, then at most
-        two synchronous native embedding calls run; an entered call is not
-        wall-clock-preemptible, while mailbox/PCM stay bounded. All failures
+        zero PCM. At landing, one inference slot was acquired without blocking
+        and at most two native embedding calls ran synchronously on capture;
+        ADR-0185 supersedes only that execution lifecycle below. All failures
         abstain. A publication-ineligible block, including the first post-gap
         guard, is never fed and dirties the stream plus any PCM ledger before the
         next fresh stream. Headless receipts: 607 focused, 280 adjacent with two
@@ -328,10 +328,46 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         613/280/522/6. Scoped static checks are green, whole-Sherpa lint retains
         the same 23 `main` findings, and formatter debt improves 34 to 33 hunks
         with zero changed-line overlap.
+      - [x] bound the own-TTS-ambiguous KWS speaker-inference lifecycle without
+        changing authority (ADR-0185). Permit exactly one unfinished KWS task
+        and worker process-wide, with no waiting successor/replacement/retry and
+        one code-owned 50 ms total action deadline beginning before task claim
+        and rechecked through callback admission. It is a headless fail-closed
+        safety bound, not model/live latency calibration. The payload is only the
+        gate, one/two owned clips, sample rate, and ticket metadata; the worker
+        clears those references before publishing only a raw immutable speaker
+        receipt or error/busy. Capture retains and revalidates all authority,
+        reduces the receipt, and alone may callback. A lifecycle Condition linearizes task/
+        result/timeout/stop plus `enter_native_step` before each word: an already-
+        admitted call may finish after abandonment only into discard. Timeout or
+        stop permanently abandons the task; only the reaper releases permit plus
+        registry ownership after worker return, ref cleanup, dead-thread proof,
+        and zero-time join, and rebuild/restart refuses until then. Current-epoch
+        timeout/error/malformed evidence latches KWS inference off; stale/reject/
+        defer/busy only abstains. Exact final verification, warm-up, legacy-WAV
+        runtime enrollment, and unchanged synchronous word-cut try-scoring share
+        the nonblocking process permit and may first reap a returned local or
+        cross-engine owner without waiting. Busy WAV recovery revokes its old
+        enrollment; legacy/custom final or word-cut gates without the matching
+        try seam abstain without a blocking fallback. Idle/novel/non-ambiguous KWS
+        creates no task. Receipts are owner `14 passed in 0.19s`, virtual
+        `167 passed in 1.55s`, lifecycle `460 passed in 4.60s`, carried authority/
+        resource `643 passed in 5.91s`, adjacent `290 passed, 2 warnings in 3.46s`
+        plus the existing exit-line `swigvarlink` `DeprecationWarning`, complete-
+        Sherpa `538 passed in 5.34s`, and APM/DTD `6 passed in 1.08s`. Frozen
+        production SHA-256 is `d3a4015b306cea183ae59cbe4345d2f4be8e06545c399f7860fa6c1ec4fbfffc`
+        for the owner, `ff168dfa636dbeb4f4ed283c76d3aff990d9168f1f1b9faadf1b6bee80d88b45`
+        for the gate, and `9669c92d458e4defb93de1bf5eb3349c454110e33ee431a65fcdbdb9e3f09dfe`
+        for Sherpa. Scoped lint, AST9, Ruff AST equivalence, diff-check, STATUS100,
+        zero changed-line formatter overlap, and frozen-hash adversarial review
+        are green; whole-nine-file lint retains exactly Sherpa's inherited 23
+        findings and remaining formatter debt matches `main`.
       - [ ] if configuration trust changes, separately hard-cap hostile finite
-        window/feed bytes; test blocked native-embed shutdown/backpressure; and
-        retain the existing rule that an entered native inference call is not
-        Python-preemptible. ADR-0184 does not complete these follow-ups.
+        window/feed bytes. Exact-wheel static inspection shows the installed
+        CPython-3.12/Linux-x86_64 sherpa-onnx 1.13.3 compute pybind branch releases
+        the GIL, but no extractor/model/compute path ran and ADR-0185 does not
+        claim native return/cancellation, allocator/thread/buffer bounds, another
+        wheel build, real-model latency, or termination evidence.
       - [ ] run the paired owner bare-speaker A/B for an ambiguous owner talk-over
         and matched own-TTS/no-talk control. No live acceptance follows until
         that retained physical evidence is reviewed. A raw-KWS experiment must

@@ -12,7 +12,12 @@ import time
 
 import pytest
 
-from core.engines.speaker_gate import SpeakerGate, cosine_similarity
+from core.engines.speaker_gate import (
+    RuntimeSpeakerInferencePermit,
+    RuntimeSpeakerInferencePermitSnapshot,
+    SpeakerGate,
+    cosine_similarity,
+)
 
 USER = [1.0, 0.0, 0.0, 0.0]
 USER_NOISY = [0.92, 0.1, 0.05, 0.0]  # same speaker, slightly different
@@ -22,6 +27,242 @@ ASSISTANT_TTS = [0.0, 1.0, 0.0, 0.0]  # a different "voice"
 def _gate_returning(vec, threshold=0.5):
     gate = SpeakerGate(threshold=threshold, embed_fn=lambda samples, sr: vec)
     return gate
+
+
+def _call_runtime_try_path(gate, method_name, permit):
+    if method_name == "try_similarity_batch":
+        return gate.try_similarity_batch(
+            ((1.0,),),
+            16_000,
+            runtime_permit=permit,
+        )
+    return getattr(gate, method_name)(
+        (1.0,),
+        16_000,
+        runtime_permit=permit,
+    )
+
+
+def test_runtime_speaker_inference_permit_tracks_exact_lease_lifecycle():
+    permit = RuntimeSpeakerInferencePermit()
+
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=0,
+        releases=0,
+    )
+
+    first = permit.try_acquire()
+    assert first is not None
+    assert permit.is_current(first)
+    assert permit.try_acquire() is None
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=True,
+        acquisitions=1,
+        releases=0,
+    )
+
+    assert permit.release(first)
+    assert not permit.is_current(first)
+    assert not permit.release(first)
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=1,
+        releases=1,
+    )
+
+    second = permit.try_acquire()
+    assert second is not None
+    assert second is not first
+    assert not permit.release(first)
+    assert permit.is_current(second)
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=True,
+        acquisitions=2,
+        releases=1,
+    )
+    assert permit.release(second)
+
+
+def test_runtime_speaker_inference_permit_rejects_forged_and_cross_leases():
+    permit = RuntimeSpeakerInferencePermit()
+    other_permit = RuntimeSpeakerInferencePermit()
+    lease = permit.try_acquire()
+    other_lease = other_permit.try_acquire()
+    assert lease is not None
+    assert other_lease is not None
+
+    forged = replace(lease)
+    assert forged is not lease
+    assert not permit.is_current(forged)
+    assert not permit.release(forged)
+    assert not permit.is_current(other_lease)
+    assert not permit.release(other_lease)
+    assert not other_permit.is_current(lease)
+    assert not other_permit.release(lease)
+
+    assert permit.is_current(lease)
+    assert other_permit.is_current(other_lease)
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=True,
+        acquisitions=1,
+        releases=0,
+    )
+    assert other_permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=True,
+        acquisitions=1,
+        releases=0,
+    )
+    assert permit.release(lease)
+    assert other_permit.release(other_lease)
+
+
+def test_runtime_speaker_inference_permit_serializes_distinct_gates():
+    calls: list[str] = []
+    permit = RuntimeSpeakerInferencePermit()
+    second = SpeakerGate(
+        embed_fn=lambda _samples, _sample_rate: calls.append("second") or USER
+    )
+
+    def first_embed(_samples, _sample_rate):
+        calls.append("first")
+        assert (
+            second.try_embed(
+                (2.0,),
+                16_000,
+                runtime_permit=permit,
+            )
+            is None
+        )
+        return USER
+
+    first = SpeakerGate(embed_fn=first_embed)
+
+    assert first.try_embed((1.0,), 16_000, runtime_permit=permit) == USER
+    assert calls == ["first"]
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=1,
+        releases=1,
+    )
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "try_similarity",
+        "try_similarity_batch",
+        "try_verification_similarity",
+        "try_embed",
+        "try_enroll",
+    ],
+)
+def test_runtime_try_paths_abstain_when_process_permit_is_busy(method_name):
+    calls: list[tuple[float, ...]] = []
+
+    def embed(samples, _sample_rate):
+        calls.append(tuple(float(sample) for sample in samples))
+        return USER
+
+    permit = RuntimeSpeakerInferencePermit()
+    gate = SpeakerGate(embed_fn=embed)
+    gate.enroll_embedding(USER)
+    lease = permit.try_acquire()
+    assert lease is not None
+
+    assert _call_runtime_try_path(gate, method_name, permit) is None
+    assert calls == []
+    assert permit.is_current(lease)
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=True,
+        acquisitions=1,
+        releases=0,
+    )
+    assert permit.release(lease)
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "try_similarity",
+        "try_similarity_batch",
+        "try_verification_similarity",
+        "try_embed",
+        "try_enroll",
+    ],
+)
+def test_runtime_try_paths_release_permit_when_gate_lock_is_busy(method_name):
+    calls = 0
+
+    def embed(_samples, _sample_rate):
+        nonlocal calls
+        calls += 1
+        return USER
+
+    permit = RuntimeSpeakerInferencePermit()
+    gate = SpeakerGate(embed_fn=embed)
+    gate.enroll_embedding(USER)
+    assert gate._inference_lock.acquire(blocking=False)
+    try:
+        assert _call_runtime_try_path(gate, method_name, permit) is None
+    finally:
+        gate._inference_lock.release()
+
+    assert calls == 0
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=1,
+        releases=1,
+    )
+
+
+@pytest.mark.parametrize("method_name", ["try_similarity_batch", "try_enroll"])
+def test_runtime_try_paths_release_permit_after_embedding_error(method_name):
+    def embed(_samples, _sample_rate):
+        raise RuntimeError("injected runtime embedding failure")
+
+    permit = RuntimeSpeakerInferencePermit()
+    gate = SpeakerGate(embed_fn=embed)
+    gate.enroll_embedding(USER)
+
+    with pytest.raises(RuntimeError, match="injected runtime embedding failure"):
+        _call_runtime_try_path(gate, method_name, permit)
+
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=1,
+        releases=1,
+    )
+    assert gate._inference_lock.acquire(blocking=False)
+    gate._inference_lock.release()
+
+
+def test_similarity_batch_releases_owned_permit_when_gate_lock_acquire_raises():
+    class RaisingLock:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            raise RuntimeError("injected gate-lock acquisition failure")
+
+        def release(self):
+            raise AssertionError("an unacquired gate lock must not be released")
+
+    permit = RuntimeSpeakerInferencePermit()
+    gate = SpeakerGate(embed_fn=lambda _samples, _sample_rate: USER)
+    gate.enroll_embedding(USER)
+    gate._inference_lock = RaisingLock()
+
+    with pytest.raises(RuntimeError, match="gate-lock acquisition failure"):
+        gate.try_similarity_batch(
+            ((1.0,),),
+            16_000,
+            runtime_permit=permit,
+        )
+
+    assert permit.snapshot() == RuntimeSpeakerInferencePermitSnapshot(
+        active=False,
+        acquisitions=1,
+        releases=1,
+    )
 
 
 def test_cosine_basics():

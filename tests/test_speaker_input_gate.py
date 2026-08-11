@@ -6,8 +6,22 @@ The capture loop's threaded I/O is out of scope; the decision logic is not.
 """
 from __future__ import annotations
 
+import sys
+import time
+from types import SimpleNamespace
+
+import numpy as np
+
+from core.engine import OwnerVerification
+from core.engines._kws_speaker_inference_owner import (
+    KwsSpeakerInferenceOutcome,
+    try_claim_kws_speaker_inference_owner,
+)
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
-from core.engines.speaker_gate import SpeakerGate
+from core.engines.speaker_gate import (
+    SpeakerGate,
+    runtime_speaker_inference_permit,
+)
 
 USER = [1.0, 0.0, 0.0]
 OTHER = [0.0, 1.0, 0.0]
@@ -35,6 +49,19 @@ def _engine(*, gate_input=True, gate=None):
     eng = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=gate_input))
     eng._speaker_gate = gate
     return eng
+
+
+class _ReturnedOwnedSpeakerTask:
+    def __init__(self, permit, lease) -> None:
+        self.permit = permit
+        self.lease = lease
+        self.reap_calls = 0
+
+    def try_reap(self) -> bool:
+        self.reap_calls += 1
+        assert self.reap_calls == 1
+        assert self.permit.release(self.lease)
+        return True
 
 
 def _build_with_observed_speaker_allocation(monkeypatch, config):
@@ -256,6 +283,184 @@ def test_enrolled_user_final_is_acted_on():
     assert _engine(gate=_gate(USER))._should_act_on_final([0.0]) is True
 
 
+def test_final_speaker_verification_stays_unknown_while_process_permit_is_held():
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    gate.enroll_embedding(USER)
+    eng = _engine(gate=gate)
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    try:
+        decision = eng._speaker_decision_for_final(
+            np.full(1_600, 0.25, dtype="float32")
+        )
+    finally:
+        assert permit.release(lease)
+
+    assert decision.admitted
+    assert decision.verification is OwnerVerification.UNKNOWN
+    assert embed_calls == []
+
+
+def test_final_missing_try_seam_never_uses_blocking_legacy_or_mints_verified():
+    class _LegacyGate:
+        is_enrolled = True
+        threshold = 0.5
+
+        def verification_similarity(self, _samples, _sample_rate):
+            raise AssertionError("blocking final similarity fallback was called")
+
+        def accept(self, _samples, _sample_rate):
+            raise AssertionError("blocking final admission fallback was called")
+
+    eng = _engine(gate=_LegacyGate())
+
+    decision = eng._speaker_decision_for_final(np.full(1_600, 0.25, dtype="float32"))
+
+    assert decision.admitted
+    assert decision.verification is OwnerVerification.UNKNOWN
+
+
+def test_final_reaps_returned_owned_kws_task_before_nonblocking_similarity():
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    gate.enroll_embedding(USER)
+    eng = _engine(gate=gate)
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    returned = _ReturnedOwnedSpeakerTask(permit, lease)
+    eng._kws_speaker_inference_owner = returned
+
+    decision = eng._speaker_decision_for_final(np.full(1_600, 0.25, dtype="float32"))
+
+    assert decision.admitted
+    assert decision.verification is OwnerVerification.VERIFIED
+    assert embed_calls == ["embed"]
+    assert returned.reap_calls == 1
+    assert eng._kws_speaker_inference_owner is None
+    assert not permit.snapshot().active
+
+
+def test_final_reaps_returned_cross_engine_process_owner_before_similarity():
+    class _InlineThread:
+        def __init__(self, *, target, args, name, daemon) -> None:
+            self.target = target
+            self.args = args
+            self.name = name
+            self.daemon = daemon
+            self.alive = False
+
+        def start(self) -> None:
+            self.alive = True
+            try:
+                self.target(*self.args)
+            finally:
+                self.alive = False
+
+        def join(self, _timeout=None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    foreign_gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: USER,
+    )
+    foreign_gate.enroll_embedding(USER)
+    clip = np.full(160, 0.25, dtype="float32")
+    clip.setflags(write=False)
+    owner = try_claim_kws_speaker_inference_owner(
+        foreign_gate,
+        (clip,),
+        16_000,
+        deadline=time.monotonic() + 5.0,
+        thread_factory=lambda **kwargs: _InlineThread(**kwargs),
+    )
+    assert owner is not None
+    owner.start()
+    assert owner.abandon(KwsSpeakerInferenceOutcome.STOPPED)
+    assert owner.snapshot().worker_returned
+    assert not owner.snapshot().reaped
+
+    final_embed_calls = []
+    final_gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: (
+            final_embed_calls.append("embed") or USER
+        ),
+    )
+    final_gate.enroll_embedding(USER)
+    eng = _engine(gate=final_gate)
+    try:
+        decision = eng._speaker_decision_for_final(
+            np.full(1_600, 0.25, dtype="float32")
+        )
+        reaped_by_final = owner.snapshot().reaped
+    finally:
+        owner.abandon(KwsSpeakerInferenceOutcome.STOPPED)
+        owner.try_reap()
+
+    assert decision.admitted
+    assert decision.verification is OwnerVerification.VERIFIED
+    assert final_embed_calls == ["embed"]
+    assert reaped_by_final
+    assert eng._kws_speaker_inference_owner is None
+    assert not runtime_speaker_inference_permit().snapshot().active
+
+
+def test_speaker_warm_stays_cold_while_process_permit_is_held() -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    gate.enroll_embedding(USER)
+    eng = _engine(gate=None)
+    eng._replace_speaker_gate(gate)
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    try:
+        assert not eng._warm_speaker_gate()
+    finally:
+        assert permit.release(lease)
+
+    assert not eng._speaker_gate_warmed
+    assert embed_calls == []
+
+
+def test_speaker_warm_reaps_returned_owned_kws_task_before_try_embed() -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    eng = _engine(gate=None)
+    eng._replace_speaker_gate(gate)
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    returned = _ReturnedOwnedSpeakerTask(permit, lease)
+    eng._kws_speaker_inference_owner = returned
+
+    assert eng._warm_speaker_gate()
+
+    assert eng._speaker_gate_warmed
+    assert embed_calls == ["embed"]
+    assert returned.reap_calls == 1
+    assert eng._kws_speaker_inference_owner is None
+    assert not permit.snapshot().active
+
+
 def test_live_speaker_embedding_uses_same_voiced_envelope_as_enrollment():
     import numpy as np
 
@@ -348,6 +553,91 @@ def test_enrollment_load_is_deferred_until_capture_resolution(tmp_path, caplog):
 
     assert not eng._speaker_gate.is_enrolled
     assert "deferred until the capture route/rate" in caplog.text
+
+
+def test_legacy_wav_enrollment_stays_unavailable_while_process_permit_is_held(
+    monkeypatch,
+) -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    gate.enroll_embedding(OTHER)
+    assert gate.is_enrolled
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            speaker_embedding_model="/m/spk.onnx",
+            speaker_enroll_wav="/m/legacy.wav",
+        )
+    )
+    eng._speaker_gate = gate
+    eng._capture_resolution = _capture()
+    monkeypatch.setitem(
+        sys.modules,
+        "sherpa_onnx",
+        SimpleNamespace(
+            read_wave=lambda _path: (
+                np.full(1_600, 0.25, dtype="float32"),
+                16_000,
+            )
+        ),
+    )
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    try:
+        eng._enroll_speaker_gate()
+    finally:
+        assert permit.release(lease)
+
+    assert not gate.is_enrolled
+    assert embed_calls == []
+
+
+def test_legacy_wav_enrollment_reaps_returned_owned_kws_task_before_try_embed(
+    monkeypatch,
+) -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: embed_calls.append("embed") or USER,
+    )
+    gate.enroll_embedding(OTHER)
+    before = SpeakerGate.authority_state(gate)
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            speaker_embedding_model="/m/spk.onnx",
+            speaker_enroll_wav="/m/legacy.wav",
+        )
+    )
+    eng._speaker_gate = gate
+    eng._capture_resolution = _capture()
+    monkeypatch.setitem(
+        sys.modules,
+        "sherpa_onnx",
+        SimpleNamespace(
+            read_wave=lambda _path: (
+                np.full(1_600, 0.25, dtype="float32"),
+                16_000,
+            )
+        ),
+    )
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    returned = _ReturnedOwnedSpeakerTask(permit, lease)
+    eng._kws_speaker_inference_owner = returned
+
+    eng._enroll_speaker_gate()
+
+    after = SpeakerGate.authority_state(gate)
+    assert gate.is_enrolled
+    assert after.enrollment_generation > before.enrollment_generation
+    assert embed_calls == ["embed"]
+    assert returned.reap_calls == 1
+    assert eng._kws_speaker_inference_owner is None
+    assert not permit.snapshot().active
 
 
 def test_enroll_speaker_gate_loads_matching_embedding(tmp_path):

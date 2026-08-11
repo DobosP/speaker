@@ -11,8 +11,13 @@ import weakref
 import numpy as np
 import pytest
 
+import core.engines.sherpa as sherpa_module
 from core.engine import EngineCallbacks
 from core.engines._acoustic_turn import AcousticTurnTracker
+from core.engines._kws_speaker_inference_owner import (
+    KwsSpeakerInferenceOutcome,
+    KwsSpeakerInferenceResult,
+)
 from core.engines.sherpa import (
     SherpaConfig,
     SherpaOnnxEngine,
@@ -22,7 +27,11 @@ from core.engines.sherpa import (
     _MAX_KWS_PCM_LEDGER_CHUNKS,
     _SpeakerPcmStatus,
 )
-from core.engines.speaker_gate import SpeakerGate, SpeakerSimilarityBatchReceipt
+from core.engines.speaker_gate import (
+    SpeakerGate,
+    SpeakerSimilarityBatchReceipt,
+    runtime_speaker_inference_permit,
+)
 from core.kws_contract import KWS_STOP_PHRASES, KwsPhraseBinding
 from core.media_session import CaptureBlockContext, CapturedBlock
 
@@ -1175,6 +1184,457 @@ def _warmed_speaker_scoring_engine(embed_fn):
     return engine, gate, authority
 
 
+def _prepared_kws_inference_case(embed_fn):
+    engine, _spotter, control_authority = _authority_kws_engine(
+        "stop",
+        timestamps=[0.00, 0.04, 0.08, 0.12],
+    )
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed_fn)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    control_authority = replace(
+        control_authority,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    prepared = engine._prepare_kws_speaker_pcm_batch(
+        (np.full(1_600, 0.25, dtype="float32"),),
+        speaker_authority,
+    )
+    assert tuple(item.status for item in prepared) == (_SpeakerPcmStatus.DEFER,)
+    return engine, gate, control_authority, speaker_authority, prepared
+
+
+def _ambiguous_one_word_kws_case(embed_fn):
+    engine, spotter, control_authority = _authority_kws_engine(
+        "stop",
+        timestamps=[0.00, 0.04, 0.08, 0.12],
+    )
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed_fn)
+    gate.enroll_embedding([1.0, 0.0])
+    engine._replace_speaker_gate(gate)
+    assert engine._warm_speaker_gate()
+    speaker_authority = engine._snapshot_kws_speaker_authority()
+    assert speaker_authority is not None
+    control_authority = replace(
+        control_authority,
+        source_sample_count=3_200,
+        source_sample_end=3_200,
+        speaker_authority_available=True,
+        speaker_authority=speaker_authority,
+    )
+    engine._now_playing = "I will stop after this sentence."
+    pcm = np.full(3_200, 0.25, dtype="float32")
+    return engine, spotter, control_authority, speaker_authority, pcm
+
+
+def test_stop_wins_capture_condition_before_kws_worker_start(monkeypatch) -> None:
+    engine, _gate, control_authority, speaker_authority, prepared = (
+        _prepared_kws_inference_case(lambda _samples, _sample_rate: [1.0, 0.0])
+    )
+    claimed = threading.Event()
+    outcomes = []
+
+    class _StartProbeOwner:
+        ticket = object()
+
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.receive_calls = 0
+            self.abandoned = []
+            self.reap_calls = 0
+
+        def start(self):
+            self.start_calls += 1
+            return self.ticket
+
+        def receive(self, _ticket):
+            self.receive_calls += 1
+            raise AssertionError("stop-first owner must never be received")
+
+        def abandon(self, outcome):
+            self.abandoned.append(outcome)
+            return True
+
+        def try_reap(self):
+            self.reap_calls += 1
+            return True
+
+    owner = _StartProbeOwner()
+
+    def claim(*_args, **_kwargs):
+        claimed.set()
+        return owner
+
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        claim,
+    )
+
+    def run() -> None:
+        outcomes.extend(
+            engine._run_kws_speaker_inference(
+                prepared,
+                expected_authority=speaker_authority,
+                control_authority=control_authority,
+                deadline=time.monotonic() + 5.0,
+            )
+        )
+
+    capture_worker = threading.Thread(target=run)
+    with engine._capture_effect_condition:
+        capture_worker.start()
+        assert claimed.wait(timeout=2.0)
+        engine._capture_epoch += 1
+        engine._capture_stopping.set()
+        engine._capture_effect_condition.notify_all()
+    capture_worker.join(timeout=2.0)
+
+    assert not capture_worker.is_alive()
+    assert tuple(item.status for item in outcomes) == (_SpeakerPcmStatus.STALE,)
+    assert owner.start_calls == 0
+    assert owner.receive_calls == 0
+    assert owner.abandoned == [KwsSpeakerInferenceOutcome.STOPPED]
+    assert owner.reap_calls == 1
+    assert engine._kws_speaker_inference_owner is None
+    assert engine._kws_speaker_inference_disabled_epoch is None
+
+
+def test_current_epoch_deadline_expiry_before_worker_start_latches_timeout(
+    monkeypatch,
+) -> None:
+    engine, _gate, control_authority, speaker_authority, prepared = (
+        _prepared_kws_inference_case(lambda _samples, _sample_rate: [1.0, 0.0])
+    )
+    clock = [0.0]
+    monkeypatch.setattr(sherpa_module.time, "monotonic", lambda: clock[0])
+
+    class _DeadlineOwner:
+        ticket = object()
+
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.receive_calls = 0
+            self.abandoned = []
+            self.reap_calls = 0
+
+        def start(self):
+            self.start_calls += 1
+            return self.ticket
+
+        def receive(self, _ticket):
+            self.receive_calls += 1
+            raise AssertionError("expired owner must never be received")
+
+        def abandon(self, outcome):
+            self.abandoned.append(outcome)
+            return True
+
+        def try_reap(self):
+            self.reap_calls += 1
+            return True
+
+    owner = _DeadlineOwner()
+
+    def claim(*_args, **_kwargs):
+        clock[0] = 1.0
+        return owner
+
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        claim,
+    )
+
+    decisions = engine._run_kws_speaker_inference(
+        prepared,
+        expected_authority=speaker_authority,
+        control_authority=control_authority,
+        deadline=1.0,
+    )
+
+    assert tuple(item.status for item in decisions) == (_SpeakerPcmStatus.ERROR,)
+    assert owner.start_calls == 0
+    assert owner.receive_calls == 0
+    assert owner.abandoned == [KwsSpeakerInferenceOutcome.TIMEOUT]
+    assert owner.reap_calls == 1
+    assert engine._kws_speaker_inference_owner is None
+    assert engine._kws_speaker_inference_is_disabled(control_authority.capture_epoch)
+
+
+def test_kws_worker_start_wins_before_stop_then_stop_wakes_without_join() -> None:
+    native_entered = threading.Event()
+    release_native = threading.Event()
+    block_native = False
+    native_calls = []
+
+    def embed(_samples, _sample_rate):
+        if block_native:
+            native_calls.append("native")
+            native_entered.set()
+            assert release_native.wait(timeout=2.0)
+        return [1.0, 0.0]
+
+    engine, _gate, control_authority, speaker_authority, prepared = (
+        _prepared_kws_inference_case(embed)
+    )
+    block_native = True
+    outcomes = []
+    capture_worker = threading.Thread(
+        target=lambda: outcomes.extend(
+            engine._run_kws_speaker_inference(
+                prepared,
+                expected_authority=speaker_authority,
+                control_authority=control_authority,
+                deadline=time.monotonic() + 5.0,
+            )
+        )
+    )
+    capture_worker.start()
+    assert native_entered.wait(timeout=2.0)
+    with engine._kws_speaker_inference_lock:
+        owner = engine._kws_speaker_inference_owner
+    assert owner is not None
+
+    with engine._capture_effect_condition:
+        engine._capture_epoch += 1
+        engine._capture_stopping.set()
+        engine._capture_effect_condition.notify_all()
+    engine._abandon_owned_kws_speaker_inference()
+    capture_worker.join(timeout=2.0)
+
+    assert not capture_worker.is_alive()
+    assert tuple(item.status for item in outcomes) == (_SpeakerPcmStatus.ERROR,)
+    assert owner.snapshot().abandoned
+    assert owner.snapshot().thread_alive
+    assert native_calls == ["native"]
+
+    release_native.set()
+    owner._thread.join(timeout=2.0)
+    assert not owner.snapshot().thread_alive
+    engine._require_kws_speaker_inference_idle_before_mutation()
+    assert engine._kws_speaker_inference_owner is None
+
+
+@pytest.mark.parametrize(
+    ("receipt_case", "expected_status", "expected_latch"),
+    [
+        ("nonfinite", _SpeakerPcmStatus.ERROR, True),
+        ("stale", _SpeakerPcmStatus.STALE, False),
+        ("reject", _SpeakerPcmStatus.REJECT, False),
+        ("defer", _SpeakerPcmStatus.DEFER, False),
+        ("busy", _SpeakerPcmStatus.BUSY, False),
+    ],
+)
+def test_kws_capture_reduction_latches_only_error_receipts(
+    monkeypatch,
+    receipt_case,
+    expected_status,
+    expected_latch,
+) -> None:
+    engine, _gate, control_authority, speaker_authority, prepared = (
+        _prepared_kws_inference_case(lambda _samples, _sample_rate: [1.0, 0.0])
+    )
+    if receipt_case == "busy":
+        result = KwsSpeakerInferenceResult(KwsSpeakerInferenceOutcome.BUSY)
+    else:
+        receipt_authority = speaker_authority.gate_authority
+        if receipt_case == "stale":
+            other_gate = SpeakerGate(
+                threshold=0.5,
+                embed_fn=lambda _samples, _sample_rate: [1.0, 0.0],
+            )
+            other_gate.enroll_embedding([1.0, 0.0])
+            receipt_authority = SpeakerGate.authority_state(other_gate)
+        if receipt_case == "nonfinite":
+            similarity = float("nan")
+        elif receipt_case == "reject":
+            similarity = 0.0
+        elif receipt_case == "defer":
+            similarity = float(
+                (
+                    speaker_authority.policy.accept_threshold
+                    + speaker_authority.policy.reject_threshold
+                )
+                / 2.0
+            )
+        else:
+            similarity = 1.0
+        result = KwsSpeakerInferenceResult(
+            KwsSpeakerInferenceOutcome.COMPLETED,
+            receipt=SpeakerSimilarityBatchReceipt(
+                authority=receipt_authority,
+                similarities=(similarity,),
+            ),
+        )
+
+    class _ResultOwner:
+        ticket = object()
+
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.receive_calls = 0
+            self.reap_calls = 0
+
+        def start(self):
+            self.start_calls += 1
+            return self.ticket
+
+        def receive(self, ticket):
+            self.receive_calls += 1
+            assert ticket is self.ticket
+            return result
+
+        def abandon(self, _outcome):
+            raise AssertionError("completed fake owner must not be abandoned")
+
+        def try_reap(self):
+            self.reap_calls += 1
+            return True
+
+    owner = _ResultOwner()
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        lambda *_args, **_kwargs: owner,
+    )
+
+    decisions = engine._run_kws_speaker_inference(
+        prepared,
+        expected_authority=speaker_authority,
+        control_authority=control_authority,
+        deadline=time.monotonic() + 5.0,
+    )
+
+    assert tuple(item.status for item in decisions) == (expected_status,)
+    assert (
+        engine._kws_speaker_inference_is_disabled(control_authority.capture_epoch)
+        is expected_latch
+    )
+    assert owner.start_calls == 1
+    assert owner.receive_calls == 1
+    assert owner.reap_calls == 1
+    assert engine._kws_speaker_inference_owner is None
+
+
+def test_successful_kws_speaker_callback_runs_on_capture_caller_not_worker() -> None:
+    scoring = False
+    speaker_worker_threads = []
+
+    def embed(_samples, _sample_rate):
+        if scoring:
+            speaker_worker_threads.append(threading.get_ident())
+        return [1.0, 0.0]
+
+    engine, _spotter, authority, _speaker_authority, pcm = _ambiguous_one_word_kws_case(
+        embed
+    )
+    scoring = True
+    callback_threads = []
+    engine._cb = EngineCallbacks(
+        on_control_stop_result=lambda _result: callback_threads.append(
+            threading.get_ident()
+        )
+    )
+    capture_caller = threading.get_ident()
+
+    assert engine._poll_keywords(pcm, control_authority=authority)
+
+    assert callback_threads == [capture_caller]
+    assert len(speaker_worker_threads) == 1
+    assert speaker_worker_threads[0] != capture_caller
+    assert engine._kws_speaker_inference_owner is None
+
+
+def test_stop_abandon_wakes_capture_and_late_native_return_never_callbacks() -> None:
+    native_entered = threading.Event()
+    release_native = threading.Event()
+    block_native = False
+
+    def embed(_samples, _sample_rate):
+        if block_native:
+            native_entered.set()
+            assert release_native.wait(timeout=2.0)
+        return [1.0, 0.0]
+
+    engine, _spotter, authority, _speaker_authority, pcm = _ambiguous_one_word_kws_case(
+        embed
+    )
+    block_native = True
+    callbacks = []
+    capture_results = []
+    engine._cb = EngineCallbacks(on_control_stop_result=callbacks.append)
+    capture_caller = threading.Thread(
+        target=lambda: capture_results.append(
+            engine._poll_keywords(pcm, control_authority=authority)
+        )
+    )
+
+    capture_caller.start()
+    assert native_entered.wait(timeout=2.0)
+    with engine._kws_speaker_inference_lock:
+        owner = engine._kws_speaker_inference_owner
+    assert owner is not None
+    with engine._capture_effect_condition:
+        engine._capture_epoch += 1
+        engine._capture_stopping.set()
+        engine._capture_effect_condition.notify_all()
+    engine._abandon_owned_kws_speaker_inference()
+    capture_caller.join(timeout=2.0)
+
+    assert not capture_caller.is_alive()
+    assert capture_results == [False]
+    assert callbacks == []
+    assert owner.snapshot().abandoned
+    assert owner.snapshot().thread_alive
+
+    release_native.set()
+    owner._thread.join(timeout=2.0)
+    assert not owner.snapshot().thread_alive
+    assert engine._reap_finished_owned_kws_speaker_inference()
+    assert engine._kws_speaker_inference_owner is None
+    assert callbacks == []
+
+
+def test_speaker_action_deadline_at_callback_admission_never_terminalizes(
+    monkeypatch,
+) -> None:
+    engine, _spotter, authority, _speaker_authority, pcm = _ambiguous_one_word_kws_case(
+        lambda _samples, _sample_rate: [1.0, 0.0]
+    )
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=5)
+    before, _revision = tracker.partial(emitted_at=10.0)
+    engine._acoustic_turn_tracker = tracker
+    callbacks = []
+    engine._cb = EngineCallbacks(on_control_stop_result=callbacks.append)
+    clock = [100.0]
+    monkeypatch.setattr(sherpa_module.time, "monotonic", lambda: clock[0])
+    original_claim = engine._claim_playback_kws_if_current
+
+    def claim_then_expire(control_authority, *, stop_only=None):
+        claim = original_claim(control_authority, stop_only=stop_only)
+        assert claim is not None
+        clock[0] = 101.0
+        return claim
+
+    engine._claim_playback_kws_if_current = claim_then_expire
+
+    assert not engine._poll_keywords(pcm, control_authority=authority)
+
+    after = tracker.current(emitted_at=11.0)
+    assert after is not None
+    assert after.spans[-1].key == before.spans[-1].key
+    assert tracker.active
+    assert callbacks == []
+    assert engine._playback_kws_claim is None
+    assert engine._kws_speaker_inference_is_disabled(authority.capture_epoch)
+
+
 @pytest.mark.parametrize(
     ("levels", "statuses"),
     [
@@ -1530,10 +1990,10 @@ def test_ambiguous_kws_releases_pcm_and_native_stream_before_stop_callback() -> 
     old_stream_ref = weakref.ref(retaining_stream)
     del retaining_stream
 
-    original_score = engine._score_explicit_speaker_pcm_batch
+    original_prepare = engine._prepare_kws_speaker_pcm_batch
 
-    def observe_heavy_pcm(pcm_regions, **kwargs):
-        decisions = original_score(pcm_regions, **kwargs)
+    def observe_heavy_pcm(pcm_regions, expected_authority):
+        prepared = original_prepare(pcm_regions, expected_authority)
         observed: list[np.ndarray] = [*pcm_regions]
         roots = {
             id(root): root
@@ -1542,13 +2002,13 @@ def test_ambiguous_kws_releases_pcm_and_native_stream_before_stop_callback() -> 
         observed.extend(roots.values())
         observed.extend(
             decision.identity_pcm
-            for decision in decisions
+            for decision in prepared
             if decision.identity_pcm is not None
         )
         heavy_pcm_refs.extend(weakref.ref(array) for array in observed)
-        return decisions
+        return prepared
 
-    engine._score_explicit_speaker_pcm_batch = observe_heavy_pcm
+    engine._prepare_kws_speaker_pcm_batch = observe_heavy_pcm
     stop_results = []
 
     def assert_released_then_stop(result) -> None:
@@ -1666,17 +2126,28 @@ def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
     assert engine._kws.resets == 1  # stream is still reset after the hit
 
 
-def test_kws_hit_passes_when_not_speaking_even_if_now_playing_matches():
+def test_kws_hit_passes_when_not_speaking_even_if_now_playing_matches(
+    monkeypatch,
+):
     # Not speaking -> the guard is inert; a genuine user "stop" must reach the
     # command callback even if the last-played line contained the word.
     engine, commands = _kws_engine("stop")
     engine._now_playing = "Okay, I will stop now."
+    permit_before = runtime_speaker_inference_permit().snapshot()
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("idle KWS must not allocate a speaker task")
+        ),
+    )
 
     consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
     assert commands == ["stop"]
     assert consumed is True
     assert engine._kws_own_echo_suppressions == 0
+    assert runtime_speaker_inference_permit().snapshot() == permit_before
 
 
 def test_kws_hit_passes_when_now_playing_does_not_contain_keyword():
@@ -1706,6 +2177,7 @@ def test_kws_hit_passes_when_now_playing_does_not_contain_keyword():
 def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
     keyword,
     phrase_index,
+    monkeypatch,
 ) -> None:
     engine, spotter, authority = _authority_kws_engine(
         keyword,
@@ -1721,10 +2193,14 @@ def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
         on_control_stop_result=stop_results.append,
     )
 
-    def unexpected_score(*_args, **_kwargs):
-        raise AssertionError("novel STOP must not score speaker PCM")
-
-    engine._score_explicit_speaker_pcm_batch = unexpected_score
+    permit_before = runtime_speaker_inference_permit().snapshot()
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("novel STOP must not allocate a speaker task")
+        ),
+    )
 
     consumed = engine._poll_keywords(
         np.zeros(1600, dtype="float32"),
@@ -1738,9 +2214,20 @@ def test_playback_kws_uses_only_typed_stop_callback_and_canonicalizes_wait(
     assert spotter.token_calls == 1
     assert spotter.timestamp_calls == 0
     assert engine._playback_kws_claim is None
+    assert runtime_speaker_inference_permit().snapshot() == permit_before
 
 
-def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> None:
+def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged(
+    monkeypatch,
+) -> None:
+    permit_before = runtime_speaker_inference_permit().snapshot()
+    monkeypatch.setattr(
+        sherpa_module,
+        "try_claim_kws_speaker_inference_owner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("non-ambiguous KWS must not allocate a speaker task")
+        ),
+    )
     playback, playback_spotter, playback_authority = _authority_kws_engine(
         "command mode"
     )
@@ -1770,11 +2257,6 @@ def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> N
         on_control_stop_result=idle_stop.append,
     )
 
-    def unexpected_idle_score(*_args, **_kwargs):
-        raise AssertionError("idle generic KWS must not score speaker PCM")
-
-    idle._score_explicit_speaker_pcm_batch = unexpected_idle_score
-
     assert idle._poll_keywords(
         np.zeros(1600, dtype="float32"),
         control_authority=idle_authority,
@@ -1783,6 +2265,7 @@ def test_playback_non_stop_abstains_while_idle_generic_label_is_unchanged() -> N
     assert idle_stop == []
     assert idle_spotter.token_calls == 0
     assert idle_spotter.timestamp_calls == 0
+    assert runtime_speaker_inference_permit().snapshot() == permit_before
 
 
 def test_playback_kws_uses_stop_callback_captured_before_native_tokens() -> None:

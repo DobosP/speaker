@@ -1,7 +1,7 @@
 # ADR-0183: Resolve own-TTS KWS ambiguity with word-scoped speaker authority
 
 Date: 2026-08-11
-Status: accepted
+Status: superseded-by ADR-0185
 
 ## Decision
 

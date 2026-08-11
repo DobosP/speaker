@@ -23,7 +23,10 @@ import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
-from core.engines.speaker_gate import SpeakerGate
+from core.engines.speaker_gate import (
+    SpeakerGate,
+    runtime_speaker_inference_permit,
+)
 from core.realtime_media_stage import RealtimeMediaStage
 
 
@@ -821,6 +824,9 @@ class _FakeSpeakerGate:
     def similarity(self, samples, _sample_rate):
         self.calls.append(np.asarray(samples, dtype="float32").copy())
         return self._scores.pop(0)
+
+    def try_similarity(self, samples, _sample_rate):
+        return self.similarity(samples, _sample_rate)
 
     def embed(self, _samples, _sample_rate):
         self.embed_calls += 1
@@ -1829,6 +1835,107 @@ def test_required_speaker_authority_warms_idempotently_off_capture_thread():
     assert embed_calls == 1
     assert eng._warm_speaker_gate()
     assert embed_calls == 1
+
+
+def test_word_cut_try_scoring_stays_nonblocking_behind_process_permit() -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.30,
+        embed_fn=lambda _samples, _sample_rate: (
+            embed_calls.append("embed") or [1.0, 0.0]
+        ),
+    )
+    gate.enroll_embedding([1.0, 0.0])
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.10,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    region = (np.full(1_600, 0.25, dtype="float32"),)
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+    try:
+        busy = eng._score_explicit_speaker_pcm_batch(region, min_sec=0.10)
+    finally:
+        assert permit.release(lease)
+
+    assert tuple(item.status.value for item in busy) == ("busy",)
+    assert embed_calls == []
+
+    recovered = eng._score_explicit_speaker_pcm_batch(region, min_sec=0.10)
+    assert tuple(item.status.value for item in recovered) == ("accept",)
+    assert embed_calls == ["embed"]
+
+
+def test_word_cut_reaps_returned_owned_kws_task_before_try_similarity() -> None:
+    embed_calls = []
+    gate = SpeakerGate(
+        threshold=0.30,
+        embed_fn=lambda _samples, _sample_rate: (
+            embed_calls.append("embed") or [1.0, 0.0]
+        ),
+    )
+    gate.enroll_embedding([1.0, 0.0])
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.10,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    permit = runtime_speaker_inference_permit()
+    lease = permit.try_acquire()
+    assert lease is not None
+
+    class _ReturnedOwner:
+        reap_calls = 0
+
+        def try_reap(self) -> bool:
+            self.reap_calls += 1
+            assert self.reap_calls == 1
+            assert permit.release(lease)
+            return True
+
+    returned = _ReturnedOwner()
+    eng._kws_speaker_inference_owner = returned
+
+    decisions = eng._score_explicit_speaker_pcm_batch(
+        (np.full(1_600, 0.25, dtype="float32"),),
+        min_sec=0.10,
+    )
+
+    assert tuple(item.status.value for item in decisions) == ("accept",)
+    assert embed_calls == ["embed"]
+    assert returned.reap_calls == 1
+    assert eng._kws_speaker_inference_owner is None
+    assert not permit.snapshot().active
+
+
+def test_word_cut_missing_try_seam_never_uses_blocking_similarity_fallback() -> None:
+    class _LegacyGate:
+        is_enrolled = True
+        threshold = 0.30
+
+        def similarity(self, _samples, _sample_rate):
+            raise AssertionError("blocking word-cut similarity fallback was called")
+
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.10,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _LegacyGate()
+    eng._speaker_gate_warmed = True
+
+    decisions = eng._score_explicit_speaker_pcm_batch(
+        (np.full(1_600, 0.25, dtype="float32"),),
+        min_sec=0.10,
+    )
+
+    assert tuple(item.status.value for item in decisions) == ("unavailable",)
 
 
 def test_speaker_warm_result_cannot_cross_gate_replacement_aba():

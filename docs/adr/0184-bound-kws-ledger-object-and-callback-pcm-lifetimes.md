@@ -1,7 +1,7 @@
 # ADR-0184: Bound KWS ledger object and callback PCM lifetimes
 
 Date: 2026-08-11
-Status: accepted
+Status: superseded-by ADR-0185
 
 ## Decision
 

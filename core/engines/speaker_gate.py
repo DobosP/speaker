@@ -10,6 +10,116 @@ Embedding = Sequence[float]
 EmbedFn = Callable[[Sequence[float], int], Optional[Embedding]]
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class RuntimeSpeakerInferenceLease:
+    """Exact process-wide admission for one runtime native speaker operation.
+
+    The production speaker extractor is lazy and may be retained by an entered
+    extension call.  A per-gate lock cannot prevent a rebuilt/fresh gate from
+    starting a second native call, so live runtime paths additionally share one
+    process-wide nonblocking lease.  Enrollment tooling keeps its established
+    blocking API; the live engine uses only the ``try_*`` methods below.
+    """
+
+    permit_token: object
+    token: object
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSpeakerInferencePermitSnapshot:
+    """Payload-free observation of one injectable process admission permit."""
+
+    active: bool
+    acquisitions: int
+    releases: int
+
+
+class RuntimeSpeakerInferencePermit:
+    """Injectable exact one-operation permit; production shares one instance."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._permit_token = object()
+        self._lease: Optional[RuntimeSpeakerInferenceLease] = None
+        self._acquisitions = 0
+        self._releases = 0
+
+    def try_acquire(self) -> Optional[RuntimeSpeakerInferenceLease]:
+        lease = RuntimeSpeakerInferenceLease(self._permit_token, object())
+        with self._condition:
+            if self._lease is not None:
+                return None
+            self._lease = lease
+            self._acquisitions += 1
+            return lease
+
+    def is_current(self, lease: RuntimeSpeakerInferenceLease) -> bool:
+        if not isinstance(lease, RuntimeSpeakerInferenceLease):
+            return False
+        with self._condition:
+            return bool(
+                lease.permit_token is self._permit_token and self._lease is lease
+            )
+
+    def release(self, lease: RuntimeSpeakerInferenceLease) -> bool:
+        if not isinstance(lease, RuntimeSpeakerInferenceLease):
+            return False
+        with self._condition:
+            if lease.permit_token is not self._permit_token or self._lease is not lease:
+                return False
+            self._lease = None
+            self._releases += 1
+            self._condition.notify_all()
+            return True
+
+    def snapshot(self) -> RuntimeSpeakerInferencePermitSnapshot:
+        with self._condition:
+            return RuntimeSpeakerInferencePermitSnapshot(
+                active=self._lease is not None,
+                acquisitions=self._acquisitions,
+                releases=self._releases,
+            )
+
+
+_RUNTIME_INFERENCE_PERMIT = RuntimeSpeakerInferencePermit()
+
+
+def runtime_speaker_inference_permit() -> RuntimeSpeakerInferencePermit:
+    """Return the production singleton; tests pass a private permit directly."""
+
+    return _RUNTIME_INFERENCE_PERMIT
+
+
+def try_acquire_runtime_speaker_inference() -> Optional[RuntimeSpeakerInferenceLease]:
+    """Acquire the one process-wide runtime native-inference lease, or abstain."""
+
+    return _RUNTIME_INFERENCE_PERMIT.try_acquire()
+
+
+def runtime_speaker_inference_lease_is_current(
+    lease: RuntimeSpeakerInferenceLease,
+) -> bool:
+    """Whether ``lease`` is the exact unfinished process-wide operation."""
+
+    if not isinstance(lease, RuntimeSpeakerInferenceLease):
+        return False
+    return _RUNTIME_INFERENCE_PERMIT.is_current(lease)
+
+
+def release_runtime_speaker_inference(
+    lease: RuntimeSpeakerInferenceLease,
+) -> bool:
+    """Release only the exact runtime lease after its native call returned."""
+
+    return _RUNTIME_INFERENCE_PERMIT.release(lease)
+
+
+def runtime_speaker_inference_active() -> bool:
+    """Return a diagnostic snapshot; never use this for check-then-act admission."""
+
+    return _RUNTIME_INFERENCE_PERMIT.snapshot().active
+
+
 @dataclass(frozen=True)
 class SpeakerIdentityActivation:
     """Why the live runtime must allocate speaker-identity resources."""
@@ -371,7 +481,11 @@ class SpeakerGate:
         return cosine_similarity(embedding, enrolled)
 
     def try_similarity(
-        self, samples: Sequence[float], sample_rate: int
+        self,
+        samples: Sequence[float],
+        sample_rate: int,
+        *,
+        runtime_permit: Optional[RuntimeSpeakerInferencePermit] = None,
     ) -> Optional[float]:
         """Return similarity without waiting for another model inference.
 
@@ -381,12 +495,21 @@ class SpeakerGate:
         enrolled, generation = self._enrollment_snapshot()
         if enrolled is None:
             return 0.0
-        if not self._inference_lock.acquire(blocking=False):
+        permit = _RUNTIME_INFERENCE_PERMIT if runtime_permit is None else runtime_permit
+        if not isinstance(permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        runtime_lease = permit.try_acquire()
+        if runtime_lease is None:
             return None
         try:
-            embedding = self._embed_unlocked(samples, sample_rate)
+            if not self._inference_lock.acquire(blocking=False):
+                return None
+            try:
+                embedding = self._embed_unlocked(samples, sample_rate)
+            finally:
+                self._inference_lock.release()
         finally:
-            self._inference_lock.release()
+            permit.release(runtime_lease)
         if embedding is None:
             return 0.0
         if not self._enrollment_is_current(enrolled, generation):
@@ -397,6 +520,8 @@ class SpeakerGate:
         self,
         samples: tuple[Sequence[float], ...],
         sample_rate: int,
+        *,
+        runtime_permit: Optional[RuntimeSpeakerInferencePermit] = None,
     ) -> Optional[SpeakerSimilarityBatchReceipt]:
         """Score one or two clips under one nonblocking authority snapshot.
 
@@ -405,12 +530,55 @@ class SpeakerGate:
         revalidate the returned receipt before acting.
         """
 
+        permit = _RUNTIME_INFERENCE_PERMIT if runtime_permit is None else runtime_permit
+        if not isinstance(permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        runtime_lease = permit.try_acquire()
+        if runtime_lease is None:
+            return None
+        try:
+            return self._try_similarity_batch_with_runtime_lease(
+                samples,
+                sample_rate,
+                runtime_permit=permit,
+                runtime_lease=runtime_lease,
+                enter_native_step=None,
+            )
+        finally:
+            permit.release(runtime_lease)
+
+    def _try_similarity_batch_with_runtime_lease(
+        self,
+        samples: tuple[Sequence[float], ...],
+        sample_rate: int,
+        *,
+        runtime_permit: RuntimeSpeakerInferencePermit,
+        runtime_lease: RuntimeSpeakerInferenceLease,
+        enter_native_step: Optional[Callable[[], bool]],
+    ) -> Optional[SpeakerSimilarityBatchReceipt]:
+        """Score under a lifecycle owner's already-held exact runtime lease.
+
+        This private seam never releases ``runtime_lease``. The approved KWS
+        lifecycle owner retains it from before ``Thread.start`` until the exact
+        worker has returned, cleared its payload, and is reaped. Public callers
+        use :meth:`try_similarity_batch`, which owns its lease locally.
+        """
+
         if type(samples) is not tuple or not 0 < len(samples) <= 2:
             raise ValueError("speaker batch must contain one or two clips")
         if isinstance(sample_rate, bool) or not isinstance(sample_rate, int):
             raise TypeError("speaker sample rate must be an integer")
         if sample_rate <= 0:
             raise ValueError("speaker sample rate must be positive")
+        if not isinstance(runtime_permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        if not isinstance(runtime_lease, RuntimeSpeakerInferenceLease):
+            raise TypeError("runtime_lease must be a RuntimeSpeakerInferenceLease")
+        if not runtime_permit.is_current(runtime_lease):
+            raise RuntimeError("runtime speaker-inference lease is not current")
+        if enter_native_step is not None and not callable(enter_native_step):
+            raise TypeError("enter_native_step must be callable or None")
+
         if not self._inference_lock.acquire(blocking=False):
             return None
         try:
@@ -434,6 +602,11 @@ class SpeakerGate:
                 if enrolled is None:
                     similarities.append(0.0)
                     continue
+                # The lifecycle owner linearizes this admission against
+                # timeout/stop under its request Condition. Once admitted, the
+                # native call is deliberately non-preemptible from Python.
+                if enter_native_step is not None and not enter_native_step():
+                    return None
                 embedding = self._embed_unlocked(clip, sample_rate)
                 similarities.append(
                     0.0
@@ -451,6 +624,95 @@ class SpeakerGate:
             authority=authority,
             similarities=tuple(similarities),
         )
+
+    def try_verification_similarity(
+        self,
+        samples: Sequence[float],
+        sample_rate: int,
+        *,
+        runtime_permit: Optional[RuntimeSpeakerInferencePermit] = None,
+    ) -> Optional[float]:
+        """Exact live identity score without waiting behind native inference.
+
+        ``None`` means unavailable, unusable, stale, or process/per-gate busy.
+        Those cases were already fail-open for final admission; the live final
+        worker must not block behind an abandoned KWS native call.
+        """
+
+        enrolled, generation = self._enrollment_snapshot()
+        if enrolled is None:
+            return None
+        permit = _RUNTIME_INFERENCE_PERMIT if runtime_permit is None else runtime_permit
+        if not isinstance(permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        runtime_lease = permit.try_acquire()
+        if runtime_lease is None:
+            return None
+        try:
+            if not self._inference_lock.acquire(blocking=False):
+                return None
+            try:
+                embedding = self._embed_unlocked(samples, sample_rate)
+            finally:
+                self._inference_lock.release()
+        finally:
+            permit.release(runtime_lease)
+        if embedding is None or not self._enrollment_is_current(enrolled, generation):
+            return None
+        return cosine_similarity(embedding, enrolled)
+
+    def try_embed(
+        self,
+        samples: Sequence[float],
+        sample_rate: int,
+        *,
+        runtime_permit: Optional[RuntimeSpeakerInferencePermit] = None,
+    ) -> Optional[Embedding]:
+        """Run one live warm-up embedding only when every runtime slot is free."""
+
+        permit = _RUNTIME_INFERENCE_PERMIT if runtime_permit is None else runtime_permit
+        if not isinstance(permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        runtime_lease = permit.try_acquire()
+        if runtime_lease is None:
+            return None
+        try:
+            if not self._inference_lock.acquire(blocking=False):
+                return None
+            try:
+                return self._embed_unlocked(samples, sample_rate)
+            finally:
+                self._inference_lock.release()
+        finally:
+            permit.release(runtime_lease)
+
+    def try_enroll(
+        self,
+        samples: Sequence[float],
+        sample_rate: int,
+        *,
+        runtime_permit: Optional[RuntimeSpeakerInferencePermit] = None,
+    ) -> Optional[bool]:
+        """Live legacy-WAV enrollment, or ``None`` when inference is busy."""
+
+        permit = _RUNTIME_INFERENCE_PERMIT if runtime_permit is None else runtime_permit
+        if not isinstance(permit, RuntimeSpeakerInferencePermit):
+            raise TypeError("runtime_permit must be a RuntimeSpeakerInferencePermit")
+        runtime_lease = permit.try_acquire()
+        if runtime_lease is None:
+            return None
+        try:
+            if not self._inference_lock.acquire(blocking=False):
+                return None
+            try:
+                embedding = self._embed_unlocked(samples, sample_rate)
+            finally:
+                self._inference_lock.release()
+        finally:
+            permit.release(runtime_lease)
+        if embedding is not None:
+            self.enroll_embedding(embedding)
+        return self.is_enrolled
 
     def embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
         """Public embedding accessor used by the enrollment flow (core.enroll).

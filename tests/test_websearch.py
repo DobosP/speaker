@@ -18,10 +18,17 @@ from __future__ import annotations
 import threading
 import time
 
-from always_on_agent.capabilities import create_default_capabilities
+import pytest
+
+from always_on_agent.capabilities import (
+    CapabilityRegistry,
+    CapabilityResult,
+    create_default_capabilities,
+)
 from always_on_agent.events import Mode
 from always_on_agent.models import IntentKind
 
+from core.sensitivity import CODE, PRIVATE, PUBLIC
 from core.websearch import (
     SearxngBackend,
     WebSearchConfig,
@@ -55,6 +62,17 @@ class _FakeSearxng:
         return self._results
 
 
+class _CountingClassifier:
+    """A permissive gate whose call count proves an earlier veto won."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        return True
+
+
 class _Unreachable:
     """Mimics SearXNG being down: every call raises (a transport error)."""
 
@@ -79,6 +97,85 @@ class _BlocksPastTimeout:
         raise TimeoutError("read timed out")
 
 
+class _EqualityBomb:
+    """A hostile context value whose comparison/coercion must never run."""
+
+    def __eq__(self, other):
+        raise AssertionError("hostile sensitivity equality hook was invoked")
+
+    def __hash__(self):
+        raise AssertionError("hostile sensitivity hash hook was invoked")
+
+    def __str__(self):
+        raise AssertionError("hostile sensitivity coercion hook was invoked")
+
+
+class _FalseyPrivateContext(dict):
+    """A supplied context that registry normalization must not discard."""
+
+    def __bool__(self):
+        return False
+
+
+class _LyingPrivateContext(dict):
+    """A dict subclass whose virtual lookup must never hide PRIVATE."""
+
+    def get(self, key, default=None):
+        if key == "sensitivity":
+            return default
+        return super().get(key, default)
+
+
+class _SensitivityAliasKey:
+    """A non-string key that must never impersonate ``sensitivity``."""
+
+    def __init__(self):
+        self.comparisons = 0
+
+    def __hash__(self):
+        return hash("sensitivity")
+
+    def __eq__(self, other):
+        self.comparisons += 1
+        return other == "sensitivity"
+
+
+class _ExplodingHit(dict):
+    def get(self, key, default=None):
+        raise RuntimeError("malformed backend hit")
+
+
+class _EnumBomb:
+    """A malformed mode/intent value whose hooks must not be invoked."""
+
+    def __hash__(self):
+        raise AssertionError("malformed enum hash hook was invoked")
+
+    def __eq__(self, other):
+        raise AssertionError("malformed enum equality hook was invoked")
+
+    def __str__(self):
+        raise AssertionError("malformed enum coercion hook was invoked")
+
+
+class _PrefixOnlyBackend:
+    """A result iterator that fails if normalization exceeds its cap."""
+
+    def __init__(self):
+        self.consumed = 0
+
+    def search(self, query):
+        del query
+        for index in range(2):
+            self.consumed += 1
+            yield {
+                "title": f"result {index}",
+                "content": "safe hit",
+                "url": f"https://a/{index}",
+            }
+        raise AssertionError("web result iterator consumed beyond max_results")
+
+
 def _enabled_cfg(**kw) -> WebSearchConfig:
     base = dict(enabled=True, base_url="http://searx.local", timeout_s=0.2, max_results=5)
     base.update(kw)
@@ -89,6 +186,24 @@ def _registry_with_web_search(config, backend):
     registry = create_default_capabilities()
     attach_web_search_capability(registry, config, backend=backend)
     return registry
+
+
+def test_registry_preserves_an_explicit_empty_context_object():
+    """Only ``None`` means absent; an explicit dict keeps its identity."""
+    context: dict[str, object] = {}
+    registry = CapabilityRegistry()
+    registry.register(
+        "context.identity",
+        lambda _query, supplied: CapabilityResult(
+            True,
+            "same" if supplied is context else "replaced",
+        ),
+    )
+
+    result = registry.invoke("context.identity", "", context)
+
+    assert result.ok is True
+    assert result.text == "same"
 
 
 # --- PRIVATE tripwire: gate first, never egress ----------------------------
@@ -118,6 +233,295 @@ def test_code_with_credential_never_egresses():
     assert result.ok is True
     assert tripwire.calls == 0
     assert result.data["egress"] is False
+
+
+def test_private_turn_context_vetoes_before_classifier_and_backend():
+    """A floated PRIVATE turn dominates a harmless planner-generated query."""
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": PRIVATE},
+    )
+
+    assert result.ok is True
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+    assert result.data["source"] == "corpus"
+
+
+def test_falsey_private_context_survives_registry_normalization_and_vetoes():
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        _FalseyPrivateContext(sensitivity=PRIVATE),
+    )
+
+    assert result.ok is True
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+    assert result.data["source"] == "corpus"
+
+
+def test_dict_subclass_cannot_hide_private_sensitivity_from_veto():
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        _LyingPrivateContext(sensitivity=PRIVATE),
+    )
+
+    assert result.ok is True
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+    assert result.data["source"] == "corpus"
+
+
+def test_non_string_context_key_fails_closed_without_equality_hook():
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+    alias = _SensitivityAliasKey()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {alias: PUBLIC},
+    )
+
+    assert result.ok is True
+    assert alias.comparisons == 0
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+    assert result.data["source"] == "corpus"
+
+
+def test_invocation_observer_metadata_cannot_mutate_private_context_before_veto():
+    holder: dict[str, dict[object, object]] = {}
+
+    class _MutatingTaskIdKey:
+        def __init__(self) -> None:
+            self.comparisons = 0
+
+        def __hash__(self):
+            return hash("task_id")
+
+        def __eq__(self, other):
+            self.comparisons += 1
+            holder["context"].clear()
+            return other == "task_id"
+
+    key = _MutatingTaskIdKey()
+    context: dict[object, object] = {"sensitivity": PRIVATE, key: object()}
+    holder["context"] = context
+    events = []
+    tripwire = _Tripwire()
+    registry = _registry_with_web_search(_enabled_cfg(), tripwire)
+    registry.observe_invocations(events.append)
+
+    result = registry.invoke("web.search", "weather in Berlin", context)  # type: ignore[arg-type]
+
+    assert result.ok is True
+    assert key.comparisons == 0
+    assert context["sensitivity"] == PRIVATE
+    assert tripwire.calls == 0
+    assert [event.phase for event in events] == [
+        "started",
+        "started",
+        "finished",
+        "finished",
+    ]
+    assert result.data["egress"] is False
+    assert result.data["source"] == "corpus"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [None, True, 1, "", "PRIVATE", "unknown", [], {}, object(), _EqualityBomb()],
+    ids=(
+        "none",
+        "bool",
+        "int",
+        "empty",
+        "case-variant",
+        "unknown",
+        "list",
+        "dict",
+        "object",
+        "hostile-object",
+    ),
+)
+def test_present_invalid_turn_sensitivity_fails_closed_before_work(invalid):
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": invalid},
+    )
+
+    assert result.ok is True
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+    assert result.data["source"] == "corpus"
+
+
+@pytest.mark.parametrize(
+    ("sensitivity", "query"),
+    ((PUBLIC, "weather in Berlin"), (CODE, "debug this Python function")),
+)
+def test_canonical_non_private_context_still_requires_and_passes_raw_gate(
+    sensitivity,
+    query,
+):
+    fake = _FakeSearxng(
+        [{"title": "result", "content": "safe hit", "url": "https://a/1"}]
+    )
+    registry = _registry_with_web_search(_enabled_cfg(), fake)
+
+    result = registry.invoke(
+        "web.search",
+        query,
+        {"sensitivity": sensitivity},
+    )
+
+    assert result.ok is True
+    assert fake.queries == [query]
+    assert result.data["egress"] is True
+    assert result.data["source"] == "web"
+
+
+@pytest.mark.parametrize("sensitivity", (PUBLIC, CODE))
+def test_non_private_context_cannot_override_private_raw_query(sensitivity):
+    tripwire = _Tripwire()
+    registry = _registry_with_web_search(_enabled_cfg(), tripwire)
+
+    result = registry.invoke(
+        "web.search",
+        "what is my home address",
+        {"sensitivity": sensitivity},
+    )
+
+    assert result.ok is True
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+
+
+@pytest.mark.parametrize(
+    ("sensitivity", "raw_context"),
+    (
+        (PUBLIC, {"mode": Mode.MEETING.value}),
+        (CODE, {"intent_kind": IntentKind.COMMAND.value}),
+    ),
+    ids=("public-meeting", "code-command"),
+)
+def test_non_private_context_cannot_override_mode_or_intent_gate(
+    sensitivity,
+    raw_context,
+):
+    tripwire = _Tripwire()
+    registry = _registry_with_web_search(_enabled_cfg(), tripwire)
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": sensitivity, **raw_context},
+    )
+
+    assert result.ok is True
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
+
+
+def _classify_false(*_args, **_kwargs):
+    return False
+
+
+def _classify_raises(*_args, **_kwargs):
+    raise RuntimeError("classifier unavailable")
+
+
+@pytest.mark.parametrize(
+    "classifier",
+    (_classify_false, _classify_raises),
+    ids=("denied", "raised"),
+)
+def test_public_context_never_overrides_raw_classifier_denial(classifier):
+    tripwire = _Tripwire()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": PUBLIC},
+    )
+
+    assert result.ok is True
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["sensitivity"] == PRIVATE
 
 
 # --- PUBLIC query: hits the backend, citations == urls ---------------------
@@ -160,6 +564,21 @@ def test_max_results_caps_mapped_hits():
     assert len(result.citations) == 3
 
 
+def test_max_results_bounds_backend_iterable_consumption():
+    backend = _PrefixOnlyBackend()
+    registry = _registry_with_web_search(
+        _enabled_cfg(max_results=2),
+        backend,
+    )
+
+    result = registry.invoke("web.search", "weather in Berlin", {})
+
+    assert result.ok is True
+    assert backend.consumed == 2
+    assert len(result.data["results"]) == 2
+    assert result.data["source"] == "web"
+
+
 # --- BR7: unreachable / blocks-past-timeout => corpus ok=True --------------
 
 
@@ -168,16 +587,18 @@ def test_unreachable_backend_falls_back_to_corpus_ok_true():
 
     result = registry.invoke("web.search", "what is pipecat", {})
 
-    assert result.ok is True  # never aborts the plan (tasks.py:229-231)
+    assert result.ok is True  # never aborts the plan (tasks.py:586-588)
     assert result.data["source"] == "corpus"
     assert result.data["error"] == "ConnectionError"
     # The corpus actually answered (pipecat is in the default corpus).
     assert "pipecat" in result.text.lower()
 
 
-def test_backend_blocking_past_timeout_returns_corpus_bounded(monkeypatch):
-    """BR7: a backend that blocks past timeout_s yields the corpus fallback with
-    ok=True and bounded latency -- the timeout is the only wedge bound."""
+def test_backend_with_its_own_timeout_returns_corpus_bounded():
+    """A fake backend's own timeout yields a bounded, successful fallback.
+
+    This pins provider error handling, not an HTTPX total wall-clock deadline.
+    """
     timeout_s = 0.2
     registry = _registry_with_web_search(
         _enabled_cfg(timeout_s=timeout_s), _BlocksPastTimeout(timeout_s)
@@ -224,6 +645,25 @@ def test_bogus_mode_with_pii_query_still_blocked():
     assert result.data["egress"] is False
 
 
+@pytest.mark.parametrize("field", ("mode", "intent_kind"))
+def test_hostile_mode_or_intent_value_uses_historical_none_fallback(field):
+    fake = _FakeSearxng(
+        [{"title": "result", "content": "safe hit", "url": "https://a/1"}]
+    )
+    registry = _registry_with_web_search(_enabled_cfg(), fake)
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": PUBLIC, field: _EnumBomb()},
+    )
+
+    assert result.ok is True
+    assert fake.queries == ["weather in Berlin"]
+    assert result.data["egress"] is True
+    assert result.data["source"] == "web"
+
+
 def test_real_meeting_mode_still_blocks_egress():
     """A valid blocking mode (MEETING) is honoured -- coercion preserves it."""
     tripwire = _Tripwire()
@@ -266,6 +706,24 @@ def test_disabled_config_is_corpus_only_and_dependency_free():
     assert result.data["egress"] is False
     assert result.data["source"] == "corpus"
     assert "livekit" in result.text.lower()
+
+
+def test_disabled_config_never_uses_an_injected_backend():
+    tripwire = _Tripwire()
+    registry = _registry_with_web_search(
+        WebSearchConfig(
+            enabled=False,
+            base_url="http://searx.local",
+        ),
+        tripwire,
+    )
+
+    result = registry.invoke("web.search", "weather in Berlin", {})
+
+    assert result.ok is True
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["source"] == "corpus"
 
 
 def test_enabled_but_no_base_url_is_corpus_only():
@@ -317,4 +775,33 @@ def test_empty_results_from_backend_falls_back_to_corpus():
     assert result.ok is True
     assert result.data["source"] == "corpus"
     assert result.data["egress"] is True  # we did egress; corpus is the fallback
+    assert "moonshine" in result.text.lower()
+
+
+def test_malformed_backend_hits_are_skipped_without_aborting_plan():
+    registry = _registry_with_web_search(
+        _enabled_cfg(),
+        _FakeSearxng([None, "not-a-result", 7]),
+    )
+
+    result = registry.invoke("web.search", "what is moonshine", {})
+
+    assert result.ok is True
+    assert result.data["source"] == "corpus"
+    assert result.data["egress"] is True
+    assert "moonshine" in result.text.lower()
+
+
+def test_backend_hit_normalization_error_falls_back_with_egress_receipt():
+    registry = _registry_with_web_search(
+        _enabled_cfg(),
+        _FakeSearxng([_ExplodingHit()]),
+    )
+
+    result = registry.invoke("web.search", "what is moonshine", {})
+
+    assert result.ok is True
+    assert result.data["source"] == "corpus"
+    assert result.data["egress"] is True
+    assert result.data["error"] == "RuntimeError"
     assert "moonshine" in result.text.lower()

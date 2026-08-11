@@ -862,13 +862,32 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       production vocabularies before counting or reporting them, with the same
       detached, detail-free validation used for selected-source accounting.
       This is follow-up hardening, not part of ADR-0124's selected-source slice.
-- [ ] **`web.search` egress vs the floated turn sensitivity (review nit, 2026-06-08g).**
-      `core/websearch.py` gates egress on the raw tool `arg` via `may_leave_device(arg)`,
-      independent of `context["sensitivity"]`. Now that the ReAct planner also sees the
-      recent-conversation block (2026-06-08g), it has more material it *could* phrase into
-      a search arg. `_is_personal` re-classifies that exact arg so literal PII still fails
-      closed, but consider ALSO gating the search arg on the turn's floated sensitivity
-      (defence-in-depth). Orthogonal to the 2026-06-08g change; not a regression.
+- [x] **`web.search` egress vs the floated turn sensitivity — DONE 2026-08-12
+      (ADR-0187).** Registry invocation now preserves every supplied context and
+      synthesizes an empty dict only for `None`. Before classifier or backend
+      work, only an exact built-in dict with exact-string keys can use absent-field
+      compatibility; exact `private`, malformed/unknown values, non-string keys,
+      and dict subclasses fall back locally without virtual lookup/coercion hooks.
+      Exact `public`/`code` can only proceed to the unchanged raw query/mode/intent
+      gate, never authorize past it; these strings are not opaque provenance.
+      Observer fields come from an exact-string snapshot, and ReAct invalidates
+      missing sensitivity, non-exact Mappings, and non-string keys before copying;
+      absent compatibility is only for direct web calls reaching the raw gate.
+      Hostile mode/intent objects abstain as historical `None`, and disabled config
+      blocks an injected backend. Only the configured backend-result prefix is
+      normalized; malformed entries are skipped, or normalization failure returns
+      the successful local fallback with `egress=true` plus an error receipt
+      because the call already occurred. SearXNG timeouts bound each HTTP phase's
+      inactivity, not total wall time. This closes only the
+      2026-06-08g defence-in-depth review nit: same-process context/provider
+      mutation, blocking-backend cancellation and parsed-response/trusted-limit/
+      value-size caps, heuristic raw false negatives, and PRIVATE cloud-LLM
+      routing remain. Frozen headless
+      receipts are 96 focused, 111 policy/context, 161 capability/observer, 150
+      ReAct/untrusted/cancellation, and 6 APM/DTD; AST6/diff-check and scoped Ruff
+      excluding the identical inherited React F401 are green, while all 37
+      formatter hunks are base-identical with zero task-line overlap. No network,
+      SearXNG, cloud/model, audio, device, or live path ran.
 
 ## Shipped this session (2026-06-02)
 - [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged

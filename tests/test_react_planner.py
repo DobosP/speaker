@@ -555,6 +555,282 @@ def test_recent_conversation_reaches_the_real_planner_end_to_end():
     )
 
 
+def test_private_history_blocks_public_looking_react_web_query_end_to_end():
+    """The Assistant-floated turn receipt must survive the ReAct context copy.
+
+    A planner-controlled subquery is not allowed to downgrade private prior-turn
+    context merely by phrasing the tool argument as a harmless public lookup.
+    """
+    from always_on_agent.memory import SessionMemory
+
+    class _BackendTripwire:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str):
+            self.queries.append(query)
+            raise AssertionError("private turn reached web backend")
+
+    memory = SessionMemory()
+    memory.add("what is in my medical notes", tags=("user",))
+    memory.add("That is a private record.", tags=("assistant_output",))
+
+    backend = _BackendTripwire()
+    registry = create_default_capabilities(memory)
+    attach_web_search_capability(
+        registry,
+        WebSearchConfig(
+            enabled=True,
+            base_url="http://searx.local",
+            timeout_s=0.2,
+        ),
+        backend=backend,
+    )
+    llm = ScriptLLM(
+        [
+            "TOOL web.search: weather in Berlin",
+            "FINAL: answered from the local fallback",
+        ],
+        final="answered from the local fallback",
+    )
+    attach_react_capability(registry, llm)
+    attach_llm_capabilities(
+        registry,
+        llm,
+        memory=memory,
+        escalate=lambda _query, _context: True,
+    )
+
+    result = registry.invoke(
+        "assistant.answer",
+        "What is the weather in Berlin?",
+        {"mode": "assistant"},
+    )
+
+    assert result.ok is True
+    assert backend.queries == []
+    assert result.data["steps"] == ["web.search"]
+    assert result.text == "answered from the local fallback"
+
+
+def test_private_tool_result_blocks_later_public_looking_web_query():
+    """A local discovery may tighten the live planner context mid-plan."""
+
+    class _BackendTripwire:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str):
+            self.queries.append(query)
+            raise AssertionError("private tool context reached web backend")
+
+    backend = _BackendTripwire()
+    registry = create_default_capabilities()
+    registry.register(
+        "private.lookup",
+        lambda _query, _context: CapabilityResult(
+            True,
+            "private finding",
+            data={"egress": False, "sensitivity": "private"},
+        ),
+        spec=CapabilitySpec(
+            "private.lookup",
+            "private lookup",
+            planner_tool=True,
+        ),
+    )
+    attach_web_search_capability(
+        registry,
+        WebSearchConfig(
+            enabled=True,
+            base_url="http://searx.local",
+            timeout_s=0.2,
+        ),
+        backend=backend,
+    )
+    planner = ReactPlanner(
+        ScriptLLM(
+            [
+                "TOOL private.lookup: local record",
+                "TOOL web.search: weather in Berlin",
+                "FINAL: kept the private finding local",
+            ],
+            final="kept the private finding local",
+        ),
+        registry,
+        max_steps=3,
+        tools=("private.lookup", "web.search"),
+    )
+
+    result = planner.run(
+        "What is the weather in Berlin?",
+        {"sensitivity": "public"},
+    )
+
+    assert result.ok is True
+    assert backend.queries == []
+    assert result.data["steps"] == ["private.lookup", "web.search"]
+    assert result.text == "kept the private finding local"
+
+
+def test_react_missing_sensitivity_cannot_use_direct_web_compatibility():
+    """Only deterministic direct web calls may use absent-field compatibility."""
+
+    class _BackendTripwire:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str):
+            self.queries.append(query)
+            raise AssertionError("unclassified ReAct query reached web backend")
+
+    backend = _BackendTripwire()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        WebSearchConfig(
+            enabled=True,
+            base_url="http://searx.local",
+            timeout_s=0.2,
+        ),
+        backend=backend,
+    )
+    planner = ReactPlanner(
+        ScriptLLM(
+            [
+                "TOOL web.search: weather in Berlin",
+                "FINAL: kept unclassified planner work local",
+            ],
+            final="kept unclassified planner work local",
+        ),
+        registry,
+        tools=("web.search",),
+    )
+
+    result = planner.run("What is the weather in Berlin?", {})
+
+    assert result.ok is True
+    assert backend.queries == []
+    assert result.data["steps"] == ["web.search"]
+    assert result.text == "kept unclassified planner work local"
+
+
+def test_non_exact_react_context_cannot_hide_private_before_tool_copy():
+    """A direct-call dict subclass cannot turn PRIVATE into an absent field."""
+
+    class _LyingPrivateContext(dict):
+        def get(self, key, default=None):
+            if key == "sensitivity":
+                return default
+            return super().get(key, default)
+
+        def keys(self):
+            return ()
+
+        def __iter__(self):
+            return iter(())
+
+    class _BackendTripwire:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str):
+            self.queries.append(query)
+            raise AssertionError("non-exact private context reached web backend")
+
+    backend = _BackendTripwire()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        WebSearchConfig(
+            enabled=True,
+            base_url="http://searx.local",
+            timeout_s=0.2,
+        ),
+        backend=backend,
+    )
+    planner = ReactPlanner(
+        ScriptLLM(
+            [
+                "TOOL web.search: weather in Berlin",
+                "FINAL: kept malformed provenance local",
+            ],
+            final="kept malformed provenance local",
+        ),
+        registry,
+        tools=("web.search",),
+    )
+
+    result = planner.run(
+        "What is the weather in Berlin?",
+        _LyingPrivateContext(sensitivity="private"),
+    )
+
+    assert result.ok is True
+    assert backend.queries == []
+    assert result.data["steps"] == ["web.search"]
+    assert result.text == "kept malformed provenance local"
+
+
+def test_react_rejects_non_string_key_before_virtual_lookup_can_mutate_context():
+    """Hostile exact-dict keys cannot erase PRIVATE during planner lookup."""
+    holder: dict[str, dict[object, object]] = {}
+
+    class _MutatingCancelKey:
+        def __init__(self) -> None:
+            self.comparisons = 0
+
+        def __hash__(self):
+            return hash("cancel_event")
+
+        def __eq__(self, other):
+            self.comparisons += 1
+            holder["context"].clear()
+            return other == "cancel_event"
+
+    class _BackendTripwire:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str):
+            self.queries.append(query)
+            raise AssertionError("mutated private context reached web backend")
+
+    key = _MutatingCancelKey()
+    context: dict[object, object] = {"sensitivity": "private", key: object()}
+    holder["context"] = context
+    backend = _BackendTripwire()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        WebSearchConfig(
+            enabled=True,
+            base_url="http://searx.local",
+            timeout_s=0.2,
+        ),
+        backend=backend,
+    )
+    planner = ReactPlanner(
+        ScriptLLM(
+            [
+                "TOOL web.search: weather in Berlin",
+                "FINAL: kept hostile provenance local",
+            ],
+            final="kept hostile provenance local",
+        ),
+        registry,
+        tools=("web.search",),
+    )
+
+    result = planner.run("What is the weather in Berlin?", context)  # type: ignore[arg-type]
+
+    assert result.ok is True
+    assert key.comparisons == 0
+    assert backend.queries == []
+    assert result.data["steps"] == ["web.search"]
+    assert result.text == "kept hostile provenance local"
+
+
 # --- P3: robust tool-call parsing + bounded re-prompt ------------------------
 
 def test_parse_step_scans_past_preamble_and_markdown():

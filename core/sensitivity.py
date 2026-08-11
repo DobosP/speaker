@@ -30,8 +30,9 @@ PUBLIC = "public"     # general-knowledge / encyclopedic lookups
 
 Sensitivity = str  # one of PRIVATE / CODE / PUBLIC
 
-# Most-restrictive-wins ordering for egress: PRIVATE never leaves the device, so
-# it dominates; CODE may use a coding cloud; PUBLIC is the most permissive.
+# Most-restrictive-wins ordering: PRIVATE dominates web-search admission and
+# selects the most restrictive configured LLM chain; CODE may use a coding
+# cloud, while PUBLIC is the most permissive.
 _SENSITIVITY_RANK = {PUBLIC: 0, CODE: 1, PRIVATE: 2}
 
 
@@ -239,10 +240,11 @@ def may_leave_device(
     """Return True when ``query`` is permitted to egress to the web-search
     surface (the self-hosted SearXNG backend), per the §9.7 data boundary.
 
-    Decision BR3 (LOCKED, "block PII only"): a plain non-PII lookup such as
-    "weather in Berlin" may reach external (user-controlled) infra because a
-    SEARCH/RESEARCH intent signals the user wants an external lookup, but any
-    PII/personal/possessive query is hard-blocked to corpus-only. The PII
+    Decision BR3 (LOCKED, "block PII only"): once the controller selects the
+    web-search surface, a plain non-PII lookup such as "weather in Berlin" may
+    reach external (user-controlled) infra; this predicate does not itself
+    require a SEARCH/RESEARCH intent. Any PII/personal/possessive query is
+    hard-blocked to corpus-only. The PII
     check is ``_is_personal`` -- the P0-hardened detector (security-5) that
     also runs first inside ``classify_sensitivity`` -- so CODE-with-credential
     queries ("debug this, the api key is sk-...") fail closed via the same
@@ -260,10 +262,12 @@ def may_leave_device(
     ChainSelector picks *which* cloud chain a permitted turn uses from the
     ``classify_sensitivity`` tag. They share the same PII precedence (run
     ``_is_personal`` first) so they MUST NOT drift: any new PII signal added
-    here belongs in ``_is_personal`` so both consumers see it. Callers pass a
-    raw ``query`` (NOT a trusted ``context['sensitivity']`` tag, which is only
-    set on the assistant path); enum coercion for ``mode``/``intent_kind`` is
-    the caller's responsibility and must fail safe to ``None`` (BR2).
+    here belongs in ``_is_personal`` so both consumers see it. Web-search
+    callers always pass the raw ``query`` and may additionally enforce a
+    controller-floated exact turn sensitivity as a restrictive veto; that
+    context tag never authorizes a query that fails this predicate. Enum
+    coercion for ``mode``/``intent_kind`` is the caller's responsibility and
+    must fail safe to ``None`` (BR2).
     """
     if _is_personal(query or ""):
         return False

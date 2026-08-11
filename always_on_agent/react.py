@@ -364,6 +364,21 @@ class ReactPlanner:
         )
 
     def run(self, query: str, context: Mapping[str, object]) -> CapabilityResult:
+        # The planner later copies this context into tool invocations.  Accept
+        # absent-field compatibility only from the controller's exact built-in
+        # dict; a Mapping/dict subclass could otherwise hide PRIVATE through
+        # virtual get/iteration hooks and make the copy look absent.  Mark such
+        # direct-call context invalid before invoking any of its hooks so the
+        # web provider fails closed while ordinary planner tools remain usable.
+        if type(context) is not dict:
+            context = {"sensitivity": None}
+        else:
+            context_keys = tuple(dict.keys(context))
+            if any(type(key) is not str for key in context_keys):
+                context = {"sensitivity": None}
+            elif "sensitivity" not in context_keys:
+                context = dict.copy(context)
+                context["sensitivity"] = None
         cancel = context.get("cancel_event")  # type: ignore[assignment]
         scoped_hook = context.get("first_token_hook")
         first_token_hook = scoped_hook if callable(scoped_hook) else self._first_token_hook

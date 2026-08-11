@@ -14,9 +14,10 @@ Shape:
   (Decision 3); :class:`SearxngBackend` is the shipped implementation (lazy
   ``httpx`` import à la ``core/llm.py``'s lazy ``openai``).
 - :func:`attach_web_search_capability` registers a ``web.search`` provider whose
-  closure enforces the order **GUARD-COERCE -> gate -> SearXNG -> corpus
-  fallback** and **never raises** (a non-ok step aborts the whole plan in
-  ``always_on_agent/tasks.py:229-231``, so a raised exception or an ``ok=False``
+  closure enforces the order **turn-context veto -> GUARD-COERCE -> raw-query
+  gate -> SearXNG -> corpus fallback** and **never raises** (a non-ok step aborts
+  the whole plan in
+  ``always_on_agent/tasks.py:586-588``, so a raised exception or an ``ok=False``
   here would silently break RESEARCH/SEARCH plans).
 
 The result mirrors the corpus ``search()`` shape
@@ -30,15 +31,18 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Mapping, Optional, Protocol, Sequence, runtime_checkable
+from itertools import islice
+from typing import Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.models import IntentKind
 
-from .sensitivity import may_leave_device
+from .sensitivity import CODE, PRIVATE, PUBLIC, may_leave_device
 
 log = logging.getLogger("speaker.websearch")
+
+_WEB_EGRESS_CONTEXT_SENSITIVITIES = frozenset({CODE, PUBLIC})
 
 
 @dataclass(frozen=True)
@@ -49,9 +53,10 @@ class WebSearchConfig:
     ``enabled`` defaults to **false** so the fully-local corpus path is the
     out-of-the-box behaviour -- a user opts in by setting ``enabled`` AND a
     ``base_url`` pointing at their self-hosted SearXNG. ``timeout_s`` is the
-    bounded connect+read budget (BR7): a blocking ``httpx`` GET cannot poll the
-    brain's ``cancel_event``, so this timeout is the only wedge bound. ``max_results``
-    caps how many hits are mapped into the corpus-compatible result shape.
+    per-phase connect/read/write/pool inactivity budget (BR7), not a total
+    wall-clock deadline; a blocking ``httpx`` GET cannot poll the brain's
+    ``cancel_event``. ``max_results`` caps how many hits are normalized into the
+    corpus-compatible result shape.
     """
 
     enabled: bool = False
@@ -74,13 +79,13 @@ class WebSearchConfig:
 class Backend(Protocol):
     """A pluggable web-search backend (Decision 3).
 
-    Returns a list of ``{"title", "content", "url"}`` mappings (the SearXNG
-    JSON result shape). MUST raise on a network/transport error so the provider
-    closure can fall back to the corpus -- the closure, never the backend, owns
-    the never-raise guarantee.
+    Returns an iterable of ``{"title", "content", "url"}`` mappings (the
+    SearXNG JSON result shape). MUST raise on a network/transport error so the
+    provider closure can fall back to the corpus -- the closure, never the
+    backend, owns the never-raise guarantee.
     """
 
-    def search(self, query: str) -> Sequence[Mapping[str, object]]: ...
+    def search(self, query: str) -> Iterable[Mapping[str, object]]: ...
 
 
 class SearxngBackend:
@@ -90,9 +95,10 @@ class SearxngBackend:
     ``ollama``) so the runtime and the logic test suite work without it
     installed -- it is only needed when web search is actually enabled.
 
-    The GET is ``{base_url}/search?q=<query>&format=json`` bounded by a single
-    connect+read ``timeout_s`` (BR7): a blocking GET can't poll ``cancel_event``,
-    so the timeout is the wedge bound. SearXNG ``results[]`` entries
+    The GET is ``{base_url}/search?q=<query>&format=json`` with ``timeout_s``
+    applied separately to connect/read/write/pool inactivity (BR7); it is not a
+    total wall-clock deadline and a blocking GET can't poll ``cancel_event``.
+    SearXNG ``results[]`` entries
     (``{title, content, url}``) are returned raw; the provider closure maps them
     into the corpus ``search()`` shape.
     """
@@ -105,9 +111,8 @@ class SearxngBackend:
     def search(self, query: str) -> Sequence[Mapping[str, object]]:
         import httpx  # lazy: only needed when web search is enabled
 
-        # One bounded connect+read budget. httpx.Timeout(x) applies x to every
-        # phase (connect/read/write/pool), so a stalled SearXNG can't wedge the
-        # turn past timeout_s (BR7).
+        # httpx.Timeout(x) applies x separately to connect/read/write/pool
+        # inactivity. It is not a total request wall-clock deadline (BR7).
         resp = httpx.get(
             f"{self._base_url}/search",
             params={"q": query, "format": "json"},
@@ -131,6 +136,8 @@ def _coerce_mode(raw: object) -> Optional[Mode]:
         return None
     if isinstance(raw, Mode):
         return raw
+    if type(raw) is not str:
+        return None
     try:
         return Mode(raw)
     except (ValueError, TypeError):
@@ -144,10 +151,46 @@ def _coerce_intent(raw: object) -> Optional[IntentKind]:
         return None
     if isinstance(raw, IntentKind):
         return raw
+    if type(raw) is not str:
+        return None
     try:
         return IntentKind(raw)
     except (ValueError, TypeError):
         return None
+
+
+def _turn_context_egress_snapshot(
+    context: dict[str, object],
+) -> tuple[Optional[bool], dict[str, object]]:
+    """Snapshot ``context`` and return its restrictive web-egress verdict.
+
+    ``None`` means the field is absent from an exact built-in ``dict``, so
+    deterministic SEARCH/RESEARCH calls keep the historical raw-query gate.
+    Dict subclasses are rejected before virtual container hooks can hide or
+    rewrite the field.  A present value is accepted only when it is one of the
+    two exact canonical non-private strings.  Everything else (including
+    ``private``, ``None``, a case variant, or a hostile object) fails closed
+    without invoking user-defined equality/coercion hooks.
+
+    This receipt is never sufficient to authorize egress: callers must still
+    pass :func:`may_leave_device` on the exact tool query, mode, and intent.
+    """
+    if type(context) is not dict:
+        return False, {}
+    snapshot = dict.copy(context)
+    missing = object()
+    raw: object = missing
+    for key, value in dict.items(snapshot):
+        if type(key) is not str:
+            return False, {}
+        if key == "sensitivity":
+            raw = value
+    if raw is missing:
+        return None, snapshot
+    return (
+        type(raw) is str and raw in _WEB_EGRESS_CONTEXT_SENSITIVITIES,
+        snapshot,
+    )
 
 
 def attach_web_search_capability(
@@ -162,23 +205,28 @@ def attach_web_search_capability(
 
     The provider closure enforces, in order:
 
-    1. **GUARD-COERCE** ``mode`` / ``intent_kind`` from ``context`` via a
+    1. **Turn-context veto**: an exact ``private`` sensitivity or any present
+       malformed/unknown sensitivity fails closed to the local corpus before
+       classifier or backend work.  Exact ``public``/``code`` is restrictive
+       only and cannot override the raw-query gate.  An absent field preserves
+       deterministic SEARCH/RESEARCH compatibility.
+    2. **GUARD-COERCE** ``mode`` / ``intent_kind`` from ``context`` via a
        fail-safe try/except (-> ``None`` on a bad value, BR2) so a bogus enum
        string never aborts the plan or bypasses the gate.
-    2. **Gate FIRST** (``classify`` == :func:`core.sensitivity.may_leave_device`)
-       on the raw ``query`` arg -- NOT a trusted ``context['sensitivity']`` tag
-       (which is set only on the assistant path and may be absent for
-       gather/ReAct steps). A PRIVATE/personal query is hard-blocked: SearXNG is
-       never called and the corpus answers with ``data["egress"]=False``.
-    3. If permitted AND web search is enabled AND a backend/``base_url`` exists,
+    3. **Raw-query gate** (``classify`` ==
+       :func:`core.sensitivity.may_leave_device`) on the exact tool query.  A
+       PRIVATE/personal query is hard-blocked regardless of a supplied
+       ``public``/``code`` context: SearXNG is never called and the corpus
+       answers with ``data["egress"]=False``.
+    4. If permitted AND web search is enabled AND a backend/``base_url`` exists,
        call the backend; map ``{title, content, url}`` -> corpus
        ``{name, summary}`` + ``citations``.
-    4. On empty results / network error / import error, fall back to the corpus
+    5. On empty results / network error / import error, fall back to the corpus
        with ``ok=True`` (BR7: an unreachable or slow SearXNG must not abort the
        plan) and stamp ``data["source"]`` / ``data["error"]``.
 
     NEVER raises and NEVER returns ``ok=False`` from a fallback path: a non-ok
-    step aborts the whole plan (``always_on_agent/tasks.py:229-231``), so the
+    step aborts the whole plan (``always_on_agent/tasks.py:586-588``), so the
     corpus fallback must keep the plan alive.
 
     ``classify`` / ``backend`` are injectable for tests. When ``backend`` is
@@ -195,11 +243,27 @@ def attach_web_search_capability(
         return registry.invoke(fallback_capability, query, context)
 
     def web_search(query: str, context: dict[str, object]) -> CapabilityResult:
-        # 1. GUARD-COERCE mode/intent (BR2) -- fail-safe to None, never raise.
-        mode = _coerce_mode(context.get("mode"))
-        intent_kind = _coerce_intent(context.get("intent_kind"))
+        # 1. An exact floated turn receipt is a veto, never an authorization.
+        #    Evaluate it before enum coercion, the injectable classifier, or the
+        #    backend so PRIVATE/malformed context cannot trigger egress work.
+        turn_context_permitted, context_snapshot = _turn_context_egress_snapshot(
+            context
+        )
+        if turn_context_permitted is False:
+            result = _corpus(query, context_snapshot)
+            data = dict(result.data)
+            data["egress"] = False
+            data["sensitivity"] = PRIVATE
+            data["source"] = "corpus"
+            return CapabilityResult(
+                True, result.text, data=data, citations=result.citations
+            )
 
-        # 2. Gate FIRST on the raw query. PRIVATE/personal/MEETING/COMMAND/...
+        # 2. GUARD-COERCE mode/intent (BR2) -- fail-safe to None, never raise.
+        mode = _coerce_mode(context_snapshot.get("mode"))
+        intent_kind = _coerce_intent(context_snapshot.get("intent_kind"))
+
+        # 3. Gate the raw query. PRIVATE/personal/MEETING/COMMAND/...
         #    => corpus only, no network egress (§9.7).
         permitted = True
         try:
@@ -207,9 +271,9 @@ def attach_web_search_capability(
         except Exception:  # noqa: BLE001 - the gate must fail safe, never abort
             permitted = False
 
-        # 3. Denied OR disabled OR no usable backend => corpus fallback, no egress.
-        if not permitted or backend is None:
-            result = _corpus(query, context)
+        # 4. Denied OR disabled OR no usable backend => corpus fallback, no egress.
+        if not permitted or not config.enabled or backend is None:
+            result = _corpus(query, context_snapshot)
             data = dict(result.data)
             data["egress"] = False
             data["sensitivity"] = "private" if not permitted else "local"
@@ -218,13 +282,26 @@ def attach_web_search_capability(
                 True, result.text, data=data, citations=result.citations
             )
 
-        # 4. Permitted: hit the backend. On empty/error fall back to corpus with
+        # 5. Permitted: hit the backend. On empty/error fall back to corpus with
         #    ok=True (BR7) + a stamp so the audit trail records what happened.
         try:
-            hits = list(backend.search(query))
-        except Exception as exc:  # noqa: BLE001 - any backend/transport/import error
+            results: list[dict[str, str]] = []
+            urls: list[str] = []
+            hits = backend.search(query)
+            for hit in islice(hits, max(0, config.max_results)):
+                if not isinstance(hit, Mapping):
+                    continue
+                title = str(hit.get("title", "") or "").strip()
+                summary = str(hit.get("content", "") or "").strip()
+                url = str(hit.get("url", "") or "").strip()
+                if not (title or summary):
+                    continue
+                results.append({"name": title or url, "summary": summary})
+                if url:
+                    urls.append(url)
+        except Exception as exc:  # noqa: BLE001 - backend/payload must never abort
             log.info("web.search backend failed; falling back to corpus: %r", exc)
-            result = _corpus(query, context)
+            result = _corpus(query, context_snapshot)
             data = dict(result.data)
             data["egress"] = True
             data["sensitivity"] = "public"
@@ -234,22 +311,10 @@ def attach_web_search_capability(
                 True, result.text, data=data, citations=result.citations
             )
 
-        results: list[dict[str, str]] = []
-        urls: list[str] = []
-        for hit in hits[: config.max_results]:
-            title = str(hit.get("title", "") or "").strip()
-            summary = str(hit.get("content", "") or "").strip()
-            url = str(hit.get("url", "") or "").strip()
-            if not (title or summary):
-                continue
-            results.append({"name": title or url, "summary": summary})
-            if url:
-                urls.append(url)
-
         if not results:
             # Reachable but no usable hits: corpus fallback keeps the plan alive.
             log.info("web.search returned no usable results; falling back to corpus")
-            result = _corpus(query, context)
+            result = _corpus(query, context_snapshot)
             data = dict(result.data)
             data["egress"] = True
             data["sensitivity"] = "public"

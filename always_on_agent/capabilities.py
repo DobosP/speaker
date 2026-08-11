@@ -260,7 +260,11 @@ class CapabilityRegistry:
             return CapabilityResult(False, "", error=str(exc))
 
     def invoke(self, name: str, query: str, context: dict[str, object] | None = None) -> CapabilityResult:
-        context = context or {}
+        # Preserve every explicitly supplied context, including an empty or
+        # falsey dict subclass.  Capability providers own any stricter field
+        # validation; truthiness normalization here could discard an egress
+        # veto before the provider sees it and may invoke user-defined hooks.
+        context = {} if context is None else context
         provider = self._providers.get(name)
         # The common production path stays timestamp/sequence/lock free.
         # A subscriber added concurrently begins with the next invocation.
@@ -273,14 +277,27 @@ class CapabilityRegistry:
 
         invocation_id = self._next_invocation_id()
         spec = self._specs.get(name)
+
+        # Observation must not invoke virtual mapping/value hooks before the
+        # provider enforces its own authority boundary.  Snapshot only an exact
+        # built-in dict, scan exact string keys, and publish exact string values;
+        # malformed diagnostic metadata is empty rather than execution-capable.
+        observer_context = dict.copy(context) if type(context) is dict else {}
+
+        def observer_text(key: str) -> str:
+            for raw_key, raw_value in dict.items(observer_context):
+                if type(raw_key) is str and raw_key == key:
+                    return raw_value if type(raw_value) is str else ""
+            return ""
+
         common = {
             "invocation_id": invocation_id,
             "name": name,
             "query": query,
-            "task_id": str(context.get("task_id", "") or ""),
+            "task_id": observer_text("task_id"),
             "planner_tool": bool(spec is not None and spec.planner_tool),
-            "tool_call_id": str(context.get("tool_call_id", "") or ""),
-            "idempotency_key": str(context.get("idempotency_key", "") or ""),
+            "tool_call_id": observer_text("tool_call_id"),
+            "idempotency_key": observer_text("idempotency_key"),
         }
         self._notify_invocation(
             CapabilityInvocation(

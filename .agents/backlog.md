@@ -561,13 +561,19 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       double-talk regression is now covered below. NOTE the open-speaker barge authority is now the ADR-0013
       OS-capture + word-cut path (aec_enabled=false → the DTD never runs); this item
       only governs the in-app-APM FALLBACK path (`open_speaker` profile).
-- [ ] **P2 — Mobile BargeCalibrator ambient floor is contaminated** (mobile/lib/assistant.dart):
-      `observeQuiet` is fed on every `!_speaking` chunk, which includes the user's own
-      request speech AND the TTS-echo tail (because `_speaking` clears before `_player.stop()`
-      completes) → the learned floor drifts UP → `threshold=max(0.08, floor*2.0)` rises →
-      a real talk-over gets harder to trigger over a session. Fix: gate `observeQuiet` on a
-      genuinely-idle window (no ASR partial in flight + ~300-500 ms cooldown after playback)
-      and add an upper clamp. Dart — validate with `flutter test barge_calibrator_test`.
+- [x] **P2 — Mobile BargeCalibrator ambient-floor contamination — DONE.**
+      `QuietObservationGate` now rejects ambient training while an ASR partial is in
+      flight and for 500 ms after user speech or playback stop; `BargeCalibrator`
+      caps the learned floor at 0.12, and pure-Dart tests pin the cooldown/cap edges.
+      ADR-0186 activity remains conservatively true through logical work and any
+      starting/playing/stopping/uncertain physical clip; the cooldown begins only
+      after exact natural completion or successful release proves silence. Failed
+      release without a natural terminal keeps activity true and poisons playback.
+      This closure is scoped to one Assistant state; reconstruction can create a
+      fresh owner while an old player remains uncertain and is an open lifecycle risk.
+      DEFERRED: the ASR isolate still has no explicit pre-partial speech-start signal,
+      so the first nonempty partial remains the earliest available guard; add that
+      typed signal during `AgentEvent` convergence.
 - [x] **P2 — Shipped-APM double-talk headless guard — DONE.**
       `tests/test_apm_double_talk.py` drives the real gate with the shipped
       always-on/NS-owning source policy, proves modeled near-end talk-over survives, and
@@ -775,6 +781,18 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] **Mobile convergence onto the `AgentEvent` contract.** `mobile/lib/assistant.dart`
       is a parallel Dart loop re-deriving core behavior; align the Dart supervisor with
       the Python brain so the contract duplication disappears. See unified doc §10 / §12.
+      - [x] Narrow mobile TTS lifecycle owner DONE (ADR-0186): one opaque exact
+        generation, turn-local sentence buffer, one cross-generation pump/lane, and a
+        fresh player whose exact state/handle is installed before route/play admission.
+        Player construction precedes that installation and may begin plugin/native
+        creation. Started, typed terminal, and memoized stop/dispose receipts are data;
+        derived activity keeps uncertain physical state conservative, cleanup failure
+        poisons only that owner instance, barge revokes the LLM turn, and dispose rejects
+        late mutations. This closes the within-instance stale-drain/player-identity race.
+      - [ ] Add a cross-widget/process native-player lifecycle fence or prove the
+        plugin contract: disposing/reconstructing the tab can currently create a new
+        owner while an old native start/cleanup remains uncertain, so no no-overlap
+        claim exists across Assistant state instances.
 - [ ] **SQLite + sqlite-vec memory backend** for mobile (the `Memory` protocol makes it
       a drop-in for the Postgres adapter). See unified doc §6.
 

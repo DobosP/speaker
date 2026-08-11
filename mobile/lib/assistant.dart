@@ -22,7 +22,210 @@ import './barge_calibrator.dart';
 import './contract.dart';
 import './llm.dart';
 import './tts_isolate.dart';
+import './tts_playback_owner.dart';
 import './utils.dart';
+
+AudioContext _voicePlaybackContext() => AudioContext(
+      android: const AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        contentType: AndroidContentType.speech,
+        usageType: AndroidUsageType.voiceCommunication,
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+    );
+
+final class _AssistantTtsClipState {
+  _AssistantTtsClipState({
+    required this.player,
+    required this.started,
+    required this.terminal,
+  });
+
+  final AudioPlayer player;
+  final Completer<TtsPlaybackResult> started;
+  final Completer<TtsPlaybackTerminal> terminal;
+  StreamSubscription<void>? completionSubscription;
+  late TtsPlaybackClip handle;
+  Future<TtsPlaybackResult>? cleanup;
+  bool cleanupStarted = false;
+}
+
+/// Owns the exact AudioPlayer instance behind each sentence clip.
+///
+/// `AudioPlayer.onPlayerComplete` is not tagged with a play generation. A fresh
+/// player per clip makes its event stream an exact identity boundary instead of
+/// trying to infer which play produced an event on one shared stream.
+final class _AssistantTtsPlayer {
+  _AssistantTtsClipState? _current;
+  bool _closed = false;
+
+  Future<void> configureGlobalRoute() =>
+      AudioPlayer.global.setAudioContext(_voicePlaybackContext());
+
+  TtsPlaybackClip createClip(String path) {
+    if (_closed) throw StateError('mobile TTS player is closed');
+    if (_current != null) {
+      throw StateError('previous mobile TTS clip is not released');
+    }
+
+    final started = Completer<TtsPlaybackResult>();
+    final terminal = Completer<TtsPlaybackTerminal>();
+    final state = _AssistantTtsClipState(
+      player: AudioPlayer(),
+      started: started,
+      terminal: terminal,
+    );
+    final handle = TtsPlaybackClip(
+      started: started.future,
+      terminal: terminal.future,
+      stopAndRelease: () => _stopAndRelease(state),
+    );
+    state.handle = handle;
+    _current = state;
+
+    try {
+      state.completionSubscription = state.player.onPlayerComplete.listen(
+        (_) {
+          if (!terminal.isCompleted) {
+            terminal.complete(const TtsPlaybackTerminal.completed());
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!terminal.isCompleted) {
+            terminal.complete(
+              TtsPlaybackTerminal.failed(error, stackTrace),
+            );
+          }
+        },
+        onDone: () {
+          if (terminal.isCompleted) return;
+          if (state.cleanupStarted) {
+            terminal.complete(const TtsPlaybackTerminal.interrupted());
+          } else {
+            terminal.complete(
+              TtsPlaybackTerminal.failed(
+                StateError('mobile TTS completion stream closed early'),
+                StackTrace.current,
+              ),
+            );
+          }
+        },
+      );
+      // Let the owner receive and install the exact handle before native
+      // route/play admission. AudioPlayer construction may already have begun
+      // plugin setup, but it cannot play this path before the scheduled start.
+      scheduleMicrotask(() {
+        unawaited(_start(state, path));
+      });
+    } catch (error, stackTrace) {
+      final failed = TtsPlaybackResult.failure(error, stackTrace);
+      if (!started.isCompleted) started.complete(failed);
+      if (!terminal.isCompleted) {
+        terminal.complete(TtsPlaybackTerminal.failed(error, stackTrace));
+      }
+    }
+    return handle;
+  }
+
+  Future<void> _start(_AssistantTtsClipState state, String path) async {
+    try {
+      await state.player.setAudioContext(_voicePlaybackContext());
+      await state.player.play(DeviceFileSource(path));
+      if (!state.started.isCompleted) {
+        state.started.complete(const TtsPlaybackResult.success());
+      }
+    } catch (error, stackTrace) {
+      if (!state.started.isCompleted) {
+        state.started.complete(TtsPlaybackResult.failure(error, stackTrace));
+      }
+      if (!state.terminal.isCompleted) {
+        state.terminal.complete(
+          TtsPlaybackTerminal.failed(error, stackTrace),
+        );
+      }
+    }
+  }
+
+  Future<TtsPlaybackResult> _stopAndRelease(
+    _AssistantTtsClipState state,
+  ) {
+    final existing = state.cleanup;
+    if (existing != null) return existing;
+
+    final completed = Completer<TtsPlaybackResult>();
+    state.cleanup = completed.future;
+    state.cleanupStarted = true;
+    unawaited(
+      _runCleanup(state).then(
+        completed.complete,
+        onError: (Object error, StackTrace stackTrace) {
+          completed.complete(TtsPlaybackResult.failure(error, stackTrace));
+        },
+      ),
+    );
+    return completed.future;
+  }
+
+  Future<TtsPlaybackResult> _runCleanup(
+    _AssistantTtsClipState state,
+  ) async {
+    Object? stopError;
+    StackTrace? stopStackTrace;
+    try {
+      await state.player.stop();
+    } catch (error, stackTrace) {
+      stopError = error;
+      stopStackTrace = stackTrace;
+    }
+
+    Object? disposeError;
+    StackTrace? disposeStackTrace;
+    try {
+      await state.player.dispose();
+    } catch (error, stackTrace) {
+      disposeError = error;
+      disposeStackTrace = stackTrace;
+    }
+    if (disposeError != null) {
+      final error = stopError == null
+          ? disposeError
+          : StateError(
+              'mobile TTS stop and dispose both failed: '
+              '$stopError; $disposeError',
+            );
+      return TtsPlaybackResult.failure(
+        error,
+        disposeStackTrace ?? stopStackTrace ?? StackTrace.current,
+      );
+    }
+
+    Object? subscriptionError;
+    StackTrace? subscriptionStackTrace;
+    try {
+      await state.completionSubscription?.cancel();
+    } catch (error, stackTrace) {
+      subscriptionError = error;
+      subscriptionStackTrace = stackTrace;
+    }
+    if (identical(_current, state)) _current = null;
+    if (!state.terminal.isCompleted) {
+      state.terminal.complete(const TtsPlaybackTerminal.interrupted());
+    }
+
+    final diagnostic = subscriptionError ?? stopError;
+    return TtsPlaybackResult.success(
+      error: diagnostic,
+      stackTrace: subscriptionStackTrace ?? stopStackTrace,
+    );
+  }
+
+  Future<bool> close() async {
+    _closed = true;
+    final current = _current;
+    if (current == null) return true;
+    return (await current.handle.stopAndRelease()).succeeded;
+  }
+}
 
 class AssistantScreen extends StatefulWidget {
   const AssistantScreen({super.key});
@@ -33,8 +236,12 @@ class AssistantScreen extends StatefulWidget {
 
 class _AssistantScreenState extends State<AssistantScreen> {
   final _promptController = TextEditingController();
-  final _player = AudioPlayer();
+  final _ttsPlayer = _AssistantTtsPlayer();
   final _recorder = AudioRecorder();
+  late final TtsPlaybackOwner _ttsPlayback;
+  Future<bool>? _speechStopInFlight;
+  TtsPlaybackGeneration? _speechStopGeneration;
+  bool _disposing = false;
 
   // Model lifecycle.
   bool _downloading = false;
@@ -53,7 +260,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   StreamSubscription<List<int>>? _audioSub;
   bool _alwaysOn = false; // user has enabled continuous listening
   bool _listening = false; // mic stream currently active
-  bool _speaking = false; // TTS is playing (the barge-in target)
+  bool _speaking = false; // TTS work/physical uncertainty (barge-in target)
   int _turn = 0; // increments per utterance; a newer turn supersedes older gen
 
   // Barge-in sensitivity: how many recognized characters during playback count
@@ -66,7 +273,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // watch near-end loudness on the mic stream during playback and stop on
   // sustained sound. Thresholds are device-dependent — calibrate from the
   // "spoke: … peakRms" line in the exported logs.
-  static const _bargeInRms = 0.08; // legacy fixed floor; now the calibrator's min
+  static const _bargeInRms =
+      0.08; // legacy fixed floor; now the calibrator's min
   // Adaptive barge-in threshold: learns the room's ambient floor from the
   // echo-free (not-speaking) windows and raises the bar to a margin above it, so
   // background noise can't self-interrupt. Floored at _bargeInRms -> never less
@@ -80,14 +288,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   int _spkChunks = 0; // mic chunks observed while speaking
   double _spkPeakRms = 0; // loudest near-end chunk while speaking
   int _spkPartials = 0; // partials received while speaking
-
-  // Streaming TTS pipeline: completed sentences are queued and played back in
-  // order while later sentences are still being generated, so the first words
-  // are spoken almost immediately instead of after the whole answer.
-  final List<String> _speechQueue = [];
-  bool _draining = false;
-  String _ttsBuffer = '';
-  Completer<void>? _playInterrupt; // completes to cut the current clip short
 
   // Latency profiling, shown on screen (stages mirror core/metrics.py):
   //   silence wait : last speech -> endpoint (the trailing-silence timeout)
@@ -113,6 +313,16 @@ class _AssistantScreenState extends State<AssistantScreen> {
   @override
   void initState() {
     super.initState();
+    _ttsPlayback = TtsPlaybackOwner(
+      synthesize: (text) async {
+        final filename = await generateWaveFilename();
+        return TtsService.instance.synthesize(text, filename);
+      },
+      createPlaybackClip: _ttsPlayer.createClip,
+      onActivityChanged: _onSpeechActivityChanged,
+      onPlaybackStarted: _onPlaybackStarted,
+      onError: _onSpeechPlaybackError,
+    );
     // Probe disk so the button/status reflect whether a network download is
     // actually needed (the model persists across reinstalls).
     GemmaService.instance.isModelPresent().then((present) {
@@ -156,23 +366,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
     await _startListening();
   }
 
-  // Route playback through the Android voice-communication path so the hardware
-  // echo-canceller (engaged by the voiceCommunication record source) actually
-  // cancels the assistant's own TTS — without this the mic hears the speaker and
-  // barges in on itself. Android-only here; iOS keeps the audioplayers default.
-  Future<void> _configureAudioSession() async {
-    await _player.setAudioContext(
-      AudioContext(
-        android: const AudioContextAndroid(
-          isSpeakerphoneOn: true,
-          contentType: AndroidContentType.speech,
-          usageType: AndroidUsageType.voiceCommunication,
-          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
-        ),
-      ),
-    );
-  }
-
   Future<void> _startListening() async {
     if (!await _recorder.hasPermission()) {
       _alwaysOn = false;
@@ -180,7 +373,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
           'Microphone permission denied — enable it in system settings.');
       return;
     }
-    await _configureAudioSession();
+    // Keep the Android voice-communication route global for the capture/playback
+    // pair, and also apply it to each fresh exact clip player before play.
+    await _ttsPlayer.configureGlobalRoute();
     unawaited(TtsService.instance.ensureReady()); // warm the TTS worker isolate
 
     // The recognizer lives on a worker isolate; wire its callbacks and start it.
@@ -210,7 +405,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // is where "last voice" advances (drives the silence-wait metric) and where
   // barge-in fires.
   void _onPartial(String partial) {
-    if (partial.isEmpty) return;
+    if (_disposing || partial.isEmpty) return;
     _tLastVoice = DateTime.now();
     // TODO(recovered): ASR isolate has no explicit speech-start callback; a
     // non-empty partial is the earliest reliable signal that an utterance is
@@ -235,15 +430,17 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   // A finished utterance from the ASR worker.
   void _onEndpoint(String utterance) {
+    if (_disposing) return;
     _quietGate.noteAsrFinished(DateTime.now(), hadSpeech: utterance.isNotEmpty);
     if (utterance.isEmpty) return;
     // A completed utterance supersedes any in-flight reply (its tokens stop
     // feeding TTS) and silences whatever is still playing.
     _turn++;
-    unawaited(_stopSpeaking());
+    final playbackGeneration = _ttsPlayback.supersede();
     if (isStopCommand(utterance) || _looksLikeStop(utterance)) {
       if (mounted) {
         setState(() {
+          _thinking = false;
           _status = 'Stopped.';
           _promptController.clear();
         });
@@ -251,7 +448,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
       return;
     }
     _tHeard = DateTime.now();
-    unawaited(_answerUtterance(utterance, _turn));
+    unawaited(
+      _answerUtterance(utterance, _turn, playbackGeneration),
+    );
   }
 
   Future<void> _stopListening() async {
@@ -268,6 +467,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // off by talking even when the words aren't cleanly transcribed (energy
   // barge-in, independent of the recognizer).
   void _onMicChunk(Uint8List chunk) {
+    if (_disposing) return;
     AsrService.instance.feed(chunk);
     if (!_speaking) {
       // Genuine-idle window: learn the room's ambient floor only after recent
@@ -320,15 +520,23 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // Generate a reply for [prompt] and stream it to TTS. [myTurn] guards against
   // a newer utterance arriving (barge-in): once the turn advances, this reply
   // stops emitting tokens and queuing speech.
-  Future<void> _answerUtterance(String prompt, int myTurn) async {
-    if (prompt.isEmpty || !GemmaService.instance.isReady) return;
+  Future<void> _answerUtterance(
+    String prompt,
+    int myTurn,
+    TtsPlaybackGeneration playbackGeneration,
+  ) async {
+    if (prompt.isEmpty ||
+        !GemmaService.instance.isReady ||
+        !_replyIsCurrent(myTurn, playbackGeneration)) {
+      return;
+    }
     _lastUtterance = prompt;
     setState(() {
       _thinking = true;
       _answer = '';
       _status = 'Thinking…';
     });
-    _ttsBuffer = '';
+    var ttsBuffer = '';
     _tFirstToken = null;
     _tFirstAudio = null;
     _tGenDone = null;
@@ -336,58 +544,101 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _logIndex = null; // a new turn gets a fresh log entry
     try {
       await for (final token in GemmaService.instance.reply(prompt)) {
-        if (myTurn != _turn) return; // superseded by a newer utterance
+        if (!_replyIsCurrent(myTurn, playbackGeneration)) return;
         if (_tFirstToken == null) {
           _tFirstToken = DateTime.now();
           _updateMetrics();
         }
         _genTokens++;
         setState(() => _answer += token);
-        _ttsBuffer += token;
-        _flushSentences();
+        ttsBuffer += token;
+        ttsBuffer = _flushSentences(
+          ttsBuffer,
+          playbackGeneration,
+        );
       }
-      if (myTurn == _turn) {
+      if (_replyIsCurrent(myTurn, playbackGeneration)) {
         _tGenDone = DateTime.now();
-        _flushSentences(flushAll: true);
+        _flushSentences(
+          ttsBuffer,
+          playbackGeneration,
+          flushAll: true,
+        );
         _updateMetrics();
       }
     } catch (e) {
-      if (myTurn == _turn) {
+      if (_replyIsCurrent(myTurn, playbackGeneration)) {
         setState(() => _answer = 'Generation failed: $e');
         _appendLog(error: '$e');
       }
     } finally {
-      if (mounted && myTurn == _turn) setState(() => _thinking = false);
+      if (_replyIsCurrent(myTurn, playbackGeneration)) {
+        setState(() => _thinking = false);
+      }
     }
   }
 
+  bool _replyIsCurrent(
+    int myTurn,
+    TtsPlaybackGeneration playbackGeneration,
+  ) =>
+      !_disposing &&
+      mounted &&
+      myTurn == _turn &&
+      _ttsPlayback.isCurrent(playbackGeneration);
+
   // Send whatever is typed in the field (the manual fallback to voice).
   Future<void> _submitTyped() async {
+    if (_disposing || !mounted) return;
     final text = _promptController.text.trim();
     if (text.isEmpty) return;
     _promptController.clear();
     _turn++;
-    await _stopSpeaking();
+    final myTurn = _turn;
+    final playbackGeneration = _ttsPlayback.supersede();
+    await _ttsPlayback.waitForStop(playbackGeneration);
+    if (!_replyIsCurrent(myTurn, playbackGeneration)) return;
     if (isStopCommand(text)) {
-      if (mounted) setState(() => _status = 'Stopped.');
+      if (mounted) {
+        setState(() {
+          _thinking = false;
+          _status = 'Stopped.';
+        });
+      }
       return;
     }
     _tLastVoice = null; // typed input has no silence-wait stage
     _tHeard = DateTime.now();
-    await _answerUtterance(text, _turn);
+    await _answerUtterance(text, myTurn, playbackGeneration);
   }
 
   // Cut all speech now: drop the queue, stop the current clip, and release any
   // coroutine awaiting playback. Idempotent.
-  Future<void> _stopSpeaking() async {
-    _speechQueue.clear();
-    _ttsBuffer = '';
-    _quietGate.notePlaybackStopped(DateTime.now());
-    _speaking = false;
-    _draining = false;
-    if (!(_playInterrupt?.isCompleted ?? true)) _playInterrupt!.complete();
-    await _player.stop();
-    _quietGate.notePlaybackStopped(DateTime.now());
+  Future<bool> _stopSpeaking() {
+    final existing = _speechStopInFlight;
+    if (existing != null &&
+        identical(_speechStopGeneration, _ttsPlayback.generation)) {
+      return existing;
+    }
+
+    // Barge-in also revokes the reply stream. Without this turn fence, the same
+    // LLM coroutine can enqueue later sentences after its current clip stops.
+    _turn++;
+    if (mounted && !_disposing) {
+      setState(() => _thinking = false);
+    }
+    final stopped = _ttsPlayback.interrupt();
+    final stopGeneration = _ttsPlayback.generation;
+    _speechStopInFlight = stopped;
+    _speechStopGeneration = stopGeneration;
+    unawaited(stopped.whenComplete(() {
+      if (identical(_speechStopInFlight, stopped) &&
+          identical(_speechStopGeneration, stopGeneration)) {
+        _speechStopInFlight = null;
+        _speechStopGeneration = null;
+      }
+    }));
+    return stopped;
   }
 
   // --- streaming TTS ---
@@ -396,63 +647,72 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // speech; with flushAll, also speak whatever remains at end of generation.
   // Sentence boundaries follow the shared contract (contract.dart) so mobile and
   // the Python core split identically.
-  void _flushSentences({bool flushAll = false}) {
-    final (sentences, rest) = drainCompleteSentences(_ttsBuffer);
-    _ttsBuffer = rest;
+  String _flushSentences(
+    String buffer,
+    TtsPlaybackGeneration playbackGeneration, {
+    bool flushAll = false,
+  }) {
+    final (sentences, rest) = drainCompleteSentences(buffer);
+    var remaining = rest;
     for (final sentence in sentences) {
-      unawaited(_enqueueSpeech(sentence));
+      _ttsPlayback.enqueue(playbackGeneration, sentence);
     }
     if (flushAll) {
-      final tail = _ttsBuffer.trim();
-      _ttsBuffer = '';
-      if (tail.isNotEmpty) unawaited(_enqueueSpeech(tail));
-    }
-  }
-
-  // Sequential player: synthesize + play one sentence at a time so audio never
-  // overlaps, while generation of later sentences continues in parallel.
-  Future<void> _enqueueSpeech(String sentence) async {
-    _speechQueue.add(sentence);
-    if (_draining) return;
-    _draining = true;
-    _speaking = true;
-    _spkChunks = 0;
-    _spkPeakRms = 0;
-    _spkPartials = 0;
-    _loudMs = 0;
-    if (mounted) setState(() => _status = 'Speaking…');
-    try {
-      while (_speechQueue.isNotEmpty) {
-        await _synthesizeAndPlay(_speechQueue.removeAt(0));
+      final tail = remaining.trim();
+      remaining = '';
+      if (tail.isNotEmpty) {
+        _ttsPlayback.enqueue(playbackGeneration, tail);
       }
-    } finally {
-      _draining = false;
-      _quietGate.notePlaybackStopped(DateTime.now());
-      _speaking = false;
-      // Window summary: if chunks==0 the mic was starved during playback; if
-      // peakRms stayed below _bargeInRms, near-end speech isn't reaching us.
-      _logLine('spoke: chunks=$_spkChunks '
-          'peakRms=${_spkPeakRms.toStringAsFixed(3)} partials=$_spkPartials');
     }
+    return remaining;
   }
 
-  Future<void> _synthesizeAndPlay(String text) async {
-    // Synthesis runs on a worker isolate (tts_isolate.dart) so the synchronous
-    // native call doesn't freeze the UI/ASR on the main thread.
-    final filename = await generateWaveFilename();
-    final path = await TtsService.instance.synthesize(text, filename);
-    if (path == null) return;
-    // Subscribe before playing so a fast/short clip can't complete before we
-    // start awaiting (which would otherwise stall the queue).
-    final done = _player.onPlayerComplete.first;
-    _playInterrupt = Completer<void>();
-    await _player.play(DeviceFileSource(path));
+  void _onSpeechActivityChanged(
+    TtsPlaybackGeneration generation,
+    bool speaking,
+  ) {
+    if (!_ttsPlayback.isCurrent(generation)) return;
+    final wasSpeaking = _speaking;
+    _speaking = speaking;
+    if (speaking) {
+      if (!wasSpeaking) {
+        _spkChunks = 0;
+        _spkPeakRms = 0;
+        _spkPartials = 0;
+        _loudMs = 0;
+      }
+      if (mounted && !_disposing) {
+        setState(() => _status = 'Speaking…');
+      }
+      return;
+    }
+    if (!wasSpeaking) return;
+
+    _quietGate.notePlaybackStopped(DateTime.now());
+    if (_disposing) return;
+    // Window summary: if chunks==0 the mic was starved during playback; if
+    // peakRms stayed below _bargeInRms, near-end speech isn't reaching us.
+    _logLine('spoke: chunks=$_spkChunks '
+        'peakRms=${_spkPeakRms.toStringAsFixed(3)} partials=$_spkPartials');
+  }
+
+  void _onPlaybackStarted(TtsPlaybackGeneration generation) {
+    if (!_ttsPlayback.isCurrent(generation) || _disposing) return;
     if (_tFirstAudio == null) {
       _tFirstAudio = DateTime.now();
       _updateMetrics();
     }
-    // Whichever happens first: the clip finishes, or barge-in cuts it short.
-    await Future.any([done, _playInterrupt!.future]);
+  }
+
+  void _onSpeechPlaybackError(
+    TtsPlaybackGeneration generation,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_disposing) return;
+    _logLine(
+      'speech playback error (generation ${generation.ordinal}): $error',
+    );
   }
 
   // --- latency profiling ---
@@ -526,12 +786,18 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   @override
   void dispose() {
+    _disposing = true;
+    _turn++;
+    _thinking = false;
     _alwaysOn = false;
     _audioSub?.cancel();
     _recorder.dispose();
     unawaited(AsrService.instance.stop());
     unawaited(TtsService.instance.dispose());
-    _player.dispose();
+    unawaited(() async {
+      await _ttsPlayback.close();
+      await _ttsPlayer.close();
+    }());
     _promptController.dispose();
     super.dispose();
   }

@@ -61,8 +61,12 @@ _FINAL_INPUT_ROLE_TAGS = frozenset(
 _SELECTED_SOURCES = frozenset(
     {"none", "streaming", "offline", "verifier_consensus", "established_override"}
 )
-_VERIFIER_COMPLETED_OUTCOMES = frozenset(
+_OFFLINE_OUTCOMES = frozenset({"unavailable", "skipped", "error", "decoded", "empty"})
+_VERIFIER_OUTCOMES = frozenset(
     {
+        "unavailable",
+        "skipped",
+        "error",
         "consensus",
         "empty",
         "tie",
@@ -73,6 +77,11 @@ _VERIFIER_COMPLETED_OUTCOMES = frozenset(
         "empty_streaming_guard",
     }
 )
+_VERIFIER_COMPLETED_OUTCOMES = _VERIFIER_OUTCOMES - {
+    "unavailable",
+    "skipped",
+    "error",
+}
 _FINAL_STT_PROFILE_NAMES = frozenset(FINAL_STT_PROFILE_NAMES)
 _ARTIFACT_FIELDS = (
     "asr_tokens",
@@ -212,18 +221,19 @@ class EvaluationTotals:
     def __post_init__(self) -> None:
         if type(self.selected_sources_attested) is not bool:
             raise EvaluationPrerequisiteError()
-        selected_sources = {
-            source: count
-            for source, count in _closed_selected_sources(
-                self.selected_sources
-            ).items()
-            if count
-        }
-        object.__setattr__(
-            self,
-            "selected_sources",
-            MappingProxyType(selected_sources),
-        )
+        for name, vocabulary in (
+            ("offline_outcomes", _OFFLINE_OUTCOMES),
+            ("verifier_outcomes", _VERIFIER_OUTCOMES),
+            ("selected_sources", _SELECTED_SOURCES),
+        ):
+            closed = {
+                key: count
+                for key, count in _closed_counts(
+                    getattr(self, name), vocabulary
+                ).items()
+                if count
+            }
+            object.__setattr__(self, name, MappingProxyType(closed))
 
     @property
     def complete(self) -> bool:
@@ -231,18 +241,29 @@ class EvaluationTotals:
 
     @property
     def selected_source_accounting_complete(self) -> bool:
-        if (
-            self.selected_sources_attested is not True
-            or isinstance(self.decisions, bool)
-            or type(self.decisions) is not int
-            or self.decisions <= 0
-        ):
+        if self.selected_sources_attested is not True:
             return False
-        try:
-            selected_sources = _closed_selected_sources(self.selected_sources)
-        except EvaluationPrerequisiteError:
-            return False
-        return sum(selected_sources.values()) == self.decisions
+        return _accounting_complete(
+            self.selected_sources,
+            self.decisions,
+            _SELECTED_SOURCES,
+        )
+
+    @property
+    def offline_outcome_accounting_complete(self) -> bool:
+        return _accounting_complete(
+            self.offline_outcomes,
+            self.decisions,
+            _OFFLINE_OUTCOMES,
+        )
+
+    @property
+    def verifier_outcome_accounting_complete(self) -> bool:
+        return _accounting_complete(
+            self.verifier_outcomes,
+            self.decisions,
+            _VERIFIER_OUTCOMES,
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -253,8 +274,22 @@ class EvaluationTotals:
             "selected_source_accounting_complete": (
                 self.selected_source_accounting_complete
             ),
-            "offline_outcomes": dict(sorted(self.offline_outcomes.items())),
-            "verifier_outcomes": dict(sorted(self.verifier_outcomes.items())),
+            "offline_outcomes": dict(
+                sorted(
+                    _closed_counts(
+                        self.offline_outcomes,
+                        _OFFLINE_OUTCOMES,
+                    ).items()
+                )
+            ),
+            "verifier_outcomes": dict(
+                sorted(
+                    _closed_counts(
+                        self.verifier_outcomes,
+                        _VERIFIER_OUTCOMES,
+                    ).items()
+                )
+            ),
             "selected_sources": dict(
                 sorted(_closed_selected_sources(self.selected_sources).items())
             ),
@@ -264,27 +299,51 @@ class EvaluationTotals:
         }
 
 
-def _closed_selected_sources(value: Mapping[str, int]) -> dict[str, int]:
-    """Copy one aggregate source map only when its vocabulary/counts are closed."""
+def _closed_counts(
+    value: Mapping[str, int],
+    vocabulary: frozenset[str],
+) -> dict[str, int]:
+    """Copy one aggregate map only when its vocabulary/counts are closed."""
 
     try:
         if not isinstance(value, Mapping):
             raise EvaluationPrerequisiteError()
         result: dict[str, int] = {}
-        for source, count in value.items():
+        for key, count in value.items():
             if (
-                type(source) is not str
-                or source not in _SELECTED_SOURCES
+                type(key) is not str
+                or key not in vocabulary
                 or type(count) is not int
                 or count < 0
             ):
                 raise EvaluationPrerequisiteError()
-            result[source] = count
+            result[key] = count
         return result
-    except EvaluationPrerequisiteError:
-        raise
     except Exception:
         raise EvaluationPrerequisiteError() from None
+
+
+def _closed_selected_sources(value: Mapping[str, int]) -> dict[str, int]:
+    return _closed_counts(value, _SELECTED_SOURCES)
+
+
+def _accounting_complete(
+    value: Mapping[str, int],
+    decisions: object,
+    vocabulary: frozenset[str],
+) -> bool:
+    if type(decisions) is not int or decisions <= 0:
+        return False
+    try:
+        return sum(_closed_counts(value, vocabulary).values()) == decisions
+    except EvaluationPrerequisiteError:
+        return False
+
+
+def _outcome(value: object, vocabulary: frozenset[str]) -> str:
+    if type(value) is not str or value not in vocabulary:
+        raise EvaluationPrerequisiteError()
+    return value
 
 
 def _selected_source(value: object) -> str:
@@ -293,8 +352,6 @@ def _selected_source(value: object) -> str:
         if type(raw) is not str or raw not in _SELECTED_SOURCES:
             raise EvaluationPrerequisiteError()
         return raw
-    except EvaluationPrerequisiteError:
-        raise
     except Exception:
         raise EvaluationPrerequisiteError() from None
 
@@ -1051,17 +1108,24 @@ def _evaluate(
                 speech_sec=item.speech_sec,
             )
             decisions = tuple(result.decisions)
+            offline_decisions = tuple(
+                _outcome(decision.offline_outcome, _OFFLINE_OUTCOMES)
+                for decision in decisions
+            )
+            verifier_decisions = tuple(
+                _outcome(decision.verifier_outcome, _VERIFIER_OUTCOMES)
+                for decision in decisions
+            )
+            source_decisions = tuple(
+                _selected_source(decision.selected_source) for decision in decisions
+            )
             terminal_texts = _terminal_decision_texts(decisions)
             if route_gate is not None:
                 route_gate.add_case(item.tags, terminal_texts.selected)
             decisions_total += len(decisions)
-            outcomes.update(decision.offline_outcome for decision in decisions)
-            verifier_outcomes.update(
-                decision.verifier_outcome for decision in decisions
-            )
-            selected_sources.update(
-                _selected_source(decision.selected_source) for decision in decisions
-            )
+            outcomes.update(offline_decisions)
+            verifier_outcomes.update(verifier_decisions)
+            selected_sources.update(source_decisions)
             streaming = _joined_terminal_text(terminal_texts.streaming)
             offline = _joined_terminal_text(terminal_texts.offline)
             selected = _joined_terminal_text(terminal_texts.selected)
@@ -1078,8 +1142,8 @@ def _evaluate(
                 _measure([(item.reference, selected)], keywords=keywords),
             )
             selected_errors.append(_pair_errors(item.reference, selected))
-    except Exception as exc:  # noqa: BLE001 - never expose native/private detail
-        raise EvaluationPrerequisiteError() from exc
+    except Exception:  # noqa: BLE001 - never expose native/private detail
+        raise EvaluationPrerequisiteError() from None
     finally:
         engine.stop()
 
@@ -1101,6 +1165,8 @@ def _recorded_evaluation_ok(config, totals: EvaluationTotals) -> bool:
     return (
         totals.complete
         and totals.selected.nonempty == totals.clips
+        and totals.offline_outcome_accounting_complete
+        and totals.verifier_outcome_accounting_complete
         and totals.selected_source_accounting_complete
         and _enabled_offline_evaluation_ok(config, totals)
         and _enabled_verifier_evaluation_ok(config, totals)

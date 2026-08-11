@@ -297,6 +297,7 @@ def _recorded_totals(rows, *, attested=True):
         len(rows),
         len(rows),
         {"decoded": len(rows)},
+        verifier_outcomes={"unavailable": len(rows)},
         selected_sources={"streaming": len(rows)} if attested else {},
         selected_sources_attested=attested,
     )

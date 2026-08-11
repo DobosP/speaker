@@ -6,7 +6,7 @@ import stat
 import os
 import wave
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,17 +21,30 @@ from tools.streaming_stt.private_diagnostic_receipt import (
 )
 
 
-def _totals(pairs, *, keywords=(), verifier_outcomes=None):
+def _totals(
+    pairs,
+    *,
+    keywords=(),
+    offline_outcomes=None,
+    verifier_outcomes=None,
+):
     measured = stt_eval._measure(pairs, keywords=keywords)
+    decisions = len(pairs)
     return stt_eval.EvaluationTotals(
         streaming=measured,
         offline=measured,
         selected=measured,
-        clips=len(pairs),
-        decisions=len(pairs),
-        offline_outcomes={"decoded": len(pairs)},
-        verifier_outcomes=verifier_outcomes or {},
-        selected_sources={"streaming": len(pairs)},
+        clips=decisions,
+        decisions=decisions,
+        offline_outcomes=(
+            {"decoded": decisions} if offline_outcomes is None else offline_outcomes
+        ),
+        verifier_outcomes=(
+            {"unavailable": decisions}
+            if verifier_outcomes is None
+            else verifier_outcomes
+        ),
+        selected_sources={"streaming": decisions},
         selected_sources_attested=True,
     )
 
@@ -1021,7 +1034,8 @@ def test_selected_source_accounting_requires_exact_attestation_and_sum():
         measured,
         1,
         1,
-        {},
+        {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
     )
     mismatch = stt_eval.EvaluationTotals(
         measured,
@@ -1029,7 +1043,8 @@ def test_selected_source_accounting_requires_exact_attestation_and_sum():
         measured,
         1,
         2,
-        {},
+        {"decoded": 2},
+        verifier_outcomes={"unavailable": 2},
         selected_sources={"streaming": 1},
         selected_sources_attested=True,
     )
@@ -1068,7 +1083,8 @@ def test_selected_source_map_is_detached_and_hidden_from_repr():
         measured,
         1,
         1,
-        {},
+        {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
         selected_sources=source_map,
         selected_sources_attested=True,
     )
@@ -1155,6 +1171,621 @@ def test_selected_source_attestation_signal_requires_exact_bool():
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "vocabulary"),
+    [
+        (
+            "offline_outcomes",
+            ("unavailable", "skipped", "error", "decoded", "empty"),
+        ),
+        (
+            "verifier_outcomes",
+            (
+                "unavailable",
+                "skipped",
+                "error",
+                "consensus",
+                "empty",
+                "tie",
+                "no_quorum",
+                "control_guard",
+                "attested_control",
+                "empty_veto",
+                "empty_streaming_guard",
+            ),
+        ),
+    ],
+)
+def test_outcome_maps_accept_only_the_complete_production_vocabularies(
+    field,
+    vocabulary,
+):
+    from core.asr_verifier import AsrConsensusOutcome
+
+    measured = stt_eval._measure((("one", "one"),))
+    decisions = len(vocabulary)
+    kwargs = {
+        "offline_outcomes": {"unavailable": decisions},
+        "verifier_outcomes": {"unavailable": decisions},
+    }
+    kwargs[field] = {outcome: 1 for outcome in vocabulary}
+
+    totals = stt_eval.EvaluationTotals(
+        measured,
+        measured,
+        measured,
+        1,
+        decisions,
+        selected_sources={"streaming": decisions},
+        selected_sources_attested=True,
+        **kwargs,
+    )
+
+    production_vocabulary = (
+        stt_eval._OFFLINE_OUTCOMES
+        if field == "offline_outcomes"
+        else stt_eval._VERIFIER_OUTCOMES
+    )
+    accounting_property = (
+        "offline_outcome_accounting_complete"
+        if field == "offline_outcomes"
+        else "verifier_outcome_accounting_complete"
+    )
+    assert production_vocabulary == frozenset(vocabulary)
+    if field == "verifier_outcomes":
+        assert production_vocabulary == {
+            outcome.value for outcome in AsrConsensusOutcome
+        } | {
+            "unavailable",
+            "skipped",
+            "empty",
+            "attested_control",
+            "empty_streaming_guard",
+        }
+    assert dict(getattr(totals, field)) == {outcome: 1 for outcome in vocabulary}
+    assert getattr(totals, accounting_property) is True
+    assert stt_eval._recorded_evaluation_ok(object(), totals)
+
+
+@pytest.mark.parametrize(
+    ("field", "initial", "expected"),
+    [
+        (
+            "offline_outcomes",
+            {"decoded": 1, "skipped": 0},
+            {"decoded": 1},
+        ),
+        (
+            "verifier_outcomes",
+            {"consensus": 1, "skipped": 0},
+            {"consensus": 1},
+        ),
+    ],
+)
+def test_outcome_maps_are_detached_zero_pruned_read_only_snapshots(
+    field,
+    initial,
+    expected,
+):
+    measured = stt_eval._measure((("one", "one"),))
+    kwargs = {
+        "offline_outcomes": {"decoded": 1},
+        "verifier_outcomes": {"unavailable": 1},
+    }
+    kwargs[field] = initial
+    totals = stt_eval.EvaluationTotals(
+        measured,
+        measured,
+        measured,
+        1,
+        1,
+        selected_sources={"streaming": 1},
+        selected_sources_attested=True,
+        **kwargs,
+    )
+
+    initial.clear()
+    initial["error"] = 999
+
+    outcomes = getattr(totals, field)
+    assert type(outcomes) is MappingProxyType
+    assert dict(outcomes) == expected
+    with pytest.raises(TypeError):
+        outcomes["error"] = 1
+    assert field not in repr(totals)
+
+
+@pytest.mark.parametrize(
+    ("field", "mapping"),
+    [
+        ("offline_outcomes", {"SENTINEL_PRIVATE_OUTCOME": 1}),
+        ("verifier_outcomes", {"SENTINEL_PRIVATE_OUTCOME": 1}),
+        ("offline_outcomes", {1: 1}),
+        ("verifier_outcomes", {1: 1}),
+        ("offline_outcomes", {"decoded": True}),
+        ("verifier_outcomes", {"consensus": True}),
+        ("offline_outcomes", {"decoded": 1.0}),
+        ("verifier_outcomes", {"consensus": 1.0}),
+        ("offline_outcomes", {"decoded": -1}),
+        ("verifier_outcomes", {"consensus": -1}),
+    ],
+)
+def test_malformed_outcome_maps_fail_without_private_detail(field, mapping):
+    measured = stt_eval._measure((("one", "one"),))
+    kwargs = {
+        "offline_outcomes": {"decoded": 1},
+        "verifier_outcomes": {"unavailable": 1},
+    }
+    kwargs[field] = mapping
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval.EvaluationTotals(
+            measured,
+            measured,
+            measured,
+            1,
+            1,
+            selected_sources={"streaming": 1},
+            selected_sources_attested=True,
+            **kwargs,
+        )
+
+    assert "SENTINEL_PRIVATE_OUTCOME" not in str(caught.value)
+    assert "SENTINEL_PRIVATE_OUTCOME" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("field", ["offline_outcomes", "verifier_outcomes"])
+def test_outcome_map_validation_sanitizes_hostile_mapping_hooks(field):
+    from collections.abc import Mapping
+
+    canary = "SENTINEL_PRIVATE_OUTCOME_DETAIL"
+    hooks = []
+
+    class HostileMapping(Mapping):
+        def __getitem__(self, _key):
+            hooks.append("getitem")
+            raise RuntimeError(canary)
+
+        def __iter__(self):
+            hooks.append("iter")
+            raise RuntimeError(canary)
+
+        def __len__(self):
+            hooks.append("len")
+            raise RuntimeError(canary)
+
+    measured = stt_eval._measure((("one", "one"),))
+    kwargs = {
+        "offline_outcomes": {"decoded": 1},
+        "verifier_outcomes": {"unavailable": 1},
+    }
+    kwargs[field] = HostileMapping()
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval.EvaluationTotals(
+            measured,
+            measured,
+            measured,
+            1,
+            1,
+            selected_sources={"streaming": 1},
+            selected_sources_attested=True,
+            **kwargs,
+        )
+
+    assert hooks
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value)
+
+
+@pytest.mark.parametrize("field", ["offline_outcomes", "verifier_outcomes"])
+@pytest.mark.parametrize("hostile_part", ["key", "count"])
+def test_outcome_map_rejects_hostile_yielded_parts_before_value_hooks(
+    field,
+    hostile_part,
+):
+    from collections.abc import Mapping
+
+    canary = "SENTINEL_PRIVATE_YIELDED_OUTCOME"
+    hooks = []
+
+    class HostileKey:
+        def __hash__(self):
+            hooks.append("key_hash")
+            raise RuntimeError(canary)
+
+        def __eq__(self, _other):
+            hooks.append("key_eq")
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            hooks.append("key_str")
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            hooks.append("key_repr")
+            raise RuntimeError(canary)
+
+    class HostileCount(int):
+        def __eq__(self, _other):
+            hooks.append("count_eq")
+            raise RuntimeError(canary)
+
+        def __lt__(self, _other):
+            hooks.append("count_lt")
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            hooks.append("count_str")
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            hooks.append("count_repr")
+            raise RuntimeError(canary)
+
+    known = "decoded" if field == "offline_outcomes" else "consensus"
+    pair = (HostileKey(), 1) if hostile_part == "key" else (known, HostileCount(1))
+
+    class YieldingMapping(Mapping):
+        def __getitem__(self, _key):
+            raise AssertionError("items() should own this adversarial fixture")
+
+        def __iter__(self):
+            raise AssertionError("items() should own this adversarial fixture")
+
+        def __len__(self):
+            return 1
+
+        def items(self):
+            return (pair,)
+
+    measured = stt_eval._measure((("one", "one"),))
+    kwargs = {
+        "offline_outcomes": {"decoded": 1},
+        "verifier_outcomes": {"unavailable": 1},
+    }
+    kwargs[field] = YieldingMapping()
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval.EvaluationTotals(
+            measured,
+            measured,
+            measured,
+            1,
+            1,
+            selected_sources={"streaming": 1},
+            selected_sources_attested=True,
+            **kwargs,
+        )
+
+    assert hooks == []
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value)
+
+
+@pytest.mark.parametrize("field", ["offline_outcomes", "verifier_outcomes"])
+@pytest.mark.parametrize("count", [1, 3], ids=["undercount", "overcount"])
+def test_recorded_gate_requires_each_outcome_map_to_cover_every_decision(
+    field,
+    count,
+):
+    measured = stt_eval._measure((("one", "one"),))
+    kwargs = {
+        "offline_outcomes": {"decoded": 2},
+        "verifier_outcomes": {"unavailable": 2},
+    }
+    kwargs[field] = {"decoded" if field == "offline_outcomes" else "unavailable": count}
+    totals = stt_eval.EvaluationTotals(
+        measured,
+        measured,
+        measured,
+        1,
+        2,
+        selected_sources={"streaming": 2},
+        selected_sources_attested=True,
+        **kwargs,
+    )
+
+    accounting_property = (
+        "offline_outcome_accounting_complete"
+        if field == "offline_outcomes"
+        else "verifier_outcome_accounting_complete"
+    )
+    assert totals.complete is True
+    assert totals.selected_source_accounting_complete is True
+    assert getattr(totals, accounting_property) is False
+    assert not stt_eval._recorded_evaluation_ok(object(), totals)
+
+
+def test_empty_outcome_maps_remain_constructible_but_are_not_complete():
+    measured = stt_eval._measure((("one", "one"),))
+    totals = stt_eval.EvaluationTotals(
+        measured,
+        measured,
+        measured,
+        1,
+        1,
+        {},
+        verifier_outcomes={},
+    )
+
+    assert totals.offline_outcomes == {}
+    assert totals.verifier_outcomes == {}
+    assert totals.offline_outcome_accounting_complete is False
+    assert totals.verifier_outcome_accounting_complete is False
+
+
+@pytest.mark.parametrize("decisions", [0, -1, True, 1.0, "1", "int-subclass"])
+def test_outcome_accounting_requires_positive_exact_int_decisions(decisions):
+    class IntSubclass(int):
+        pass
+
+    if decisions == "int-subclass":
+        decisions = IntSubclass(1)
+    measured = stt_eval._measure((("one", "one"),))
+    totals = stt_eval.EvaluationTotals(
+        measured,
+        measured,
+        measured,
+        1,
+        decisions,
+        {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
+    )
+
+    assert totals.offline_outcome_accounting_complete is False
+    assert totals.verifier_outcome_accounting_complete is False
+
+
+@pytest.mark.parametrize(
+    ("backend_field", "gate", "outcomes"),
+    [
+        (
+            "asr_final_backend",
+            stt_eval._enabled_offline_evaluation_ok,
+            {"error": 1},
+        ),
+        (
+            "asr_final_verifier_backend",
+            stt_eval._enabled_verifier_evaluation_ok,
+            {"error": 1},
+        ),
+    ],
+)
+def test_disabled_model_outcome_quality_gates_remain_bypassed(
+    backend_field,
+    gate,
+    outcomes,
+):
+    config = type("Config", (), {backend_field: ""})()
+    kwargs = {
+        "offline_outcomes": {"decoded": 1},
+        "verifier_outcomes": {"unavailable": 1},
+    }
+    kwargs[
+        "offline_outcomes"
+        if backend_field == "asr_final_backend"
+        else "verifier_outcomes"
+    ] = outcomes
+    totals = _totals((("one", "one"),), **kwargs)
+
+    assert gate(config, totals)
+
+
+@pytest.mark.parametrize(
+    ("outcome_field", "invalid_outcome"),
+    [
+        ("offline_outcome", "SENTINEL_PRIVATE_OFFLINE_OUTCOME"),
+        ("verifier_outcome", "SENTINEL_PRIVATE_VERIFIER_OUTCOME"),
+    ],
+)
+def test_evaluate_rejects_unknown_outcomes_before_returning_reportable_totals(
+    monkeypatch,
+    outcome_field,
+    invalid_outcome,
+):
+    from core.engines import file_replay
+    from core.engines.sherpa import FinalTranscriptSource
+
+    stopped = []
+    values = {
+        "streaming_raw": "SENTINEL_PRIVATE_HYPOTHESIS",
+        "offline_raw": "SENTINEL_PRIVATE_HYPOTHESIS",
+        "selected": "SENTINEL_PRIVATE_HYPOTHESIS",
+        "offline_outcome": "decoded",
+        "verifier_outcome": "unavailable",
+        "selected_source": FinalTranscriptSource.STREAMING,
+    }
+    values[outcome_field] = invalid_outcome
+    decision = SimpleNamespace(**values)
+
+    class Engine:
+        def __init__(self, _config, *, asr_only):
+            assert asr_only is True
+
+        def start(self, _callbacks):
+            return None
+
+        def evaluate_samples(self, *_args, **_kwargs):
+            return SimpleNamespace(decisions=(decision,))
+
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(file_replay, "FileReplayEngine", Engine)
+    item = stt_eval._CorpusItem(
+        "SENTINEL_PRIVATE_REFERENCE",
+        np.zeros(1, dtype=np.float32),
+        16_000,
+        None,
+    )
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval._evaluate(object(), (item,), ())
+
+    assert stopped == [True]
+    for canary in (
+        invalid_outcome,
+        "SENTINEL_PRIVATE_HYPOTHESIS",
+        "SENTINEL_PRIVATE_REFERENCE",
+    ):
+        assert canary not in str(caught.value)
+        assert canary not in repr(caught.value)
+
+
+def test_evaluate_validates_complete_batch_before_route_or_counter_commit(
+    monkeypatch,
+):
+    from core.engines import file_replay
+    from core.engines.sherpa import FinalTranscriptSource
+
+    invalid = "SENTINEL_PRIVATE_LATE_VERIFIER_OUTCOME"
+
+    def decision(verifier_outcome):
+        return SimpleNamespace(
+            streaming_raw="private",
+            offline_raw="private",
+            selected="private",
+            offline_outcome="decoded",
+            verifier_outcome=verifier_outcome,
+            selected_source=FinalTranscriptSource.STREAMING,
+        )
+
+    class Engine:
+        def __init__(self, _config, *, asr_only):
+            assert asr_only is True
+
+        def start(self, _callbacks):
+            return None
+
+        def evaluate_samples(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                decisions=(decision("unavailable"), decision(invalid))
+            )
+
+        def stop(self):
+            return None
+
+    counter_updates = []
+    original_counter = stt_eval.Counter
+
+    class RecordingCounter(original_counter):
+        def update(self, iterable=None, **kwargs):
+            if iterable is not None or kwargs:
+                counter_updates.append(True)
+            return super().update(iterable, **kwargs)
+
+    route_calls = []
+    route_gate = SimpleNamespace(
+        add_case=lambda *_args, **_kwargs: route_calls.append(True)
+    )
+    monkeypatch.setattr(file_replay, "FileReplayEngine", Engine)
+    monkeypatch.setattr(stt_eval, "Counter", RecordingCounter)
+    item = stt_eval._CorpusItem("private", np.zeros(1), 16_000, None)
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval._evaluate(object(), (item,), (), route_gate=route_gate)
+
+    assert counter_updates == []
+    assert route_calls == []
+    assert invalid not in str(caught.value)
+    assert invalid not in repr(caught.value)
+
+
+@pytest.mark.parametrize("outcome_field", ["offline_outcome", "verifier_outcome"])
+@pytest.mark.parametrize("value_kind", ["object", "str-subclass"])
+def test_evaluate_rejects_hostile_outcome_without_invoking_value_hooks(
+    monkeypatch,
+    outcome_field,
+    value_kind,
+):
+    from core.engines import file_replay
+    from core.engines.sherpa import FinalTranscriptSource
+
+    canary = "SENTINEL_PRIVATE_HOSTILE_OUTCOME"
+    hooks = []
+
+    class HostileOutcome:
+        @property
+        def value(self):
+            hooks.append("value")
+            raise RuntimeError(canary)
+
+        def __hash__(self):
+            hooks.append("hash")
+            raise RuntimeError(canary)
+
+        def __eq__(self, _other):
+            hooks.append("eq")
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            hooks.append("str")
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            hooks.append("repr")
+            raise RuntimeError(canary)
+
+    class HostileStr(str):
+        @property
+        def value(self):
+            hooks.append("str_value")
+            raise RuntimeError(canary)
+
+        def __hash__(self):
+            hooks.append("str_hash")
+            raise RuntimeError(canary)
+
+        def __eq__(self, _other):
+            hooks.append("str_eq")
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            hooks.append("str_str")
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            hooks.append("str_repr")
+            raise RuntimeError(canary)
+
+    values = {
+        "streaming_raw": "private",
+        "offline_raw": "private",
+        "selected": "private",
+        "offline_outcome": "decoded",
+        "verifier_outcome": "unavailable",
+        "selected_source": FinalTranscriptSource.STREAMING,
+    }
+    values[outcome_field] = (
+        HostileOutcome() if value_kind == "object" else HostileStr("decoded")
+    )
+    decision = SimpleNamespace(**values)
+
+    class Engine:
+        def __init__(self, _config, *, asr_only):
+            assert asr_only is True
+
+        def start(self, _callbacks):
+            return None
+
+        def evaluate_samples(self, *_args, **_kwargs):
+            return SimpleNamespace(decisions=(decision,))
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(file_replay, "FileReplayEngine", Engine)
+    item = stt_eval._CorpusItem("private", np.zeros(1), 16_000, None)
+
+    with pytest.raises(stt_eval.EvaluationPrerequisiteError) as caught:
+        stt_eval._evaluate(object(), (item,), ())
+
+    assert hooks == []
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value)
+
+
 def test_cli_never_prints_private_rows_or_config(capsys, monkeypatch):
     private_reference = "SENTINEL_PRIVATE_REFERENCE"
     private_hypothesis = "SENTINEL_PRIVATE_HYPOTHESIS"
@@ -1172,6 +1803,7 @@ def test_cli_never_prints_private_rows_or_config(capsys, monkeypatch):
         clips=1,
         decisions=1,
         offline_outcomes={"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
         selected_sources={"streaming": 1},
         selected_sources_attested=True,
     )
@@ -1210,6 +1842,7 @@ def test_cli_rejects_unattested_baseline_source_accounting(capsys, monkeypatch):
         1,
         1,
         {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
     )
     monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: _loaded_fixture(item))
     monkeypatch.setattr(stt_eval, "_load_config", object)
@@ -1248,7 +1881,8 @@ def test_cli_rejects_candidate_with_bad_source_accounting(
         measured,
         1,
         2 if source_state == "mismatch" else 1,
-        {"decoded": 1},
+        {"decoded": 2 if source_state == "mismatch" else 1},
+        verifier_outcomes={"unavailable": 2 if source_state == "mismatch" else 1},
         selected_sources=(
             {"streaming": 1} if source_state == "mismatch" else {}
         ),
@@ -1290,6 +1924,7 @@ def test_cli_rechecks_schema_v3_after_evaluation_before_report(
         1,
         1,
         {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
         selected_sources={"streaming": 1},
         selected_sources_attested=True,
     )
@@ -1349,6 +1984,7 @@ def test_cli_refuses_output_aliases_to_loaded_schema_v3_inputs(
         1,
         1,
         {"decoded": 1},
+        verifier_outcomes={"unavailable": 1},
         selected_sources={"streaming": 1},
         selected_sources_attested=True,
     )
@@ -1447,6 +2083,9 @@ def test_cli_fails_closed_when_selected_offline_model_never_decodes(
         clips=1,
         decisions=1,
         offline_outcomes={"unavailable": 1},
+        verifier_outcomes={"unavailable": 1},
+        selected_sources={"streaming": 1},
+        selected_sources_attested=True,
     )
     monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: _loaded_fixture(item))
     monkeypatch.setattr(stt_eval, "_load_config", _Config)

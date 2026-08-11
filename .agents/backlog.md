@@ -858,9 +858,14 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
-- [ ] Close the existing recorded-STT offline/verifier outcome maps to the exact
-      production vocabularies before counting or reporting them, with the same
-      detached, detail-free validation used for selected-source accounting.
+- [x] **Recorded-STT outcome vocabularies closed — DONE 2026-08-12
+      (ADR-0188).** Offline and verifier values are normalized before aggregate
+      counting into exact five- and eleven-value vocabularies. Detached,
+      zero-pruned, read-only maps accept only exact string/nonnegative exact-int
+      entries; each map must close over the exact positive decision count before
+      recorded acceptance or promotion. Malformed and hostile inputs fail
+      detail-free, while a valid sum mismatch remains an aggregate-red generic
+      state. Final low-priority headless gates and independent audit are GO.
       This is follow-up hardening, not part of ADR-0124's selected-source slice.
 - [x] **`web.search` egress vs the floated turn sensitivity — DONE 2026-08-12
       (ADR-0187).** Registry invocation now preserves every supplied context and

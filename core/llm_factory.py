@@ -13,6 +13,12 @@ import logging
 import os
 from typing import Optional
 
+from ._hedge_source_owner import (
+    FACTORY_HEDGE_SOURCE_REGISTRY,
+    FACTORY_LOCAL_MAIN_SOURCE,
+    FACTORY_SINGLE_CLOUD_SOURCE,
+    factory_named_cloud_source,
+)
 from .llm import (
     EchoLLM,
     HedgeLLM,
@@ -356,11 +362,19 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
             # faster presets to the front of the failover chain.
             if cost_order:
                 preset_names = order_presets_by_cost(preset_names, providers)
-            chain_clouds = [resolved[n] for n in preset_names if n in resolved]
+            resolved_names = [n for n in preset_names if n in resolved]
+            chain_clouds = [resolved[n] for n in resolved_names]
             if chain_clouds:
                 any_clouds = True
             hedged_chains[chain_name] = HedgeLLM(
-                local=local_main, cloud=chain_clouds, **hedge_kwargs
+                local=local_main,
+                cloud=chain_clouds,
+                source_owner_registry=FACTORY_HEDGE_SOURCE_REGISTRY,
+                local_source_key=FACTORY_LOCAL_MAIN_SOURCE,
+                cloud_source_keys=[
+                    factory_named_cloud_source(name) for name in resolved_names
+                ],
+                **hedge_kwargs,
             )
 
         if not hedged_chains or not any_clouds:
@@ -410,7 +424,14 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         "(post-ASR text only; raw audio/STT/TTS stay local per §9.7)",
         model, redact_pii_outbound,
     )
-    return HedgeLLM(local=local_main, cloud=cloud, **hedge_kwargs)
+    return HedgeLLM(
+        local=local_main,
+        cloud=cloud,
+        source_owner_registry=FACTORY_HEDGE_SOURCE_REGISTRY,
+        local_source_key=FACTORY_LOCAL_MAIN_SOURCE,
+        cloud_source_keys=[FACTORY_SINGLE_CLOUD_SOURCE],
+        **hedge_kwargs,
+    )
 
 
 # Back-compat alias for the historical private name some tests import.

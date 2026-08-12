@@ -465,9 +465,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       addressing/cleanup/routing leases, arrival-time output fencing, and
       continuation reservations shipped in ADR-0023. Direct CPU llama.cpp
       prefill/generation now uses the version-verified native abort + context
-      recovery boundary (ADR-0030). REMAINING: hard containment for model load /
-      native deadlock and cloud-enabled Hedge loser cancellation; use a spawned
-      process if the native recovery gate regresses. Also evaluate MiniCPM native
+      recovery boundary (ADR-0030). Process-wide exact-source ownership now bounds
+      factory Hedge loser/successor multiplication per local or named-cloud key,
+      without claiming native cancellation or billing cessation (ADR-0190;
+      frozen headless/static and independent reviews GO). REMAINING: hard containment for model
+      load/native deadlock; use a spawned process if the native recovery gate
+      regresses. Also evaluate MiniCPM native
       XML tools behind a dedicated adapter. Supported generation-time no-think,
       pre-TTS fail-closed reasoning filtering, and real TTFT/completion/cancel-
       recovery gates shipped in ADR-0031. Affinity-aware, explicitly bounded
@@ -710,8 +713,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       retire promptly on reap/barge and abandoned synchronous provider calls are
       bulkhead-bounded (ADR-0021); production Ollama streams cancel their owned
       request (ADR-0022), and direct CPU llama.cpp inference aborts and recovers
-      its shared context (ADR-0030). REMAINING: arbitrary providers, llama.cpp
-      construction/native deadlock, and cloud-enabled Hedge loser cancellation.
+      its shared context (ADR-0030). Factory-created Hedge members additionally
+      retain one process-wide exact source owner after the bounded 0.5-second
+      coordinator cleanup, so same-source successors stay BUSY while distinct
+      keys progress (ADR-0190; frozen audit/receipts GO). REMAINING: arbitrary
+      raw/direct providers, hard cancellation, and llama.cpp construction/native
+      deadlock.
 - [x] **Unbounded queued_tasks list + runlog logging queue** — DONE 2026-07-07:
       `_queue_task` bounded admission (`max_queued_tasks=32` ctor default; drop-OLDEST
       non-continuation victim, cancelled + one spoken notice per storm); runlog queue
@@ -752,7 +759,9 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       merged to main).**
       (a) DONE -- HedgeLLM.shutdown() now WARNs (`speaker.llm.hedge`) with the survivor count
       when worker threads outlive the join budget (core/llm.py); the leak is visible in the
-      run bundle instead of silent.
+      run bundle instead of silent. ADR-0190 now retains that survivor's exact
+      factory source key process-wide without extending the shared 0.5-second
+      coordinator join budget; frozen headless/static receipts and independent review are GO.
       (b) DONE -- WINNER_SELECT_BUDGET_FLOOR 30s -> 10s (core/llm.py:687).
       (c) DONE -- tier markers are now `\b`-anchored regexes ('show me the time' no longer
       hits 'how'; multi-word markers still match) + added 'compose'/'draft'/'write an'

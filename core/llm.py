@@ -26,6 +26,14 @@ from always_on_agent.models import (
     CloudEgressScope,
 )
 
+from ._hedge_source_owner import (
+    HedgeSourceKey,
+    HedgeSourceOwner,
+    HedgeSourceRegistry,
+    HedgeSourceWork,
+    try_claim_hedge_source_lease,
+    try_claim_hedge_source_owner,
+)
 from .llm_threads import DEFAULT_LLM_THREAD_RESERVE, resolve_llamacpp_thread_pair
 
 # Per-turn context published by the capability layer so the LLM stack can
@@ -2568,6 +2576,10 @@ class HedgeLLM:
         hedge_delay_ms: int = 150,
         ttft_deadline_ms: int = 1200,
         enforce_cloud_egress_scope: bool = False,
+        source_owner_registry: Optional[HedgeSourceRegistry] = None,
+        local_source_key: Optional[HedgeSourceKey] = None,
+        cloud_source_keys: Optional[Sequence[HedgeSourceKey]] = None,
+        thread_factory: Optional[Callable[..., object]] = None,
     ):
         self.local = local
         if cloud is None:
@@ -2583,6 +2595,48 @@ class HedgeLLM:
         # The default stays False for direct-construction compatibility, while
         # an exact LOCAL_ONLY scope is honored in both modes.
         self.enforce_cloud_egress_scope = bool(enforce_cloud_egress_scope)
+        if (
+            source_owner_registry is None
+            and local_source_key is None
+            and cloud_source_keys is None
+        ):
+            # Direct construction remains self-contained while repeated calls
+            # on the same wrapper still share stable per-member ownership.
+            self._source_owner_registry = HedgeSourceRegistry()
+            self._local_source_key = HedgeSourceKey("direct", "LOCAL")
+            self._cloud_source_keys = tuple(
+                HedgeSourceKey("direct", f"CLOUD_{index}")
+                for index in range(len(self._clouds))
+            )
+        else:
+            if type(source_owner_registry) is not HedgeSourceRegistry:
+                raise TypeError(
+                    "source_owner_registry must be an exact HedgeSourceRegistry"
+                )
+            if type(local_source_key) is not HedgeSourceKey:
+                raise TypeError("local_source_key must be an exact HedgeSourceKey")
+            if cloud_source_keys is None or type(cloud_source_keys) not in (
+                list,
+                tuple,
+            ):
+                raise TypeError("cloud_source_keys must be an exact list or tuple")
+            validated_cloud_keys: list[HedgeSourceKey] = []
+            for key in cloud_source_keys:
+                if type(key) is not HedgeSourceKey:
+                    raise TypeError(
+                        "every cloud_source_keys member must be an exact HedgeSourceKey"
+                    )
+                validated_cloud_keys.append(key)
+            if len(validated_cloud_keys) != len(self._clouds):
+                raise ValueError(
+                    "cloud_source_keys cardinality must match the cloud chain"
+                )
+            self._source_owner_registry = source_owner_registry
+            self._local_source_key = local_source_key
+            self._cloud_source_keys = tuple(validated_cloud_keys)
+        if thread_factory is not None and not callable(thread_factory):
+            raise TypeError("thread_factory must be callable or None")
+        self._source_thread_factory = thread_factory
         # Egress receipt (provenance): which source served the LAST stream --
         # "local" or "cloud_<i>" (the chain index), or None before any call. Lets a
         # caller record/surface whether an answer actually came from the device or a
@@ -2610,84 +2664,6 @@ class HedgeLLM:
         return "".join(
             self.stream(prompt, system=system, images=images, history=history)
         ).strip()
-
-    @staticmethod
-    def _is_cross_thread_cancel_safe(stream: object) -> bool:
-        """Return whether ``stream.cancel()`` may run from the coordinator.
-
-        The marker is deliberately nominal: an incidental ``cancel`` method on
-        a third-party iterator does not advertise thread safety or nonblocking
-        behavior. Known-safe implementations must opt in explicitly.
-        """
-        return (
-            getattr(stream, "_cross_thread_cancel_safe", False) is True
-            and callable(getattr(stream, "cancel", None))
-        )
-
-    @staticmethod
-    def _worker(
-        client,
-        tag,
-        prompt,
-        system,
-        images,
-        history,
-        q,
-        stop,
-        context,
-        active_streams,
-        cancellable_tags,
-        active_streams_lock,
-    ) -> None:
-        # Hold the underlying stream so a stop can close it at the next token
-        # boundary -- that propagates GeneratorExit into the client's stream(),
-        # running its ``finally`` (socket close, metric log) promptly instead
-        # of leaving a half-read HTTP body dangling until GC.
-        # ``history`` is forwarded ONLY when present (like ``hedge_delay_ms``), so
-        # a wrapped client / test fake that predates the multi-turn param is still
-        # called with the byte-identical single-turn signature by default.
-        context_token = capability_context.set(context)
-        stream = None
-        try:
-            if stop.is_set():
-                q.put((tag, "done", None))
-                return
-            kw: dict = {"system": system, "images": images}
-            if history:
-                kw["history"] = history
-            stream = client.stream(prompt, **kw)
-            # Only iterators that explicitly advertise a thread-safe,
-            # nonblocking cancel seam may be touched by Hedge.shutdown from a
-            # different thread. Arbitrary generator.close() while next() is
-            # executing raises and is unsafe (notably sync Ollama pre-TTFT).
-            if HedgeLLM._is_cross_thread_cancel_safe(stream):
-                with active_streams_lock:
-                    active_streams[tag] = stream
-                    cancellable_tags.add(tag)
-            if stop.is_set():
-                if HedgeLLM._is_cross_thread_cancel_safe(stream):
-                    stream.cancel()
-                q.put((tag, "done", None))
-                return
-            for token in stream:
-                if stop.is_set():
-                    break
-                q.put((tag, "tok", token))
-            q.put((tag, "done", None))
-        except Exception as exc:  # cloud down / rate-limited -> chain advances
-            q.put((tag, "err", str(exc)))
-        finally:
-            with active_streams_lock:
-                active_streams.pop(tag, None)
-            # Best-effort close: list/iterator fakes lack .close(); a generator
-            # raising on close shouldn't take the worker down.
-            closer = getattr(stream, "close", None)
-            if closer is not None:
-                try:
-                    closer()
-                except Exception:
-                    pass
-            capability_context.reset(context_token)
 
     def _winner_select_budget(self) -> float:
         """Bounded wall-clock window for the pre-first-token wait.
@@ -2761,15 +2737,50 @@ class HedgeLLM:
         # worker thread.  A local-only call is a direct local stream: local
         # failure/empty output cannot fall through to, or even start, cloud.
         if not self._clouds or not self._cloud_egress_admitted(turn_context):
+            self.last_source = None
+            lease = try_claim_hedge_source_lease(
+                self._local_source_key,
+                registry=self._source_owner_registry,
+            )
+            if lease is None:
+                return
             self.last_source = "local"  # egress receipt: served on-device, no cloud
-            local_kw: dict = {"system": system, "images": images}
-            if history:
-                local_kw["history"] = history
-            context_token = capability_context.set(turn_context)
+            local_kw: dict | None = None
+            context_token = None
+            local_stream = None
+            token = None
+            cleanup_error_type = ""
             try:
-                yield from self.local.stream(prompt, **local_kw)
+                local_kw = {"system": system, "images": images}
+                if history:
+                    local_kw["history"] = history
+                context_token = capability_context.set(turn_context)
+                local_stream = self.local.stream(prompt, **local_kw)
+                for token in local_stream:
+                    yield token
             finally:
-                capability_context.reset(context_token)
+                try:
+                    closer = getattr(local_stream, "close", None)
+                except BaseException as exc:
+                    closer = None
+                    cleanup_error_type = type(exc).__name__
+                if callable(closer):
+                    try:
+                        closer()
+                    except BaseException as exc:
+                        cleanup_error_type = type(exc).__name__
+                if context_token is not None:
+                    try:
+                        capability_context.reset(context_token)
+                    except BaseException as exc:
+                        cleanup_error_type = cleanup_error_type or type(exc).__name__
+                # Drop all direct-call aliases before attempting exact release.
+                prompt = system = images = history = turn_context = None
+                local_kw = context_token = local_stream = closer = token = None
+                lease.finish(
+                    references_cleared=True,
+                    error_type=cleanup_error_type,
+                )
             return
 
         # Reset the egress receipt at the START of the race so a no-winner turn
@@ -2785,46 +2796,66 @@ class HedgeLLM:
             "local": self.local,
             **dict(zip(cloud_tags, self._clouds)),
         }
+        source_keys: dict[str, HedgeSourceKey] = {
+            "local": self._local_source_key,
+            **dict(zip(cloud_tags, self._cloud_source_keys)),
+        }
         started: set[str] = set()
         dead: set[str] = set()
-        threads: dict[str, threading.Thread] = {}
-        active_streams: dict[str, Iterator[str]] = {}
-        # Sticky after registration: a worker removes its active stream before
-        # owning close(), but shutdown must still wait for that cleanup.
-        cancellable_tags: set[str] = set()
-        active_streams_lock = threading.Lock()
+        owners: dict[str, HedgeSourceOwner] = {}
 
-        def launch(tag: str) -> None:
+        def launch(tag: str) -> bool:
+            """Claim and start without waiting; BUSY is a dead chain member."""
+
             if tag in started:
-                return
+                return tag not in dead
             started.add(tag)
-            t = threading.Thread(
-                target=self._worker,
-                args=(
-                    clients[tag], tag, prompt, system, images, history, q, stops[tag],
-                    turn_context, active_streams, cancellable_tags,
-                    active_streams_lock,
-                ),
-                daemon=True,
+            work = HedgeSourceWork(
+                clients[tag],
+                prompt,
+                system,
+                images,
+                history,
+                q,
+                stops[tag],
+                turn_context,
+                capability_context,
+                tag,
             )
-            threads[tag] = t
-            t.start()
+            try:
+                owner = try_claim_hedge_source_owner(
+                    source_keys[tag],
+                    work,
+                    registry=self._source_owner_registry,
+                    thread_factory=self._source_thread_factory,
+                )
+            except BaseException:
+                work = None
+                dead.add(tag)
+                return False
+            work = None
+            if owner is None:
+                dead.add(tag)
+                return False
+            owners[tag] = owner
+            try:
+                owner.start()
+            except BaseException:
+                # Thread.start() is ambiguous.  The published owner remains the
+                # only authority for this key until its exact target positively
+                # returns and is reaped, or until process exit.
+                dead.add(tag)
+                return False
+            return True
 
         def cancel_active(tags: Optional[set[str]] = None) -> None:
-            """Cancel explicitly thread-safe streams by tag."""
-            with active_streams_lock:
-                cancellable = [
-                    stream
-                    for tag, stream in active_streams.items()
-                    if tags is None or tag in tags
-                ]
-            for stream in cancellable:
-                cancel_stream = getattr(stream, "cancel", None)
-                if callable(cancel_stream):
-                    try:
-                        cancel_stream()
-                    except Exception:
-                        pass
+            """Signal exact owners; they invoke only advertised safe cancel."""
+
+            selected = [
+                owner for tag, owner in owners.items() if tags is None or tag in tags
+            ]
+            for owner in selected:
+                owner.request_stop()
 
         def shutdown() -> None:
             """Signal every worker and share one bounded join budget.
@@ -2833,57 +2864,21 @@ class HedgeLLM:
             worker can outlive the join until its next token or timeout. This
             runs on natural completion and early generator close alike.
             """
-            for ev in stops.values():
-                ev.set()
-            # Native cancellation for streams that explicitly guarantee
-            # cross-thread cancellation (Ollama's async bridge). Snapshot
-            # outside callbacks:
-            # cancel() is nonblocking, but it may complete the worker and mutate
-            # this registry immediately.
             cancel_active()
-            with active_streams_lock:
-                cleanup_owned = set(cancellable_tags)
-            # Ollama advertises the stream contract eagerly, closing the narrow
-            # race in which shutdown arrives before its worker registers the
-            # returned iterator.
-            cleanup_owned.update(
-                tag
-                for tag, client in clients.items()
-                if getattr(client, "_stream_cross_thread_cancel_safe", False) is True
-            )
-            # A cooperative provider slot must not be released while its owned
-            # request/client is still cleaning up. If an advertised provider
-            # violates that contract and hangs, ADR-0021 intentionally keeps the
-            # outer bulkhead slot occupied instead of spawning unbounded work.
-            for tag in cleanup_owned:
-                worker = threads.get(tag)
-                if worker is not None and worker.is_alive():
-                    worker.join()
             join_deadline = time.monotonic() + self.WORKER_JOIN_TIMEOUT
-            for tag, t in threads.items():
-                if tag in cleanup_owned:
-                    continue
-                if t.is_alive():
-                    remaining = join_deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    t.join(timeout=remaining)
-            # Observability for the known leak: WORKER_JOIN_TIMEOUT is below real
-            # reap latency (a cloud worker can take up to ~5s; Hedge's private
-            # loser-stop event is not yet bridged into LlamaCppLLM's task-owned
-            # native abort), so a loser can outlive the join and leak a live
-            # thread/socket. A barge-in storm accumulates them. Surface the
-            # survivor count in the run bundle so the leak is visible instead of
-            # silent. Best-effort: never raise
-            # from cleanup (this runs in a generator finally, including on
-            # GeneratorExit), so guard the whole check.
+            for owner in owners.values():
+                remaining = max(0.0, join_deadline - time.monotonic())
+                owner.wait_and_reap(remaining)
             try:
-                leaked = sum(1 for t in threads.values() if t.is_alive())
-                if leaked:
+                retained = sum(
+                    1 for owner in owners.values() if not owner.snapshot().reaped
+                )
+                if retained:
                     _hedge_log.warning(
-                        "HedgeLLM shutdown: %d worker thread(s) still alive after "
-                        "%.3fs join budget; may leak thread/socket until reaped",
-                        leaked,
+                        "HedgeLLM shutdown: %d worker thread/source owner(s) still "
+                        "alive or retained after %.3fs join budget; same sources "
+                        "stay busy until exact return/reap or process exit",
+                        retained,
                         self.WORKER_JOIN_TIMEOUT,
                     )
             except Exception:
@@ -2902,17 +2897,17 @@ class HedgeLLM:
             if self.strategy == "fallback":
                 # Cloud-first: launch the first cloud with a ttft_deadline; on
                 # error/timeout, advance the chain; finally fall back to local.
-                if current_cloud is not None:
-                    launch(current_cloud)
-                deadline = time.monotonic() + self.ttft_deadline
+                # ``kick_chain`` performs the first nonblocking claim so BUSY
+                # members advance immediately instead of consuming a deadline.
+                deadline = time.monotonic()
                 local_pending = True
             else:  # hedge
                 # Local-first: kick local now; after hedge_delay also launch the
                 # first cloud. On cloud error/finish-without-tokens, advance the
                 # chain and keep racing against local. ``hedge_delay`` is the
                 # per-call override (or the constructor default when None).
-                launch("local")
-                deadline = time.monotonic() + hedge_delay
+                local_started = launch("local")
+                deadline = time.monotonic() + (hedge_delay if local_started else 0.0)
                 local_pending = False
 
             winner: Optional[str] = None
@@ -2930,21 +2925,27 @@ class HedgeLLM:
             def kick_chain() -> bool:
                 """Bring up whatever is next in line. Returns True if launched."""
                 nonlocal current_cloud, deadline, local_pending
-                if self.strategy == "hedge":
-                    if current_cloud is not None and current_cloud not in started:
-                        launch(current_cloud)
-                        deadline = float("inf")
+                while current_cloud is not None:
+                    if current_cloud in started:
+                        if current_cloud not in dead:
+                            return False
+                        current_cloud = next_cloud()
+                        continue
+                    if launch(current_cloud):
+                        deadline = (
+                            float("inf")
+                            if self.strategy == "hedge"
+                            else time.monotonic() + self.ttft_deadline
+                        )
                         return True
-                else:  # fallback
-                    if current_cloud is not None and current_cloud not in started:
-                        launch(current_cloud)
-                        deadline = time.monotonic() + self.ttft_deadline
-                        return True
+                    # A BUSY or ambiguously-started source is never waited on;
+                    # advance to the next distinct provider key immediately.
+                    current_cloud = next_cloud()
                 if local_pending:
-                    launch("local")
                     local_pending = False
                     deadline = float("inf")
-                    return True
+                    return launch("local")
+                deadline = float("inf")
                 return False
 
             while winner is None:

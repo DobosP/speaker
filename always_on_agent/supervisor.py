@@ -67,7 +67,13 @@ from .event_bus import EventBus
 from .events import AgentEvent, EventKind, Mode
 from .followups import FollowupConfig, FollowupState
 from .memory import Memory, SessionMemory
-from .models import IntentDecision, IntentKind, SpeechObservation
+from .models import (
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    SYNTHETIC_RESUME_TAIL_METADATA_KEY,
+    IntentDecision,
+    IntentKind,
+    SpeechObservation,
+)
 from .origin import Origin, combine
 from .session_actor import (
     AdmissionRejected,
@@ -134,6 +140,7 @@ class ArrivalContinuation:
     victim_origin: str
     victim_metrics_turn_token: int | None
     awaiting_addon: bool = False
+    retained_prompt_context: bool = False
 
 
 class AgentSupervisor:
@@ -324,6 +331,36 @@ class AgentSupervisor:
             return False
         return self.looks_like_continuation(text)
 
+    @staticmethod
+    def _has_retained_prompt_context(metadata: object) -> bool:
+        """Read the reserved receipt without invoking virtual mapping hooks."""
+
+        if type(metadata) is not dict:
+            return False
+        snapshot = dict.copy(metadata)
+        for key, _value in dict.items(snapshot):
+            if type(key) is not str:
+                # Internal task metadata has exact string keys. A malformed key
+                # at this boundary is uncertain lineage and therefore sticky.
+                return True
+            if key == RETAINED_PROMPT_CONTEXT_METADATA_KEY:
+                # Presence is restrictive; controller-created receipts use True.
+                return True
+        return False
+
+    @classmethod
+    def _inherit_retained_prompt_context(
+        cls,
+        task: AgentTask,
+        *lineage_metadata: object,
+    ) -> None:
+        """Monotonically OR retained prompt provenance into a synthetic task."""
+
+        if cls._has_retained_prompt_context(task.metadata) or any(
+            cls._has_retained_prompt_context(metadata) for metadata in lineage_metadata
+        ):
+            task.metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] = True
+
     def reserve_arrival_continuation(
         self,
         text: str,
@@ -420,6 +457,12 @@ class AgentSupervisor:
                         else None
                     ),
                     awaiting_addon=False,
+                    retained_prompt_context=bool(
+                        self._has_retained_prompt_context(
+                            queued_continuation.metadata
+                        )
+                        or self._has_retained_prompt_context(victim.metadata)
+                    ),
                 )
             # Revalidate the identity immediately before the linearization
             # point.  Every check and mutation is under the cancellation lock.
@@ -455,6 +498,9 @@ class AgentSupervisor:
                     else None
                 ),
                 awaiting_addon=False,
+                retained_prompt_context=self._has_retained_prompt_context(
+                    victim.metadata
+                ),
             )
 
     def reserve_unheard_for_partial(self) -> ArrivalContinuation | None:
@@ -516,6 +562,9 @@ class AgentSupervisor:
                         int(token) if token is not None else None
                     ),
                     awaiting_addon=True,
+                    retained_prompt_context=self._has_retained_prompt_context(
+                        victim.metadata
+                    ),
                 )
             self._advance_output_epoch_locked()
             for task in candidates:
@@ -574,6 +623,7 @@ class AgentSupervisor:
             victim_origin=reservation.victim_origin,
             victim_metrics_turn_token=reservation.victim_metrics_turn_token,
             awaiting_addon=False,
+            retained_prompt_context=reservation.retained_prompt_context,
         )
 
     @staticmethod
@@ -598,6 +648,7 @@ class AgentSupervisor:
             victim_origin=reservation.victim_origin,
             victim_metrics_turn_token=reservation.victim_metrics_turn_token,
             awaiting_addon=reservation.awaiting_addon,
+            retained_prompt_context=reservation.retained_prompt_context,
         )
 
     def materialize_arrival_continuation(
@@ -646,6 +697,8 @@ class AgentSupervisor:
         }
         if not reservation.merge_before_audio:
             metadata["continue_after"] = reservation.victim_task_id
+        if reservation.retained_prompt_context:
+            metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] = True
         return merged, metadata
 
     def should_preempt_for_final_arrival(self, text: str) -> bool:
@@ -1896,6 +1949,7 @@ class AgentSupervisor:
                         "continuation_victim_metrics_turn_token",
                         "skip_user_memory",
                         "post_barge_response_only",
+                        SYNTHETIC_RESUME_TAIL_METADATA_KEY,
                         "direct_user_instruction",
                     )
                     if key in metadata
@@ -1903,6 +1957,8 @@ class AgentSupervisor:
                 if isinstance(metadata, Mapping)
                 else {}
             )
+            if self._has_retained_prompt_context(metadata):
+                turn_metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] = True
             expected_input_epoch = turn_metadata.get("input_epoch")
             with self._cancel_lock:
                 if self._stopped:
@@ -2044,6 +2100,15 @@ class AgentSupervisor:
         try:
             self._execute_decision(decision)
         finally:
+            # These receipts authorize only the task copied above. A later
+            # proactive follow-up is a fresh synthetic turn and must not inherit
+            # local-only provenance from ambient controller state. Synthetic
+            # continuation tasks retain their own copied, monotonic lineage.
+            for key in (
+                SYNTHETIC_RESUME_TAIL_METADATA_KEY,
+                RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+            ):
+                self.state.turn_metadata.pop(key, None)
             # Reservation metadata belongs to exactly this final.  Tasks already
             # copied it in _create_task; leaving it in turn_metadata would let a
             # later proactive follow-up inherit synthetic lineage/trust policy.
@@ -2852,6 +2917,7 @@ class AgentSupervisor:
             ):
                 return True
             task = self._create_task(replace(decision, text=merged))
+            self._inherit_retained_prompt_context(task, victim.metadata)
             with self._cancel_lock:
                 task.metadata["input_generation"] = self.latest_input_generation
             task.metadata["continuation_of"] = victim.task_id
@@ -2926,6 +2992,11 @@ class AgentSupervisor:
                     prior_owner_verified=self.state.turn_owner_verified,
                     prior_origin=self.state.turn_origin,
                 )
+                self._inherit_retained_prompt_context(
+                    pending,
+                    victim.metadata,
+                    self.state.turn_metadata,
+                )
                 if "metrics_turn_token" in self.state.turn_metadata:
                     pending.metadata["metrics_turn_token"] = self.state.turn_metadata[
                         "metrics_turn_token"
@@ -2939,6 +3010,7 @@ class AgentSupervisor:
             return True
         cont_text = cfg.continue_template.format(prev=origin, addon=self._render_addons(addons))
         task = self._create_task(replace(decision, text=cont_text))
+        self._inherit_retained_prompt_context(task, victim.metadata)
         task.metadata["continuation_of"] = victim.task_id
         task.metadata["continue_after"] = victim.task_id
         task.metadata["continuation_origin"] = origin

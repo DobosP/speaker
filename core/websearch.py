@@ -36,7 +36,12 @@ from typing import Iterable, Mapping, Optional, Protocol, Sequence, runtime_chec
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
-from always_on_agent.models import IntentKind
+from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    CloudEgressScope,
+    IntentKind,
+)
 
 from .sensitivity import CODE, PRIVATE, PUBLIC, may_leave_device
 
@@ -164,13 +169,14 @@ def _turn_context_egress_snapshot(
 ) -> tuple[Optional[bool], dict[str, object]]:
     """Snapshot ``context`` and return its restrictive web-egress verdict.
 
-    ``None`` means the field is absent from an exact built-in ``dict``, so
+    ``None`` means no restrictive receipt vetoed and sensitivity is absent, so
     deterministic SEARCH/RESEARCH calls keep the historical raw-query gate.
     Dict subclasses are rejected before virtual container hooks can hide or
-    rewrite the field.  A present value is accepted only when it is one of the
-    two exact canonical non-private strings.  Everything else (including
-    ``private``, ``None``, a case variant, or a hostile object) fails closed
-    without invoking user-defined equality/coercion hooks.
+    rewrite a field. A present LLM scope proceeds only for the exact
+    ``CURRENT_TURN_ONLY`` enum; ``LOCAL_ONLY`` and malformed values fail closed.
+    A present retained-prompt key also fails closed (the canonical receipt is
+    exact ``True``). The sensitivity receipt remains restrictive-only: only
+    exact canonical non-private strings can proceed.
 
     This receipt is never sufficient to authorize egress: callers must still
     pass :func:`may_leave_device` on the exact tool query, mode, and intent.
@@ -180,11 +186,28 @@ def _turn_context_egress_snapshot(
     snapshot = dict.copy(context)
     missing = object()
     raw: object = missing
+    raw_scope: object = missing
     for key, value in dict.items(snapshot):
         if type(key) is not str:
             return False, {}
         if key == "sensitivity":
             raw = value
+        elif key == CLOUD_EGRESS_SCOPE_CONTEXT_KEY:
+            raw_scope = value
+    if raw_scope is not missing and raw_scope is not CloudEgressScope.CURRENT_TURN_ONLY:
+        return False, snapshot
+    metadata_missing = object()
+    metadata: object = dict.get(snapshot, "metadata", metadata_missing)
+    if metadata is not metadata_missing:
+        if type(metadata) is not dict:
+            return False, snapshot
+        metadata_snapshot = dict.copy(metadata)
+        snapshot["metadata"] = metadata_snapshot
+        for metadata_key, _metadata_value in dict.items(metadata_snapshot):
+            if type(metadata_key) is not str:
+                return False, snapshot
+            if metadata_key == RETAINED_PROMPT_CONTEXT_METADATA_KEY:
+                return False, snapshot
     if raw is missing:
         return None, snapshot
     return (
@@ -205,11 +228,13 @@ def attach_web_search_capability(
 
     The provider closure enforces, in order:
 
-    1. **Turn-context veto**: an exact ``private`` sensitivity or any present
+    1. **Turn-context veto**: exact local-only LLM scope, malformed present
+       scope, retained-prompt task metadata, exact ``private`` sensitivity, or
        malformed/unknown sensitivity fails closed to the local corpus before
-       classifier or backend work.  Exact ``public``/``code`` is restrictive
-       only and cannot override the raw-query gate.  An absent field preserves
-       deterministic SEARCH/RESEARCH compatibility.
+       classifier or backend work. Exact current-turn-only scope and exact
+       ``public``/``code`` sensitivity are restrictive only and cannot override
+       the raw-query gate. Absent scope/metadata preserves direct deterministic
+       SEARCH/RESEARCH compatibility.
     2. **GUARD-COERCE** ``mode`` / ``intent_kind`` from ``context`` via a
        fail-safe try/except (-> ``None`` on a bad value, BR2) so a bogus enum
        string never aborts the plan or bypasses the gate.

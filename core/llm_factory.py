@@ -324,6 +324,7 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         strategy=strategy,
         hedge_delay_ms=int(cloud_cfg.get("hedge_delay_ms", 150)),
         ttft_deadline_ms=int(cloud_cfg.get("ttft_deadline_ms", 1200)),
+        enforce_cloud_egress_scope=True,
     )
 
     # Multi-provider path.

@@ -26,7 +26,13 @@ from always_on_agent.recall import (
     trim_block_to_tokens,
 )
 from always_on_agent.untrusted import detect_injection, redact_pii, wrap_untrusted
-from always_on_agent.models import IntentKind
+from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    SYNTHETIC_RESUME_TAIL_METADATA_KEY,
+    CloudEgressScope,
+    IntentKind,
+)
 
 from .contract import drain_complete_sentences
 from .conversation import (
@@ -99,6 +105,81 @@ _REPEAT_PREVIOUS_ANSWER_RE = re.compile(
 )
 _SESSION_FACT_ACK = "Okay, I'll remember that for this conversation."
 _SESSION_FACT_LIMIT = 16
+
+
+def _initialize_cloud_egress_scope(context: dict[str, object]) -> None:
+    """Mint current-turn scope only for an absent key on an exact context."""
+
+    if type(context) is not dict:
+        return
+    snapshot = dict.copy(context)
+    for key in dict.keys(snapshot):
+        if type(key) is not str:
+            # Leave scope absent; factory-managed wrappers fail absent scope
+            # local without comparing against a hostile colliding key.
+            return
+        if key == CLOUD_EGRESS_SCOPE_CONTEXT_KEY:
+            return
+    dict.__setitem__(
+        context,
+        CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+        CloudEgressScope.CURRENT_TURN_ONLY,
+    )
+
+
+def _downgrade_cloud_egress_scope(context: dict[str, object]) -> None:
+    """Monotonically pin this composed turn to the local model tier."""
+
+    if type(context) is dict:
+        dict.__setitem__(
+            context,
+            CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+            CloudEgressScope.LOCAL_ONLY,
+        )
+
+
+def _apply_task_metadata_cloud_egress_policy(
+    context: dict[str, object],
+    *,
+    include_resume_tail: bool,
+) -> None:
+    """Apply exact task-lineage receipts before any model can be selected."""
+
+    if type(context) is not dict:
+        return
+    context_snapshot = dict.copy(context)
+    missing = object()
+    metadata: object = missing
+    for key, value in dict.items(context_snapshot):
+        if type(key) is not str:
+            # Initialization deliberately left scope absent for this shape;
+            # keep that factory-level local veto without hashing our canonical
+            # key against a potentially hostile colliding object.
+            return
+        if key == "metadata":
+            metadata = value
+    if metadata is missing:
+        return
+    if type(metadata) is not dict:
+        _downgrade_cloud_egress_scope(context)
+        return
+    metadata_snapshot = dict.copy(metadata)
+    for key, value in dict.items(metadata_snapshot):
+        if type(key) is not str:
+            _downgrade_cloud_egress_scope(context)
+            return
+        if key == RETAINED_PROMPT_CONTEXT_METADATA_KEY:
+            # This reserved controller key has no permissive value. Exact True
+            # is canonical; malformed presence is uncertain and fails local.
+            _downgrade_cloud_egress_scope(context)
+            return
+        if (
+            include_resume_tail
+            and key == SYNTHETIC_RESUME_TAIL_METADATA_KEY
+            and value is True
+        ):
+            _downgrade_cloud_egress_scope(context)
+            return
 
 
 @dataclass(frozen=True)
@@ -500,6 +581,11 @@ def attach_llm_capabilities(
         return context
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
+        _initialize_cloud_egress_scope(context)
+        _apply_task_metadata_cloud_egress_policy(
+            context,
+            include_resume_tail=True,
+        )
         cancel = context.get("cancel_event")
         metric_turn = _metric_turn_token(context)
         if "vault.search" in registry.names():
@@ -813,6 +899,16 @@ def attach_llm_capabilities(
                     recent_block = format_recent_block(recent_turns, recent_cfg)
         except Exception:  # noqa: BLE001 - context is best-effort, never fatal
             log.exception("recent-conversation context failed; continuing without it")
+        published_recent = (
+            dict.get(context, RECENT_CONVERSATION_KEY) if type(context) is dict else ""
+        )
+        if (
+            recent_history
+            or recent_block
+            or planner_recent_block
+            or (type(published_recent) is str and bool(published_recent))
+        ):
+            _downgrade_cloud_egress_scope(context)
         if recent_block or planner_recent_block:
             context[RECENT_CONVERSATION_KEY] = (
                 recent_block or planner_recent_block
@@ -918,6 +1014,7 @@ def attach_llm_capabilities(
                 # lm-3; must hold before recall/continuity is enabled by default).
                 memory_blocks = [b for b in (last_session_block, recall_block) if b]
                 if memory_blocks:
+                    _downgrade_cloud_egress_scope(context)
                     combined = "\n\n".join(memory_blocks)
                     context["sensitivity"] = most_sensitive(
                         str(context.get("sensitivity") or PRIVATE),
@@ -968,6 +1065,7 @@ def attach_llm_capabilities(
                     block = render_rules(rules)
                     if block:
                         procedural_block = block
+                        _downgrade_cloud_egress_scope(context)
                         # §9.7: a rule may carry private info ("address me as <X>"),
                         # so float the turn's sensitivity over it before any LLM call
                         # -- a private rule must not pin the turn to a public chain.
@@ -1166,10 +1264,16 @@ def attach_llm_capabilities(
             capability_context.reset(ctx_token)
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
+        _initialize_cloud_egress_scope(context)
+        _apply_task_metadata_cloud_egress_policy(
+            context,
+            include_resume_tail=False,
+        )
         metric_turn = _metric_turn_token(context)
         previous = context.get("previous_steps", [])
         gathered_parts: list[str] = []
         gathered_private = False
+        gathered_private_local = False
         for step in previous:
             if not (isinstance(step, dict) and step.get("text")):
                 continue
@@ -1182,6 +1286,8 @@ def attach_llm_capabilities(
             data = step.get("data")
             if isinstance(data, dict) and data.get("sensitivity") == PRIVATE:
                 gathered_private = True
+                if data.get("egress") is not True:
+                    gathered_private_local = True
             if isinstance(data, dict) and data.get("egress"):
                 text = wrap_untrusted(text, source="web")
             gathered_parts.append(text)
@@ -1205,6 +1311,8 @@ def attach_llm_capabilities(
         # public provider route; the outer ContextVar reset still isolates turns.
         if gathered_private:
             context["sensitivity"] = PRIVATE
+        if gathered_private_local:
+            _downgrade_cloud_egress_scope(context)
         _enrich_context(query, context)
         ctx_token = capability_context.set(context)
         try:

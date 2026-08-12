@@ -7,6 +7,18 @@ import time
 from .events import Mode
 
 
+class CloudEgressScope(str, Enum):
+    """Typed admission scope for a cloud-backed LLM call."""
+
+    CURRENT_TURN_ONLY = "current_turn_only"
+    LOCAL_ONLY = "local_only"
+
+
+CLOUD_EGRESS_SCOPE_CONTEXT_KEY = "cloud_egress_scope"
+SYNTHETIC_RESUME_TAIL_METADATA_KEY = "synthetic_resume_tail"
+RETAINED_PROMPT_CONTEXT_METADATA_KEY = "retained_prompt_context"
+
+
 class IntentKind(str, Enum):
     IGNORE = "ignore"
     STOP = "stop"

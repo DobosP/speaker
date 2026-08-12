@@ -78,6 +78,8 @@ class StageRegistry:
                 name="cloud",
                 purpose="Cloud LLM middle layer: providers, hedge chain, sensitivity routing, end-to-end integration.",
                 paths=(
+                    "tests/test_llm_egress_policy.py",
+                    "tests/test_websearch.py",
                     "tests/test_multi_provider_llm.py",
                     "tests/test_hedge_chain.py",
                     "tests/test_hedge_chain_advanced.py",

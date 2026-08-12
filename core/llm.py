@@ -21,15 +21,43 @@ from typing import (
     runtime_checkable,
 )
 
+from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    CloudEgressScope,
+)
+
 from .llm_threads import DEFAULT_LLM_THREAD_RESERVE, resolve_llamacpp_thread_pair
 
 # Per-turn context published by the capability layer so the LLM stack can
 # pick a routing chain (sensitivity / intent_kind / mode) without changing
-# the LLMClient protocol. Default is an empty mapping so callers that don't
-# set it always land on the safe-default chain.
+# the LLMClient protocol. Factory-managed cloud wrappers additionally require
+# an exact typed egress scope; the empty default therefore stays on-device.
 capability_context: ContextVar[Mapping[str, object]] = ContextVar(
     "speaker_capability_context", default={}
 )
+
+
+def snapshot_capability_context() -> dict[str, object]:
+    """Return a hook-free exact-dict snapshot of the current capability context.
+
+    Only an exact built-in ``dict`` containing exact built-in ``str`` keys is
+    copied.  A mapping subclass or non-exact key could otherwise run user code
+    during iteration/copying, so either shape is replaced with a minimal
+    local-only context instead.
+    """
+
+    context = capability_context.get()
+    if type(context) is dict:
+        try:
+            snapshot = dict.copy(context)
+            if all(type(key) is str for key in dict.keys(snapshot)):
+                return snapshot
+        except Exception:  # noqa: BLE001 - a racing mutation fails closed
+            pass
+    return {
+        CLOUD_EGRESS_SCOPE_CONTEXT_KEY: CloudEgressScope.LOCAL_ONLY,
+    }
+
 
 _ollama_log = logging.getLogger("speaker.llm.ollama")
 _hedge_log = logging.getLogger("speaker.llm.hedge")
@@ -2539,6 +2567,7 @@ class HedgeLLM:
         strategy: str = "hedge",
         hedge_delay_ms: int = 150,
         ttft_deadline_ms: int = 1200,
+        enforce_cloud_egress_scope: bool = False,
     ):
         self.local = local
         if cloud is None:
@@ -2550,6 +2579,10 @@ class HedgeLLM:
         self.strategy = strategy
         self.hedge_delay = max(0.0, hedge_delay_ms / 1000.0)
         self.ttft_deadline = max(0.0, ttft_deadline_ms / 1000.0)
+        # Factory-owned cloud wrappers require a positive exact per-turn scope.
+        # The default stays False for direct-construction compatibility, while
+        # an exact LOCAL_ONLY scope is honored in both modes.
+        self.enforce_cloud_egress_scope = bool(enforce_cloud_egress_scope)
         # Egress receipt (provenance): which source served the LAST stream --
         # "local" or "cloud_<i>" (the chain index), or None before any call. Lets a
         # caller record/surface whether an answer actually came from the device or a
@@ -2669,6 +2702,18 @@ class HedgeLLM:
             self.WINNER_SELECT_BUDGET_FLOOR,
         )
 
+    def _cloud_egress_admitted(self, context: Mapping[str, object]) -> bool:
+        """Return whether this exact captured turn may start a cloud provider."""
+
+        if type(context) is not dict:
+            return False
+        scope = dict.get(context, CLOUD_EGRESS_SCOPE_CONTEXT_KEY)
+        if scope is CloudEgressScope.LOCAL_ONLY:
+            return False
+        if self.enforce_cloud_egress_scope:
+            return scope is CloudEgressScope.CURRENT_TURN_ONLY
+        return True
+
     def stream(
         self,
         prompt: str,
@@ -2682,7 +2727,7 @@ class HedgeLLM:
         # until first iteration. Bind it at call time so an iterator created in a
         # task context keeps that turn's cancellation/routing metadata when a
         # different thread consumes it after the caller resets its ContextVar.
-        turn_context = dict(capability_context.get())
+        turn_context = snapshot_capability_context()
         return self._stream_captured(
             prompt,
             system=system,
@@ -2712,7 +2757,10 @@ class HedgeLLM:
             if hedge_delay_ms is None
             else max(0.0, hedge_delay_ms / 1000.0)
         )
-        if not self._clouds:
+        # Decide admission before allocating the shared queue or starting any
+        # worker thread.  A local-only call is a direct local stream: local
+        # failure/empty output cannot fall through to, or even start, cloud.
+        if not self._clouds or not self._cloud_egress_admitted(turn_context):
             self.last_source = "local"  # egress receipt: served on-device, no cloud
             local_kw: dict = {"system": system, "images": images}
             if history:
@@ -3016,7 +3064,7 @@ class SensitivityRouterLLM:
         self.default_chain = default_chain
 
     def _pick(self) -> "LLMClient":
-        ctx = capability_context.get()
+        ctx = snapshot_capability_context()
         name = self.selector.choose_chain(ctx) if self.selector is not None else self.default_chain
         return self.chains.get(name, self.chains[self.default_chain])
 

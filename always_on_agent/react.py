@@ -15,11 +15,12 @@ small structural protocol.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Event
 from typing import Callable, Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from .capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
+from .models import CLOUD_EGRESS_SCOPE_CONTEXT_KEY, CloudEgressScope
 from .planner_steps import (
     PlannerCall,
     PlannerExchange,
@@ -477,6 +478,7 @@ class ReactPlanner:
                 and isinstance(context, dict)
             ):
                 context["sensitivity"] = "private"
+                context[CLOUD_EGRESS_SCOPE_CONTEXT_KEY] = CloudEgressScope.LOCAL_ONLY
             steps_taken.append(action)
             exchange_text = ""
             exchange_untrusted = False

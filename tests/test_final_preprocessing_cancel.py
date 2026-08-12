@@ -13,10 +13,17 @@ import time
 
 import pytest
 
-from always_on_agent.continuation import ContinuationConfig
+from always_on_agent.continuation import CONTINUE, ContinuationConfig
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.memory import SessionMemory
-from always_on_agent.models import IntentDecision, IntentKind
+from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    SYNTHETIC_RESUME_TAIL_METADATA_KEY,
+    CloudEgressScope,
+    IntentDecision,
+    IntentKind,
+)
 from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
 from always_on_agent.supervisor import AgentSupervisor
 from core.addressing import ACT, LLMAddressingClassifier
@@ -26,6 +33,7 @@ from core.capability_router import (
     RESEARCH,
 )
 from core.cleanup import LLMTranscriptCleaner, ScriptedTranscriptCleaner
+from core.conversation import RecentContextConfig
 from core.engines.scripted import ScriptedEngine
 from core.llm import (
     EchoLLM,
@@ -924,6 +932,7 @@ class _FirstPretokenBlockedEcho:
         self.release_first = threading.Event()
         self.first_closed = threading.Event()
         self.prompts: list[str] = []
+        self.contexts: list[dict[str, object]] = []
         self._lock = threading.Lock()
 
     def generate(self, prompt, *, system=None, images=None):
@@ -932,6 +941,7 @@ class _FirstPretokenBlockedEcho:
     def stream(self, prompt, *, system=None, images=None):
         with self._lock:
             self.prompts.append(prompt)
+            self.contexts.append(dict(capability_context.get()))
             call = len(self.prompts)
         if call != 1:
             yield prompt
@@ -1011,6 +1021,7 @@ def test_accepted_preaudio_continuation_becomes_resume_query_after_barge():
             echo_guard_enabled=False,
             template="RESUME<{query}>",
         ),
+        recent_context_config=RecentContextConfig(enabled=False),
     )
     runtime.start(run_bus=True)
     try:
@@ -1049,8 +1060,59 @@ def test_accepted_preaudio_continuation_becomes_resume_query_after_barge():
         assert isinstance(synthetic_metadata, dict)
         assert synthetic_metadata.get("post_barge_response_only") is True
         assert synthetic_metadata.get("skip_user_memory") is True
+        assert synthetic_metadata.get(SYNTHETIC_RESUME_TAIL_METADATA_KEY) is True
+        resume_context = llm.contexts[2]
+        resume_task_metadata = resume_context.get("metadata")
+        assert isinstance(resume_task_metadata, dict)
+        assert resume_task_metadata.get(SYNTHETIC_RESUME_TAIL_METADATA_KEY) is True
+        assert (
+            resume_context.get(CLOUD_EGRESS_SCOPE_CONTEXT_KEY)
+            is CloudEgressScope.LOCAL_ONLY
+        )
+        assert (
+            SYNTHETIC_RESUME_TAIL_METADATA_KEY
+            not in runtime.supervisor.state.turn_metadata
+        )
     finally:
         llm.release_first.set()
+        runtime.stop()
+
+
+@pytest.mark.parametrize("response_only", [False, True])
+def test_current_user_and_generic_post_barge_turns_keep_current_egress_scope(
+    response_only,
+):
+    llm = _FirstPretokenBlockedEcho()
+    llm.release_first.set()
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        recent_context_config=RecentContextConfig(enabled=False),
+    )
+    runtime.start(run_bus=True)
+    try:
+        if response_only:
+            runtime.bus.publish(
+                AgentEvent.final(
+                    "answer this current utterance",
+                    metadata={"post_barge_response_only": True},
+                )
+            )
+        else:
+            engine.final("answer this current utterance")
+
+        assert _wait_until(lambda: len(llm.contexts) == 1)
+        assert runtime.wait_idle(timeout=2.0)
+        context = llm.contexts[0]
+        assert (
+            context.get(CLOUD_EGRESS_SCOPE_CONTEXT_KEY)
+            is CloudEgressScope.CURRENT_TURN_ONLY
+        )
+        metadata = context.get("metadata")
+        assert isinstance(metadata, dict)
+        assert SYNTHETIC_RESUME_TAIL_METADATA_KEY not in metadata
+    finally:
         runtime.stop()
 
 
@@ -1086,6 +1148,144 @@ def test_preaudio_reservation_marks_victim_superseded_before_gate_finishes():
         gate.release_second.set()
         llm.release_first.set()
         runtime.stop()
+
+
+class _AlwaysContinue:
+    realtime_safe = True
+
+    def classify(self, text, previous):
+        del text, previous
+        return CONTINUE
+
+
+def _continuation_victim(supervisor: AgentSupervisor, *, speaking: bool):
+    victim = supervisor.tasks.create_task(
+        IntentDecision(
+            kind=IntentKind.ASSISTANT,
+            confidence=1.0,
+            text="explain the moon phases",
+            reason="test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    victim.started_speaking = speaking
+    supervisor.state.active_tasks[victim.task_id] = victim
+    return victim
+
+
+def test_published_unheard_retained_prompt_marker_survives_reservation_lineage():
+    runtime = VoiceRuntime(
+        ScriptedEngine(),
+        EchoLLM(),
+        continuation_config=ContinuationConfig(enabled=True),
+    )
+    event = AgentEvent.final(
+        "explain the moon phases",
+        metadata={RETAINED_PROMPT_CONTEXT_METADATA_KEY: True},
+    )
+    runtime._note_published_unheard(  # noqa: SLF001
+        1,
+        "explain the moon phases",
+        7,
+        event,
+    )
+    try:
+        reservation = runtime._take_published_unheard(1)  # noqa: SLF001
+        assert reservation is not None
+        assert reservation.retained_prompt_context is True
+
+        extended = runtime.supervisor.extend_arrival_continuation(
+            reservation,
+            "make it shorter",
+        )
+        assert extended is not None
+        coalesced = runtime.supervisor.coalesce_arrival_continuation(
+            extended,
+            "make it shorter and use bullets",
+        )
+        _merged, metadata = runtime.supervisor.materialize_arrival_continuation(
+            coalesced,
+            "make it shorter and use bullets",
+        )
+        assert metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] is True
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("speaking", (False, True), ids=("merge", "queue"))
+def test_victim_retained_prompt_marker_survives_continuation_replacement(
+    monkeypatch,
+    speaking,
+):
+    supervisor = AgentSupervisor(
+        continuation_config=ContinuationConfig(enabled=True),
+        continuation=_AlwaysContinue(),
+    )
+    victim = _continuation_victim(supervisor, speaking=speaking)
+    victim.metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] = True
+    captured = []
+    if speaking:
+        monkeypatch.setattr(
+            supervisor,
+            "_queue_task",
+            lambda task: captured.append(task) or True,
+        )
+        monkeypatch.setattr(supervisor, "_start_queued_tasks", lambda: None)
+    else:
+        monkeypatch.setattr(
+            supervisor,
+            "_start_task",
+            lambda task, *args, **kwargs: captured.append(task) or True,
+        )
+
+    handled = supervisor._maybe_continue(  # noqa: SLF001
+        IntentDecision(
+            kind=IntentKind.ASSISTANT,
+            confidence=1.0,
+            text="make it shorter",
+            reason="test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+
+    assert handled is True
+    assert len(captured) == 1
+    assert captured[0].metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] is True
+
+
+def test_current_retained_prompt_marker_is_orred_into_folded_continuation():
+    supervisor = AgentSupervisor(
+        continuation_config=ContinuationConfig(enabled=True),
+        continuation=_AlwaysContinue(),
+    )
+    victim = _continuation_victim(supervisor, speaking=True)
+    pending = supervisor.tasks.create_task(
+        IntentDecision(
+            kind=IntentKind.ASSISTANT,
+            confidence=1.0,
+            text="make it shorter",
+            reason="test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    pending.metadata["continue_after"] = victim.task_id
+    supervisor.state.queued_tasks.append(pending)
+    supervisor.state.turn_metadata = {
+        RETAINED_PROMPT_CONTEXT_METADATA_KEY: True,
+    }
+
+    handled = supervisor._maybe_continue(  # noqa: SLF001
+        IntentDecision(
+            kind=IntentKind.ASSISTANT,
+            confidence=1.0,
+            text="and use bullets",
+            reason="test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+
+    assert handled is True
+    assert pending.metadata[RETAINED_PROMPT_CONTEXT_METADATA_KEY] is True
 
 
 @pytest.mark.parametrize(

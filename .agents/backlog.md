@@ -877,7 +877,8 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       gate, never authorize past it; these strings are not opaque provenance.
       Observer fields come from an exact-string snapshot, and ReAct invalidates
       missing sensitivity, non-exact Mappings, and non-string keys before copying;
-      absent compatibility is only for direct web calls reaching the raw gate.
+      absent compatibility is only at the direct `web.search` capability boundary
+      (including canonical deterministic SEARCH/RESEARCH) reaching the raw gate.
       Hostile mode/intent objects abstain as historical `None`, and disabled config
       blocks an injected backend. Only the configured backend-result prefix is
       normalized; malformed entries are skipped, or normalization failure returns
@@ -886,13 +887,56 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       inactivity, not total wall time. This closes only the
       2026-06-08g defence-in-depth review nit: same-process context/provider
       mutation, blocking-backend cancellation and parsed-response/trusted-limit/
-      value-size caps, heuristic raw false negatives, and PRIVATE cloud-LLM
-      routing remain. Frozen headless
-      receipts are 96 focused, 111 policy/context, 161 capability/observer, 150
+      value-size caps, and heuristic raw false negatives remain. ADR-0189 now
+      extends this boundary with retained-prompt and typed-scope vetoes for both
+      model and web egress; its frozen receipts, hashes, and audit closure are
+      recorded in the next item. Earlier headless receipts are 96 focused, 111
+      policy/context, 161 capability/observer, 150
       ReAct/untrusted/cancellation, and 6 APM/DTD; AST6/diff-check and scoped Ruff
       excluding the identical inherited React F401 are green, while all 37
       formatter hunks are base-identical with zero task-line overlap. No network,
       SearXNG, cloud/model, audio, device, or live path ran.
+- [x] **Retained prompt context → model/web egress — IMPLEMENTED AND VERIFIED
+      (ADR-0189).**
+      Current-turn post-ASR PRIVATE text remains eligible for its configured US
+      model chain. Canonical Assistant/research/ReAct calls carry exact typed
+      `CloudEgressScope`; capability entry mints `current_turn_only` only for an
+      absent key and never upgrades a present `local_only` or malformed value.
+      Composed/prepublished recent context, recall/profile/last-session/screen
+      recall, procedural rules, PRIVATE local/vault findings, accepted
+      substantive cleaner rewrites made with nonempty bounded prior-user
+      context, and synthetic resume prompts containing the prior query plus
+      actually spoken tail force monotonic `local_only` before any cloud
+      preallocation/member stream. The cleaner equivalence preserves Unicode
+      content while allowing only case/spacing/ASCII-punctuation changes;
+      context-free substantive rewrites remain eligible. Exact-True
+      `retained_prompt_context` persists through published-unheard,
+      reservation/merge/queue/fold continuation lineage into the exact task and
+      is then cleared from ambient state; downstream consumers treat reserved-key
+      presence as restrictive. `web.search` preserves absent scope for canonical
+      deterministic SEARCH/RESEARCH and direct compatibility, but any present
+      scope must be exact `current_turn_only`; retained-key presence, non-exact
+      metadata, non-string metadata keys, `local_only`, or malformed scope vetoes
+      before classifier/backend while unrelated exact-string metadata is ignored,
+      closing ReAct-generated public queries over retained context. Explicit
+      file/image and ambient/current images, public
+      already-egressed web findings, and static configured system/persona/tool
+      manifests keep existing policy. Direct/custom/raw providers, aliases, and
+      arbitrary same-process mutation remain outside the claim. The deliberate
+      case/spacing/ASCII-punctuation byte/covert channel, composer surfaces that
+      are not globally hook-free, shared `last_source` diagnostic race, and
+      untagged unexpected private-tool exception strings also remain. Frozen
+      fake/headless receipts pass 262 focused changed-surface, 275 exact cloud
+      stage, 101 declared adjacent, 1,196 broad policy/context/ReAct/vault, 103
+      resume integration, 314 imports, and 6 APM/DTD tests. AST13, scoped Ruff
+      `E9,F63,F7,F82`, diff-check, STATUS100, pre/post hashes, and the exact
+      19-path inventory are green; all 13 Python SHA-256 values are recorded in
+      ADR-0189. Independent security and architecture/adversarial reviews are
+      GO. Managed policy rejected three task-owned mechanical format
+      suggestions documented in the ADR, so no bytes changed and no
+      full-format-clean claim follows.
+      No network, SearXNG, cloud provider/model, GPU, audio, microphone, device,
+      or live path ran.
 
 ## Shipped this session (2026-06-02)
 - [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged

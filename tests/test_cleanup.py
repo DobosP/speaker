@@ -30,10 +30,28 @@ from core.cleanup import (
 )
 from core.engines.scripted import ScriptedEngine
 from core.llm import EchoLLM, LLMCallCancelled
-from core.runtime import VoiceRuntime, _cleaner_recent_user_context
+from core.runtime import (
+    VoiceRuntime,
+    _cleaner_policy_equivalent,
+    _cleaner_recent_user_context,
+)
 
 
 # --- Heuristic unit tests ----------------------------------------------------
+
+
+def test_cleaner_policy_equivalence_preserves_every_non_ascii_codepoint():
+    assert _cleaner_policy_equivalent(
+        "Hello, spaced world!",
+        "  hello spaced WORLD  ",
+    )
+    assert not _cleaner_policy_equivalent(
+        "tell me um about mars",
+        "tell me um about mars 秘密",
+    )
+    assert not _cleaner_policy_equivalent("status", "status ⁣")
+    assert not _cleaner_policy_equivalent("status", "status 🧭")
+
 
 def test_trailing_repeat_detects_single_word_repeat():
     assert has_trailing_repeat("tell me about Paris Paris")

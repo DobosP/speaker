@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import string
 import threading
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field, replace
 from threading import Event, Thread
@@ -15,6 +17,10 @@ from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
+from always_on_agent.models import (
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    SYNTHETIC_RESUME_TAIL_METADATA_KEY,
+)
 from always_on_agent.post_barge import PostBargeResponseGate
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.session_actor import PlaybackAdmission, TaskIdentity
@@ -96,6 +102,7 @@ _LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"}
 # It is normalized back to ``unknown`` before any event leaves the runtime.
 _LEGACY_TEXT_ORIGIN = "__legacy_text__"
 _CLEANER_RECENT_USER_LIMIT = 4
+_ASCII_CLEANER_POLICY_PUNCTUATION = frozenset(string.punctuation)
 
 
 def _cleaner_recent_user_context(memory: Memory) -> list[str]:
@@ -118,6 +125,44 @@ def _cleaner_recent_user_context(memory: Memory) -> list[str]:
             if type(item_text) is str and item_text.strip():
                 recent.append(item_text)
     return recent[-_CLEANER_RECENT_USER_LIMIT:]
+
+
+def _cleaner_policy_equivalent(raw: object, cleaned: object) -> bool:
+    """Whether cleanup changed only case, spacing, or ASCII punctuation.
+
+    Unlike the conversational ``normalize_text`` helper, this policy seam must
+    preserve CJK, emoji, combining marks, and bidi/control code points. Any
+    non-string output is conservatively a substantive rewrite.
+    """
+
+    if type(raw) is not str or type(cleaned) is not str:
+        return False
+
+    def canonical(value: str) -> str:
+        return "".join(
+            character
+            for character in unicodedata.normalize("NFC", value).casefold()
+            if (
+                not character.isspace()
+                and character not in _ASCII_CLEANER_POLICY_PUNCTUATION
+            )
+        )
+
+    return canonical(raw) == canonical(cleaned)
+
+
+def _has_retained_prompt_context_receipt(metadata: object) -> bool:
+    """Read one exact restrictive receipt without virtual mapping hooks."""
+
+    if type(metadata) is not dict:
+        return False
+    snapshot = dict.copy(metadata)
+    for key, _value in dict.items(snapshot):
+        if type(key) is not str:
+            return True
+        if key == RETAINED_PROMPT_CONTEXT_METADATA_KEY:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -1402,6 +1447,9 @@ class VoiceRuntime:
             victim_origin="unknown",
             victim_metrics_turn_token=metrics_turn_token,
             awaiting_addon=True,
+            retained_prompt_context=_has_retained_prompt_context_receipt(
+                event.payload.get("metadata")
+            ),
         )
         with self._input_generation_lock:
             # Only the latest committed-but-unresolved final can be continued;
@@ -2058,6 +2106,7 @@ class VoiceRuntime:
                             "input_generation": input_generation,
                             "post_barge_response_only": True,
                             "skip_user_memory": True,
+                            SYNTHETIC_RESUME_TAIL_METADATA_KEY: True,
                         },
                         acoustic=acoustic,
                         revision=revision,
@@ -2147,6 +2196,7 @@ class VoiceRuntime:
         # with the cleaned version (and the raw retained in 'raw') so the
         # user can audit every rewrite in run-<id>.summary.json.
         final_text = text
+        retained_prompt_context = False
         if self._cleaner is not None:
             try:
                 recent_for_cleaner = _cleaner_recent_user_context(self.memory)
@@ -2169,7 +2219,7 @@ class VoiceRuntime:
             # raw transcript. Casing/punctuation-only cleanup remains equivalent.
             if (
                 cleaned != text
-                and normalize_text(str(cleaned or "")) != normalize_text(text)
+                and not _cleaner_policy_equivalent(text, cleaned)
             ):
                 owner_verified = False
                 direct_user_instruction = False
@@ -2220,6 +2270,10 @@ class VoiceRuntime:
                         }},
                     )
                     final_text = cleaned
+                    retained_prompt_context = bool(
+                        recent_for_cleaner
+                        and not _cleaner_policy_equivalent(text, cleaned)
+                    )
         if (
             direct_user_instruction
             and self._device_tool_dispatcher is not None
@@ -2239,6 +2293,13 @@ class VoiceRuntime:
                     continuation,
                     final_text,
                 )
+            )
+            retained_prompt_context = bool(
+                retained_prompt_context
+                or continuation_metadata.get(
+                    RETAINED_PROMPT_CONTEXT_METADATA_KEY
+                )
+                is True
             )
 
         # Unified capability-router decision (the "middle layer"). It DRIVES
@@ -2444,6 +2505,11 @@ class VoiceRuntime:
                     "skip_user_memory": bool(
                         post_barge_response_only
                         or continuation_metadata.get("skip_user_memory", False)
+                    ),
+                    **(
+                        {RETAINED_PROMPT_CONTEXT_METADATA_KEY: True}
+                        if retained_prompt_context
+                        else {}
                     ),
                 },
                 acoustic=acoustic,

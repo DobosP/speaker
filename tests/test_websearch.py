@@ -26,7 +26,12 @@ from always_on_agent.capabilities import (
     create_default_capabilities,
 )
 from always_on_agent.events import Mode
-from always_on_agent.models import IntentKind
+from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    RETAINED_PROMPT_CONTEXT_METADATA_KEY,
+    CloudEgressScope,
+    IntentKind,
+)
 
 from core.sensitivity import CODE, PRIVATE, PUBLIC
 from core.websearch import (
@@ -138,6 +143,20 @@ class _SensitivityAliasKey:
     def __eq__(self, other):
         self.comparisons += 1
         return other == "sensitivity"
+
+
+class _RetainedMarkerAliasKey:
+    """A colliding nested key whose equality hook must never run."""
+
+    def __init__(self):
+        self.comparisons = 0
+
+    def __hash__(self):
+        return hash(RETAINED_PROMPT_CONTEXT_METADATA_KEY)
+
+    def __eq__(self, other):
+        self.comparisons += 1
+        raise AssertionError("nested retained-marker equality hook was invoked")
 
 
 class _ExplodingHit(dict):
@@ -260,6 +279,115 @@ def test_private_turn_context_vetoes_before_classifier_and_backend():
     assert result.data["egress"] is False
     assert result.data["sensitivity"] == PRIVATE
     assert result.data["source"] == "corpus"
+
+
+@pytest.mark.parametrize("marker_value", (True, False, "true", None))
+def test_retained_prompt_marker_vetoes_before_classifier_and_backend(marker_value):
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+    context = {
+        "sensitivity": PUBLIC,
+        CLOUD_EGRESS_SCOPE_CONTEXT_KEY: CloudEgressScope.CURRENT_TURN_ONLY,
+        "metadata": {RETAINED_PROMPT_CONTEXT_METADATA_KEY: marker_value},
+    }
+
+    result = registry.invoke("web.search", "weather in Berlin", context)
+
+    assert result.ok is True
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+    assert result.data["source"] == "corpus"
+
+
+def test_hostile_nested_metadata_key_fails_closed_without_equality_hook():
+    alias = _RetainedMarkerAliasKey()
+    tripwire = _Tripwire()
+    classifier = _CountingClassifier()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=tripwire,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": PUBLIC, "metadata": {alias: True}},
+    )
+
+    assert result.ok is True
+    assert alias.comparisons == 0
+    assert classifier.calls == 0
+    assert tripwire.calls == 0
+    assert result.data["egress"] is False
+
+
+@pytest.mark.parametrize(
+    ("scope", "permitted"),
+    (
+        (CloudEgressScope.CURRENT_TURN_ONLY, True),
+        (CloudEgressScope.LOCAL_ONLY, False),
+        (None, False),
+        ("current_turn_only", False),
+        ("local_only", False),
+        (_EqualityBomb(), False),
+    ),
+    ids=("current", "local", "none", "raw-current", "raw-local", "hostile"),
+)
+def test_present_cloud_scope_is_exact_and_restrictive(scope, permitted):
+    backend = _FakeSearxng(
+        [{"title": "result", "content": "safe hit", "url": "https://a/1"}]
+    )
+    classifier = _CountingClassifier()
+    registry = create_default_capabilities()
+    attach_web_search_capability(
+        registry,
+        _enabled_cfg(),
+        classify=classifier,
+        backend=backend,
+    )
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {
+            "sensitivity": PUBLIC,
+            CLOUD_EGRESS_SCOPE_CONTEXT_KEY: scope,
+            "metadata": {},
+        },
+    )
+
+    assert result.ok is True
+    assert classifier.calls == int(permitted)
+    assert backend.queries == (["weather in Berlin"] if permitted else [])
+    assert result.data["egress"] is permitted
+
+
+def test_absent_scope_and_empty_metadata_preserve_direct_web_compatibility():
+    backend = _FakeSearxng(
+        [{"title": "result", "content": "safe hit", "url": "https://a/1"}]
+    )
+    registry = _registry_with_web_search(_enabled_cfg(), backend)
+
+    result = registry.invoke(
+        "web.search",
+        "weather in Berlin",
+        {"sensitivity": PUBLIC, "metadata": {}},
+    )
+
+    assert result.ok is True
+    assert backend.queries == ["weather in Berlin"]
+    assert result.data["egress"] is True
 
 
 def test_falsey_private_context_survives_registry_normalization_and_vetoes():

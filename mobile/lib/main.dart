@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 
 import './asr.dart';
+import './agent_session.dart';
 import './assistant.dart';
 import './tts.dart';
 
@@ -16,8 +17,30 @@ void main() {
   runApp(const SpeakerApp());
 }
 
-class SpeakerApp extends StatelessWidget {
+class SpeakerApp extends StatefulWidget {
   const SpeakerApp({super.key});
+
+  @override
+  State<SpeakerApp> createState() => _SpeakerAppState();
+}
+
+class _SpeakerAppState extends State<SpeakerApp> {
+  late final AgentSession _session;
+
+  @override
+  void initState() {
+    super.initState();
+    _session = AgentSession();
+  }
+
+  @override
+  void dispose() {
+    // Flutter unmounts descendant screen State objects first. Their exact
+    // reply/listening/playback fences therefore run before this app-root
+    // session loses authority.
+    _session.close();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -27,13 +50,15 @@ class SpeakerApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: HomePage(session: _session),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({required this.session, super.key});
+
+  final AgentSession session;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -41,7 +66,17 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _index = 0;
-  static const _screens = [AssistantScreen(), AsrScreen(), TtsScreen()];
+  late final List<Widget> _screens;
+
+  @override
+  void initState() {
+    super.initState();
+    _screens = <Widget>[
+      AssistantScreen(session: widget.session),
+      const AsrScreen(),
+      const TtsScreen(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,9 +87,15 @@ class _HomePageState extends State<HomePage> {
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.auto_awesome), label: 'Assistant'),
+          NavigationDestination(
+            icon: Icon(Icons.auto_awesome),
+            label: 'Assistant',
+          ),
           NavigationDestination(icon: Icon(Icons.mic), label: 'Listen'),
-          NavigationDestination(icon: Icon(Icons.record_voice_over), label: 'Speak'),
+          NavigationDestination(
+            icon: Icon(Icons.record_voice_over),
+            label: 'Speak',
+          ),
         ],
       ),
     );

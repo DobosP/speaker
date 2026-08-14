@@ -331,12 +331,50 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    partial-length transcription barge remains separate, and the shared fixture
    keeps `nonstop`, `stopwatch`, `pit stop`, `stop sign`,
    `do not stop talking`, `quiet room`, `cancel culture`, and `don't stop`
-   non-STOP. Widget disposal calls neither app-global `AsrService.close()` nor
-   `TtsService.dispose()`; process-TTS ownership stays outside ADR-0203 in the
-   separate unlanded ADR-0200 composition candidate.
-   Listening-start `TtsService.instance.ensureReady()` remains an unawaited
-   best-effort request outside the listening adapter, not readiness or cleanup
-   evidence.
+   non-STOP.
+
+   ADR-0204 composes those exact owners beneath one app-root `AgentSession` and
+   one nullable no-wait `TtsProcessLease` for shipped speech-output paths in the
+   canonical Flutter UI isolate. Every mobile partial transition is semantic
+   ignore; an at-least-two-character partial while speaking remains a separate
+   generic acoustic barge request. Completed/typed STOP alone uses the exact
+   ASCII-normalized set `stop`, `cancel`, `cancel that`, `quiet`,
+   `stop talking`, `stop speaking`, and `be quiet`. Desktop intentionally keeps
+   exact STOP partial-authoritative while rejecting every other partial
+   decision, so no broad analyzer parity follows.
+
+   Missing/BUSY/revoked/poisoned speech output leaves semantic STOP, mode,
+   ignore, and unavailable effects usable. Every nonempty admitted final still
+   fences/cancels its predecessor exact reply. A new reply without exact turn/
+   reply/playback/lease
+   authority admits no new reply factory/listen, Gemma generation, TTS
+   synthesis, or AudioPlayer/playback work; predecessor cancellation/lower
+   cleanup may continue. A no-lease Assistant uses a capture-only listening
+   route with no AudioPlayer/TTS call; recorder capture configuration is not
+   proof of a configured/live playback route. With a lease, routing and every
+   token/UI/TTS callback rechecks exact authority. Assistant disposal leaves
+   the app-root session open, revokes its turn, starts reply/listening close,
+   revokes lease/player, then starts playback close before waits. It gates
+   recorder disposal on exact listening close and releases only after ordered
+   playback → player → TTS-service exact cleanup.
+
+   This owner covers shipped paths only in the canonical UI isolate.
+   It proves no operating-system/cross-engine/isolate/direct-plugin exclusion,
+   native destruction/return/preemption, route restoration, or device release.
+   Standalone `AsrScreen` bypasses Assistant's ASR/listening owner, so
+   cross-widget/process recorder/ASR exclusion during asynchronous cleanup is
+   unproved. Direct Speak lease wiring is source/compile/analyze-covered but has
+   no dedicated source-level wiring test.
+   A successful `TtsService.dispose(lease)` is a Dart/coordinator receipt, not
+   native shutdown or isolate-termination proof. Full Python priority/task/
+   tool/confirmation/memory convergence remains open. The frozen ADR-0200
+   candidate was never landed and is provenance only; ADR-0204 is the accepted
+   reconciled record and leaves ADR-0201/0202/0203 byte-stable.
+
+   The composition adds no acoustic/corpus artifact and changes only the
+   `commands.json` description, not its cases. It supplies no ASR-quality or
+   dataset-promotion evidence. The bounded English packet and separate Romanian
+   opt-in/model/tokenizer/normalization/metric work below remain open.
 
    The shipped mobile Zipformer is English-only. Shared control normalization
    lowercases, retains only ASCII `a-z` plus spaces, then collapses spaces and

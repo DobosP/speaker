@@ -249,6 +249,43 @@ def test_mode_switch_then_assistant_task_emits_tts_request():
     assert any(e.kind == EventKind.TTS_REQUEST for e in supervisor.state.event_log)
 
 
+def test_non_stop_partials_cannot_mutate_mode_confirm_or_start_work():
+    for index, text in enumerate(
+        ("research mode", "search for pipecat", "run backup", "yes", "no")
+    ):
+        supervisor = AgentSupervisor()
+        supervisor.state.mode = Mode.ASSISTANT
+        lineage = AcousticLineage.single(
+            AcousticSpan(
+                stream_id=f"partial-control-test-{index}",
+                utterance_id=f"partial-control-turn-{index}",
+                source=AcousticSource.SCRIPTED,
+            )
+        )
+
+        assert supervisor.publish(
+            AgentEvent.partial(text, acoustic=lineage, revision=1)
+        )
+        supervisor.drain()
+
+        assert supervisor.state.mode is Mode.ASSISTANT, text
+        assert supervisor.state.decisions[-1].kind is IntentKind.IGNORE, text
+        assert supervisor.state.decisions[-1].reason == "partial_non_control", text
+        assert not supervisor.state.active_tasks, text
+        assert not supervisor.state.queued_tasks, text
+        assert not any(
+            event.kind
+            in {
+                EventKind.CONTROL_MODE,
+                EventKind.CONTROL_CONFIRM,
+                EventKind.CONTROL_DENY,
+                EventKind.TASK_STARTED,
+                EventKind.TTS_REQUEST,
+            }
+            for event in supervisor.state.event_log
+        ), text
+
+
 def test_passive_mode_ignores_unprefixed_final_text():
     supervisor = AgentSupervisor()
 

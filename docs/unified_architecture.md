@@ -950,9 +950,9 @@ additionally gets one explicit owner-port stop attempt. None proves native
 cleanup, termination, or return. Flutter dispose only initiates upper close because it
 cannot await. Neither owner crosses FlutterEngine/Dart-isolate boundaries or
 proves plugin/native return. The frozen ADR-0202 slice left legacy substring
-STOP open; ADR-0203 below closes completed/typed STOP while generic partial
-barge and the broader ADR-0200 `AgentSession`/process-TTS composition remain
-separate/open.
+STOP and app-session/process-TTS composition open at that point. ADR-0203 below
+closes completed/typed substring STOP; ADR-0204 later performs the app-session/
+UI-isolate speech composition without changing this historical proof boundary.
 
 ADR-0203 adds an independent exact audio-input seam. `AsrService.instance`
 remains app-lifetime and issues opaque owner-keyed `AsrSession`s. New worker
@@ -982,11 +982,8 @@ end, and exact-session cleanup—never plugin/device/native return. The revoke
 callback fences reply/playback before any stale-UI guard. Dispose starts reply,
 listening, and playback closes synchronously and disposes the recorder only
 behind exact local listening close. It calls neither app-global
-`AsrService.close()` nor `TtsService.dispose()`; process-TTS ownership remains
-in the separate unlanded ADR-0200 composition candidate. Cross-widget/process
-recorder/player exclusion remains unproved. The listening-start
-`TtsService.instance.ensureReady()` request is unawaited, best-effort warming
-outside that adapter and supplies no readiness or cleanup authority.
+`AsrService.close()` nor independently owns app-global TTS. Cross-widget/
+process recorder/player exclusion remains unproved at that ADR boundary.
 
 Completed ASR endpoints and typed input now use only shared exact
 `isStopCommand`; substring STOP is removed. A partial of at least two characters
@@ -996,6 +993,70 @@ keeps `nonstop`, `stopwatch`, `pit stop`, `stop sign`,
 non-STOP. Lifecycle receipts retain no PCM/transcript/token/raw exception, but
 the Assistant still retains and renders partials, utterances, answers, and
 bounded logs, so no app-wide transcript-privacy claim follows.
+
+ADR-0204 composes these exact owners beneath one `SpeakerApp`-root
+`AgentSession` that survives canonical Assistant widget reconstruction, plus
+one nullable no-wait `TtsProcessLease` for covered shipped speech-output paths
+in the canonical Flutter UI isolate. The bounded session validates raw input at
+16 KiB UTF-8 before trim/retention and atomically publishes STT, intent, optional
+control, mode, input/event ordinals, and one opaque current `AgentTurn`; it
+retains no transcript/event history. Search, research, command, dictation, and
+meeting work decisions remain typed-unavailable and gain no Python capability.
+
+Every mobile partial is first committed as semantic ignore, including text that
+normalizes to STOP, mode, confirmation, denial, or work syntax. While speaking,
+the separate nonempty at-least-two-character path may still request generic
+acoustic barge-in, without command authority. Mobile completed/typed STOP alone
+uses the ASCII-normalized exact set `stop`, `cancel`, `cancel that`, `quiet`,
+`stop talking`, `stop speaking`, and `be quiet`. Desktop intentionally remains
+asymmetric: its exact STOP set stays partial-authoritative, while a separate
+guard rejects every other partial decision. The existing desktop
+`tests/golden/speech_analyzer_contract.json` is unchanged desktop evidence, not
+mobile or broad analyzer parity.
+
+Missing, BUSY, revoked, or poisoned speech output cannot suppress semantic
+STOP, mode, ignore, or unavailable effects. Every nonempty admitted final still
+fences/cancels its predecessor exact reply before effect dispatch. A new reply
+without an exact current turn, reply generation/owner, playback generation/owner, and live
+lease interrupts its turn before new reply factory/listen, Gemma generation,
+TTS synthesis, AudioPlayer/playback admission, plugin, or native work;
+predecessor cancellation/lower cleanup may continue. Without a lease, listening
+follows a capture-only route: it makes no AudioPlayer or TTS call, and the
+recorder's `voiceCommunication` capture configuration is not proof of a
+configured or live global playback route. With a lease, global route work is
+serialized and rechecks exact authority after its await. Direct Speak/replay
+shares the no-wait UI-isolate lease but remains outside session semantic
+authority.
+
+Handling each nonempty admitted final from completed ASR or typed input commits
+the session transition before cleanup waits,
+clears/cancels the exact reply before playback supersession, and rechecks exact
+turn/playback/lease authority before reply dispatch. Barge fences session turn
+and reply before playback-stop deduplication. Dispose leaves the app-root
+session open for a successor widget, revokes its turn, synchronously starts
+reply/listening close, revokes lease/player, and then starts playback close
+before waits. It gates recorder disposal on exact listening close and releases
+the lease only after ordered playback → player → `TtsService` exact Dart
+cleanup. A successful
+`TtsService.dispose(lease)` is not native-shutdown or isolate-termination proof.
+
+The registry covers only shipped paths in the canonical Flutter UI isolate. It
+does not exclude another FlutterEngine, headless engine, Dart isolate, direct
+service/plugin caller, or arbitrary native recorder/player; no stop, dispose,
+acknowledgement, timeout, or isolate exit proves native destruction, return,
+preemption, route restoration, or device release. Standalone `AsrScreen`
+bypasses Assistant's ASR/listening owner, so cross-widget/process recorder/ASR
+exclusion during asynchronous cleanup is unproved. Direct Speak registry
+participation is source/compile/analyze-covered but has no dedicated source-
+level wiring test. The sentence queue remains unbounded. Full Python priority
+bus, supervisor/task, tools/capabilities, staged confirmation, memory, payload,
+and general Unicode convergence remains open. The frozen file named ADR-0200
+was never landed and is provenance only;
+ADR-0204 is the accepted hand-composed record, and ADR-0201/0202/0203 remain
+byte-stable. The composition adds no acoustic/corpus artifact and changes only
+the `commands.json` description, not cases; it supplies no ASR-quality or
+dataset-promotion evidence. The bounded English packet and separate Romanian
+opt-in/model/tokenizer/normalization/metric plan remain open.
 
 The current mobile Zipformer is English-only. Shared control normalization
 lowercases, retains only ASCII `a-z` plus spaces, then collapses spaces and
@@ -1013,9 +1074,7 @@ metric decision. This is future test data, not evidence from ADR-0203.
 
 `remote/worker.py` currently mints a token and forwards to `core.app` with hidden `--engine livekit`. The canonical entry and promotion policy are recorded in ADR-0096 and ADR-0097.
 
-**Design decision (from code review §6):** "share the contract + tests, not a binary core." The Python core and Dart mobile shell each re-derive the brain in their own language (`core/capabilities.py` vs `mobile/lib/assistant.dart`'s hot loops for sentence boundaries and the command fast-path). The golden suite (~95% of "one source of truth") is cheaper than FFI/IPC and keeps both shells independent. Drift surfaces immediately in CI.
-
-Mobile is a parallel Dart loop today; the planned convergence onto the `AgentEvent` contract (from `always_on_agent/events.py`, see [§1](#1--system-shape--topology)) is an **open cross-platform roadmap item** (not part of the voice-latency Phase 2) — it would align the Dart supervisor with the Python one and make the contract duplication disappear (tracked in [§12](#12--known-gaps--roadmap) "Open high-value work").
+**Design decision (from code review §6):** "share the contract + tests, not a binary core." The first bounded mobile `AgentEvent`/`AgentSession` decision spine is now landed, but it remains a deliberately narrow mobile projection. ADR-0204 adds app-root semantic identity and canonical-UI-isolate speech ownership without porting the Python priority bus, supervisor/task plane, tools/capabilities, staged confirmation, memory, wire payloads, or general analyzer/Unicode semantics. The exact completed/typed ASCII STOP slice is shared; mobile makes every partial semantic-ignore, while desktop intentionally retains exact partial STOP. The remaining control-plane convergence is tracked in [§12](#12--known-gaps--roadmap) "Open high-value work".
 
 ---
 
@@ -1277,7 +1336,7 @@ Ranked by field impact:
 5. **Multi-participant `remote/` test** — barge-in calls a global `supervisor.cancel_all()` with no session scoping; two participants would cancel each other's work. No test exists. **(M effort, coverage gap)**
 6. **Run-bundle PII/retention policy** — private bundles are ignored and stay
    local, but their verbatim content has no automatic redaction/TTL. **(S effort, hygiene)**
-7. **Complete mobile Dart → `AgentEvent` convergence** — ADR-0186/0201/0202/0203 now bound standalone TTS playback, lower Gemma chat lifecycle, exact Assistant reply subscription, and exact ASR/listening resources. Completed/typed STOP matches the shared exact contract, but `mobile/lib/assistant.dart` remains a parallel Dart loop; partial-length generic barge is intentionally separate. The broader ADR-0200 `AgentSession`/process-TTS composition is unlanded; aligning the Dart supervisor, priority/task plane, capabilities/confirmation authority, modes, and memory with declared Python contract slices remains open. **(L effort, cross-platform; see [§10](#10--cross-platform-contract--mobile))**
+7. **Complete mobile Dart → Python control-plane convergence** — ADR-0186 and ADR-0201/0202/0203/0204 now bound playback, lower Gemma chat, exact reply, ASR/listening, one app-root mobile session projection, and covered shipped speech output in the canonical UI isolate. Mobile completed/typed STOP uses the shared exact ASCII contract, every mobile partial is semantic-ignore, and generic acoustic barge remains separate; desktop exact partial STOP is an intentional asymmetry. What remains is the Python priority/event bus, supervisor/task queue, capabilities/tools and confirmation authority, modes beyond the bounded projection, memory, payload parity, and platform-native cross-engine resource ownership. **(L effort, cross-platform; see [§10](#10--cross-platform-contract--mobile))**
 
 ### Known latent risks (not blockers yet)
 
@@ -1406,9 +1465,10 @@ cleanup proof. The lower owner prevents successor Dart chat construction until
 predecessor true source terminal plus successful exact chat close; a revoked
 entered predecessor additionally gets one explicit owner-port stop attempt.
 None proves native cleanup, termination, or return. Dispose
-initiates close unawaited. That frozen slice left legacy substring STOP,
-native/plugin/live proof, and ADR-0200 composition open; ADR-0203 next closes
-completed/typed substring STOP without changing this historical record. See
+initiates close unawaited. That frozen slice left legacy substring STOP and
+app-session/process-TTS composition open at that point. ADR-0203 next closes
+completed/typed substring STOP; ADR-0204 later composes the app session and
+UI-isolate speech owner without changing this historical record. See
 [`ADR-0202`](adr/0202-own-assistant-reply-subscription.md).
 
 35. **Own exact mobile ASR sessions and serialize Assistant listening
@@ -1429,12 +1489,40 @@ reply/playback before any stale-UI guard; recorder disposal requires that
 close. Completed/typed STOP uses the shared exact contract. The eight
 substring-bearing negative fixtures remain non-STOP, and widget dispose owns
 neither app-global ASR nor TTS close. Plugin/device/live, cross-widget
-recorder/player exclusion, ASR quality, multilingual/Romanian, full
-`AgentEvent`, and the separate unlanded ADR-0200 composition remain outside.
+recorder/player exclusion, ASR quality, multilingual/Romanian, and the broader
+Python control plane remain outside. ADR-0204 later composes the bounded app
+session and covered UI-isolate speech owner without strengthening those limits.
 The current Zipformer is English-only. Control normalization lowercases,
 retains only ASCII `a-z` plus spaces, then collapses spaces and trims; digits and
 non-ASCII characters are discarded. See
 [`ADR-0203`](adr/0203-own-mobile-asr-session-and-listening-lifecycle.md).
+
+36. **Compose the app-root mobile session with canonical-UI-isolate speech
+ownership (2026-08-14).** One app-root `AgentSession` owns the bounded atomic
+mobile semantic transition across Assistant reconstruction. All mobile partials
+are semantic ignore; generic acoustic barge remains separate, and only
+completed/typed input uses the exact seven-command ASCII STOP set. Desktop
+keeps exact partial STOP and rejects all other partial decisions, intentionally
+without broad analyzer parity. The existing desktop speech-analyzer golden
+remains unchanged desktop evidence.
+
+One nullable no-wait `TtsProcessLease` covers shipped Assistant and Speak/replay
+output in the canonical UI isolate. Missing/BUSY output preserves semantic
+controls. Every nonempty admitted final still fences/cancels its predecessor exact reply; a new
+reply without exact turn/reply/playback/lease authority admits no new reply
+factory/listen, Gemma generation, TTS synthesis, or AudioPlayer/playback work,
+though predecessor cancellation/lower cleanup may continue. No-lease listening
+is capture-only with no AudioPlayer/TTS call. Disposal starts reply/listening
+close, revokes lease/player, then starts playback close before waits. Exact
+lease cleanup orders playback → player → TTS service; ambiguous cleanup retains
+BUSY/poison. Its Dart receipt proves neither native shutdown nor isolate
+termination. No cross-engine/isolate/direct/native exclusion or return follows.
+Standalone `AsrScreen` bypasses the Assistant owner, and direct Speak wiring
+lacks a dedicated source-level test. No full Python plane, Romanian/general
+Unicode, or plugin/model/device/live claim follows. Frozen ADR-0200 was never landed;
+ADR-0204 is the accepted hand-composed record and ADR-0201/0202/0203 remain
+byte-stable. See
+[`ADR-0204`](adr/0204-compose-mobile-session-and-ui-isolate-speech-ownership.md).
 
 ---
 

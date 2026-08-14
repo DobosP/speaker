@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
 import './asr_isolate.dart';
+import './agent_session.dart';
 import './assistant_listening_owner.dart';
 import './assistant_reply_owner.dart';
 import './audio_capture_config.dart';
@@ -27,6 +28,7 @@ import './llm.dart';
 import './llm_generation_owner.dart';
 import './tts_isolate.dart';
 import './tts_playback_owner.dart';
+import './tts_process_owner.dart';
 import './utils.dart';
 
 AudioContext _voicePlaybackContext() => AudioContext(
@@ -47,11 +49,13 @@ bool _assistantPromptFitsBound(String text) {
 
 final class _AssistantTtsClipState {
   _AssistantTtsClipState({
+    required this.lease,
     required this.player,
     required this.started,
     required this.terminal,
   });
 
+  final TtsProcessLease lease;
   final AudioPlayer player;
   final Completer<TtsPlaybackResult> started;
   final Completer<TtsPlaybackTerminal> terminal;
@@ -68,13 +72,45 @@ final class _AssistantTtsClipState {
 /// trying to infer which play produced an event on one shared stream.
 final class _AssistantTtsPlayer {
   _AssistantTtsClipState? _current;
+  Future<void> _routeTail = Future<void>.value();
+  bool _routeExact = true;
   bool _closed = false;
 
-  Future<void> configureGlobalRoute() =>
-      AudioPlayer.global.setAudioContext(_voicePlaybackContext());
+  Future<bool> configureGlobalRoute(TtsProcessLease lease) {
+    if (_closed || !ttsProcessOwnerRegistry.ownsExact(lease)) {
+      return Future<bool>.value(false);
+    }
+    final completed = Completer<bool>();
+    final operation = _runRoute(_routeTail, lease, completed);
+    _routeTail = operation;
+    return completed.future;
+  }
 
-  TtsPlaybackClip createClip(String path) {
+  Future<void> _runRoute(
+    Future<void> previous,
+    TtsProcessLease lease,
+    Completer<bool> completed,
+  ) async {
+    await previous;
+    if (_closed || !ttsProcessOwnerRegistry.ownsExact(lease)) {
+      completed.complete(false);
+      return;
+    }
+    try {
+      await AudioPlayer.global.setAudioContext(_voicePlaybackContext());
+    } catch (_) {
+      _routeExact = false;
+      completed.complete(false);
+      return;
+    }
+    completed.complete(!_closed && ttsProcessOwnerRegistry.ownsExact(lease));
+  }
+
+  TtsPlaybackClip createClip(TtsProcessLease lease, String path) {
     if (_closed) throw StateError('mobile TTS player is closed');
+    if (!ttsProcessOwnerRegistry.ownsExact(lease)) {
+      throw StateError('mobile speech ownership is unavailable');
+    }
     if (_current != null) {
       throw StateError('previous mobile TTS clip is not released');
     }
@@ -82,6 +118,7 @@ final class _AssistantTtsPlayer {
     final started = Completer<TtsPlaybackResult>();
     final terminal = Completer<TtsPlaybackTerminal>();
     final state = _AssistantTtsClipState(
+      lease: lease,
       player: AudioPlayer(),
       started: started,
       terminal: terminal,
@@ -103,9 +140,7 @@ final class _AssistantTtsPlayer {
         },
         onError: (Object error, StackTrace stackTrace) {
           if (!terminal.isCompleted) {
-            terminal.complete(
-              TtsPlaybackTerminal.failed(error, stackTrace),
-            );
+            terminal.complete(TtsPlaybackTerminal.failed(error, stackTrace));
           }
         },
         onDone: () {
@@ -140,7 +175,13 @@ final class _AssistantTtsPlayer {
 
   Future<void> _start(_AssistantTtsClipState state, String path) async {
     try {
+      if (!ttsProcessOwnerRegistry.ownsExact(state.lease)) {
+        throw StateError('mobile speech ownership was revoked');
+      }
       await state.player.setAudioContext(_voicePlaybackContext());
+      if (!ttsProcessOwnerRegistry.ownsExact(state.lease)) {
+        throw StateError('mobile speech ownership was revoked');
+      }
       await state.player.play(DeviceFileSource(path));
       if (!state.started.isCompleted) {
         state.started.complete(const TtsPlaybackResult.success());
@@ -150,16 +191,12 @@ final class _AssistantTtsPlayer {
         state.started.complete(TtsPlaybackResult.failure(error, stackTrace));
       }
       if (!state.terminal.isCompleted) {
-        state.terminal.complete(
-          TtsPlaybackTerminal.failed(error, stackTrace),
-        );
+        state.terminal.complete(TtsPlaybackTerminal.failed(error, stackTrace));
       }
     }
   }
 
-  Future<TtsPlaybackResult> _stopAndRelease(
-    _AssistantTtsClipState state,
-  ) {
+  Future<TtsPlaybackResult> _stopAndRelease(_AssistantTtsClipState state) {
     final existing = state.cleanup;
     if (existing != null) return existing;
 
@@ -177,9 +214,7 @@ final class _AssistantTtsPlayer {
     return completed.future;
   }
 
-  Future<TtsPlaybackResult> _runCleanup(
-    _AssistantTtsClipState state,
-  ) async {
+  Future<TtsPlaybackResult> _runCleanup(_AssistantTtsClipState state) async {
     Object? stopError;
     StackTrace? stopStackTrace;
     try {
@@ -230,16 +265,41 @@ final class _AssistantTtsPlayer {
     );
   }
 
-  Future<bool> close() async {
+  /// Synchronously fence every future route and player construction.
+  void revoke() {
     _closed = true;
+  }
+
+  Future<bool> close() async {
+    revoke();
+    await _routeTail;
     final current = _current;
-    if (current == null) return true;
-    return (await current.handle.stopAndRelease()).succeeded;
+    if (current == null) return _routeExact;
+    final playerExact = (await current.handle.stopAndRelease()).succeeded;
+    return _routeExact && playerExact;
   }
 }
 
 typedef _AssistantListeningGeneration
     = AssistantListeningGeneration<AsrSession, _AssistantListeningCapture>;
+
+final class _AssistantReplyAdmission {
+  const _AssistantReplyAdmission({
+    required this.prompt,
+    required this.transition,
+    required this.turn,
+    required this.lease,
+    required this.playback,
+    required this.playbackGeneration,
+  });
+
+  final String prompt;
+  final AgentSessionTransition transition;
+  final AgentTurn turn;
+  final TtsProcessLease lease;
+  final TtsPlaybackOwner playback;
+  final TtsPlaybackGeneration playbackGeneration;
+}
 
 /// One exact recorder stream and its immutable ASR authority.
 ///
@@ -295,11 +355,13 @@ final class _AssistantListeningCapture {
     if (_terminal.isCompleted || _failureRequested) return;
     _failureRequested = true;
     final cancellation = cancelSource();
-    unawaited(cancellation.then<void>((succeeded) {
-      if (succeeded && !_terminal.isCompleted) {
-        _terminal.complete(AssistantListeningCaptureTerminal.failed);
-      }
-    }));
+    unawaited(
+      cancellation.then<void>((succeeded) {
+        if (succeeded && !_terminal.isCompleted) {
+          _terminal.complete(AssistantListeningCaptureTerminal.failed);
+        }
+      }),
+    );
   }
 
   Future<bool> cancelSource() {
@@ -310,22 +372,27 @@ final class _AssistantListeningCapture {
     _cancelFuture = result;
 
     unawaited(
-      _subscription.future.then<void>((subscription) {
-        if (subscription == null) {
-          completer.complete(!_subscriptionUncertain);
-          return;
-        }
-        Future<void>.sync(subscription.cancel).then<void>(
-          (_) => completer.complete(true),
-          onError: (_error, _stackTrace) => completer.complete(false),
-        );
-      }, onError: (_error, _stackTrace) {
-        completer.complete(false);
+      _subscription.future.then<void>(
+        (subscription) {
+          if (subscription == null) {
+            completer.complete(!_subscriptionUncertain);
+            return;
+          }
+          Future<void>.sync(subscription.cancel).then<void>(
+            (_) => completer.complete(true),
+            onError: (_error, _stackTrace) => completer.complete(false),
+          );
+        },
+        onError: (_error, _stackTrace) {
+          completer.complete(false);
+        },
+      ),
+    );
+    unawaited(
+      result.then<void>((succeeded) {
+        _cancelSucceeded = succeeded;
       }),
     );
-    unawaited(result.then<void>((succeeded) {
-      _cancelSucceeded = succeeded;
-    }));
     return result;
   }
 
@@ -344,9 +411,11 @@ final class _AssistantListeningCapture {
     } catch (_) {
       completer.complete(false);
     }
-    unawaited(result.then<void>((succeeded) {
-      _stopSucceeded = succeeded;
-    }));
+    unawaited(
+      result.then<void>((succeeded) {
+        _stopSucceeded = succeeded;
+      }),
+    );
     return result;
   }
 
@@ -381,15 +450,18 @@ final class _AssistantListeningPluginLifecycle
     required AudioRecorder recorder,
     required _AssistantTtsPlayer ttsPlayer,
     required AsrService asrService,
+    required TtsProcessLease? Function() speechLease,
     required WeakReference<_AssistantScreenState> state,
   })  : _recorder = recorder,
         _ttsPlayer = ttsPlayer,
         _asr = asrService,
+        _speechLease = speechLease,
         _state = state;
 
   final AudioRecorder _recorder;
   final _AssistantTtsPlayer _ttsPlayer;
   final AsrService _asr;
+  final TtsProcessLease? Function() _speechLease;
   final WeakReference<_AssistantScreenState> _state;
   final Map<_AssistantListeningGeneration, AsrSession> _sessions =
       Map<_AssistantListeningGeneration, AsrSession>.identity();
@@ -409,10 +481,17 @@ final class _AssistantListeningPluginLifecycle
       _recorder.hasPermission();
 
   @override
-  Future<bool> configureRoute(
-    _AssistantListeningGeneration generation,
-  ) async {
-    await _ttsPlayer.configureGlobalRoute();
+  Future<bool> configureRoute(_AssistantListeningGeneration generation) async {
+    final lease = _speechLease();
+    // Capture uses its own voice-communication configuration. Speech output
+    // being busy or unavailable must not suppress ASR/session controls, and no
+    // AudioPlayer global/plugin call is made without exact speech authority.
+    if (lease == null || !lease.admitsWork) return true;
+    final configured = await _ttsPlayer.configureGlobalRoute(lease);
+    if (!configured) {
+      lease.revoke();
+      _state.target?._onSpeechUnavailable('speech_route_failed');
+    }
     return true;
   }
 
@@ -421,11 +500,7 @@ final class _AssistantListeningPluginLifecycle
     late final AsrSession exactSession;
     exactSession = _asr.beginSession(
       onPartial: (partial) {
-        _state.target?._onListeningPartial(
-          generation,
-          exactSession,
-          partial,
-        );
+        _state.target?._onListeningPartial(generation, exactSession, partial);
       },
       onEndpoint: (utterance) {
         _state.target?._onListeningEndpoint(
@@ -479,17 +554,10 @@ final class _AssistantListeningPluginLifecycle
     final exactSession = session;
     try {
       final subscription = audioStream.listen(
-        (chunk) => _onCaptureData(
-          capture,
-          exactGeneration,
-          exactSession,
-          chunk,
-        ),
-        onError: (_error, _stackTrace) => _onCaptureError(
-          capture,
-          exactGeneration,
-          exactSession,
-        ),
+        (chunk) =>
+            _onCaptureData(capture, exactGeneration, exactSession, chunk),
+        onError: (_error, _stackTrace) =>
+            _onCaptureError(capture, exactGeneration, exactSession),
         onDone: capture.publishEnded,
         cancelOnError: false,
       );
@@ -512,10 +580,7 @@ final class _AssistantListeningPluginLifecycle
     if (!_isExactCapture(capture, exactGeneration, exactSession)) return;
     final state = _state.target;
     if (state == null ||
-        !state._listeningCallbackIsCurrent(
-          exactGeneration,
-          exactSession,
-        )) {
+        !state._listeningCallbackIsCurrent(exactGeneration, exactSession)) {
       return;
     }
     if (!_asr.feed(exactSession, chunk)) {
@@ -589,14 +654,14 @@ final class _AssistantListeningPluginLifecycle
       return;
     }
     capture._retirementWatchInstalled = true;
-    unawaited(Future.wait<bool>(<Future<bool>>[cancellation, stop]).then<void>(
-      (_) {
+    unawaited(
+      Future.wait<bool>(<Future<bool>>[cancellation, stop]).then<void>((_) {
         if (capture.exactCleanupSucceeded &&
             identical(_captureLanes[capture.generation], capture)) {
           _captureLanes.remove(capture.generation);
         }
-      },
-    ));
+      }),
+    );
   }
 
   @override
@@ -626,7 +691,9 @@ final class _AssistantListeningPluginLifecycle
 }
 
 class AssistantScreen extends StatefulWidget {
-  const AssistantScreen({super.key});
+  const AssistantScreen({required this.session, super.key});
+
+  final AgentSession session;
 
   @override
   State<AssistantScreen> createState() => _AssistantScreenState();
@@ -635,13 +702,16 @@ class AssistantScreen extends StatefulWidget {
 class _AssistantScreenState extends State<AssistantScreen> {
   final _promptController = TextEditingController();
   final _ttsPlayer = _AssistantTtsPlayer();
+  late final WeakReference<_AssistantScreenState> _stateReference;
   late final _AssistantListeningPluginLifecycle _listeningLifecycle;
   late final AssistantListeningOwner<AsrSession, _AssistantListeningCapture>
       _listeningOwner;
   _AssistantListeningGeneration? _listeningGeneration;
   late final AssistantReplyOwner _replyOwner;
   AssistantReplyGeneration? _replyGeneration;
-  late final TtsPlaybackOwner _ttsPlayback;
+  AgentTurn? _agentTurn;
+  TtsProcessLease? _speechLease;
+  TtsPlaybackOwner? _ttsPlayback;
   Future<bool>? _speechStopInFlight;
   TtsPlaybackGeneration? _speechStopGeneration;
   bool _disposing = false;
@@ -662,8 +732,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _alwaysOn = false;
   bool _listening = false; // mic stream currently active
   bool _speaking = false; // TTS work/physical uncertainty (barge-in target)
-  int _turn = 0; // increments per utterance; a newer turn supersedes older gen
-
   // Barge-in sensitivity: how many recognized characters during playback count
   // as "the user is talking" and should cut the assistant off. Tune per device:
   // lower = snappier but more prone to false trips from residual echo.
@@ -714,11 +782,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
   @override
   void initState() {
     super.initState();
-    final state = WeakReference<_AssistantScreenState>(this);
+    final state = _stateReference = WeakReference<_AssistantScreenState>(this);
+    _tryAcquireSpeechOwner();
     _listeningLifecycle = _AssistantListeningPluginLifecycle(
       recorder: AudioRecorder(),
       ttsPlayer: _ttsPlayer,
       asrService: AsrService.instance,
+      speechLease: () => state.target?._liveSpeechLease,
       state: state,
     );
     _listeningOwner =
@@ -734,39 +804,100 @@ class _AssistantScreenState extends State<AssistantScreen> {
         state.target?._onListeningStopped(generation);
       },
     );
-    _replyOwner = AssistantReplyOwner(
-      openReply: GemmaService.instance.reply,
-    );
-    _ttsPlayback = TtsPlaybackOwner(
+    _replyOwner = AssistantReplyOwner(openReply: GemmaService.instance.reply);
+    // Probe disk so the button/status reflect whether a network download is
+    // actually needed (the model persists across reinstalls).
+    GemmaService.instance.isModelPresent().then<void>((present) {
+      final target = state.target;
+      if (target == null || target._disposing || !target.mounted) return;
+      target.setState(() => target._modelPresent = present);
+    }, onError: (_error, _stackTrace) {});
+  }
+
+  TtsProcessLease? get _liveSpeechLease {
+    final lease = _speechLease;
+    return lease != null && lease.admitsWork ? lease : null;
+  }
+
+  bool _speechOwnerIsCurrent(
+    TtsProcessLease lease,
+    TtsPlaybackOwner playback,
+  ) =>
+      !_disposing &&
+      identical(_speechLease, lease) &&
+      lease.admitsWork &&
+      identical(_ttsPlayback, playback) &&
+      !playback.snapshot.closed &&
+      !playback.snapshot.poisoned;
+
+  bool _tryAcquireSpeechOwner() {
+    if (_disposing) return false;
+    final existingLease = _speechLease;
+    final existingPlayback = _ttsPlayback;
+    if (existingLease != null || existingPlayback != null) {
+      return existingLease != null &&
+          existingPlayback != null &&
+          _speechOwnerIsCurrent(existingLease, existingPlayback);
+    }
+
+    final lease = ttsProcessOwnerRegistry.tryAcquire();
+    if (lease == null) return false;
+    final playback = _buildTtsPlaybackOwner(lease);
+    _speechLease = lease;
+    _ttsPlayback = playback;
+    return true;
+  }
+
+  TtsPlaybackOwner _buildTtsPlaybackOwner(TtsProcessLease lease) {
+    final state = _stateReference;
+    final ttsPlayer = _ttsPlayer;
+    late final TtsPlaybackOwner playback;
+    playback = TtsPlaybackOwner(
       synthesize: (text) async {
+        if (!(state.target?._speechOwnerIsCurrent(lease, playback) ?? false)) {
+          return null;
+        }
         final filename = await generateWaveFilename();
-        return TtsService.instance.synthesize(text, filename);
+        if (!(state.target?._speechOwnerIsCurrent(lease, playback) ?? false)) {
+          return null;
+        }
+        return TtsService.instance.synthesize(lease, text, filename);
       },
-      createPlaybackClip: _ttsPlayer.createClip,
+      createPlaybackClip: (path) {
+        if (!(state.target?._speechOwnerIsCurrent(lease, playback) ?? false)) {
+          throw StateError('mobile speech ownership was revoked');
+        }
+        return ttsPlayer.createClip(lease, path);
+      },
       onActivityChanged: (generation, speaking) {
-        state.target?._onSpeechActivityChanged(generation, speaking);
+        state.target?._onSpeechActivityChanged(
+          lease,
+          playback,
+          generation,
+          speaking,
+        );
       },
       onPlaybackStarted: (generation) {
-        state.target?._onPlaybackStarted(generation);
+        state.target?._onPlaybackStarted(lease, playback, generation);
       },
       onError: (generation, error, stackTrace) {
         state.target?._onSpeechPlaybackError(
+          lease,
+          playback,
           generation,
           error,
           stackTrace,
         );
       },
     );
-    // Probe disk so the button/status reflect whether a network download is
-    // actually needed (the model persists across reinstalls).
-    GemmaService.instance.isModelPresent().then<void>(
-      (present) {
-        final target = state.target;
-        if (target == null || target._disposing || !target.mounted) return;
-        target.setState(() => target._modelPresent = present);
-      },
-      onError: (_error, _stackTrace) {},
-    );
+    return playback;
+  }
+
+  void _onSpeechUnavailable(String code) {
+    final lease = _speechLease;
+    lease?.revoke();
+    if (_disposing || !mounted) return;
+    setState(() => _status = 'Speech output unavailable: $code');
   }
 
   Future<void> _prepareModel() async {
@@ -806,6 +937,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_disposing || !mounted) return;
     final enable = !_alwaysOn;
     if (enable && !GemmaService.instance.isReady) return;
+    if (enable) _tryAcquireSpeechOwner();
 
     // A listening shutdown fences reply/playback and the prior UI generation
     // synchronously. Owner replacement then fences the exact recorder/ASR lane;
@@ -875,19 +1007,40 @@ class _AssistantScreenState extends State<AssistantScreen> {
         !_listeningOwner.isAuthoritative(generation)) {
       return;
     }
-    // This is app-global best-effort warming, not a resource owned or disposed
-    // by the widget-local listening lifecycle.
-    unawaited(
-      TtsService.instance.ensureReady().then<void>(
-            (_) {},
-            onError: (_error, _stackTrace) {},
-          ),
-    );
+    // Warming is best effort, but only the exact app-process speech lease may
+    // enter asset/plugin/isolate work. Missing speech never blocks listening.
+    final lease = _liveSpeechLease;
+    if (lease != null) {
+      final state = _stateReference;
+      unawaited(
+        TtsService.instance.ensureReady(lease).then<void>(
+          (ready) {
+            final target = state.target;
+            if (!ready &&
+                target != null &&
+                !target._disposing &&
+                identical(target._speechLease, lease)) {
+              target._onSpeechUnavailable('speech_warm_failed');
+            }
+          },
+          onError: (_error, _stackTrace) {
+            final target = state.target;
+            if (target != null &&
+                !target._disposing &&
+                identical(target._speechLease, lease)) {
+              target._onSpeechUnavailable('speech_warm_failed');
+            }
+          },
+        ),
+      );
+    }
     _quietGate.resetAsr();
     setState(() {
       _alwaysOn = true;
       _listening = true;
-      _status = 'Listening…';
+      _status = lease == null
+          ? 'Listening… speech output is busy or unavailable.'
+          : 'Listening…';
       _promptController.clear();
     });
   }
@@ -955,9 +1108,21 @@ class _AssistantScreenState extends State<AssistantScreen> {
     AsrSession session,
     String partial,
   ) {
-    if (!_listeningCallbackIsCurrent(generation, session) || partial.isEmpty) {
+    if (!_listeningCallbackIsCurrent(generation, session)) return;
+    if (!_assistantPromptFitsBound(partial)) {
+      if (mounted && !_disposing) {
+        setState(() => _status = 'Input rejected: input_too_large');
+      }
       return;
     }
+    try {
+      // Session observation is mandatory, but partial decisions are always
+      // semantic-ignore: they cannot stop, switch mode, or admit a reply.
+      widget.session.acceptPartial(partial);
+    } on AgentSessionContractException {
+      return;
+    }
+    if (partial.isEmpty) return;
     _tLastVoice = DateTime.now();
     // TODO(recovered): ASR isolate has no explicit speech-start callback; a
     // non-empty partial is the earliest reliable signal that an utterance is
@@ -987,33 +1152,11 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (!_listeningCallbackIsCurrent(generation, session)) return;
     _quietGate.noteAsrFinished(DateTime.now(), hadSpeech: utterance.isNotEmpty);
     if (utterance.isEmpty) return;
-    // A completed utterance supersedes any in-flight reply (its tokens stop
-    // feeding TTS) and silences whatever is still playing.
-    final isStop = isStopCommand(utterance);
-    _turn++;
-    _replyGeneration = null;
-    unawaited(
-      _replyOwner.cancelCurrent(
-        reason: isStop
-            ? AssistantReplyCancelReason.cancelled
-            : AssistantReplyCancelReason.superseded,
-      ),
-    );
-    final playbackGeneration = _ttsPlayback.supersede();
-    if (isStop) {
-      if (mounted) {
-        setState(() {
-          _thinking = false;
-          _status = 'Stopped.';
-          _promptController.clear();
-        });
-      }
-      return;
-    }
+    final admission = _linearizeFinal(utterance);
+    _promptController.clear();
+    if (admission == null) return;
     _tHeard = DateTime.now();
-    unawaited(
-      _answerUtterance(utterance, _turn, playbackGeneration),
-    );
+    unawaited(_runReplyAdmission(admission));
   }
 
   // Exact-lane mic bytes have already been accepted by AsrService.feed. The UI
@@ -1062,16 +1205,167 @@ class _AssistantScreenState extends State<AssistantScreen> {
     return math.sqrt(sumSq / n);
   }
 
+  _AssistantReplyAdmission? _linearizeFinal(String rawText) {
+    if (!_assistantPromptFitsBound(rawText)) {
+      if (mounted && !_disposing) {
+        setState(() => _status = 'Input rejected: input_too_large');
+      }
+      return null;
+    }
+    if (rawText.isEmpty) return null;
+
+    late final AgentSessionTransition transition;
+    try {
+      // The app-root session is the final-input linearization point. No reply,
+      // playback, lease admission, plugin call, or await may precede it.
+      transition = widget.session.acceptFinal(rawText);
+    } on AgentSessionContractException {
+      if (mounted && !_disposing) {
+        setState(() => _status = 'Input rejected: session_unavailable');
+      }
+      return null;
+    }
+
+    _agentTurn = transition.turn;
+    _fenceExactReply(
+      reason: transition.mobileEffect == AgentMobileEffectKind.stop
+          ? AssistantReplyCancelReason.cancelled
+          : AssistantReplyCancelReason.superseded,
+    );
+
+    final fencedPlayback = _ttsPlayback;
+    TtsPlaybackGeneration? playbackGeneration;
+    if (fencedPlayback != null) {
+      try {
+        playbackGeneration = fencedPlayback.supersede();
+      } catch (_) {
+        _speechLease?.revoke();
+      }
+    }
+
+    switch (transition.mobileEffect) {
+      case AgentMobileEffectKind.stop:
+        _publishFinalStatus('Stopped.');
+        return null;
+      case AgentMobileEffectKind.switchMode:
+        _publishFinalStatus('Mode: ${transition.resultingMode.wireName}.');
+        return null;
+      case AgentMobileEffectKind.ignore:
+        _publishFinalStatus('Ignored.');
+        return null;
+      case AgentMobileEffectKind.unavailable:
+        _publishFinalStatus(
+          '${transition.decision.kind.wireName} is unavailable on mobile.',
+        );
+        return null;
+      case AgentMobileEffectKind.reply:
+        break;
+    }
+
+    final turn = transition.turn;
+    if (turn == null ||
+        !identical(_agentTurn, turn) ||
+        !widget.session.isCurrent(turn)) {
+      _publishFinalStatus('Reply unavailable: session_turn_unavailable');
+      return null;
+    }
+    if (!GemmaService.instance.isReady) {
+      _interruptAgentTurn(reason: 'model unavailable');
+      _publishFinalStatus('Reply unavailable: model_unavailable');
+      return null;
+    }
+
+    // Admission is non-blocking. BUSY or retained poison cannot delay or undo
+    // the already-linearized STOP/mode/ignore/unavailable outcomes above.
+    if (!_tryAcquireSpeechOwner()) {
+      _interruptAgentTurn(reason: 'speech unavailable');
+      _publishFinalStatus('Reply unavailable: speech_owner_busy');
+      return null;
+    }
+    final lease = _liveSpeechLease;
+    final playback = _ttsPlayback;
+    if (lease == null || playback == null) {
+      _interruptAgentTurn(reason: 'speech unavailable');
+      _publishFinalStatus('Reply unavailable: speech_owner_unavailable');
+      return null;
+    }
+
+    if (!identical(playback, fencedPlayback)) {
+      try {
+        playbackGeneration = playback.supersede();
+      } catch (_) {
+        lease.revoke();
+      }
+    }
+    final exactPlaybackGeneration = playbackGeneration;
+    if (exactPlaybackGeneration == null ||
+        !_speechOwnerIsCurrent(lease, playback) ||
+        !playback.isCurrent(exactPlaybackGeneration)) {
+      _interruptAgentTurn(reason: 'speech generation unavailable');
+      _publishFinalStatus('Reply unavailable: speech_generation_unavailable');
+      return null;
+    }
+
+    return _AssistantReplyAdmission(
+      prompt: transition.decision.text.trim(),
+      transition: transition,
+      turn: turn,
+      lease: lease,
+      playback: playback,
+      playbackGeneration: exactPlaybackGeneration,
+    );
+  }
+
+  void _publishFinalStatus(String status) {
+    _thinking = false;
+    if (mounted && !_disposing) setState(() => _status = status);
+  }
+
+  void _fenceExactReply({required AssistantReplyCancelReason reason}) {
+    final exactReply = _replyGeneration;
+    _replyGeneration = null;
+    if (exactReply != null) {
+      unawaited(_replyOwner.cancelExact(exactReply, reason: reason));
+    } else {
+      // Covers the narrow owner-admission interval before the widget publishes
+      // the exact generation; AssistantReplyOwner still fences synchronously.
+      unawaited(_replyOwner.cancelCurrent(reason: reason));
+    }
+  }
+
+  void _interruptAgentTurn({required String reason}) {
+    final turn = _agentTurn;
+    _agentTurn = null;
+    if (turn == null || widget.session.isClosed) return;
+    widget.session.interruptIfCurrent(turn, reason: reason);
+  }
+
+  Future<void> _runReplyAdmission(_AssistantReplyAdmission admission) async {
+    final stopped = await admission.playback.waitForStop(
+      admission.playbackGeneration,
+    );
+    if (!stopped) {
+      final wasCurrent = _replyIsCurrent(admission);
+      admission.lease.revoke();
+      if (wasCurrent) {
+        _interruptAgentTurn(reason: 'playback fence failed');
+        _publishFinalStatus('Reply unavailable: playback_fence_failed');
+      }
+      return;
+    }
+    if (!_replyIsCurrent(admission) ||
+        !widget.session.isCurrentInput(admission.transition)) {
+      return;
+    }
+    await _answerUtterance(admission);
+  }
+
   // --- generation ---
 
-  // Generate a reply for [prompt] and stream it to TTS. [myTurn] guards against
-  // a newer utterance arriving (barge-in): once the turn advances, this reply
-  // stops emitting tokens and queuing speech.
-  Future<void> _answerUtterance(
-    String prompt,
-    int myTurn,
-    TtsPlaybackGeneration playbackGeneration,
-  ) async {
+  // Generate one exact session-owned reply and stream it to its exact playback
+  // generation. Any newer final or barge fence invalidates all four tokens.
+  Future<void> _answerUtterance(_AssistantReplyAdmission admission) async {
+    final prompt = admission.prompt;
     if (!_assistantPromptFitsBound(prompt)) {
       if (!_disposing && mounted) {
         setState(() => _status = 'Input rejected: input_too_large');
@@ -1080,7 +1374,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
     if (prompt.isEmpty ||
         !GemmaService.instance.isReady ||
-        !_replyIsCurrent(myTurn, playbackGeneration)) {
+        !_replyIsCurrent(admission)) {
       return;
     }
     _lastUtterance = prompt;
@@ -1104,7 +1398,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
           if (!identical(callbackGeneration, replyGeneration) ||
               !identical(_replyGeneration, callbackGeneration) ||
               !_replyOwner.isAuthoritative(callbackGeneration) ||
-              !_replyIsCurrent(myTurn, playbackGeneration)) {
+              !_replyIsCurrent(admission)) {
             return;
           }
           if (_tFirstToken == null) {
@@ -1116,7 +1410,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
           ttsBuffer += token;
           ttsBuffer = _flushSentences(
             ttsBuffer,
-            playbackGeneration,
+            admission.playback,
+            admission.playbackGeneration,
           );
         },
       );
@@ -1126,7 +1421,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final isExactReply = identical(_replyGeneration, admittedGeneration);
       final remainingTts = ttsBuffer;
       ttsBuffer = '';
-      if (!isExactReply || !_replyIsCurrent(myTurn, playbackGeneration)) {
+      if (!isExactReply || !_replyIsCurrent(admission)) {
         return;
       }
       finishThinking = true;
@@ -1134,7 +1429,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
         _tGenDone = DateTime.now();
         _flushSentences(
           remainingTts,
-          playbackGeneration,
+          admission.playback,
+          admission.playbackGeneration,
           flushAll: true,
         );
         _updateMetrics();
@@ -1146,7 +1442,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final mayMutate = replyGeneration == null
           ? _replyGeneration == null
           : identical(_replyGeneration, replyGeneration);
-      if (mayMutate && _replyIsCurrent(myTurn, playbackGeneration)) {
+      if (mayMutate && _replyIsCurrent(admission)) {
         finishThinking = true;
         setState(() => _answer = 'Generation failed: ${failure.code}');
         _appendLog(error: failure.code);
@@ -1155,7 +1451,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final mayMutate = replyGeneration == null
           ? _replyGeneration == null
           : identical(_replyGeneration, replyGeneration);
-      if (mayMutate && _replyIsCurrent(myTurn, playbackGeneration)) {
+      if (mayMutate && _replyIsCurrent(admission)) {
         finishThinking = true;
         const code = 'reply_integration_failed';
         setState(() => _answer = 'Generation failed: $code');
@@ -1165,9 +1461,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final isExactReply = replyGeneration == null
           ? _replyGeneration == null
           : identical(_replyGeneration, replyGeneration);
-      if (finishThinking &&
-          isExactReply &&
-          _replyIsCurrent(myTurn, playbackGeneration)) {
+      if (finishThinking && isExactReply && _replyIsCurrent(admission)) {
         setState(() => _thinking = false);
       }
       if (replyGeneration != null && isExactReply) {
@@ -1176,14 +1470,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
   }
 
-  bool _replyIsCurrent(
-    int myTurn,
-    TtsPlaybackGeneration playbackGeneration,
-  ) =>
+  bool _replyIsCurrent(_AssistantReplyAdmission admission) =>
       !_disposing &&
       mounted &&
-      myTurn == _turn &&
-      _ttsPlayback.isCurrent(playbackGeneration);
+      identical(_agentTurn, admission.turn) &&
+      widget.session.isCurrent(admission.turn) &&
+      _speechOwnerIsCurrent(admission.lease, admission.playback) &&
+      admission.playback.isCurrent(admission.playbackGeneration);
 
   // Send whatever is typed in the field (the manual fallback to voice).
   Future<void> _submitTyped() async {
@@ -1197,63 +1490,45 @@ class _AssistantScreenState extends State<AssistantScreen> {
     final text = rawText.trim();
     if (text.isEmpty) return;
     _promptController.clear();
-    final isStop = isStopCommand(text);
-    _turn++;
-    final myTurn = _turn;
-    _replyGeneration = null;
-    unawaited(
-      _replyOwner.cancelCurrent(
-        reason: isStop
-            ? AssistantReplyCancelReason.cancelled
-            : AssistantReplyCancelReason.superseded,
-      ),
-    );
-    final playbackGeneration = _ttsPlayback.supersede();
-    await _ttsPlayback.waitForStop(playbackGeneration);
-    if (!_replyIsCurrent(myTurn, playbackGeneration)) return;
-    if (isStop) {
-      if (mounted) {
-        setState(() {
-          _thinking = false;
-          _status = 'Stopped.';
-        });
-      }
-      return;
-    }
     _tLastVoice = null; // typed input has no silence-wait stage
+    final admission = _linearizeFinal(rawText);
+    if (admission == null) return;
     _tHeard = DateTime.now();
-    await _answerUtterance(text, myTurn, playbackGeneration);
+    await _runReplyAdmission(admission);
   }
 
   // Cut all speech now: drop the queue, stop the current clip, and release any
   // coroutine awaiting playback. Idempotent.
   Future<bool> _stopSpeaking() {
-    // Fence reply authority even when exact playback cleanup is already in
-    // flight; playback deduplication must not bypass LLM cancellation.
-    _turn++;
-    _replyGeneration = null;
-    unawaited(_replyOwner.cancelCurrent());
+    // Session turn and exact reply authority are fenced before playback-stop
+    // deduplication. A repeated barge can never bypass upper-layer revocation.
+    _interruptAgentTurn(reason: 'barge in');
+    _fenceExactReply(reason: AssistantReplyCancelReason.cancelled);
     if (mounted && !_disposing) {
       setState(() => _thinking = false);
     }
 
+    final playback = _ttsPlayback;
+    if (playback == null) return Future<bool>.value(true);
     final existing = _speechStopInFlight;
     if (existing != null &&
-        identical(_speechStopGeneration, _ttsPlayback.generation)) {
+        identical(_speechStopGeneration, playback.generation)) {
       return existing;
     }
 
-    final stopped = _ttsPlayback.interrupt();
-    final stopGeneration = _ttsPlayback.generation;
+    final stopped = playback.interrupt();
+    final stopGeneration = playback.generation;
     _speechStopInFlight = stopped;
     _speechStopGeneration = stopGeneration;
-    unawaited(stopped.whenComplete(() {
-      if (identical(_speechStopInFlight, stopped) &&
-          identical(_speechStopGeneration, stopGeneration)) {
-        _speechStopInFlight = null;
-        _speechStopGeneration = null;
-      }
-    }));
+    unawaited(
+      stopped.whenComplete(() {
+        if (identical(_speechStopInFlight, stopped) &&
+            identical(_speechStopGeneration, stopGeneration)) {
+          _speechStopInFlight = null;
+          _speechStopGeneration = null;
+        }
+      }),
+    );
     return stopped;
   }
 
@@ -1265,29 +1540,44 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // the Python core split identically.
   String _flushSentences(
     String buffer,
+    TtsPlaybackOwner playback,
     TtsPlaybackGeneration playbackGeneration, {
     bool flushAll = false,
   }) {
     final (sentences, rest) = drainCompleteSentences(buffer);
     var remaining = rest;
     for (final sentence in sentences) {
-      _ttsPlayback.enqueue(playbackGeneration, sentence);
+      playback.enqueue(playbackGeneration, sentence);
     }
     if (flushAll) {
       final tail = remaining.trim();
       remaining = '';
       if (tail.isNotEmpty) {
-        _ttsPlayback.enqueue(playbackGeneration, tail);
+        playback.enqueue(playbackGeneration, tail);
       }
     }
     return remaining;
   }
 
   void _onSpeechActivityChanged(
+    TtsProcessLease lease,
+    TtsPlaybackOwner playback,
     TtsPlaybackGeneration generation,
     bool speaking,
   ) {
-    if (!_ttsPlayback.isCurrent(generation)) return;
+    if (!identical(_ttsPlayback, playback) || !playback.isCurrent(generation)) {
+      return;
+    }
+    final speechIsCurrent = _speechOwnerIsCurrent(lease, playback);
+    // A revoked lane may still report its terminal false edge. Clear only the
+    // local acoustic state; stale authority cannot publish status or logs.
+    if (!speechIsCurrent) {
+      if (!speaking && _speaking) {
+        _speaking = false;
+        _quietGate.notePlaybackStopped(DateTime.now());
+      }
+      return;
+    }
     final wasSpeaking = _speaking;
     _speaking = speaking;
     if (speaking) {
@@ -1308,12 +1598,21 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_disposing) return;
     // Window summary: if chunks==0 the mic was starved during playback; if
     // peakRms stayed below _bargeInRms, near-end speech isn't reaching us.
-    _logLine('spoke: chunks=$_spkChunks '
-        'peakRms=${_spkPeakRms.toStringAsFixed(3)} partials=$_spkPartials');
+    _logLine(
+      'spoke: chunks=$_spkChunks '
+      'peakRms=${_spkPeakRms.toStringAsFixed(3)} partials=$_spkPartials',
+    );
   }
 
-  void _onPlaybackStarted(TtsPlaybackGeneration generation) {
-    if (!_ttsPlayback.isCurrent(generation) || _disposing) return;
+  void _onPlaybackStarted(
+    TtsProcessLease lease,
+    TtsPlaybackOwner playback,
+    TtsPlaybackGeneration generation,
+  ) {
+    if (!_speechOwnerIsCurrent(lease, playback) ||
+        !playback.isCurrent(generation)) {
+      return;
+    }
     if (_tFirstAudio == null) {
       _tFirstAudio = DateTime.now();
       _updateMetrics();
@@ -1321,11 +1620,16 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   void _onSpeechPlaybackError(
+    TtsProcessLease lease,
+    TtsPlaybackOwner playback,
     TtsPlaybackGeneration generation,
     Object _error,
     StackTrace _stackTrace,
   ) {
-    if (_disposing) return;
+    if (!_speechOwnerIsCurrent(lease, playback) ||
+        !playback.isCurrent(generation)) {
+      return;
+    }
     _logLine(
       'speech playback failed (generation ${generation.ordinal}): '
       'speech_playback_failed',
@@ -1351,8 +1655,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_tFirstToken != null && _tGenDone != null && _genTokens > 1) {
       final secs = _ms(_tFirstToken!, _tGenDone!) / 1000.0;
       final rate = secs > 0 ? _genTokens / secs : 0.0;
-      lines
-          .add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
+      lines.add(
+        'gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s',
+      );
     }
     final text = lines.join('\n');
     if (mounted) setState(() => _metrics = text);
@@ -1405,28 +1710,41 @@ class _AssistantScreenState extends State<AssistantScreen> {
   @override
   void dispose() {
     _disposing = true;
-    _turn++;
-    _replyGeneration = null;
+    _interruptAgentTurn(reason: 'assistant disposed');
     _listeningGeneration = null;
-    // Each owner synchronously revokes its callback authority before returning
-    // a cleanup Future. Start every fence before any asynchronous wait.
-    final replyClose = _replyOwner.close();
-    final listeningClose = _listeningOwner.close();
-    final playbackClose = _ttsPlayback.close();
+    final lease = _speechLease;
     final listeningLifecycle = _listeningLifecycle;
     final ttsPlayer = _ttsPlayer;
+    // Each upper owner synchronously revokes its callback authority before
+    // returning cleanup. All upper fences precede playback/lease cleanup.
+    final replyClose = _replyOwner.close();
+    final listeningClose = _listeningOwner.close();
+    lease?.revoke();
+    ttsPlayer.revoke();
+    final playbackClose = _ttsPlayback?.close() ?? Future<bool>.value(true);
     _thinking = false;
     _alwaysOn = false;
     _listening = false;
-    unawaited(() async {
+    Future<bool> closeUpperAndPlayback() async {
       await replyClose;
       final listeningReceipt = await listeningClose;
-      await listeningLifecycle.disposeRecorderAfterExactClose(
-        listeningReceipt,
+      await listeningLifecycle.disposeRecorderAfterExactClose(listeningReceipt);
+      final playbackExact = await playbackClose;
+      final playerExact = await ttsPlayer.close();
+      return playbackExact && playerExact;
+    }
+
+    if (lease == null) {
+      unawaited(closeUpperAndPlayback());
+    } else {
+      unawaited(
+        lease.close(() async {
+          final upperAndPlaybackExact = await closeUpperAndPlayback();
+          final serviceExact = await TtsService.instance.dispose(lease);
+          return upperAndPlaybackExact && serviceExact;
+        }),
       );
-      await playbackClose;
-      await ttsPlayer.close();
-    }());
+    }
     _promptController.dispose();
     super.dispose();
   }
@@ -1441,8 +1759,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
         children: [
           if (!ready) ...[
             const SizedBox(height: 8),
-            Text('On-device Gemma 3',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'On-device Gemma 3',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             if (_downloading)
               Column(
@@ -1450,7 +1770,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
                   // No byte-accurate percent when loading an on-disk model, so
                   // show an indeterminate bar in that case.
                   LinearProgressIndicator(
-                      value: _modelPresent ? null : _downloadPct / 100.0),
+                    value: _modelPresent ? null : _downloadPct / 100.0,
+                  ),
                   if (!_modelPresent) ...[
                     const SizedBox(height: 8),
                     Text('${_downloadPct.toStringAsFixed(0)}%'),
@@ -1462,7 +1783,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 onPressed: _prepareModel,
                 icon: Icon(_modelPresent ? Icons.play_arrow : Icons.download),
                 label: Text(
-                    _modelPresent ? 'Load model' : 'Download model (one time)'),
+                  _modelPresent ? 'Load model' : 'Download model (one time)',
+                ),
               ),
           ],
           if (_status.isNotEmpty) ...[
@@ -1471,8 +1793,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
           ],
           if (_metrics.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text(_metrics,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            Text(
+              _metrics,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            ),
           ],
           if (ready) ...[
             const SizedBox(height: 8),
@@ -1494,7 +1818,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       ? const SizedBox(
                           width: 16,
                           height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                       : const Icon(Icons.send),
                   label: const Text('Ask'),
                 ),

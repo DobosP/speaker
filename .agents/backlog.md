@@ -843,17 +843,43 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         `TtsService.dispose()`; process-TTS ownership stays outside ADR-0203.
         Listening-start TTS warming remains best-effort and supplies no
         readiness or cleanup authority.
-      - [ ] Land and reconcile the broader ADR-0200 `AgentSession` plus
-        process-TTS composition. The current Assistant remains a parallel Dart
-        loop even though ADR-0203 now aligns completed/typed STOP with the shared
-        exact command contract; supervisor priority/task, tool/confirmation,
-        mode, memory, and process-TTS convergence remain open.
-      - [ ] Add a cross-widget/process plugin lifecycle fence or prove the exact
-        recorder/player contracts. The shared ASR service serializes its own
-        exact sessions, but disposing/reconstructing a tab can still create a
-        new recorder/player owner while old plugin/native cleanup is uncertain.
-        No arbitrary cross-widget/process recorder/player no-overlap claim
-        exists.
+      - [x] App-root mobile session plus canonical-UI-isolate process-TTS
+        composition DONE (ADR-0204). One app-root `AgentSession` survives
+        Assistant reconstruction and commits bounded semantic state for each
+        nonempty admitted final from completed ASR or typed input before effect
+        cleanup or dispatch. Every mobile partial is semantic
+        ignore; the separate nonempty at-least-two-character speaking path is
+        generic acoustic barge only. Completed/typed STOP is exactly `stop`,
+        `cancel`, `cancel that`, `quiet`, `stop talking`, `stop speaking`, or
+        `be quiet` after shared ASCII normalization. Desktop intentionally keeps
+        exact partial STOP and rejects every other partial decision; no broad
+        partial/analyzer parity is claimed.
+        One nullable no-wait `TtsProcessLease` covers shipped Assistant and
+        Speak/replay speech output in the canonical UI isolate. Missing/BUSY or
+        poisoned output preserves STOP/mode/ignore/unavailable semantics. Every
+        nonempty admitted final still fences/cancels its predecessor exact
+        reply; a new reply
+        without exact turn/reply/playback/lease authority admits no new reply
+        factory/listen, Gemma generation, TTS synthesis, or AudioPlayer/playback
+        work, though predecessor cancellation/lower cleanup may continue. The
+        no-lease listening path is capture-only and calls neither AudioPlayer
+        nor TTS. Disposal starts reply/listening close, revokes lease/player,
+        then starts playback close before waits; exact lease cleanup orders
+        playback → player → TTS service. The frozen ADR-0200 candidate remains
+        unlanded provenance; ADR-0201/0202/0203 remain byte-stable. This slice
+        adds zero acoustic/corpus artifacts; `commands.json` cases are unchanged
+        (description only), so no ASR-quality or dataset-promotion evidence
+        follows and the bounded English packet below remains open.
+      - [ ] Add a platform-native or cross-engine plugin lifecycle fence, or
+        prove the exact recorder/player contracts. ADR-0204 excludes overlap
+        only among covered shipped paths in the canonical Flutter UI isolate.
+        Another FlutterEngine, Dart isolate, direct service/plugin caller, or
+        arbitrary native recorder/player remains outside. Standalone
+        `AsrScreen` bypasses Assistant's listening owner, so cross-widget/
+        process recorder/ASR exclusion during asynchronous cleanup is unproved.
+        Direct Speak lease wiring is source/compile/analyze-covered without a
+        dedicated source-level wiring test. No Dart cleanup, timeout, isolate
+        exit, or acknowledgement proves native return.
       - [ ] Build a bounded English-only mobile ASR regression packet by reusing
         the existing retained GSC/ECCC command-noise, DEMAND noise, NOTSOFAR
         far-field, and PriMock isolated/two-role assets and their current

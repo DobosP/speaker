@@ -1,5 +1,5 @@
 {
-  "description": "Canonical control-command normalization + stop recognition, shared by core/contract.py and mobile/lib/contract.dart. 'normalize' pins normalize_command (lowercase, drop non a-z/space, collapse spaces, trim). 'is_stop' pins is_stop_command against the shared stop-class set {stop, cancel, cancel that, quiet, stop talking, stop speaking, be quiet}. Mode/confirm/deny commands are config-driven and desktop-only, so they are deliberately NOT stop commands here.",
+  "description": "Canonical control-command normalization + stop recognition, shared by core/contract.py and mobile/lib/contract.dart. 'normalize' pins normalize_command (lowercase, drop non a-z/space, collapse spaces, trim). 'is_stop' pins is_stop_command against the shared stop-class set {stop, cancel, cancel that, quiet, stop talking, stop speaking, be quiet}. Mode/confirm/deny decisions are outside this narrow stop-class fixture and are tested under each runtime's own partial/final authority policy.",
   "normalize": [
     {"in": "Stop!", "out": "stop"},
     {"in": "  CANCEL. ", "out": "cancel"},

@@ -15,85 +15,102 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
+import './tts_isolate_lifecycle.dart';
+import './tts_process_owner.dart';
 import './utils.dart';
 
 class TtsService {
-  TtsService._();
+  TtsService._()
+      : _lifecycle = TtsIsolateLifecycle(driver: _DartTtsWorkerDriver());
   static final TtsService instance = TtsService._();
 
-  Isolate? _isolate;
-  SendPort? _toWorker;
-  Completer<void> _ready = Completer<void>();
-  bool _starting = false;
-  int _nextId = 0;
-  final Map<int, Completer<String?>> _pending = {};
-  _TtsInit? _initData;
+  final TtsIsolateLifecycle _lifecycle;
+  TtsProcessLease? _lease;
+  Future<_TtsInit>? _initFuture;
+  Future<bool>? _readyFuture;
 
-  // Spawn + initialize the worker once. Safe to call repeatedly/concurrently.
-  Future<void> ensureReady() {
-    if (_toWorker != null && _ready.isCompleted) return _ready.future;
-    if (_starting) return _ready.future;
-    _starting = true;
-    return _spawn();
+  /// Spawn and initialize the exact worker owned by [lease].
+  ///
+  /// Concurrent calls for that lease share one asset-resolution and spawn
+  /// future. A foreign, revoked, or replacement lease cannot reuse the worker.
+  Future<bool> ensureReady(TtsProcessLease lease) {
+    if (!ttsProcessOwnerRegistry.ownsExact(lease)) {
+      return Future<bool>.value(false);
+    }
+    final current = _lease;
+    if (current != null && !identical(current, lease)) {
+      return Future<bool>.value(false);
+    }
+    final existing = _readyFuture;
+    if (existing != null) return existing;
+
+    _lease = lease;
+    final ready = _prepareAndStart(lease);
+    _readyFuture = ready;
+    return ready;
   }
 
-  Future<void> _spawn() async {
-    // Resolve everything that needs plugins/assets HERE on the main isolate.
+  Future<bool> _prepareAndStart(TtsProcessLease lease) async {
+    final init = await (_initFuture ??= _resolveInit());
+    if (!lease.admitsWork || !identical(_lease, lease)) return false;
+    return _lifecycle.ensureReady(lease, init);
+  }
+
+  Future<_TtsInit> _resolveInit() async {
     await copyAllAssetFiles();
     final dir = (await getApplicationSupportDirectory()).path;
     const modelDir = 'vits-piper-en_US-amy-low';
-    _initData = _TtsInit(
+    return _TtsInit(
       model: p.join(dir, modelDir, 'en_US-amy-low.onnx'),
       tokens: p.join(dir, modelDir, 'tokens.txt'),
       dataDir: p.join(dir, modelDir, 'espeak-ng-data'),
     );
-
-    final fromWorker = ReceivePort();
-    fromWorker.listen(_onWorkerMessage);
-    _isolate = await Isolate.spawn(_ttsWorkerMain, fromWorker.sendPort);
-    return _ready.future;
-  }
-
-  void _onWorkerMessage(dynamic msg) {
-    if (msg is SendPort) {
-      _toWorker = msg;
-      _toWorker!.send(_initData);
-    } else if (msg == 'ready') {
-      if (!_ready.isCompleted) _ready.complete();
-    } else if (msg is _TtsResult) {
-      _pending.remove(msg.id)?.complete(msg.outPath);
-    }
   }
 
   // Synthesize [text] into [outPath] on the worker; resolves with the path once
-  // the file is written, or null on failure/timeout (so callers never hang).
-  Future<String?> synthesize(String text, String outPath) async {
+  // the file is written, or null for modeled readiness/request failure and
+  // request timeout. Asset/plugin preparation, spawn, or entered native work
+  // may remain pending, so owners retain authority until the exact Future returns.
+  Future<String?> synthesize(
+    TtsProcessLease lease,
+    String text,
+    String outPath,
+  ) async {
     try {
-      await ensureReady().timeout(const Duration(seconds: 30));
+      if (!await ensureReady(lease)) return null;
     } catch (_) {
       return null;
     }
-    if (_toWorker == null) return null;
-    final id = _nextId++;
-    final completer = Completer<String?>();
-    _pending[id] = completer;
-    _toWorker!.send(_TtsRequest(id, text, outPath));
-    return completer.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () {
-        _pending.remove(id);
-        return null;
-      },
-    );
+    return _lifecycle.request(lease, text, outPath);
   }
 
-  Future<void> dispose() async {
-    _isolate?.kill(priority: Isolate.immediate);
-    _isolate = null;
-    _toWorker = null;
-    _pending.clear();
-    _ready = Completer<void>();
-    _starting = false;
+  /// Return true only after the exact worker reports that its `OfflineTts.free`
+  /// wrapper returned and the main-side shutdown/receive-subscription cleanup
+  /// calls complete. This is not proof of native destruction or isolate exit.
+  Future<bool> dispose(TtsProcessLease lease) async {
+    if (!ttsProcessOwnerRegistry.holdsExact(lease)) return false;
+    final current = _lease;
+    if (current != null && !identical(current, lease)) return false;
+    // Mark an already-started lifecycle closing before waiting for asset/plugin
+    // preparation. A late spawn can then only enter the lifecycle's stale
+    // cleanup path, never initialize or publish readiness after revocation.
+    final lifecycleClose = _lifecycle.dispose();
+    final preparing = _readyFuture;
+    if (preparing != null) {
+      try {
+        await preparing;
+      } catch (_) {
+        // The lifecycle records spawn/send uncertainty. Continue into its exact
+        // cleanup receipt; never clear or release merely because prep failed.
+      }
+    }
+    final clean = await lifecycleClose;
+    if (clean) {
+      _lease = null;
+      _initFuture = null;
+      _readyFuture = null;
+    }
+    return clean;
   }
 }
 
@@ -106,33 +123,123 @@ class _TtsInit {
   _TtsInit({required this.model, required this.tokens, required this.dataDir});
 }
 
-class _TtsRequest {
-  final int id;
-  final String text;
-  final String outPath;
-  _TtsRequest(this.id, this.text, this.outPath);
+final class _TtsWorkerBootstrap {
+  const _TtsWorkerBootstrap(this.epoch, this.toMain);
+
+  final int epoch;
+  final SendPort toMain;
 }
 
-class _TtsResult {
-  final int id;
-  final String? outPath; // null = synthesis failed
-  _TtsResult(this.id, this.outPath);
+final class _TtsWorkerPort {
+  const _TtsWorkerPort(this.epoch, this.port);
+
+  final int epoch;
+  final SendPort port;
+}
+
+final class _DartTtsWorkerDriver implements TtsWorkerDriver {
+  @override
+  Future<TtsWorkerHandle> spawn(
+    int epoch,
+    void Function(TtsWorkerEvent event) emit,
+  ) async {
+    final events = ReceivePort();
+    final handle = _DartTtsWorkerHandle(epoch, events, emit);
+    try {
+      final isolate = await Isolate.spawn(
+        _ttsWorkerMain,
+        _TtsWorkerBootstrap(epoch, events.sendPort),
+      );
+      handle.attach(isolate);
+      return handle;
+    } catch (_) {
+      await handle.closeEvents();
+      rethrow;
+    }
+  }
+}
+
+final class _DartTtsWorkerHandle implements TtsWorkerHandle {
+  _DartTtsWorkerHandle(this.epoch, this._events, this._emit) {
+    _subscription = _events.listen(_onMessage);
+  }
+
+  final int epoch;
+  final ReceivePort _events;
+  final void Function(TtsWorkerEvent event) _emit;
+  late final StreamSubscription<dynamic> _subscription;
+  Isolate? _isolate;
+  SendPort? _worker;
+  bool _killed = false;
+  bool _eventsClosed = false;
+
+  void attach(Isolate isolate) {
+    if (_killed) {
+      isolate.kill(priority: Isolate.immediate);
+      return;
+    }
+    _isolate = isolate;
+  }
+
+  void _onMessage(dynamic message) {
+    if (_eventsClosed) return;
+    if (message is _TtsWorkerPort && message.epoch == epoch) {
+      _worker = message.port;
+      _emit(TtsWorkerSendPort(epoch));
+    } else if (message is TtsWorkerEvent && message.epoch == epoch) {
+      _emit(message);
+    }
+  }
+
+  @override
+  void send(TtsWorkerCommand command) {
+    if (_killed || command.epoch != epoch) {
+      throw StateError('stale mobile TTS worker command');
+    }
+    final worker = _worker;
+    if (worker == null) throw StateError('mobile TTS worker port unavailable');
+    worker.send(command);
+  }
+
+  @override
+  void kill() {
+    if (_killed) return;
+    _killed = true;
+    _worker = null;
+    _isolate?.kill(priority: Isolate.immediate);
+    _isolate = null;
+  }
+
+  @override
+  Future<void> closeEvents() async {
+    if (_eventsClosed) return;
+    _eventsClosed = true;
+    try {
+      await _subscription.cancel();
+    } finally {
+      _events.close();
+    }
+  }
 }
 
 // --- worker isolate ---
 
-void _ttsWorkerMain(SendPort toMain) {
+void _ttsWorkerMain(_TtsWorkerBootstrap bootstrap) {
+  final epoch = bootstrap.epoch;
+  final toMain = bootstrap.toMain;
   final fromMain = ReceivePort();
-  toMain.send(fromMain.sendPort);
+  toMain.send(_TtsWorkerPort(epoch, fromMain.sendPort));
   sherpa_onnx.OfflineTts? tts;
 
   fromMain.listen((msg) {
-    if (msg is _TtsInit) {
+    if (msg is TtsWorkerInit && msg.epoch == epoch) {
+      final init = msg.payload;
+      if (init is! _TtsInit) return;
       sherpa_onnx.initBindings();
       final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-        model: msg.model,
-        tokens: msg.tokens,
-        dataDir: msg.dataDir,
+        model: init.model,
+        tokens: init.tokens,
+        dataDir: init.dataDir,
       );
       final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
         vits: vits,
@@ -142,8 +249,8 @@ void _ttsWorkerMain(SendPort toMain) {
       tts = sherpa_onnx.OfflineTts(
         sherpa_onnx.OfflineTtsConfig(model: modelConfig, maxNumSenetences: 1),
       );
-      toMain.send('ready');
-    } else if (msg is _TtsRequest) {
+      toMain.send(TtsWorkerReady(epoch));
+    } else if (msg is TtsWorkerRequest && msg.epoch == epoch) {
       try {
         final audio = tts!.generateWithConfig(
           text: msg.text,
@@ -159,9 +266,18 @@ void _ttsWorkerMain(SendPort toMain) {
           samples: samples,
           sampleRate: audio.sampleRate,
         );
-        toMain.send(_TtsResult(msg.id, ok ? msg.outPath : null));
+        toMain.send(TtsWorkerResult(epoch, msg.id, ok ? msg.outPath : null));
       } catch (_) {
-        toMain.send(_TtsResult(msg.id, null));
+        toMain.send(TtsWorkerResult(epoch, msg.id, null));
+      }
+    } else if (msg is TtsWorkerShutdown && msg.epoch == epoch) {
+      try {
+        tts?.free();
+        tts = null;
+        fromMain.close();
+        toMain.send(TtsWorkerShutdownComplete(epoch));
+      } finally {
+        fromMain.close();
       }
     }
   });
@@ -225,9 +341,8 @@ Float32List _postProcessTts(
       final b = y[i];
       final c = y[i == n - 1 ? n - 1 : i + 1];
       // median of three = sum - max - min
-      final med = a + b + c -
-          math.max(a, math.max(b, c)) -
-          math.min(a, math.min(b, c));
+      final med =
+          a + b + c - math.max(a, math.max(b, c)) - math.min(a, math.min(b, c));
       if ((b - med).abs() > declickThreshold) bad[i] = true;
     }
     var i = 0;

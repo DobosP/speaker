@@ -65,8 +65,9 @@ List<String> streamSentences(Iterable<String> tokens) {
 final RegExp _nonCommand = RegExp(r'[^a-z ]');
 final RegExp _spaceRun = RegExp(r' +');
 
-/// The stop-class control phrases both runtimes recognize. Mode/confirm/deny
-/// commands are config-driven and desktop-only, so they are not listed here.
+/// The stop-class control phrases both runtimes recognize. Runtime policy
+/// decides which observation kinds may exercise that authority; mode and
+/// confirm/deny commands are outside this narrow shared command contract.
 const Set<String> stopCommands = {
   'stop',
   'cancel',
@@ -83,4 +84,5 @@ String normalizeCommand(String text) {
   return lowered.replaceAll(_spaceRun, ' ').trim();
 }
 
-bool isStopCommand(String text) => stopCommands.contains(normalizeCommand(text));
+bool isStopCommand(String text) =>
+    stopCommands.contains(normalizeCommand(text));

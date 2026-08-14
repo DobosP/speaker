@@ -108,6 +108,40 @@ Future<void> _closeClean(TtsPlaybackOwner owner) async {
 }
 
 void main() {
+  test('close stays pending until an entered synthesis really returns',
+      () async {
+    final synthEntered = Completer<void>();
+    final synthReturned = Completer<String?>();
+    var clipConstructions = 0;
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) {
+        synthEntered.complete();
+        return synthReturned.future;
+      },
+      createPlaybackClip: (path) {
+        clipConstructions++;
+        throw StateError('stale synthesis must not construct a player');
+      },
+    );
+
+    expect(owner.enqueue(owner.generation, 'blocked native synth'), isTrue);
+    await synthEntered.future;
+
+    final closing = owner.close();
+    var completed = false;
+    unawaited(closing.then((_) => completed = true));
+    await Future<void>.delayed(Duration.zero);
+    expect(owner.snapshot.closed, isTrue);
+    expect(owner.snapshot.pumpRunning, isTrue);
+    expect(completed, isFalse);
+
+    synthReturned.complete('/stale.wav');
+    expect(await closing, isTrue);
+    expect(clipConstructions, 0);
+    expect(owner.snapshot.pumpRunning, isFalse);
+    expect(await owner.close(), isTrue);
+  });
+
   test('activity distinguishes an idle generation edge from true to false',
       () async {
     final synthEntered = Completer<void>();
@@ -636,6 +670,31 @@ void main() {
     await _closeClean(owner);
   });
 
+  test('throwing clip construction poisons and blocks release', () async {
+    final errors = <Object>[];
+    var factoryCalls = 0;
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) async => '/$text.wav',
+      createPlaybackClip: (path) {
+        factoryCalls++;
+        throw StateError('ambiguous native player construction');
+      },
+      onError: (generation, error, stackTrace) => errors.add(error),
+    );
+
+    final generation = owner.generation;
+    expect(owner.enqueue(generation, 'first'), isTrue);
+    await owner.whenIdle();
+
+    expect(factoryCalls, 1);
+    expect(owner.snapshot.poisoned, isTrue);
+    expect(owner.enqueue(owner.generation, 'must-not-retry'), isFalse);
+    expect(errors, hasLength(1));
+    expect(await owner.close(), isFalse);
+    await owner.whenIdle();
+    expect(factoryCalls, 1);
+  });
+
   test('failed start remains physical until exact cleanup succeeds', () async {
     final clip = _FakeClip();
     final unusedClip = _readyClip();
@@ -857,16 +916,21 @@ void main() {
     expect(owner.enqueue(staleGeneration, 'in-flight'), isTrue);
     await synthEntered.future;
 
-    expect(await owner.close(), isTrue);
+    final closing = owner.close();
+    var closed = false;
+    unawaited(closing.then((_) => closed = true));
+    await Future<void>.delayed(Duration.zero);
+    expect(closed, isFalse);
     expect(owner.snapshot.closed, isTrue);
     expect(owner.isCurrent(staleGeneration), isFalse);
     expect(owner.isCurrent(owner.generation), isFalse);
     expect(owner.enqueue(owner.generation, 'after-close'), isFalse);
     expect(await owner.interrupt(), isFalse);
     expect(owner.supersede, throwsStateError);
-    expect(await owner.close(), isTrue);
+    expect(identical(owner.close(), closing), isTrue);
 
     synthRelease.complete('/late.wav');
+    expect(await closing, isTrue);
     await owner.whenIdle();
     expect(factory.paths, isEmpty);
     expect(owner.snapshot.pumpRunning, isFalse);

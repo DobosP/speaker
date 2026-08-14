@@ -11,9 +11,10 @@ Covered (genuinely shared by both runtimes):
 - streaming-TTS sentence splitting (``stream_sentences`` / ``drain_complete_sentences``)
 - control-command normalization + stop recognition (``normalize_command`` / ``is_stop_command``)
 
-Not covered here: modes, confirm/deny, and the priority event bus are part of the
-Python brain only (the mobile shell has no supervisor), so they stay outside the
-cross-language contract by design.
+Not covered here: modes, confirm/deny, intent decisions, partial-transcript
+authority, and the priority event bus. The desktop analyzer and bounded mobile
+AgentSession intentionally have different partial policies, so their wider
+decision projections are tested separately rather than claimed as one contract.
 """
 from __future__ import annotations
 
@@ -92,8 +93,9 @@ def stream_sentences(tokens: Iterable[str]) -> list[str]:
 _NON_COMMAND = re.compile(r"[^a-z ]")
 _SPACE_RUN = re.compile(r" +")
 
-# The stop-class control phrases both runtimes recognize. Mode/confirm/deny
-# commands are config-driven and desktop-only, so they are not listed here.
+# The stop-class control phrases both runtimes recognize. Runtime policy decides
+# whether a completed/typed or partial observation may exercise that authority.
+# Mode/confirm/deny are outside this narrow shared command contract.
 STOP_COMMANDS = frozenset({
     "stop", "cancel", "cancel that", "quiet", "stop talking", "stop speaking",
     "be quiet",

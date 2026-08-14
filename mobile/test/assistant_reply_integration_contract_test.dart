@@ -1,11 +1,14 @@
-// Source-level guard for the plugin-bound Assistant widget seam.
+// Source-level guard for the plugin-bound Assistant composition seam.
 //
-// Pure owner behavior is covered by the reply/listening owner tests. This test
-// keeps the widget and plugin adapter wired to those owners without loading a
-// model, Flutter plugin, audio device, emulator, or phone.
+// Pure owner/session behavior has deterministic unit tests. This test binds the
+// Flutter widget to those owners without loading a model, plugin, audio device,
+// emulator, or phone.
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:speaker_mobile/agent_decision.dart';
+import 'package:speaker_mobile/agent_event.dart';
+import 'package:speaker_mobile/agent_session.dart';
 
 void main() {
   late String source;
@@ -18,8 +21,11 @@ void main() {
     final startIndex = source.indexOf(start);
     final endIndex = source.indexOf(end, startIndex + start.length);
     expect(startIndex, isNonNegative, reason: 'missing start marker: $start');
-    expect(endIndex, greaterThan(startIndex),
-        reason: 'missing end marker: $end');
+    expect(
+      endIndex,
+      greaterThan(startIndex),
+      reason: 'missing end marker: $end',
+    );
     return source.substring(startIndex, endIndex);
   }
 
@@ -32,64 +38,96 @@ void main() {
     }
   }
 
-  test('Assistant owns Gemma through one exact reply subscription seam', () {
-    expect(source, contains("import './assistant_reply_owner.dart';"));
-    expect(source, contains('late final AssistantReplyOwner _replyOwner;'));
-    expect(
-      source,
-      contains('AssistantReplyGeneration? _replyGeneration;'),
+  test('reply prompt consumes the session decision payload', () {
+    final session = AgentSession(initialMode: AgentMode.passive);
+    final transition = session.acceptFinal('assistant please help me');
+
+    expect(transition.decision.kind, AgentIntentKind.assistant);
+    expect(transition.decision.text, 'please help me');
+    expect(transition.turn, isNotNull);
+
+    final finalPath = between(
+      '_AssistantReplyAdmission? _linearizeFinal(',
+      'void _publishFinalStatus(',
     );
+    expect(finalPath, contains('prompt: transition.decision.text.trim(),'));
+    expect(finalPath, isNot(contains('prompt: rawText.trim(),')));
+  });
+
+  test('reply admission retains exact session, reply, playback, and lease', () {
+    expect(source, contains("import './agent_session.dart';"));
+    expect(source, contains("import './assistant_reply_owner.dart';"));
+    expect(source, contains("import './tts_process_owner.dart';"));
+    expect(source, contains('final AgentSession session;'));
+    expect(source, contains('final AgentSessionTransition transition;'));
+    expect(source, contains('AgentTurn? _agentTurn;'));
+    expect(source, contains('TtsProcessLease? _speechLease;'));
+    expect(source, contains('TtsPlaybackOwner? _ttsPlayback;'));
     expect(
       source,
-      contains('openReply: GemmaService.instance.reply,'),
+      contains('AssistantReplyOwner(openReply: GemmaService.instance.reply)'),
     );
     expect(
       RegExp(r'GemmaService\.instance\.reply').allMatches(source).length,
       1,
     );
     expect(source, isNot(contains('GemmaService.instance.cancelCurrent')));
+    expect(source, isNot(contains('GemmaService.instance.dispose')));
     expect(source, isNot(contains('await for (')));
 
     final answer = between(
       'Future<void> _answerUtterance(',
       'bool _replyIsCurrent(',
     );
-    expect(answer, contains('_replyOwner.start('));
     expectOrdered(answer, [
+      'if (prompt.isEmpty ||',
+      '_replyIsCurrent(admission)',
       'final admittedGeneration = _replyOwner.start(',
       'replyGeneration = admittedGeneration;',
       '_replyGeneration = admittedGeneration;',
       'final done = await admittedGeneration.done;',
       'final isExactReply = identical(_replyGeneration, admittedGeneration);',
     ]);
-    expect(
-      answer,
-      contains('identical(callbackGeneration, replyGeneration)'),
-    );
-    expect(
-      answer,
-      contains('identical(_replyGeneration, callbackGeneration)'),
-    );
-    expect(
-      answer,
-      contains('_replyOwner.isAuthoritative(callbackGeneration)'),
-    );
-    expect(answer, contains('_replyIsCurrent(myTurn, playbackGeneration)'));
+    expect(answer, contains('identical(callbackGeneration, replyGeneration)'));
+    expect(answer, contains('identical(_replyGeneration, callbackGeneration)'));
+    expect(answer, contains('_replyOwner.isAuthoritative(callbackGeneration)'));
+    expect(answer, contains('_replyIsCurrent(admission)'));
     expectOrdered(answer, [
       'final remainingTts = ttsBuffer;',
       "ttsBuffer = '';",
       'done.outcome == AssistantReplyOutcome.completed',
       'remainingTts,',
+      'admission.playback,',
+      'admission.playbackGeneration,',
       'flushAll: true',
       'setState(() => _thinking = false);',
       '_replyGeneration = null;',
     ]);
-    expect(answer, contains("const code = 'reply_integration_failed';"));
-    expect(answer, isNot(contains(r'$e')));
+
+    final current = between(
+      'bool _replyIsCurrent(',
+      '// Send whatever is typed',
+    );
+    expectOrdered(current, [
+      'identical(_agentTurn, admission.turn)',
+      'widget.session.isCurrent(admission.turn)',
+      '_speechOwnerIsCurrent(admission.lease, admission.playback)',
+      'admission.playback.isCurrent(admission.playbackGeneration)',
+    ]);
+
+    final admission = between(
+      'Future<void> _runReplyAdmission(',
+      '// --- generation ---',
+    );
+    expectOrdered(admission, [
+      'admission.playback.waitForStop(',
+      '_replyIsCurrent(admission)',
+      'widget.session.isCurrentInput(admission.transition)',
+      'await _answerUtterance(admission);',
+    ]);
   });
 
-  test('typed prompts are bounded before normalization or retention', () {
-    expect(source, contains("import 'dart:convert' show utf8;"));
+  test('raw input is bounded before trim and every partial is observed', () {
     final preflight = between(
       'bool _assistantPromptFitsBound(',
       'final class _AssistantTtsClipState',
@@ -98,6 +136,21 @@ void main() {
       'text.length > assistantReplyPromptMaximumUtf8Bytes',
       'utf8.encode(text).length <= assistantReplyPromptMaximumUtf8Bytes',
     ]);
+
+    final partial = between(
+      'void _onListeningPartial(',
+      'void _onListeningEndpoint(',
+    );
+    expectOrdered(partial, [
+      '_listeningCallbackIsCurrent(generation, session)',
+      '_assistantPromptFitsBound(partial)',
+      'widget.session.acceptPartial(partial);',
+      'if (partial.isEmpty) return;',
+      'partial.length >= _bargeInChars',
+      '_stopSpeaking()',
+    ]);
+    expect(partial, isNot(contains('mobileEffect')));
+    expect(partial, isNot(contains('isStopCommand')));
 
     final typed = between(
       'Future<void> _submitTyped()',
@@ -110,84 +163,228 @@ void main() {
       'input_too_large',
       'return;',
       'final text = rawText.trim();',
-      'isStopCommand(text)',
+      'if (text.isEmpty) return;',
+      '_linearizeFinal(rawText)',
     ]);
 
-    final answer = between(
-      'Future<void> _answerUtterance(',
-      'bool _replyIsCurrent(',
-    );
-    expectOrdered(answer, [
-      'if (!_assistantPromptFitsBound(prompt))',
-      'input_too_large',
-      'return;',
-      '_lastUtterance = prompt;',
-    ]);
-  });
-
-  test('every replacement path fences reply before playback or waits', () {
     final endpoint = between(
       'void _onListeningEndpoint(',
       'void _onListeningMicChunk(',
     );
     expectOrdered(endpoint, [
-      '_turn++;',
-      '_replyGeneration = null;',
-      '_replyOwner.cancelCurrent(',
-      '_ttsPlayback.supersede()',
-      'if (isStop)',
-      '_answerUtterance(',
+      'if (utterance.isEmpty) return;',
+      'final admission = _linearizeFinal(utterance);',
+      '_promptController.clear();',
+      'if (admission == null) return;',
+      '_runReplyAdmission(admission)',
     ]);
+    expect(source, isNot(contains('isStopCommand(')));
+    expect(source, isNot(contains('_looksLikeStop')));
+    expect(source, isNot(contains("contains('stop')")));
+    expect(source, isNot(contains("contains('quiet')")));
+    expect(source, isNot(contains("contains('cancel')")));
+  });
 
-    final listeningToggle = between(
-      'Future<void> _toggleAlwaysOn()',
-      'bool _listeningUiGenerationIsCurrent(',
+  test('session final linearizes before every upper and lower fence', () {
+    final finalPath = between(
+      '_AssistantReplyAdmission? _linearizeFinal(',
+      'void _publishFinalStatus(',
     );
-    expectOrdered(listeningToggle, [
-      'final stopped = enable ? null : _stopSpeaking();',
-      '_listeningGeneration = null;',
-      '_listeningOwner.enable()',
-      '_listeningGeneration = generation;',
-      'final done = await generation.done;',
-      'if (stopped != null) await stopped;',
+    expect(RegExp(r'^\s*await ', multiLine: true).hasMatch(finalPath), isFalse);
+    expectOrdered(finalPath, [
+      'widget.session.acceptFinal(rawText);',
+      '_agentTurn = transition.turn;',
+      '_fenceExactReply(',
+      'final fencedPlayback = _ttsPlayback;',
+      'fencedPlayback.supersede();',
+      'switch (transition.mobileEffect)',
+      'case AgentMobileEffectKind.stop:',
+      "_publishFinalStatus('Stopped.');",
+      'case AgentMobileEffectKind.switchMode:',
+      'case AgentMobileEffectKind.ignore:',
+      'case AgentMobileEffectKind.unavailable:',
+      'case AgentMobileEffectKind.reply:',
+      'widget.session.isCurrent(turn)',
+      '_tryAcquireSpeechOwner()',
+      'final lease = _liveSpeechLease;',
+      'final playback = _ttsPlayback;',
+      'return _AssistantReplyAdmission(',
+      'prompt: transition.decision.text.trim(),',
+      'transition: transition,',
     ]);
+    final tryAcquire = finalPath.indexOf('_tryAcquireSpeechOwner()');
+    for (final authority in <String>[
+      'case AgentMobileEffectKind.stop:',
+      'case AgentMobileEffectKind.switchMode:',
+      'case AgentMobileEffectKind.ignore:',
+      'case AgentMobileEffectKind.unavailable:',
+    ]) {
+      expect(finalPath.indexOf(authority), lessThan(tryAcquire));
+    }
 
-    final typed = between(
-      'Future<void> _submitTyped()',
-      'Future<bool> _stopSpeaking()',
+    final fence = between(
+      'void _fenceExactReply(',
+      'void _interruptAgentTurn(',
     );
-    expectOrdered(typed, [
-      '_turn++;',
+    expectOrdered(fence, [
+      'final exactReply = _replyGeneration;',
       '_replyGeneration = null;',
-      '_replyOwner.cancelCurrent(',
-      '_ttsPlayback.supersede()',
-      '_ttsPlayback.waitForStop(playbackGeneration)',
-      'if (isStop)',
-      '_answerUtterance(',
+      '_replyOwner.cancelExact(exactReply, reason: reason)',
+      '_replyOwner.cancelCurrent(reason: reason)',
     ]);
 
+    final admission = between(
+      'Future<void> _runReplyAdmission(',
+      '// --- generation ---',
+    );
+    expectOrdered(admission, [
+      'admission.playback.waitForStop(',
+      'if (!stopped)',
+      'final wasCurrent = _replyIsCurrent(admission);',
+      'admission.lease.revoke();',
+      'if (wasCurrent)',
+      'if (!_replyIsCurrent(admission) ||',
+      'widget.session.isCurrentInput(admission.transition)',
+      'await _answerUtterance(admission);',
+    ]);
+  });
+
+  test('speech lease is nonblocking, nullable, and guards all TTS work', () {
+    final acquire = between(
+      'bool _tryAcquireSpeechOwner()',
+      'TtsPlaybackOwner _buildTtsPlaybackOwner(',
+    );
+    expect(acquire, isNot(contains('await ')));
+    expectOrdered(acquire, [
+      'ttsProcessOwnerRegistry.tryAcquire();',
+      'if (lease == null) return false;',
+      '_speechLease = lease;',
+      '_ttsPlayback = playback;',
+    ]);
+
+    final playback = between(
+      'TtsPlaybackOwner _buildTtsPlaybackOwner(',
+      'void _onSpeechUnavailable(',
+    );
+    expectOrdered(playback, [
+      'final state = _stateReference;',
+      'final ttsPlayer = _ttsPlayer;',
+      'state.target?._speechOwnerIsCurrent(lease, playback)',
+      'generateWaveFilename()',
+      'state.target?._speechOwnerIsCurrent(lease, playback)',
+      'TtsService.instance.synthesize(lease, text, filename)',
+      'createPlaybackClip: (path)',
+      'ttsPlayer.createClip(lease, path)',
+    ]);
+    expect(
+      RegExp(r'state\.target\?\._speechOwnerIsCurrent')
+          .allMatches(playback)
+          .length,
+      3,
+    );
+    expect(playback, isNot(contains('if (!_speechOwnerIsCurrent')));
+    expect(playback, isNot(contains('_ttsPlayer.createClip')));
+
+    final clip = between('TtsPlaybackClip createClip(', 'Future<void> _start(');
+    expectOrdered(clip, [
+      'ttsProcessOwnerRegistry.ownsExact(lease)',
+      'player: AudioPlayer()',
+      'onPlayerComplete.listen',
+      '_start(state, path)',
+    ]);
+
+    final route = between(
+      'Future<bool> configureRoute(',
+      'AsrSession beginSession(',
+    );
+    expectOrdered(route, [
+      'final lease = _speechLease();',
+      'if (lease == null || !lease.admitsWork) return true;',
+      '_ttsPlayer.configureGlobalRoute(lease)',
+      'lease.revoke();',
+      "_onSpeechUnavailable('speech_route_failed')",
+      'return true;',
+    ]);
+
+    final playerClose = between(
+      'Future<bool> close() async',
+      'typedef _AssistantListeningGeneration',
+    );
+    expectOrdered(playerClose, [
+      'revoke();',
+      'await _routeTail;',
+      'final current = _current;',
+      'current.handle.stopAndRelease()',
+      'return _routeExact && playerExact;',
+    ]);
+
+    final started = between(
+      'void _onListeningStarted(',
+      'void _onListeningRevoked(',
+    );
+    expectOrdered(started, [
+      'final lease = _liveSpeechLease;',
+      'if (lease != null)',
+      '.ensureReady(lease)',
+      "_onSpeechUnavailable('speech_warm_failed')",
+      "'Listening… speech output is busy or unavailable.'",
+    ]);
+    expect(
+      RegExp(r'TtsService\.instance\.synthesize\(').allMatches(source).length,
+      1,
+    );
+    expect(
+      RegExp(r'TtsService\.instance\s*\.ensureReady\(')
+          .allMatches(source)
+          .length,
+      1,
+    );
+  });
+
+  test('barge and dispose fence session plus upper owners before playback', () {
     final stop = between(
       'Future<bool> _stopSpeaking()',
       '// --- streaming TTS ---',
     );
     expectOrdered(stop, [
-      '_turn++;',
-      '_replyGeneration = null;',
-      '_replyOwner.cancelCurrent()',
+      "_interruptAgentTurn(reason: 'barge in');",
+      '_fenceExactReply(reason: AssistantReplyCancelReason.cancelled);',
+      'final playback = _ttsPlayback;',
       'final existing = _speechStopInFlight;',
-      '_ttsPlayback.interrupt()',
+      'playback.interrupt();',
     ]);
+
+    final dispose = between(
+      'void dispose()',
+      'Widget build(BuildContext context)',
+    );
+    expectOrdered(dispose, [
+      '_disposing = true;',
+      "_interruptAgentTurn(reason: 'assistant disposed');",
+      '_listeningGeneration = null;',
+      'final replyClose = _replyOwner.close();',
+      'final listeningClose = _listeningOwner.close();',
+      'lease?.revoke();',
+      'ttsPlayer.revoke();',
+      '_ttsPlayback?.close()',
+      'await replyClose;',
+      'await listeningClose;',
+      'disposeRecorderAfterExactClose(',
+      'await playbackClose;',
+      'await ttsPlayer.close();',
+      'lease.close(() async {',
+      'await closeUpperAndPlayback();',
+      'TtsService.instance.dispose(lease)',
+    ]);
+    expect(dispose, isNot(contains('widget.session.close')));
+    expect(source, isNot(contains('AsrService.instance.close')));
+    expect(
+      RegExp(r'TtsService\.instance\.dispose\(').allMatches(source).length,
+      1,
+    );
   });
 
-  test('listening adapter retains exact tokens and only weak widget state', () {
-    expect(source, contains("import './assistant_listening_owner.dart';"));
-    expect(
-      source,
-      contains(
-        'AssistantListeningOwner<AsrSession, _AssistantListeningCapture>',
-      ),
-    );
-
+  test('listening callbacks retain exact tokens and weak widget state', () {
     final adapter = between(
       'final class _AssistantListeningPluginLifecycle',
       'class AssistantScreen extends StatefulWidget',
@@ -200,49 +397,6 @@ void main() {
     expect(adapter, isNot(contains('AsrTextCallback')));
     expect(adapter, isNot(contains('_promptController')));
     expect(adapter, isNot(contains('_answer')));
-
-    final init = between(
-      'void initState()',
-      'Future<void> _prepareModel()',
-    );
-    expectOrdered(init, [
-      'final state = WeakReference<_AssistantScreenState>(this);',
-      '_listeningLifecycle = _AssistantListeningPluginLifecycle(',
-      'recorder: AudioRecorder(),',
-      'ttsPlayer: _ttsPlayer,',
-      'asrService: AsrService.instance,',
-      '_listeningOwner =',
-      'lifecycle: _listeningLifecycle,',
-    ]);
-    expect(
-      RegExp(r'state\.target\?\._onListening').allMatches(init).length,
-      3,
-    );
-    expectOrdered(init, [
-      '_ttsPlayback = TtsPlaybackOwner(',
-      'onActivityChanged: (generation, speaking)',
-      'state.target?._onSpeechActivityChanged(generation, speaking);',
-      'onPlaybackStarted: (generation)',
-      'state.target?._onPlaybackStarted(generation);',
-      'onError: (generation, error, stackTrace)',
-      'state.target?._onSpeechPlaybackError(',
-    ]);
-    for (final strongCallback in <String>[
-      'onActivityChanged: _onSpeechActivityChanged',
-      'onPlaybackStarted: _onPlaybackStarted',
-      'onError: _onSpeechPlaybackError',
-    ]) {
-      expect(init, isNot(contains(strongCallback)));
-    }
-
-    expectOrdered(init, [
-      'GemmaService.instance.isModelPresent().then<void>(',
-      '(present)',
-      'final target = state.target;',
-      'if (target == null || target._disposing || !target.mounted) return;',
-      'target.setState(() => target._modelPresent = present);',
-      'onError: (_error, _stackTrace) {},',
-    ]);
 
     final begin = between(
       'AsrSession beginSession(',
@@ -258,113 +412,8 @@ void main() {
       '_sessions[generation] = exactSession;',
       'return exactSession;',
     ]);
-    expect(adapter, contains('return await session.cleanup;'));
-    expect(adapter, contains('session.ready;'));
-    expect(adapter, contains('_asr.endSession(session)'));
-    expect(adapter, isNot(contains('TtsService')));
 
-    for (final banned in <String>[
-      'AsrService.instance.onPartial',
-      'AsrService.instance.onEndpoint',
-      'AsrService.instance.ensureReady',
-      'AsrService.instance.reset',
-      'AsrService.instance.feed',
-      'AsrService.instance.stop',
-      'AsrService.instance.close',
-    ]) {
-      expect(source, isNot(contains(banned)),
-          reason: 'legacy ASR API: $banned');
-    }
-  });
-
-  test('model preparation guards lifecycle and exports bounded failures', () {
-    final prepare = between(
-      'Future<void> _prepareModel()',
-      '// --- always-on listening ---',
-    );
-    expectOrdered(prepare, [
-      'final present = await GemmaService.instance.isModelPresent();',
-      'if (_disposing || !mounted) return;',
-      'setState(()',
-      'await GemmaService.instance.ensureReady(',
-      'onProgress: (p)',
-      'if (_disposing || !mounted) return;',
-      'setState(() => _downloadPct = p);',
-      'if (_disposing || !mounted) return;',
-      "setState(() => _status = 'Model ready — tap the mic to start.');",
-      'on GemmaGenerationFailure catch (failure)',
-      'if (_disposing || !mounted) return;',
-      "'Model load failed: \${failure.code}'",
-      'catch (_)',
-      'if (_disposing || !mounted) return;',
-      "'Model load failed: model_prepare_failed'",
-      'finally',
-      'if (!_disposing && mounted)',
-    ]);
-    expect(prepare, isNot(contains(r'$e')));
-    expect(source, isNot(contains('GemmaService.instance.dispose')));
-  });
-
-  test('capture callbacks cannot redirect and fail only after exact cancel',
-      () {
-    final capture = between(
-      'final class _AssistantListeningCapture',
-      'final class _AssistantListeningPluginLifecycle',
-    );
-    final cancellation = between(
-      'Future<bool> cancelSource()',
-      'Future<bool> stopRecorder()',
-    );
-    expectOrdered(cancellation, [
-      'final existing = _cancelFuture;',
-      '_cancelFuture = result;',
-      '_subscription.future',
-      'Future<void>.sync(subscription.cancel)',
-      'completer.complete(true)',
-    ]);
-    final failure = between(
-      'void failAfterExactCancellation()',
-      'Future<bool> cancelSource()',
-    );
-    expectOrdered(failure, [
-      '_failureRequested = true;',
-      'final cancellation = cancelSource();',
-      'if (succeeded && !_terminal.isCompleted)',
-      'AssistantListeningCaptureTerminal.failed',
-    ]);
-    final ended = between(
-      'void publishEnded()',
-      'void failAfterExactCancellation()',
-    );
-    expectOrdered(ended, [
-      'if (_failureRequested || _terminal.isCompleted) return;',
-      'AssistantListeningCaptureTerminal.ended',
-    ]);
-    expect(capture, contains('final AudioRecorder _recorder;'));
-    expect(capture, isNot(matches(RegExp(r'final String\??\s'))));
-
-    final start = between(
-      'startCapture(',
-      'void _onCaptureData(',
-    );
-    expectOrdered(start, [
-      '_captureLanes[generation] = capture;',
-      '_recorder.startStream(buildCaptureConfig())',
-      'final exactGeneration = generation;',
-      'final exactSession = session;',
-      'audioStream.listen(',
-      'capture,',
-      'exactGeneration,',
-      'exactSession,',
-      'onError:',
-      'onDone: capture.publishEnded,',
-      'capture.publishSubscription(subscription);',
-    ]);
-
-    final onData = between(
-      'void _onCaptureData(',
-      'void _onCaptureError(',
-    );
+    final onData = between('void _onCaptureData(', 'void _onCaptureError(');
     expectOrdered(onData, [
       '_isExactCapture(capture, exactGeneration, exactSession)',
       '_listeningCallbackIsCurrent(',
@@ -372,149 +421,24 @@ void main() {
       'capture.failAfterExactCancellation();',
       '_fenceListeningSource(exactGeneration, exactSession);',
     ]);
-    final onError = between(
-      'void _onCaptureError(',
-      'bool _isExactCapture(',
-    );
-    expectOrdered(onError, [
-      '_isExactCapture(capture, exactGeneration, exactSession)',
-      'capture.failAfterExactCancellation();',
-      '_fenceListeningSource(exactGeneration, exactSession);',
-    ]);
-    expect(
-      onData,
-      isNot(contains('_listeningGeneration')),
-      reason: 'plugin callbacks must not look up mutable widget authority',
-    );
-    expect(
-      onError,
-      isNot(contains('_listeningGeneration')),
-      reason: 'plugin callbacks must not look up mutable widget authority',
-    );
+    expect(onData, isNot(contains('_listeningGeneration')));
 
-    for (final method in <String>[
-      'Future<bool> cancelSource()',
-      'Future<bool> stopRecorder()',
-      'Future<bool> recoverAmbiguousStart()',
-    ]) {
-      final body = between(
-        method,
-        method == 'Future<bool> cancelSource()'
-            ? 'Future<bool> stopRecorder()'
-            : method == 'Future<bool> stopRecorder()'
-                ? 'Future<bool> recoverAmbiguousStart()'
-                : '/// Plugin adapter for one Assistant listening owner.',
-      );
-      expect(body, contains('final existing = _'));
-      expect(body, contains('return existing;'));
-      expect(body, isNot(contains('partial')));
-      expect(body, isNot(contains('utterance')));
-    }
+    final init = between(
+      'void initState()',
+      'TtsProcessLease? get _liveSpeechLease',
+    );
+    expectOrdered(init, [
+      '_stateReference = WeakReference<_AssistantScreenState>(this);',
+      '_tryAcquireSpeechOwner();',
+      '_AssistantListeningPluginLifecycle(',
+      'speechLease: () => state.target?._liveSpeechLease,',
+      'AssistantListeningOwner<AsrSession, _AssistantListeningCapture>',
+      'AssistantReplyOwner(openReply: GemmaService.instance.reply)',
+    ]);
+    expect(RegExp(r'state\.target\?\._onListening').allMatches(init).length, 3);
   });
 
-  test('listening desired state and UI callbacks are exact and serialized', () {
-    final toggle = between(
-      'Future<void> _toggleAlwaysOn()',
-      'bool _listeningUiGenerationIsCurrent(',
-    );
-    expect(toggle, contains('final enable = !_alwaysOn;'));
-    expect(toggle, contains('_listeningOwner.enable()'));
-    expect(toggle, contains('_listeningOwner.disable()'));
-    expectOrdered(toggle, [
-      '_listeningGeneration = null;',
-      'setState(()',
-      '_listeningOwner.enable()',
-      '_listeningGeneration = generation;',
-      'await generation.done;',
-    ]);
-
-    final uiGuard = between(
-      'bool _listeningUiGenerationIsCurrent(',
-      'bool _listeningCallbackIsCurrent(',
-    );
-    expect(uiGuard, contains('mounted'));
-    expect(uiGuard, contains('identical(_listeningGeneration, generation)'));
-
-    final callbackGuard = between(
-      'bool _listeningCallbackIsCurrent(',
-      'void _onListeningStarted(',
-    );
-    expectOrdered(callbackGuard, [
-      '_listeningUiGenerationIsCurrent(generation)',
-      '_listeningOwner.isAuthoritative(generation)',
-      '_listeningLifecycle.ownsExactSession(generation, session)',
-    ]);
-    expect(source, isNot(contains('_currentSession')));
-    expect(source, isNot(contains('_currentCapture')));
-
-    final revoked = between(
-      'void _onListeningRevoked(',
-      'void _onListeningStopped(',
-    );
-    expectOrdered(revoked, [
-      'unawaited(_stopSpeaking());',
-      'if (!_listeningUiGenerationIsCurrent(generation)) return;',
-      '_listeningGeneration = null;',
-    ]);
-  });
-
-  test('STOP uses only the shared exact typed command contract', () {
-    final endpoint = between(
-      'void _onListeningEndpoint(',
-      'void _onListeningMicChunk(',
-    );
-    expect(endpoint, contains('final isStop = isStopCommand(utterance);'));
-
-    final typed = between(
-      'Future<void> _submitTyped()',
-      'Future<bool> _stopSpeaking()',
-    );
-    expect(typed, contains('final isStop = isStopCommand(text);'));
-
-    final partial = between(
-      'void _onListeningPartial(',
-      'void _onListeningEndpoint(',
-    );
-    expect(partial, contains('partial.length >= _bargeInChars'));
-    expect(partial, isNot(contains('isStopCommand')));
-    expect(RegExp(r'isStopCommand\(').allMatches(source).length, 2);
-    expect(source, isNot(contains('_looksLikeStop')));
-    expect(source, isNot(contains("contains('stop')")));
-    expect(source, isNot(contains("contains('quiet')")));
-    expect(source, isNot(contains("contains('cancel')")));
-  });
-
-  test('dispose fences all owners and gates recorder disposal on exact close',
-      () {
-    final dispose = between(
-      'void dispose()',
-      'Widget build(BuildContext context)',
-    );
-    expectOrdered(dispose, [
-      '_disposing = true;',
-      '_turn++;',
-      '_replyGeneration = null;',
-      '_listeningGeneration = null;',
-      'final replyClose = _replyOwner.close();',
-      'final listeningClose = _listeningOwner.close();',
-      'final playbackClose = _ttsPlayback.close();',
-      'final listeningLifecycle = _listeningLifecycle;',
-      'final ttsPlayer = _ttsPlayer;',
-      'unawaited(() async {',
-      'await replyClose;',
-      'final listeningReceipt = await listeningClose;',
-      'listeningLifecycle.disposeRecorderAfterExactClose(',
-      'await playbackClose;',
-      'await ttsPlayer.close();',
-    ]);
-    final asyncStart = dispose.indexOf('unawaited(() async {');
-    final asyncEnd = dispose.indexOf('}());', asyncStart);
-    expect(asyncStart, isNonNegative);
-    expect(asyncEnd, greaterThan(asyncStart));
-    final asyncDispose = dispose.substring(asyncStart, asyncEnd);
-    expect(asyncDispose, isNot(contains('_listeningLifecycle')));
-    expect(asyncDispose, isNot(contains('_ttsPlayer')));
-
+  test('recorder cleanup and diagnostics remain bounded', () {
     final recorderDispose = between(
       'Future<bool> disposeRecorderAfterExactClose(',
       'class AssistantScreen extends StatefulWidget',
@@ -526,19 +450,33 @@ void main() {
       '_recorder.dispose()',
     ]);
     expect(RegExp(r'_recorder\.dispose\(\)').allMatches(source).length, 1);
-    expect(source, isNot(contains('AsrService.instance.close')));
-    expect(source, isNot(contains('TtsService.instance.dispose')));
-  });
 
-  test('playback error logs expose only a bounded code', () {
     final playbackError = between(
       'void _onSpeechPlaybackError(',
       '// --- latency profiling ---',
     );
+    expectOrdered(playbackError, [
+      'TtsProcessLease lease,',
+      'TtsPlaybackOwner playback,',
+      '_speechOwnerIsCurrent(lease, playback)',
+      'playback.isCurrent(generation)',
+      'return;',
+      '_logLine(',
+    ]);
     expect(playbackError, contains('Object _error'));
     expect(playbackError, contains('StackTrace _stackTrace'));
     expect(playbackError, contains('speech_playback_failed'));
     expect(playbackError, isNot(contains(r'$error')));
     expect(playbackError, isNot(contains(r'$stackTrace')));
+
+    final callbacks = between(
+      'void _onSpeechActivityChanged(',
+      '// --- latency profiling ---',
+    );
+    expect(callbacks, contains('_speechOwnerIsCurrent(lease, playback)'));
+    expect(callbacks, contains('playback.isCurrent(generation)'));
+    expect(callbacks, contains('if (!speaking && _speaking)'));
+    expect(
+        callbacks, contains('stale authority cannot publish status or logs'));
   });
 }

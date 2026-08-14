@@ -1,20 +1,22 @@
 name: Mobile tests
 
-# Runs the Dart half of the cross-language golden contract (and any other Flutter
-# unit tests) so the mobile shell can't drift from the Python core. Triggered
-# only when the mobile app or the shared golden fixtures change. Pure Dart unit
-# tests -- no emulator, no device, no model downloads.
+# Runs the Dart half of the shared command/sentence contracts (and the other
+# Flutter unit tests). Triggered by mobile, shared-golden, or shared Python
+# contract-author changes. Pure Dart unit tests -- no emulator, no device, no
+# model downloads.
 
 on:
   push:
     branches: [ main ]
     paths:
       - 'mobile/**'
+      - 'core/contract.py'
       - 'tests/golden/**'
       - '.github/workflows/mobile-tests.yml'
   pull_request:
     paths:
       - 'mobile/**'
+      - 'core/contract.py'
       - 'tests/golden/**'
       - '.github/workflows/mobile-tests.yml'
 

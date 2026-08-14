@@ -1409,6 +1409,13 @@ class LiveSpeechAnalyzer:
 
         if text in _STOP_PHRASES:
             return IntentDecision(IntentKind.STOP, 1.0, observation.text, "stop_phrase")
+        # Only STOP is partial-authoritative. A transient recognizer hypothesis
+        # must never switch mode, confirm/deny, or start work; those require the
+        # final transcript. Desktop deliberately keeps exact STOP above as a
+        # partial-authoritative fail-safe; mobile rejects every semantic partial
+        # and implements generic acoustic barge-in in its widget adapter.
+        if not observation.is_final:
+            return IntentDecision(IntentKind.IGNORE, 0.8, observation.text, "partial_non_control")
         # CONFIRM/DENY are control-plane replies to a STAGED command confirmation,
         # so only treat a bare "yes"/"no" as one when a confirmation is ACTUALLY
         # pending. Otherwise a "yes" answering the assistant's own yes/no question
@@ -1420,8 +1427,8 @@ class LiveSpeechAnalyzer:
         # derived from a PARTIAL would carry the PRIOR turn's speaker-ID trust
         # (state.turn_owner_verified is only updated on finals), so an ambient
         # partial "yes" could launder the owner's trust onto a staged owner-verified
-        # action (the ambient-yes race). Partials fall through to IGNORE below; the
-        # FINAL "yes"/"no" acts. (STOP above stays partial-allowed for instant
+        # action (the ambient-yes race). Partials were rejected as IGNORE above;
+        # the FINAL "yes"/"no" acts. (STOP above stays partial-allowed for instant
         # barge-in -- cancelling is always fail-safe.)
         if has_pending_confirmation and observation.is_final:
             if text in _CONFIRM_PHRASES:
@@ -1438,9 +1445,6 @@ class LiveSpeechAnalyzer:
                 "mode_phrase",
                 target_mode=mode,
             )
-
-        if not observation.is_final:
-            return IntentDecision(IntentKind.IGNORE, 0.8, observation.text, "partial_non_control")
 
         if self.policy.device_tools_enabled:
             prepared_device_command = None

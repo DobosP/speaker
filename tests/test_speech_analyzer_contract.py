@@ -1,16 +1,15 @@
-"""Cross-language CONTRACT golden for the deterministic speech analyzer.
+"""Desktop deterministic speech-analyzer golden.
 
-This is the P5 anti-drift gate (cross-platform-1 / architecture-quality-4). The
+This is the P5 desktop anti-drift gate. The
 control-plane decision (``observe`` -> ``decide``) and the Mode state machine are
 frozen as transcript -> expected (SpeechObservation subset + IntentDecision)
 fixtures in ``tests/golden/speech_analyzer_contract.json``.
 
-The PYTHON analyzer must reproduce them (this test). When the mobile **Dart**
-shell ports ``always_on_agent``'s analyzer onto the shared ``AgentEvent``/``Mode``
-contract, its test MUST load the SAME JSON and reproduce it too -- so the desktop
-and mobile runtimes provably cannot drift (the lenient mobile stop-check drift the
-review flagged is exactly what this prevents). Authoring the fixtures Python-side
-first is the gate; the Dart port lands behind it (needs a Flutter toolchain).
+The Python analyzer must reproduce them. Mobile has a smaller bounded decision
+projection and intentionally different partial-transcript authority: desktop
+keeps exact STOP partial-authoritative, while mobile treats every partial as
+semantic-ignore and implements generic acoustic barge-in separately. The narrow
+normalization/final-or-typed STOP phrases remain shared through commands.json.
 
 Regenerate ONLY on an intentional contract change, then review the JSON diff:
 
@@ -188,10 +187,9 @@ def test_speech_analyzer_matches_golden_contract():
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
     actual = build_golden()
     assert actual == expected, (
-        "speech analyzer drifted from the frozen cross-language contract. If the "
+        "speech analyzer drifted from the frozen desktop contract. If the "
         "change is intentional, regenerate the golden (python "
-        "tests/test_speech_analyzer_contract.py) and review the diff -- and update "
-        "the Dart port to match."
+        "tests/test_speech_analyzer_contract.py) and review the desktop diff."
     )
 
 

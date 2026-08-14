@@ -316,8 +316,28 @@ final class TtsPlaybackOwner {
     _closeResult = closed.future;
     _closed = true;
     final stopFence = _advanceGeneration(allowClosed: true)._stopFence;
-    unawaited(stopFence.then(closed.complete));
+    unawaited(_runClose(stopFence, closed));
     return closed.future;
+  }
+
+  Future<void> _runClose(
+    Future<bool> stopFence,
+    Completer<bool> closed,
+  ) async {
+    var stopped = false;
+    try {
+      stopped = await stopFence;
+      // `_advanceGeneration` synchronously drops queued work, but a synthesis
+      // already admitted by the pump may still be inside native code. Keep the
+      // close receipt pending until that exact call returns and every resulting
+      // stale-path/clip-cleanup step has drained.
+      await whenIdle();
+    } catch (_) {
+      stopped = false;
+    }
+    closed.complete(
+      stopped && !_poisoned && !_physicalActive && !_pumpRunning,
+    );
   }
 
   TtsPlaybackGeneration _advanceGeneration({bool allowClosed = false}) {
@@ -518,6 +538,9 @@ final class TtsPlaybackOwner {
     try {
       clip = _createPlaybackClip(path);
     } catch (error, stackTrace) {
+      // Construction may already have entered plugin/native work before
+      // throwing without returning an exact cleanup handle. Retain poison.
+      _poisonPlayback();
       _reportError(generation, error, stackTrace);
       outcome.complete(
         const _PlaybackStartOutcome(_PlaybackStartDisposition.failed),

@@ -869,7 +869,9 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         unlanded provenance; ADR-0201/0202/0203 remain byte-stable. This slice
         adds zero acoustic/corpus artifacts; `commands.json` cases are unchanged
         (description only), so no ASR-quality or dataset-promotion evidence
-        follows while ADR-0205 later fixes the bounded English packet contract; production materialization remains unavailable.
+        follows. ADR-0205 fixes the bounded English packet contract and
+        ADR-0206 later records its exact private v2 materialization; neither
+        supplies ASR-quality or dataset-promotion authority.
       - [ ] Add a platform-native or cross-engine plugin lifecycle fence, or
         prove the exact recorder/player contracts. ADR-0204 excludes overlap
         only among covered shipped paths in the canonical Flutter UI isolate.
@@ -886,10 +888,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         flattening their metric domains. ADR-0205 ships the exact lock,
         offline no-download assembler, strict loader, aggregate/hash-only
         index and terminal-receipt contract, plus deterministic headless
-        coverage. Production materialization remains unavailable because the
-        exact DEMAND derivative and PriMock prepared bundles are absent; no
-        partial packet, model result, quality evidence, or default change
-        follows. The current mobile Zipformer remains English-only.
+        coverage. ADR-0206 preserves v1 as rejected history, binds the current
+        exact DEMAND receipt in v2, and records successful private all-five
+        preflight/publication/strict reload. This is packet availability, not a
+        model result, quality verdict, or default change. The current mobile
+        Zipformer remains English-only.
       - [ ] Research, without changing the English default or promoting a
         production model, a later opt-in Romanian comparison:
         `ro_stream_nemotron_560` as a true-streaming approximately 685 MB int8
@@ -963,36 +966,29 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       acceptable), and any non-screen source (camera/app) if wanted.
 
 ## P2
-- [x] **Fixed five-component English mobile ASR evidence packet — HEADLESS
-      CONTRACT SHIPPED; PRODUCTION PACKET UNAVAILABLE 2026-08-14 (ADR-0205).**
-      The offline no-download lock/assembler/strict-loader contract preserves
-      GSC/ECCC schema-v4 command/noise (57 groups/leaves; 3,714,904 bytes),
-      DEMAND schema-v2 isolated (42; 26,230,128), NOTSOFAR far-field schema-v2
-      isolated (18; 2,309,120), PriMock isolated schema-v2 (3; 284,668), and
-      PriMock grouped overlap (3 groups/9 leaves; 6,760,680) as five separate
-      metric domains. The fixed total is 123 logical groups, 129 mono-16-kHz
-      f32le leaves, 9,824,875 samples, 39,299,500 bytes, and 614.0546875
-      aggregate stored-leaf seconds. Valid publication is a private self-
-      contained exact copy with an aggregate/hash-only packet index and
-      terminal receipt; a reserved incomplete root is invalid and retry uses a
-      fresh path. `mobile_model_identity_authority: false`,
-      `evaluation_result_authority: false`, and packet-level pooled WER is
-      explicitly absent; eligible components retain their own ordinary-WER
-      domains. Exact task-worktree gates pass 19 focused, 264 adjacent, and 6
-      APM/DTD tests; scoped Ruff check/format, semantic reconstruction, and
-      diff-check are clean. Ordered retained-input preflight validated GSC/ECCC,
-      then failed at absent DEMAND with one path-free error and
-      no output root; independent read-only security inspection separately
-      close-validated retained NOTSOFAR. Independent security audit is GO on
-      exact hashes; its focused 19-test gate and Ruff are clean, and no
-      transcript/PCM content crossed output. The exact DEMAND derivative and
-      PriMock isolated/overlap production bundles are absent, so no all-five
-      production packet, report, or model cell was published. No download,
-      model, GPU, plugin, device, or live path ran; no held-out, training-
-      disjoint, or qualification authority follows; the English Zipformer/
-      default is unchanged. NEXT: a separate hash-only exact-mobile-hybrid
-      provisioner and endpoint-faithful runner, followed by recovery/
-      rematerialization of only the already pinned missing components.
+- [x] **Fixed five-component English mobile ASR evidence packet — V2 PRODUCTION
+      PACKET MATERIALIZED 2026-08-15 (ADR-0205/0206).** The offline assembler
+      still preserves GSC/ECCC, DEMAND, NOTSOFAR far-field, PriMock isolated,
+      and PriMock grouped overlap as five independent metric domains totaling
+      123 logical groups, 129 mono-16-kHz f32le leaves, 9,824,875 samples, and
+      39,299,500 bytes. Packet-v2 binds the current reviewed DEMAND corpus/
+      receipt `48797d03…54a8`/`24a7005e…2f02`; packet-v1 remains byte-stable
+      rejected history. Exact private production preflight, terminal
+      publication, and separate strict reload are green at lock/index/receipt
+      `c81a89a7…cc11`/`232e4230…835c`/`36eec947…f51f`. The packet remains a
+      self-contained private copy with aggregate/hash-only metadata, no pooled
+      WER/RTF/latency, `mobile_model_identity_authority: false`, and
+      `evaluation_result_authority: false`. Final low-priority gates are focused
+      `20/20` (`0.55s` pytest, `0.99s` wall, `49,848 KiB`), adjacent `264/264`
+      (`13.98s`, `14.41s`, `70,932 KiB`), and APM/DTD `6/6` (`2.30s`,
+      `2.99s`, `118,636 KiB`); Ruff is clean (`0.01s`, `21,248 KiB`), format is
+      `2/2` unchanged (`0.02s`, `19,712 KiB`), and the independent packet-code
+      audit is GO. Data restoration/download was exact and bounded; packet
+      assembly/reload was offline and capped. No model import/load/decode, GPU,
+      plugin, device, live, held-out, training-disjoint, qualification,
+      promotion, or default authority follows. NEXT: ADR-0207's hash-only
+      exact-mobile-hybrid provisioner, endpoint-faithful protocol-v5 runner,
+      and five-domain evaluator, then bounded execution.
 - [x] **NOTSOFAR-1 natural-overlap private bundle — IMPLEMENTED AND VERIFIED
       2026-08-13 (ADR-0194).** The no-download preparer and strict
       retained-bundle loader bind the exact retained CC-BY-4.0 MTG_32006

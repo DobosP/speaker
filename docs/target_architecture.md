@@ -379,32 +379,33 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    overlap 3 groups/9 leaves/6,760,680. The all-five envelope is 123 logical
    groups, 129 mono-16-kHz f32le leaves, 9,824,875 samples, 39,299,500 bytes,
    and 614.0546875 aggregate stored-leaf seconds. The assembler preserves each
-   component's schema, grouping, license, lock/receipt binding, and evaluator domain in a
-   private self-contained exact copy with an aggregate/hash-only packet index
+   component's schema, grouping, license, lock/receipt binding, and evaluator
+   domain in a private self-contained exact copy with an aggregate/hash-only packet index
    and terminal receipt. A failed call may leave a reserved incomplete root,
    but it is not a packet/success and retry uses a fresh path. It never pools
    WER, latency, or RTF. Packet model-identity and evaluation-result authority
    are explicitly false; packet-level pooled WER is absent while eligible
    components retain their own ordinary-WER domains.
 
-   Exact task-worktree gates pass 19 focused, 264 adjacent, and 6 APM/DTD tests
-   with scoped Ruff/format, semantic audit, and diff-check clean, but the
-   production packet remains unavailable: the exact retained DEMAND derivative
-   and PriMock isolated/overlap bundles are absent, and partial publication is
-   forbidden. Ordered retained-input preflight validated GSC/ECCC, then failed
-   at absent DEMAND with one path-free error and no output root;
-   independent read-only security inspection separately close-validated
-   retained NOTSOFAR. No packet materialization or decode/evaluation followed.
-   No new source was downloaded and no model, GPU, plugin, audio
-   device, physical phone, or live path ran; no held-out, training-disjoint, or
-   qualification authority follows. The shipped mobile Zipformer is
-   English-only and its current default is unchanged; the retained desktop
-   fp32 Zipformer and CUDA references are not mobile-model evidence. The next
-   separate slice is a hash-only provisioner for the exact mobile hybrid assets
-   plus an endpoint-faithful runner. Romanian remains blocked on its own model/
-   export, language label, tokenizer/Unicode normalization, metric, compatible
-   public strata, owner recordings, and physical-phone CPU/RSS/thermal/live
-   decision.
+   ADR-0206 preserves the v1 lock as rejected history and accepts v2 with the
+   current reviewed DEMAND corpus/receipt. Exact private preflight, capped
+   terminal publication, and a separate strict reload now establish the
+   production packet at lock/index/receipt `c81a89a7…cc11`/
+   `232e4230…835c`/`36eec947…f51f`. Final low-priority gates pass focused
+   `20/20` (`0.55s` pytest/`0.99s` wall/`49,848 KiB`), adjacent `264/264`
+   (`13.98s`/`14.41s`/`70,932 KiB`), and APM/DTD `6/6` (`2.30s`/`2.99s`/
+   `118,636 KiB`); Ruff is clean (`0.01s`/`21,248 KiB`), format is `2/2`
+   unchanged (`0.02s`/`19,712 KiB`), and independent packet-code audit is GO.
+   The packet remains source evidence only: no model was imported,
+   loaded, or decoded, and no GPU, plugin, audio device, physical phone,
+   endpoint/latency measurement, quality verdict, held-out/training-disjoint,
+   qualification, promotion, default, or live authority follows. The shipped
+   mobile Zipformer is English-only and its default is unchanged; retained
+   desktop/CUDA references are not mobile-model evidence. ADR-0207 separately
+   owns the exact hybrid provisioner, endpoint-faithful protocol-v5 runner, and
+   five-domain evaluator. Romanian remains blocked on its own model/export,
+   language label, tokenizer/Unicode normalization, metric, compatible public
+   strata, owner recordings, and physical-phone CPU/RSS/thermal/live decision.
 5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search

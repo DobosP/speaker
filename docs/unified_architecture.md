@@ -1063,31 +1063,32 @@ offline English packet contract: GSC/ECCC command-noise 57 groups/57 leaves/
 groups/9 leaves/6,760,680. The complete envelope is 123 logical groups, 129
 mono-16-kHz f32le leaves, 9,824,875 samples, 39,299,500 bytes, and 614.0546875
 aggregate stored-leaf seconds. One offline no-download assembler preserves the
-five existing schema/grouping/license/lock/receipt and evaluator domains inside a private
-self-contained exact copy with an aggregate/hash-only packet index and terminal
+five existing schema/grouping/license/lock/receipt and evaluator domains inside
+a private self-contained exact copy with an aggregate/hash-only packet index and terminal
 receipt. A failed call may leave a reserved incomplete root, but it is not a
 packet/success and retry uses a fresh path. It does not flatten the components
 or pool WER, latency, RTF, or promotion scores. Packet model-identity and
 evaluation-result authority are false; packet-level pooled WER is explicitly
 absent while eligible components retain their own ordinary-WER domains.
 
-Exact task-worktree gates pass 19 focused, 264 adjacent, and 6 APM/DTD tests
-with scoped Ruff/format, semantic audit, and diff-check clean, but no production
-packet exists: the exact retained DEMAND derivative and PriMock isolated/
-overlap bundles are absent, and the all-five contract rejects partial
-publication. Ordered retained-input preflight validated GSC/ECCC, then failed
-at absent DEMAND with one path-free error and no output root;
-independent read-only security inspection separately close-validated retained
-NOTSOFAR. No packet materialization or decode/evaluation followed. No new
-source was downloaded and no model, GPU, Flutter plugin,
-audio device, physical phone, or live path ran; no held-out, training-disjoint,
-or qualification authority follows. The current mobile Zipformer is
-English-only and its default remains unchanged; desktop fp32 Zipformer and CUDA
-reference runs are not mobile-model evidence. The next separate slice is a
-hash-only provisioner for the exact mobile hybrid assets plus an endpoint-
-faithful runner. Romanian remains blocked on its own model/export, language
-label, tokenizer/Unicode normalization, metrics, compatible public strata,
-owner recordings, and physical-phone CPU/RSS/thermal/live decision.
+ADR-0206 preserves packet-v1 as rejected history and accepts packet-v2 with the
+current reviewed DEMAND corpus/receipt. Exact private preflight, bounded
+terminal publication, and a separate strict reload establish the production
+packet at lock/index/receipt `c81a89a7…cc11`/`232e4230…835c`/
+`36eec947…f51f`. Final low-priority gates pass focused `20/20` (`0.55s`
+pytest/`0.99s` wall/`49,848 KiB`), adjacent `264/264` (`13.98s`/`14.41s`/
+`70,932 KiB`), and APM/DTD `6/6` (`2.30s`/`2.99s`/`118,636 KiB`); Ruff is
+clean (`0.01s`/`21,248 KiB`), format is `2/2` unchanged (`0.02s`/
+`19,712 KiB`), and independent packet-code audit is GO. No model was imported,
+loaded, or decoded. The packet has no endpoint, latency, held-out/training-
+disjoint, qualification, quality, promotion, default, device, or live
+authority. The current mobile Zipformer is English-only and its default is
+unchanged; desktop/CUDA references are not mobile-model evidence. ADR-0207
+separately owns the exact hybrid provisioner, endpoint-faithful protocol-v5
+runner, and five-domain evaluator. Romanian remains blocked on its own model/
+export, language label, tokenizer/Unicode normalization, metrics, compatible
+public strata, owner recordings, and physical-phone CPU/RSS/thermal/live
+decision.
 
 **Remote path:** Two FastAPI endpoints in `remote/token_server.py`:
 
@@ -1546,8 +1547,8 @@ ADR-0204 is the accepted hand-composed record and ADR-0201/0202/0203 remain
 byte-stable. See
 [`ADR-0204`](adr/0204-compose-mobile-session-and-ui-isolate-speech-ownership.md).
 
-37. **Fix the five-component English mobile ASR evidence packet
-(2026-08-14).** One offline no-download contract composes exact copies of the
+37. **Fix and materialize the five-component English mobile ASR evidence packet
+(2026-08-14 through 2026-08-15).** One offline contract composes exact copies of the
 existing GSC/ECCC command-noise, DEMAND isolated, NOTSOFAR far-field, PriMock
 isolated, and PriMock grouped-overlap bundles without flattening their schemas
 or metrics. Its fixed envelope is 123 logical groups, 129 mono-16-kHz f32le
@@ -1556,14 +1557,17 @@ leaf seconds.
 Successful publication is private, self-contained, and closed by an aggregate/
 hash-only packet index plus terminal receipt; there is no pooled WER. A failed
 call may leave a reserved incomplete root, but it is not a packet/success and a
-no-clobber retry requires a fresh output path. Exact task-worktree receipts are
-19 focused, 264 adjacent, and 6 APM/DTD with scoped Ruff/format, semantic audit,
-and diff-check clean. The production packet was not materialized because exact
-DEMAND and PriMock inputs are absent. No download, model/GPU, plugin/device/
-live, runtime, or default change occurred. Mobile-model-identity and evaluation-
-result authority are false and pooled WER is absent. Next add the separate hash-
-only exact-mobile-hybrid provisioner and endpoint-faithful runner.
-See [`ADR-0205`](adr/0205-fix-english-mobile-asr-evidence-packet.md).
+no-clobber retry requires a fresh output path. ADR-0205 fixed the unavailable
+contract; ADR-0206 preserves its v1 lock as rejected history, binds the current
+DEMAND receipt in v2, and records exact private production preflight,
+publication, and strict reload at lock/index/receipt `c81a89a7…cc11`/
+`232e4230…835c`/`36eec947…f51f`. Final gates pass 20 focused, 264 adjacent,
+and 6 APM/DTD tests with scoped Ruff/format and independent packet-code audit
+green. No model was loaded or decoded, and mobile-model identity/evaluation-result authority remain
+false with pooled WER absent. ADR-0207 owns the separate exact-mobile-hybrid
+provisioner, endpoint-faithful runner, and five-domain evaluator.
+See [`ADR-0205`](adr/0205-fix-english-mobile-asr-evidence-packet.md) and
+[`ADR-0206`](adr/0206-accept-and-materialize-mobile-asr-evidence-packet-v2.md).
 
 ---
 

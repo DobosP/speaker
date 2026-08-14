@@ -1,0 +1,163 @@
+{
+  "components": [
+    {
+      "directory": "command-noise",
+      "id": "command-noise",
+      "licenses": ["CC-BY-4.0"],
+      "loader": "production-final-command-noise-schema-v4",
+      "logical_cases": 57,
+      "manifest": {"file": "corpus.json", "sha256": "50ec2c1ec7ad7ef2ca58d56d3330ca1a496db3784b78d41be9c8804413c552b9"},
+      "metric_domain": "command-assertion-v1",
+      "pcm_bytes": 3714904,
+      "pcm_inputs": 57,
+      "prepared_output_classification": "private-prepared-output",
+      "receipt": {"file": "preparation-receipt.json", "sha256": "bf6cf442e4fb02e489dc7ceef763df3b39c1a4ef2178a5f8f2d2dab664517ac2"},
+      "schema": "streaming-stt-corpus-v4",
+      "source_classification": "public-derived",
+      "upstream": {
+        "lock_file": "tools/streaming_stt/public-command-noise-v1.lock.json",
+        "lock_recipe_sha256": "4d4e7a1cab6e498fdcda7a74cfab08a01e6bd8ac9c292a4ad940f4c09046433e",
+        "lock_sha256": "1ae5a5845a70b69aa7e1d32e6f799566e2c715f8202b2d86760a6cef73d51564"
+      }
+    },
+    {
+      "directory": "demand-noise",
+      "id": "demand-noise",
+      "licenses": ["CC-BY-4.0", "CC-BY-SA-3.0"],
+      "loader": "streaming-stt-corpus-schema-v2",
+      "logical_cases": 42,
+      "manifest": {"file": "corpus.json", "sha256": "48797d031f24f19694f3c6ba81f6eca53c32f2286751612bc5661779396954a8"},
+      "metric_domain": "stratified-wer-cer-v1",
+      "pcm_bytes": 26230128,
+      "pcm_inputs": 42,
+      "prepared_output_classification": "private-prepared-output",
+      "receipt": {"file": "preparation-receipt.json", "sha256": "24a7005ea6b327cc89f633bcd9d9edf20a6bb17c7afe0d60c49f37753e1e2f02"},
+      "schema": "streaming-stt-corpus-v2",
+      "source_classification": "public-derived",
+      "upstream": {
+        "archives": [
+          {"file": "DKITCHEN_16k.zip", "license": "CC-BY-SA-3.0", "sha256": "9d68e46d2709847c59580770e2f8aa160607ebff7475788174aa1080332cc845", "size_bytes": 110501049},
+          {"file": "DLIVING_16k.zip", "license": "CC-BY-SA-3.0", "sha256": "2b1726fe06e41551ce2397f2aaf3e4fb692c912d81914b04708df0bbb5252338", "size_bytes": 80170627},
+          {"file": "DWASHING_16k.zip", "license": "CC-BY-SA-3.0", "sha256": "f687c0806b0e9731b71a9c01c6134a21330efc5fa4aa7ee97cf4df276ad1dae1", "size_bytes": 102343250}
+        ],
+        "base_manifest_sha256": "a9c6859289d28b3bcc79665d890c9934f1f7b17dd7f3fe34b83a8d69a61ed3fe",
+        "case_set_sha256": "0fed46b8a8f5198bc39ddf8f5a72a45e9e89ba32fb6730a046c7fc4683cd0d3f",
+        "purpose_sha256": "0f80a7a145870fa84ff38f96675233855fd868dfaea4729c8a3fb199c4d3662d",
+        "receipt_runtime_binding": "exact-current-runtime-receipt-reviewed-v2",
+        "source_set_sha256": "4efcbefa674ea5d14ee584f77146f3160d6ece68c47eb1d43e361d5a1732cc60"
+      }
+    },
+    {
+      "directory": "notsofar-far-field",
+      "id": "notsofar-far-field",
+      "licenses": ["CC-BY-4.0"],
+      "loader": "streaming-stt-corpus-schema-v2",
+      "logical_cases": 18,
+      "manifest": {"file": "corpus.json", "sha256": "bdff6983416fb276c0d5060aeb7f3fa07d2ffcd4e0da38f50466d1b72a1b9c71"},
+      "metric_domain": "paired-channel-wer-cer-v1",
+      "pcm_bytes": 2309120,
+      "pcm_inputs": 18,
+      "prepared_output_classification": "private-prepared-output",
+      "receipt": {"file": "preparation-receipt.json", "sha256": "45aceac93a16128d287371e3ff46f214227d8023dd355e99a79494e687ca2c0f"},
+      "schema": "streaming-stt-corpus-v2",
+      "source_classification": "public-derived",
+      "upstream": {
+        "lock_file": "tools/streaming_stt/notsofar1-mtg32006-v1.lock.json",
+        "lock_recipe_sha256": "bce20c48c793a4c793f5361abe837a5119c4c66a6fbb48c7716b423eba1e7c4e",
+        "lock_sha256": "74525e1285121928788cf10fb1bca10f3bcbfac2f348ddc1ba9d9a85d8b46116",
+        "selection_sha256": "f83ff910971b6ee51717e6e4eefbe995c426c8044ab5a5530676fb1208683c80"
+      }
+    },
+    {
+      "directory": "primock-isolated",
+      "id": "primock-isolated",
+      "licenses": ["CC-BY-4.0"],
+      "loader": "primock57-isolated-bundle-v1",
+      "logical_cases": 3,
+      "manifest": {"file": "corpus.json", "sha256": "769f0bea80da796d4213b5008b67f4bf80e4eea5a6e43a9b06472b0b548ace88"},
+      "metric_domain": "ordinary-wer-cer-v1",
+      "pcm_bytes": 284668,
+      "pcm_inputs": 3,
+      "prepared_output_classification": "private-prepared-output",
+      "receipt": {"file": "preparation-receipt.json", "sha256": "ac4f98cb650b7f8aa6096e3dd17d82b066a62e41ae2adbcd80ba652b5119d2b6"},
+      "schema": "streaming-stt-corpus-v2",
+      "source_classification": "public-derived",
+      "upstream": {
+        "lock_file": "tools/streaming_stt/primock57-consultation01-v1.lock.json",
+        "lock_recipe_sha256": "2bc14c4114959fe1323d843ed6bb1b17cf81aa46f620b6805a98dd380a1e17ef",
+        "lock_sha256": "058da5caf533a771b276f81323c5f011d35ac406fa4f91c51cec5a0ed25c2031"
+      }
+    },
+    {
+      "directory": "primock-overlap",
+      "id": "primock-overlap",
+      "licenses": ["CC-BY-4.0"],
+      "loader": "primock57-overlap-bundle-v1",
+      "logical_cases": 3,
+      "manifest": {"file": "primock57-two-role-overlap-diagnostic-v1.json", "sha256": "e69c85356a77cd87b0c7f4c100614dccbf1484e16532a5a2239a768162e443b4"},
+      "metric_domain": "two-utterance-min-order-wer-v1",
+      "pcm_bytes": 6760680,
+      "pcm_inputs": 9,
+      "prepared_output_classification": "private-prepared-output",
+      "receipt": {"file": "preparation-receipt.json", "sha256": "69ec7df35591a2b1a7203109c58077540540c32deec99dc933a5ddef0840f507"},
+      "schema": "primock57-overlap-custom-v1",
+      "source_classification": "public-derived",
+      "upstream": {
+        "evaluator_lock_file": "tools/streaming_stt/primock57-overlap-evaluator-v1.lock.json",
+        "evaluator_lock_recipe_sha256": "0697956f0671fb77e101f40b67f4a46bfb5a6da9cd0962d2cde4eec4577f261e",
+        "evaluator_lock_sha256": "b8fdc497548b8d51fd5381513427cfffb715f1b6757481410900e45c337d2748",
+        "source_lock_file": "tools/streaming_stt/primock57-consultation01-v1.lock.json",
+        "source_lock_recipe_sha256": "2bc14c4114959fe1323d843ed6bb1b17cf81aa46f620b6805a98dd380a1e17ef",
+        "source_lock_sha256": "058da5caf533a771b276f81323c5f011d35ac406fa4f91c51cec5a0ed25c2031"
+      }
+    }
+  ],
+  "evidence_scope": {
+    "default_authority": false,
+    "device_authority": false,
+    "endpoint_authority": false,
+    "evaluation_result_authority": false,
+    "gpu_authority": false,
+    "held_out_authority": false,
+    "latency_authority": false,
+    "live_authority": false,
+    "microphone_authority": false,
+    "mobile_model_identity_authority": false,
+    "model_quality_authority": false,
+    "multilingual_authority": false,
+    "promotion_authority": false,
+    "qualification_authority": false,
+    "romanian_authority": false,
+    "training_disjoint_authority": false
+  },
+  "kind": "mobile-asr-evidence-packet-lock-v2",
+  "language": {"bcp47": "en", "english_only": true},
+  "metric_aggregation": {"component_domains_are_independent": true, "pooled_metric": null, "pooled_wer": false},
+  "order": ["command-noise", "demand-noise", "notsofar-far-field", "primock-isolated", "primock-overlap"],
+  "packet_id": "mobile-asr-english-five-component-v2",
+  "privacy": {
+    "packet_index": "aggregate-path-transcript-error-free-v1",
+    "packet_receipt": "aggregate-path-transcript-error-free-v1",
+    "stdout": "aggregate-path-transcript-error-free-v1"
+  },
+  "publication": {
+    "component_materialization": "exact-byte-copy-v1",
+    "external_path_references": false,
+    "files": "mode-0600-single-link",
+    "redistribution": false,
+    "root": "fresh-outside-git-mode-0700",
+    "storage": "private-cache",
+    "terminal_receipt": "last-no-clobber-completion-marker-v1"
+  },
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "3bd6600b914876caeea3c58e82b00f0dfe0c8b8951edc0f4affb28b152e48c9d",
+  "runtime_receipt_policy": {
+    "component_hash_authority": "committed-lock-manifest-and-receipt-digests-only",
+    "computed_component_hashes": "compare-only-never-cli-supplied-or-learned",
+    "packet_receipt": "runtime-result-not-component-selection-authority",
+    "packet_reuse": "future-evaluator-must-pin-packet-index-and-packet-receipt-sha256"
+  },
+  "sample_format": {"channels": 1, "encoding": "f32le", "sample_rate_hz": 16000},
+  "schema_version": 2,
+  "totals": {"components": 5, "logical_cases": 123, "pcm_bytes": 39299500, "pcm_inputs": 129, "samples": 9824875}
+}

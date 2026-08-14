@@ -44,20 +44,20 @@ from tools.streaming_stt.corpus_writer import (
 from tools.streaming_stt.protocol import MAX_PCM_BYTES
 
 
-SCHEMA_VERSION: Final = 1
-LOCK_KIND: Final = "mobile-asr-evidence-packet-lock-v1"
-PACKET_ID: Final = "mobile-asr-english-five-component-v1"
+SCHEMA_VERSION: Final = 2
+LOCK_KIND: Final = "mobile-asr-evidence-packet-lock-v2"
+PACKET_ID: Final = "mobile-asr-english-five-component-v2"
 LOCK_RECIPE_SHA256: Final = (
-    "30b5b460a3a9fb7ff95f2c7f79f27e5f2c26a35b429effcb494315831d7225bf"
+    "3bd6600b914876caeea3c58e82b00f0dfe0c8b8951edc0f4affb28b152e48c9d"
 )
 LOCK_FILE_SHA256: Final = (
-    "268377ba9ef648647112210cd2c812cf9ea8e9783f366676dee1c4fe1dc07820"
+    "c81a89a7a7df534ec0a23dc20c0a915c4aa5eedec6270a13ec08456a0683cc11"
 )
-LOCK_FILE_BYTES: Final = 8506
+LOCK_FILE_BYTES: Final = 8481
 DEFAULT_LOCK: Final = (
     Path(__file__).resolve().parent
     / "streaming_stt"
-    / "mobile-asr-evidence-packet-v1.lock.json"
+    / "mobile-asr-evidence-packet-v2.lock.json"
 )
 
 _MAX_LOCK_BYTES = 64 * 1024
@@ -447,7 +447,7 @@ def _parse_lock(raw: bytes, *, expected_raw_sha256: str) -> PacketLock:
             or not isinstance(demand_value, dict)
             or not isinstance(demand_value.get("upstream"), dict)
             or demand_value["upstream"].get("receipt_runtime_binding")
-            != "exact-retained-digest-requires-new-lock-after-rematerialization-v1"
+            != "exact-current-runtime-receipt-reviewed-v2"
         ):
             raise MobileAsrEvidencePacketError()
         return PacketLock(
@@ -823,7 +823,7 @@ def preflight_packet(
         _close_validate(component)
     return {
         "components": 5,
-        "kind": "mobile-asr-evidence-packet-preflight-v1",
+        "kind": "mobile-asr-evidence-packet-preflight-v2",
         "logical_cases": 123,
         "ok": True,
         "packet_lock_sha256": selected.raw_sha256,
@@ -877,7 +877,7 @@ def _packet_index(lock: PacketLock) -> dict[str, object]:
             }
             for spec in lock.components
         ],
-        "kind": "mobile-asr-evidence-packet-index-v1",
+        "kind": "mobile-asr-evidence-packet-index-v2",
         "metric_aggregation": _EXPECTED_METRIC_AGGREGATION,
         "packet_id": PACKET_ID,
         "packet_lock_sha256": lock.raw_sha256,
@@ -907,7 +907,7 @@ def _packet_receipt(
     return {
         "complete": True,
         "components": [_artifact_tree(item) for item in components],
-        "kind": "mobile-asr-evidence-packet-receipt-v1",
+        "kind": "mobile-asr-evidence-packet-receipt-v2",
         "packet_id": PACKET_ID,
         "packet_index_sha256": index_sha256,
         "packet_lock_sha256": lock.raw_sha256,
@@ -1545,7 +1545,7 @@ def _publication_result(
 ) -> dict[str, object]:
     return {
         "components": packet.components,
-        "kind": "mobile-asr-evidence-packet-publication-v1",
+        "kind": "mobile-asr-evidence-packet-publication-v2",
         "logical_cases": packet.logical_cases,
         "ok": True,
         "packet_index_sha256": packet.packet_index_sha256,
@@ -2005,7 +2005,7 @@ def _help_receipt() -> dict[str, object]:
     return {
         "actions": ["preflight", "publish"],
         "component_flags": list(_SOURCE_FLAGS),
-        "kind": "mobile-asr-evidence-packet-help-v1",
+        "kind": "mobile-asr-evidence-packet-help-v2",
         "ok": True,
         "publish_only_flag": _OUTPUT_FLAG,
     }

@@ -63,7 +63,7 @@ def test_lock_is_exact_self_digested_and_has_fixed_totals() -> None:
     digest_value = dict(value)
     digest_value.pop("recipe_sha256")
 
-    assert len(raw) == packet.LOCK_FILE_BYTES == 8506
+    assert len(raw) == packet.LOCK_FILE_BYTES == 8481
     assert hashlib.sha256(raw).hexdigest() == packet.LOCK_FILE_SHA256
     assert packet._canonical_sha256(digest_value) == packet.LOCK_RECIPE_SHA256
     assert (
@@ -78,6 +78,9 @@ def test_lock_is_exact_self_digested_and_has_fixed_totals() -> None:
     assert value["evidence_scope"]["qualification_authority"] is False
     assert value["evidence_scope"]["mobile_model_identity_authority"] is False
     assert value["evidence_scope"]["evaluation_result_authority"] is False
+    assert value["schema_version"] == 2
+    assert value["kind"] == "mobile-asr-evidence-packet-lock-v2"
+    assert value["packet_id"] == "mobile-asr-english-five-component-v2"
 
 
 def test_lock_pins_exact_runtime_bound_demand_receipt_and_16k_archives() -> None:
@@ -85,10 +88,10 @@ def test_lock_pins_exact_runtime_bound_demand_receipt_and_16k_archives() -> None
     demand = value["components"][1]
 
     assert demand["manifest"]["sha256"] == (
-        "93906f0643648401308c944f5681133129a8ac9e6a78bbcab760a94ce03c761a"
+        "48797d031f24f19694f3c6ba81f6eca53c32f2286751612bc5661779396954a8"
     )
     assert demand["receipt"]["sha256"] == (
-        "fa0006b42c70fdf42830a2ac9d7700f38408e87396d462fc2e3ffc211deb199b"
+        "24a7005ea6b327cc89f633bcd9d9edf20a6bb17c7afe0d60c49f37753e1e2f02"
     )
     assert [row["file"] for row in demand["upstream"]["archives"]] == [
         "DKITCHEN_16k.zip",
@@ -96,8 +99,22 @@ def test_lock_pins_exact_runtime_bound_demand_receipt_and_16k_archives() -> None
         "DWASHING_16k.zip",
     ]
     assert demand["upstream"]["receipt_runtime_binding"] == (
-        "exact-retained-digest-requires-new-lock-after-rematerialization-v1"
+        "exact-current-runtime-receipt-reviewed-v2"
     )
+
+
+def test_v1_lock_is_preserved_as_rejected_history() -> None:
+    historical = packet.DEFAULT_LOCK.with_name(
+        "mobile-asr-evidence-packet-v1.lock.json"
+    )
+    raw = historical.read_bytes()
+
+    assert len(raw) == 8506
+    assert hashlib.sha256(raw).hexdigest() == (
+        "268377ba9ef648647112210cd2c812cf9ea8e9783f366676dee1c4fe1dc07820"
+    )
+    with pytest.raises(packet.MobileAsrEvidencePacketError):
+        packet.load_packet_lock(historical)
 
 
 def test_lock_rejects_alternate_path_and_recomputed_raw_tamper(tmp_path: Path) -> None:

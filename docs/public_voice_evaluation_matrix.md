@@ -30,6 +30,76 @@ aggregate-only report SHA-256 values are
 Both are accelerated after-PCM comparisons, not capture, endpoint, live, or
 conversational-latency evidence; reported peak VRAM is null.
 
+[ADR-0194](adr/0194-add-notsofar1-natural-overlap-bundle.md) records a second,
+still separate NOTSOFAR-1 evidence boundary without changing matrix v5 or the
+isolated 18-case fixture. It reuses the exact retained CC-BY-4.0 MTG_32006
+five-file source and freezes exact-Decimal natural-overlap selection: at least
+300 ms between two valid different-speaker segments whose unknown-free,
+known-marker-stripped normalized references exactly match word timing; an
+at-most-eight-second envelope with no third intersecting annotation; and an
+ordinal-free salted SHA-256 rank that requires at least seven candidates and
+takes seven. Seven selected rows contain ten known removable marker
+occurrences, seven rows are raw-tag-free, and no selected row contains an
+unknown or unrecognized marker; the contract does not require all raw source
+text to be tag-free.
+
+That contract is a private custom two-reference bundle rather than a schema-v2
+ordinary-WER corpus. The approved exact-source v5 preparation published seven
+grouped windows with two original synchronized far-field clips each: 14 leaves
+and exactly 2,416,640 f32 bytes. Its manifest and terminal-receipt SHA-256 are
+`898e291c713154e3cbd78ba9c38fca6fed08284edace98ac615ebdd37265da7b` and
+`29b5d0f1f11f2ac56dee92a7d5ab6ef02a18c4d695a0b9b981b67dde3a24e2ba`;
+strict root and manifest reopen passed. The aggregate terminal receipt excludes
+reference text/fragments, per-window/case rows, raw speaker/device IDs,
+source-relative paths, private-output/local absolute paths, ranks, and
+ordinals; it retains only six fixed repository-relative preparer paths and the
+fixed manifest filename. The manifest remains private because it necessarily
+binds both references. The lock's opaque private-selection commitment is an
+integrity binding, not a secrecy claim: the source is public and a determined
+party can recompute the selected data. Lock, manifest, and receipt bind exact
+`overlap_metric=not-implemented`. Exact built-in schema validation and hostile-
+hook tests close full manifest/receipt/source authority before PCM opens.
+Focused/adjacent fake gates pass 70/155 tests; type/security, fresh
+materialization, and independent final audits are GO. ADR-0194 itself adds no
+evaluator and supplies no ordinary WER, ORC-WER, tcpWER, tcORC,
+diarization, endpoint, latency, quality, qualification, promotion, default,
+device, or live result. Its creation-time `overlap_metric=not-implemented`
+field remains an immutable fact.
+
+[ADR-0196](adr/0196-add-receipt-bound-notsofar1-natural-overlap-evaluator.md)
+adds a separate evaluator lock bound to those settled manifest/receipt bytes;
+it does not rewrite the private bundle. One worker and one repeat submit all 14
+channels sequentially in window-major/channel-A-then-B order. Each single
+hypothesis is scored privately against both window references with the custom
+`two-utterance-min-order-wer-v1` diagnostic. A closed aggregate report may
+contain only `aggregate_accuracy`, anonymous `channel_accuracy`, bounded
+`paired_device` agreement/difference counts, safe
+worker/resource receipts, and exact execution bindings. It forbids references,
+hypotheses, window/case rows, roles, raw device IDs, local paths, winner/delta
+language, and repeat-stability claims.
+
+The evaluator passes 111 focused and 440 adjacent fake/static tests. The
+separately authorized retained Faster-Whisper Small CUDA/FP16 diagnostic then
+completed all 14 source-complete burst evaluations across seven windows, two
+anonymous synchronized channels, and one repeat. Its custom
+`two-utterance-min-order-wer-v1` micro-aggregate is .4231: 77 errors over 182
+reference-word opportunities, comprising 70 deletions, 7 substitutions, and
+zero insertions. Anonymous channel A/B are .4505/.3956. Both channels reported
+the same selected reference order in 7/7 windows, but their normalized
+hypotheses agreed exactly in only 1/7; deterministic tie handling means this is
+not utterance-order or speaker-attribution evidence.
+
+Preserve the mode-0600/single-link 7,946-byte aggregate report SHA-256
+`18ec9f583190752bd683f07341e8205d9b511e6823081b5173405a8fe0df45bd`.
+Its 14/14 source-complete count establishes only that every fixed input reached
+one typed final with exact source accounting. It does not establish corpus or
+turn coverage, repeat stability, ordinary WER, ORC-WER, tcpWER, tcORC,
+diarization, endpoint behavior, latency, device identity, held-out quality,
+qualification, promotion, default, or live behavior. The report contains no
+cgroup/resource observations; the collected launch unit and zero-compute-PID
+check are separate operational cleanup evidence. This result remains separate
+from matrix v5.
+
 | Track | Public inputs | Report family |
 |---|---|---|
 | STT/accent | Common Voice 26, Common Voice SPS 4 English, SpeechOcean762, MInDS-14, HarperValleyBank, EdAcc test | literal/canonical WER and CER |

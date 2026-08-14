@@ -938,6 +938,48 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       acceptable), and any non-screen source (camera/app) if wanted.
 
 ## P2
+- [x] **NOTSOFAR-1 natural-overlap private bundle — IMPLEMENTED AND VERIFIED
+      2026-08-13 (ADR-0194).** The no-download preparer and strict
+      retained-bundle loader bind the exact retained CC-BY-4.0 MTG_32006
+      five-file source. Exact-Decimal overlap `>=0.300000`, ordinal-free salted
+      SHA-256, and require-at-least-seven/take-seven selection published seven
+      private two-reference windows with two synchronized original-device clips
+      each: 14 leaves and exactly 2,416,640 f32 bytes. Lock, manifest, and
+      receipt bind `overlap_metric=not-implemented`. Focused/adjacent fake gates
+      pass 70/155 tests; the fresh exact-source v5 bundle strictly reopens from
+      either its root or manifest, with settled manifest/receipt SHA-256
+      `898e291c713154e3cbd78ba9c38fca6fed08284edace98ac615ebdd37265da7b` /
+      `29b5d0f1f11f2ac56dee92a7d5ab6ef02a18c4d695a0b9b981b67dde3a24e2ba`.
+      Exact built-in schema checks reject bool/int confusion, subclasses,
+      proxies, colliding keys, and hostile hooks; loader authority closes before
+      PCM opens. Type/security, materialization, and independent final audits
+      are GO. ADR-0194 itself adds no evaluator, ordinary
+      WER/ORC/tcpWER/tcORC, quality verdict, promotion, device, or live claim;
+      ADR-0196 now supplies the separately locked follow-on diagnostic without
+      rewriting these retained bytes.
+- [x] **NOTSOFAR-1 receipt-bound natural-overlap evaluator — IMPLEMENTED AND
+      VERIFIED 2026-08-14 (ADR-0196).** One worker and one repeat issue exactly
+      14 sequential window-major/channel-A-then-B requests. Each complete-source
+      hypothesis is scored privately against both references with only the
+      custom `two-utterance-min-order-wer-v1` metric. The closed report exposes
+      `aggregate_accuracy`, anonymous `channel_accuracy`, and bounded
+      `paired_device` agreement/difference counts; no reference, hypothesis,
+      window row, role, raw device ID, local path, winner, or repeat-stability
+      field crosses the boundary. Bundle/lock/config/worker/runtime/model/source/
+      evaluator/closure bindings are rechecked through no-clobber publication.
+      Focused/adjacent fake gates pass 111/440 and static security review is GO.
+      The retained Faster-Whisper Small CUDA/FP16 run completed 14/14
+      source-complete burst evaluations across seven windows, two anonymous
+      channels, and one repeat. Custom minimum-order WER is .4231 (77/182;
+      70 deletions, 7 substitutions, 0 insertions), anonymous channel A/B are
+      .4505/.3956, selected-order agreement is 7/7, and exact normalized-
+      hypothesis agreement is 1/7. Preserve the mode-0600/single-link 7,946-byte
+      report SHA-256 `18ec9f58…45bd`; its canonical binding and wrapper closure
+      rederive exactly. Source-complete is execution accounting only. This is
+      neither ordinary WER nor endpoint, latency, diarization, identity,
+      held-out quality, qualification, promotion, default, device, or live
+      authority. The report carries no cgroup/resource observations; the
+      collected unit and zero-compute-PID check are separate cleanup evidence.
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
 - [x] **Recorded-STT outcome vocabularies closed — DONE 2026-08-12
       (ADR-0188).** Offline and verifier values are normalized before aggregate

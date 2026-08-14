@@ -1,0 +1,85 @@
+{
+  "evidence_scope": {
+    "diagnostic_only": true,
+    "natural_overlap": true,
+    "ordinary_wer": false,
+    "original_device_audio": true,
+    "promotion_authority": false,
+    "qualification_authority": false,
+    "speaker_authority": false
+  },
+  "fixture_id": "notsofar1-mtg32006-natural-overlap-v1",
+  "kind": "notsofar1-natural-overlap-fixture-lock-v1",
+  "license_id": "CC-BY-4.0",
+  "overlap_metric": "not-implemented",
+  "output_artifacts": [
+    {"file":"notsofar-overlap-w00-channel-a.f32le","samples":24480,"sha256":"e2e8c7eb5dda5f7f4549db2d74bba318d0e6ae1c0ff6165343cb96b926a4426b","size_bytes":97920},
+    {"file":"notsofar-overlap-w00-channel-b.f32le","samples":24480,"sha256":"bb534364089a65c8d13a72e4ac57ed340a2757687a1f6ffb034efea9f2ac4c40","size_bytes":97920},
+    {"file":"notsofar-overlap-w01-channel-a.f32le","samples":30880,"sha256":"e3718847e6352e99cf7e1ef7397ed0858529ba6cf329ca610c19ba14f5e43054","size_bytes":123520},
+    {"file":"notsofar-overlap-w01-channel-b.f32le","samples":30880,"sha256":"1f073ebbbf495d33778a5475a427a2f02d248567d7beb0dba7ce7b46bfbcf07a","size_bytes":123520},
+    {"file":"notsofar-overlap-w02-channel-a.f32le","samples":42080,"sha256":"ab1f7a6cb28164ed7d6322d87765a349196004cad4bcebdeb4f04be771cde2c3","size_bytes":168320},
+    {"file":"notsofar-overlap-w02-channel-b.f32le","samples":42080,"sha256":"37fdc3198680e8421671dc29866633a0d9e23e0aa2f71c96628a3e1e0283ebd6","size_bytes":168320},
+    {"file":"notsofar-overlap-w03-channel-a.f32le","samples":67840,"sha256":"3836dbd1b708e0810802f671615a5a48829cded719b5d3e85cd3b91563cb00b2","size_bytes":271360},
+    {"file":"notsofar-overlap-w03-channel-b.f32le","samples":67840,"sha256":"6184eee37472f30e37ffb32c37c67575f0200a4ff23c9843e5aa87d6427556c4","size_bytes":271360},
+    {"file":"notsofar-overlap-w04-channel-a.f32le","samples":38880,"sha256":"6a41a3d6a0e6875fe54e79f83d8f00d7f722edfcced14022498a16d2ff379bac","size_bytes":155520},
+    {"file":"notsofar-overlap-w04-channel-b.f32le","samples":38880,"sha256":"c75bc5985500cca73d4bb92f2164de88a314ecf3abd084c426ac711260976fd1","size_bytes":155520},
+    {"file":"notsofar-overlap-w05-channel-a.f32le","samples":56800,"sha256":"e0f211c75b3430f1d408a3e6595c06860a6d4fd6309927ad213f1eaf54ee7c0b","size_bytes":227200},
+    {"file":"notsofar-overlap-w05-channel-b.f32le","samples":56800,"sha256":"711b2b1fcf77fce083a4e43397d72ab5514699c3c23d8b84cfd9008ef69f6abb","size_bytes":227200},
+    {"file":"notsofar-overlap-w06-channel-a.f32le","samples":41120,"sha256":"1aabb7767b411b7fda1e8e51f14276160556dfaf3f7a580ec33ada12705e34ca","size_bytes":164480},
+    {"file":"notsofar-overlap-w06-channel-b.f32le","samples":41120,"sha256":"c271754c066b1e893afe551eed94f8a1ecdfd8410648c8bf1fef0cf82ffc5f39","size_bytes":164480}
+  ],
+  "privacy": {
+    "case_rows_in_receipt": false,
+    "local_paths_in_receipt": false,
+    "raw_device_ids_in_receipt": false,
+    "raw_speaker_ids_in_receipt": false,
+    "transcripts_in_receipt": false
+  },
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "ec6bf59b21e7fe59d7ea432fd4a6ac17e965fb3289e2523121576f71636150a5",
+  "repository": "microsoft/NOTSOFAR",
+  "revision": "bb97bae9458f477a85dfd6e8aee92e35d5887dd3",
+  "sample_format": {
+    "channels": 1,
+    "encoding": "f32le",
+    "sample_conversion": "pcm-s16le-to-f32le-divide-32768-v1",
+    "sample_rate_hz": 16000
+  },
+  "schema_version": 1,
+  "selection": {
+    "algorithm": "sha256-ranked-two-speaker-natural-overlap-v1",
+    "cases": [
+      {"end_sample":552800,"overlap_relative_end_sample":23040,"overlap_relative_start_sample":9600,"role_a_relative_end_sample":24480,"role_a_relative_start_sample":0,"role_b_relative_end_sample":23040,"role_b_relative_start_sample":9600,"start_sample":528320},
+      {"end_sample":5901600,"overlap_relative_end_sample":25920,"overlap_relative_start_sample":9280,"role_a_relative_end_sample":30880,"role_a_relative_start_sample":0,"role_b_relative_end_sample":25920,"role_b_relative_start_sample":9280,"start_sample":5870720},
+      {"end_sample":611360,"overlap_relative_end_sample":10720,"overlap_relative_start_sample":1600,"role_a_relative_end_sample":10720,"role_a_relative_start_sample":0,"role_b_relative_end_sample":42080,"role_b_relative_start_sample":1600,"start_sample":569280},
+      {"end_sample":5642720,"overlap_relative_end_sample":57920,"overlap_relative_start_sample":39680,"role_a_relative_end_sample":67840,"role_a_relative_start_sample":0,"role_b_relative_end_sample":57920,"role_b_relative_start_sample":39680,"start_sample":5574880},
+      {"end_sample":2317600,"overlap_relative_end_sample":37920,"overlap_relative_start_sample":7360,"role_a_relative_end_sample":37920,"role_a_relative_start_sample":0,"role_b_relative_end_sample":38880,"role_b_relative_start_sample":7360,"start_sample":2278720},
+      {"end_sample":2378240,"overlap_relative_end_sample":56000,"overlap_relative_start_sample":40960,"role_a_relative_end_sample":56800,"role_a_relative_start_sample":0,"role_b_relative_end_sample":56000,"role_b_relative_start_sample":40960,"start_sample":2321440},
+      {"end_sample":3960320,"overlap_relative_end_sample":36480,"overlap_relative_start_sample":16640,"role_a_relative_end_sample":41120,"role_a_relative_start_sample":0,"role_b_relative_end_sample":36480,"role_b_relative_start_sample":16640,"start_sample":3919200}
+    ],
+    "channels": 2,
+    "maximum_envelope_seconds": "8.000000",
+    "maximum_segment_seconds": "8.000000",
+    "minimum_overlap_seconds": "0.300000",
+    "minimum_segment_seconds": "0.600000",
+    "rank_preimage": "nul-join(seed,pair,sorted-members(speaker,start,end,reference))-utf8-sha256-v1",
+    "reference_transform": "marker-stripped-row-text-and-core-wer-token-equality-v1",
+    "seed": "speaker-notsofar1-natural-overlap-v1-2026-08-12",
+    "selection_private_commitment_sha256": "fec0323b7e677e373cfd7b8332258a930581ef87707f5a211a509967985b9beb",
+    "third_annotation_policy": "reject-any-third-half-open-envelope-intersection-v1",
+    "windows": 7
+  },
+  "source": {
+    "files": [
+      {"path":"gt_transcription.json","role":"transcription","sha256":"323cb14d9bb129d67645128bc5a65559c830b54982541bc577de86f199ce955b","size_bytes":224525},
+      {"path":"gt_meeting_metadata.json","role":"meeting-metadata","sha256":"43cf2473716aa5dc958f16dfef82a5ea431a6ce5800cd695114de61b219187d0","size_bytes":469},
+      {"path":"devices.json","role":"devices-metadata","sha256":"6877215356b488462bf3bcc16fea76983a42d89dd2221c4dbff86aca3dea580f","size_bytes":1692},
+      {"path":"sc_meetup_0/ch0.wav","role":"channel-a","sha256":"02f49d286fbb3ada1cb5ec49e076a6d498d140124d11b420cfcee94b7ecc5ec6","size_bytes":12255808},
+      {"path":"sc_rockfall_2/ch0.wav","role":"channel-b","sha256":"b37c3d34462ca56006d67bd0aba434fc8e7df95534d971ac66ecb46a7b908805","size_bytes":12255808}
+    ],
+    "maximum_total_size_bytes": 25165824,
+    "meeting_id": "MTG_32006",
+    "source_lock_recipe_sha256": "bce20c48c793a4c793f5361abe837a5119c4c66a6fbb48c7716b423eba1e7c4e",
+    "total_size_bytes": 24738302
+  }
+}

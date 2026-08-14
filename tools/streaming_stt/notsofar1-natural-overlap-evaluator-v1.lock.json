@@ -1,0 +1,46 @@
+{
+  "bundle": {
+    "manifest_file": "notsofar1-natural-overlap-v1.json",
+    "manifest_sha256": "898e291c713154e3cbd78ba9c38fca6fed08284edace98ac615ebdd37265da7b",
+    "pcm_inputs": 14,
+    "receipt_file": "preparation-receipt.json",
+    "receipt_sha256": "29b5d0f1f11f2ac56dee92a7d5ab6ef02a18c4d695a0b9b981b67dde3a24e2ba",
+    "windows": 7
+  },
+  "evidence_scope": {
+    "device_identity_authority": false,
+    "diagnostic_only": true,
+    "diarization_evidence": false,
+    "endpoint_evidence": false,
+    "latency_evidence": false,
+    "live_evidence": false,
+    "promotion_authority": false,
+    "qualification_authority": false,
+    "runtime_default_authority": false
+  },
+  "execution": {
+    "input_order": "window-index-ascending/channel-a-then-channel-b-v1",
+    "metric": "two-utterance-min-order-wer-v1",
+    "repeats": 1,
+    "workers": 1
+  },
+  "fixture_id": "notsofar1-mtg32006-natural-overlap-v1",
+  "kind": "notsofar1-natural-overlap-evaluator-lock-v1",
+  "privacy": {
+    "aggregate_schema": "aggregate-channel-and-paired-device-counts-only-v1",
+    "channel_accuracy": "anonymous-channel-a-channel-b-aggregate-only-v1",
+    "device_hypothesis_scoring": "each-device-hypothesis-against-both-window-references-v1",
+    "forbidden_report_content": [
+      "references",
+      "reference_fragments",
+      "hypotheses",
+      "window_rows",
+      "speaker_roles",
+      "raw_device_ids",
+      "local_paths"
+    ]
+  },
+  "recipe_digest_rule": "sha256-canonical-json-without-recipe_sha256-v1",
+  "recipe_sha256": "e65f70c42e2568f914ffb4cc4e29c37fcba6fdf9ff291c89aebb0471ffa66ec1",
+  "schema_version": 1
+}

@@ -7,6 +7,7 @@
 // Tap again to stop. A per-turn latency readout + "Copy logs" export are wired in
 // for on-device profiling.
 import 'dart:async';
+import 'dart:convert' show utf8;
 import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -17,10 +18,13 @@ import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
 import './asr_isolate.dart';
+import './assistant_listening_owner.dart';
+import './assistant_reply_owner.dart';
 import './audio_capture_config.dart';
 import './barge_calibrator.dart';
 import './contract.dart';
 import './llm.dart';
+import './llm_generation_owner.dart';
 import './tts_isolate.dart';
 import './tts_playback_owner.dart';
 import './utils.dart';
@@ -33,6 +37,13 @@ AudioContext _voicePlaybackContext() => AudioContext(
         audioFocus: AndroidAudioFocus.gainTransientMayDuck,
       ),
     );
+
+bool _assistantPromptFitsBound(String text) {
+  if (text.length > assistantReplyPromptMaximumUtf8Bytes) {
+    return false;
+  }
+  return utf8.encode(text).length <= assistantReplyPromptMaximumUtf8Bytes;
+}
 
 final class _AssistantTtsClipState {
   _AssistantTtsClipState({
@@ -227,6 +238,393 @@ final class _AssistantTtsPlayer {
   }
 }
 
+typedef _AssistantListeningGeneration
+    = AssistantListeningGeneration<AsrSession, _AssistantListeningCapture>;
+
+/// One exact recorder stream and its immutable ASR authority.
+///
+/// The lane retains no transcript or widget callback. Cancellation, recorder
+/// stop, and ambiguous-start recovery are prepublished and memoized before
+/// invoking plugin code so reentrant cleanup always joins the same operation.
+final class _AssistantListeningCapture {
+  _AssistantListeningCapture({
+    required this.generation,
+    required this.session,
+    required AudioRecorder recorder,
+  }) : _recorder = recorder;
+
+  final _AssistantListeningGeneration generation;
+  final AsrSession session;
+  final AudioRecorder _recorder;
+  final Completer<AssistantListeningCaptureTerminal> _terminal =
+      Completer<AssistantListeningCaptureTerminal>();
+  final Completer<StreamSubscription<Uint8List>?> _subscription =
+      Completer<StreamSubscription<Uint8List>?>();
+
+  Future<bool>? _cancelFuture;
+  Future<bool>? _stopFuture;
+  Future<bool>? _recoveryFuture;
+  bool _subscriptionUncertain = false;
+  bool _failureRequested = false;
+  bool _cancelSucceeded = false;
+  bool _stopSucceeded = false;
+  bool _retirementWatchInstalled = false;
+
+  Future<AssistantListeningCaptureTerminal> get terminal => _terminal.future;
+  Future<bool>? get cancelFuture => _cancelFuture;
+  Future<bool>? get stopFuture => _stopFuture;
+  bool get exactCleanupSucceeded => _cancelSucceeded && _stopSucceeded;
+
+  void publishSubscription(StreamSubscription<Uint8List> subscription) {
+    if (_subscription.isCompleted) return;
+    _subscription.complete(subscription);
+  }
+
+  void publishNoSubscription({required bool exact}) {
+    if (_subscription.isCompleted) return;
+    _subscriptionUncertain = !exact;
+    _subscription.complete(null);
+  }
+
+  void publishEnded() {
+    if (_failureRequested || _terminal.isCompleted) return;
+    _terminal.complete(AssistantListeningCaptureTerminal.ended);
+  }
+
+  void failAfterExactCancellation() {
+    if (_terminal.isCompleted || _failureRequested) return;
+    _failureRequested = true;
+    final cancellation = cancelSource();
+    unawaited(cancellation.then<void>((succeeded) {
+      if (succeeded && !_terminal.isCompleted) {
+        _terminal.complete(AssistantListeningCaptureTerminal.failed);
+      }
+    }));
+  }
+
+  Future<bool> cancelSource() {
+    final existing = _cancelFuture;
+    if (existing != null) return existing;
+    final completer = Completer<bool>();
+    final result = completer.future;
+    _cancelFuture = result;
+
+    unawaited(
+      _subscription.future.then<void>((subscription) {
+        if (subscription == null) {
+          completer.complete(!_subscriptionUncertain);
+          return;
+        }
+        Future<void>.sync(subscription.cancel).then<void>(
+          (_) => completer.complete(true),
+          onError: (_error, _stackTrace) => completer.complete(false),
+        );
+      }, onError: (_error, _stackTrace) {
+        completer.complete(false);
+      }),
+    );
+    unawaited(result.then<void>((succeeded) {
+      _cancelSucceeded = succeeded;
+    }));
+    return result;
+  }
+
+  Future<bool> stopRecorder() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+    final completer = Completer<bool>();
+    final result = completer.future;
+    _stopFuture = result;
+
+    try {
+      _recorder.stop().then<void>(
+            (_) => completer.complete(true),
+            onError: (_error, _stackTrace) => completer.complete(false),
+          );
+    } catch (_) {
+      completer.complete(false);
+    }
+    unawaited(result.then<void>((succeeded) {
+      _stopSucceeded = succeeded;
+    }));
+    return result;
+  }
+
+  Future<bool> recoverAmbiguousStart() {
+    final existing = _recoveryFuture;
+    if (existing != null) return existing;
+    final completer = Completer<bool>();
+    final result = completer.future;
+    _recoveryFuture = result;
+
+    final cancellation = cancelSource();
+    final stop = stopRecorder();
+    Future.wait<bool>(<Future<bool>>[cancellation, stop]).then<void>(
+      (receipts) => completer.complete(receipts.every((value) => value)),
+      onError: (_error, _stackTrace) => completer.complete(false),
+    );
+    return result;
+  }
+}
+
+/// Plugin adapter for one Assistant listening owner.
+///
+/// It owns the recorder lane, borrows the widget's playback owner only to
+/// coordinate its audio route, and keeps only a weak reference back to widget
+/// State. Every plugin or ASR callback closes over its immutable generation,
+/// session, and capture lane; no callback consults a mutable current session or
+/// stores transcript text here.
+final class _AssistantListeningPluginLifecycle
+    implements
+        AssistantListeningLifecycle<AsrSession, _AssistantListeningCapture> {
+  _AssistantListeningPluginLifecycle({
+    required AudioRecorder recorder,
+    required _AssistantTtsPlayer ttsPlayer,
+    required AsrService asrService,
+    required WeakReference<_AssistantScreenState> state,
+  })  : _recorder = recorder,
+        _ttsPlayer = ttsPlayer,
+        _asr = asrService,
+        _state = state;
+
+  final AudioRecorder _recorder;
+  final _AssistantTtsPlayer _ttsPlayer;
+  final AsrService _asr;
+  final WeakReference<_AssistantScreenState> _state;
+  final Map<_AssistantListeningGeneration, AsrSession> _sessions =
+      Map<_AssistantListeningGeneration, AsrSession>.identity();
+  final Map<_AssistantListeningGeneration, _AssistantListeningCapture>
+      _captureLanes =
+      Map<_AssistantListeningGeneration, _AssistantListeningCapture>.identity();
+  Future<bool>? _recorderDisposeFuture;
+
+  bool ownsExactSession(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) =>
+      identical(_sessions[generation], session);
+
+  @override
+  Future<bool> requestPermission(_AssistantListeningGeneration generation) =>
+      _recorder.hasPermission();
+
+  @override
+  Future<bool> configureRoute(
+    _AssistantListeningGeneration generation,
+  ) async {
+    await _ttsPlayer.configureGlobalRoute();
+    return true;
+  }
+
+  @override
+  AsrSession beginSession(_AssistantListeningGeneration generation) {
+    late final AsrSession exactSession;
+    exactSession = _asr.beginSession(
+      onPartial: (partial) {
+        _state.target?._onListeningPartial(
+          generation,
+          exactSession,
+          partial,
+        );
+      },
+      onEndpoint: (utterance) {
+        _state.target?._onListeningEndpoint(
+          generation,
+          exactSession,
+          utterance,
+        );
+      },
+    );
+    _sessions[generation] = exactSession;
+    return exactSession;
+  }
+
+  @override
+  Future<bool> waitSessionEnded(AsrSession session) async {
+    try {
+      return await session.cleanup;
+    } finally {
+      _sessions.removeWhere(
+        (_generation, candidate) => identical(candidate, session),
+      );
+    }
+  }
+
+  @override
+  Future<void> waitSessionReady(AsrSession session) => session.ready;
+
+  @override
+  Future<AssistantListeningCaptureStartResult<_AssistantListeningCapture>>
+      startCapture(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) async {
+    final capture = _AssistantListeningCapture(
+      generation: generation,
+      session: session,
+      recorder: _recorder,
+    );
+    // Publish the exact recovery lane before native recorder admission.
+    _captureLanes[generation] = capture;
+
+    late final Stream<Uint8List> audioStream;
+    try {
+      audioStream = await _recorder.startStream(buildCaptureConfig());
+    } catch (_) {
+      capture.publishNoSubscription(exact: true);
+      rethrow;
+    }
+
+    final exactGeneration = generation;
+    final exactSession = session;
+    try {
+      final subscription = audioStream.listen(
+        (chunk) => _onCaptureData(
+          capture,
+          exactGeneration,
+          exactSession,
+          chunk,
+        ),
+        onError: (_error, _stackTrace) => _onCaptureError(
+          capture,
+          exactGeneration,
+          exactSession,
+        ),
+        onDone: capture.publishEnded,
+        cancelOnError: false,
+      );
+      capture.publishSubscription(subscription);
+    } catch (_) {
+      // A throwing listen call did not return an exact cancellation token.
+      capture.publishNoSubscription(exact: false);
+      rethrow;
+    }
+    return AssistantListeningCaptureStartResult<
+        _AssistantListeningCapture>.started(capture);
+  }
+
+  void _onCaptureData(
+    _AssistantListeningCapture capture,
+    _AssistantListeningGeneration exactGeneration,
+    AsrSession exactSession,
+    Uint8List chunk,
+  ) {
+    if (!_isExactCapture(capture, exactGeneration, exactSession)) return;
+    final state = _state.target;
+    if (state == null ||
+        !state._listeningCallbackIsCurrent(
+          exactGeneration,
+          exactSession,
+        )) {
+      return;
+    }
+    if (!_asr.feed(exactSession, chunk)) {
+      capture.failAfterExactCancellation();
+      state._fenceListeningSource(exactGeneration, exactSession);
+      return;
+    }
+    state._onListeningMicChunk(exactGeneration, exactSession, chunk);
+  }
+
+  void _onCaptureError(
+    _AssistantListeningCapture capture,
+    _AssistantListeningGeneration exactGeneration,
+    AsrSession exactSession,
+  ) {
+    if (!_isExactCapture(capture, exactGeneration, exactSession)) return;
+    capture.failAfterExactCancellation();
+    _state.target?._fenceListeningSource(exactGeneration, exactSession);
+  }
+
+  bool _isExactCapture(
+    _AssistantListeningCapture capture,
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) =>
+      identical(capture.generation, generation) &&
+      identical(capture.session, session) &&
+      identical(_captureLanes[generation], capture) &&
+      ownsExactSession(generation, session);
+
+  @override
+  Future<AssistantListeningCaptureTerminal> waitCaptureTerminal(
+    _AssistantListeningCapture capture,
+  ) =>
+      capture.terminal;
+
+  @override
+  Future<bool> cancelCaptureSource(_AssistantListeningCapture capture) {
+    final result = capture.cancelSource();
+    _retireCaptureWhenExact(capture);
+    return result;
+  }
+
+  @override
+  Future<bool> stopCapture(_AssistantListeningCapture capture) {
+    final result = capture.stopRecorder();
+    _retireCaptureWhenExact(capture);
+    return result;
+  }
+
+  @override
+  Future<bool> recoverAmbiguousCaptureStart(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) {
+    final capture = _captureLanes[generation];
+    if (capture == null || !identical(capture.session, session)) {
+      return Future<bool>.value(false);
+    }
+    final result = capture.recoverAmbiguousStart();
+    _retireCaptureWhenExact(capture);
+    return result;
+  }
+
+  void _retireCaptureWhenExact(_AssistantListeningCapture capture) {
+    final cancellation = capture.cancelFuture;
+    final stop = capture.stopFuture;
+    if (cancellation == null ||
+        stop == null ||
+        capture._retirementWatchInstalled) {
+      return;
+    }
+    capture._retirementWatchInstalled = true;
+    unawaited(Future.wait<bool>(<Future<bool>>[cancellation, stop]).then<void>(
+      (_) {
+        if (capture.exactCleanupSucceeded &&
+            identical(_captureLanes[capture.generation], capture)) {
+          _captureLanes.remove(capture.generation);
+        }
+      },
+    ));
+  }
+
+  @override
+  bool endSession(AsrSession session) => _asr.endSession(session);
+
+  /// Dispose the recorder only behind the exact owner's successful close.
+  /// A false receipt deliberately retains the plugin resource for diagnosis.
+  Future<bool> disposeRecorderAfterExactClose(
+    AssistantListeningCloseReceipt receipt,
+  ) {
+    if (!receipt.exactResourcesSettled) return Future<bool>.value(false);
+    final existing = _recorderDisposeFuture;
+    if (existing != null) return existing;
+    final completer = Completer<bool>();
+    final result = completer.future;
+    _recorderDisposeFuture = result;
+    try {
+      _recorder.dispose().then<void>(
+            (_) => completer.complete(true),
+            onError: (_error, _stackTrace) => completer.complete(false),
+          );
+    } catch (_) {
+      completer.complete(false);
+    }
+    return result;
+  }
+}
+
 class AssistantScreen extends StatefulWidget {
   const AssistantScreen({super.key});
 
@@ -237,7 +635,12 @@ class AssistantScreen extends StatefulWidget {
 class _AssistantScreenState extends State<AssistantScreen> {
   final _promptController = TextEditingController();
   final _ttsPlayer = _AssistantTtsPlayer();
-  final _recorder = AudioRecorder();
+  late final _AssistantListeningPluginLifecycle _listeningLifecycle;
+  late final AssistantListeningOwner<AsrSession, _AssistantListeningCapture>
+      _listeningOwner;
+  _AssistantListeningGeneration? _listeningGeneration;
+  late final AssistantReplyOwner _replyOwner;
+  AssistantReplyGeneration? _replyGeneration;
   late final TtsPlaybackOwner _ttsPlayback;
   Future<bool>? _speechStopInFlight;
   TtsPlaybackGeneration? _speechStopGeneration;
@@ -253,12 +656,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _thinking = false;
   String _answer = '';
 
-  // Always-on voice input: the mic stays live even while the assistant speaks
-  // (echo cancellation keeps its own voice out) so the user can interrupt —
-  // barge-in. Mic bytes are forwarded to the ASR worker isolate (asr_isolate),
-  // which decodes off the main thread and calls back with partials/endpoints.
-  StreamSubscription<List<int>>? _audioSub;
-  bool _alwaysOn = false; // user has enabled continuous listening
+  // Always-on voice input. The exact listening owner serializes one active plus
+  // one latest pending desired state; `_alwaysOn` is that latest UI desire,
+  // while `_listening` means its exact recorder lane reached admission.
+  bool _alwaysOn = false;
   bool _listening = false; // mic stream currently active
   bool _speaking = false; // TTS work/physical uncertainty (barge-in target)
   int _turn = 0; // increments per utterance; a newer turn supersedes older gen
@@ -313,131 +714,293 @@ class _AssistantScreenState extends State<AssistantScreen> {
   @override
   void initState() {
     super.initState();
+    final state = WeakReference<_AssistantScreenState>(this);
+    _listeningLifecycle = _AssistantListeningPluginLifecycle(
+      recorder: AudioRecorder(),
+      ttsPlayer: _ttsPlayer,
+      asrService: AsrService.instance,
+      state: state,
+    );
+    _listeningOwner =
+        AssistantListeningOwner<AsrSession, _AssistantListeningCapture>(
+      lifecycle: _listeningLifecycle,
+      onRevoke: (generation, outcome) {
+        state.target?._onListeningRevoked(generation, outcome);
+      },
+      onListening: (generation) {
+        state.target?._onListeningStarted(generation);
+      },
+      onStopped: (generation) {
+        state.target?._onListeningStopped(generation);
+      },
+    );
+    _replyOwner = AssistantReplyOwner(
+      openReply: GemmaService.instance.reply,
+    );
     _ttsPlayback = TtsPlaybackOwner(
       synthesize: (text) async {
         final filename = await generateWaveFilename();
         return TtsService.instance.synthesize(text, filename);
       },
       createPlaybackClip: _ttsPlayer.createClip,
-      onActivityChanged: _onSpeechActivityChanged,
-      onPlaybackStarted: _onPlaybackStarted,
-      onError: _onSpeechPlaybackError,
+      onActivityChanged: (generation, speaking) {
+        state.target?._onSpeechActivityChanged(generation, speaking);
+      },
+      onPlaybackStarted: (generation) {
+        state.target?._onPlaybackStarted(generation);
+      },
+      onError: (generation, error, stackTrace) {
+        state.target?._onSpeechPlaybackError(
+          generation,
+          error,
+          stackTrace,
+        );
+      },
     );
     // Probe disk so the button/status reflect whether a network download is
     // actually needed (the model persists across reinstalls).
-    GemmaService.instance.isModelPresent().then((present) {
-      if (mounted) setState(() => _modelPresent = present);
-    });
+    GemmaService.instance.isModelPresent().then<void>(
+      (present) {
+        final target = state.target;
+        if (target == null || target._disposing || !target.mounted) return;
+        target.setState(() => target._modelPresent = present);
+      },
+      onError: (_error, _stackTrace) {},
+    );
   }
 
   Future<void> _prepareModel() async {
-    final present = await GemmaService.instance.isModelPresent();
-    setState(() {
-      _downloading = true;
-      _modelPresent = present;
-      _downloadPct = present ? 100 : 0;
-      _status = present
-          ? 'Loading model from device…'
-          : 'Downloading Gemma 3 1B (one time, ~550 MB)…';
-    });
     try {
+      final present = await GemmaService.instance.isModelPresent();
+      if (_disposing || !mounted) return;
+      setState(() {
+        _downloading = true;
+        _modelPresent = present;
+        _downloadPct = present ? 100 : 0;
+        _status = present
+            ? 'Loading model from device…'
+            : 'Downloading Gemma 3 1B (one time, ~550 MB)…';
+      });
       await GemmaService.instance.ensureReady(
-        onProgress: (p) => setState(() => _downloadPct = p),
+        onProgress: (p) {
+          if (_disposing || !mounted) return;
+          setState(() => _downloadPct = p);
+        },
       );
+      if (_disposing || !mounted) return;
       setState(() => _status = 'Model ready — tap the mic to start.');
-    } catch (e) {
-      setState(() => _status = 'Model load failed: $e');
+    } on GemmaGenerationFailure catch (failure) {
+      if (_disposing || !mounted) return;
+      setState(() => _status = 'Model load failed: ${failure.code}');
+    } catch (_) {
+      if (_disposing || !mounted) return;
+      setState(() => _status = 'Model load failed: model_prepare_failed');
     } finally {
-      if (mounted) setState(() => _downloading = false);
+      if (!_disposing && mounted) setState(() => _downloading = false);
     }
   }
 
   // --- always-on listening ---
 
   Future<void> _toggleAlwaysOn() async {
-    if (_alwaysOn) {
-      _alwaysOn = false;
-      await _stopListening();
-      if (mounted) setState(() => _status = 'Stopped.');
+    if (_disposing || !mounted) return;
+    final enable = !_alwaysOn;
+    if (enable && !GemmaService.instance.isReady) return;
+
+    // A listening shutdown fences reply/playback and the prior UI generation
+    // synchronously. Owner replacement then fences the exact recorder/ASR lane;
+    // every plugin wait begins only after those authority changes.
+    final stopped = enable ? null : _stopSpeaking();
+    _listeningGeneration = null;
+    setState(() {
+      _alwaysOn = enable;
+      _status = enable ? 'Starting listener…' : 'Stopping…';
+    });
+
+    late final _AssistantListeningGeneration generation;
+    try {
+      generation =
+          enable ? _listeningOwner.enable() : _listeningOwner.disable();
+      _listeningGeneration = generation;
+    } on AssistantListeningFailure catch (failure) {
+      if (mounted && !_disposing) {
+        setState(() {
+          _alwaysOn = false;
+          _listening = false;
+          _status = 'Listening unavailable: ${failure.code}';
+        });
+      }
+      if (stopped != null) await stopped;
+      return;
+    } catch (_) {
+      if (mounted && !_disposing) {
+        setState(() {
+          _alwaysOn = false;
+          _listening = false;
+          _status = 'Listening unavailable: listening_integration_failed';
+        });
+      }
+      if (stopped != null) await stopped;
       return;
     }
-    if (!GemmaService.instance.isReady) return;
-    _alwaysOn = true;
-    await _startListening();
+
+    final done = await generation.done;
+    if (stopped != null) await stopped;
+    if (!_listeningUiGenerationIsCurrent(generation)) return;
+    final failure = done.failure;
+    if (failure != null) {
+      setState(() {
+        _alwaysOn = false;
+        _listening = false;
+        _status = 'Listening unavailable: ${failure.code}';
+      });
+    }
   }
 
-  Future<void> _startListening() async {
-    if (!await _recorder.hasPermission()) {
-      _alwaysOn = false;
-      setState(() => _status =
-          'Microphone permission denied — enable it in system settings.');
+  bool _listeningUiGenerationIsCurrent(
+    _AssistantListeningGeneration generation,
+  ) =>
+      !_disposing && mounted && identical(_listeningGeneration, generation);
+
+  bool _listeningCallbackIsCurrent(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) =>
+      _listeningUiGenerationIsCurrent(generation) &&
+      _listeningOwner.isAuthoritative(generation) &&
+      _listeningLifecycle.ownsExactSession(generation, session);
+
+  void _onListeningStarted(_AssistantListeningGeneration generation) {
+    if (!_listeningUiGenerationIsCurrent(generation) ||
+        !_listeningOwner.isAuthoritative(generation)) {
       return;
     }
-    // Keep the Android voice-communication route global for the capture/playback
-    // pair, and also apply it to each fresh exact clip player before play.
-    await _ttsPlayer.configureGlobalRoute();
-    unawaited(TtsService.instance.ensureReady()); // warm the TTS worker isolate
-
-    // The recognizer lives on a worker isolate; wire its callbacks and start it.
-    AsrService.instance.onPartial = _onPartial;
-    AsrService.instance.onEndpoint = _onEndpoint;
-    await AsrService.instance.ensureReady();
-    AsrService.instance.reset(); // fresh recognizer stream for this session
+    // This is app-global best-effort warming, not a resource owned or disposed
+    // by the widget-local listening lifecycle.
+    unawaited(
+      TtsService.instance.ensureReady().then<void>(
+            (_) {},
+            onError: (_error, _stackTrace) {},
+          ),
+    );
     _quietGate.resetAsr();
-
-    // voiceCommunication + echoCancel let the mic stay open during playback
-    // without the recognizer transcribing the assistant's own TTS. The config is
-    // a regression-tested factory (see audio_capture_config.dart) so a revert to
-    // AudioSource.mic -- which silently drops the OS AEC/NS/AGC -- fails CI.
-    final audioStream = await _recorder.startStream(buildCaptureConfig());
     setState(() {
+      _alwaysOn = true;
       _listening = true;
       _status = 'Listening…';
       _promptController.clear();
     });
+  }
 
-    // Forward mic bytes to the worker (no decoding here) and watch loudness for
-    // energy barge-in while the assistant speaks.
-    _audioSub = audioStream.listen(_onMicChunk);
+  void _onListeningRevoked(
+    _AssistantListeningGeneration generation,
+    AssistantListeningOutcome outcome,
+  ) {
+    // Owner serialization guarantees this revoke precedes successor admission.
+    // Fence reply/playback even when UI identity was already cleared by the
+    // replacing call, then gate only the state mutation below.
+    unawaited(_stopSpeaking());
+    if (!_listeningUiGenerationIsCurrent(generation)) return;
+    _listeningGeneration = null;
+    _quietGate.resetAsr();
+    final status = switch (outcome) {
+      AssistantListeningOutcome.permissionDenied =>
+        'Microphone permission denied — enable it in system settings.',
+      AssistantListeningOutcome.captureEnded => 'Microphone stream ended.',
+      AssistantListeningOutcome.cancelled ||
+      AssistantListeningOutcome.superseded ||
+      AssistantListeningOutcome.ownerClosed =>
+        'Stopped.',
+      _ => 'Listening stopped: ${outcome.name}',
+    };
+    setState(() {
+      _alwaysOn = false;
+      _listening = false;
+      _status = status;
+    });
+  }
+
+  void _onListeningStopped(_AssistantListeningGeneration generation) {
+    if (!_listeningUiGenerationIsCurrent(generation)) return;
+    _quietGate.resetAsr();
+    setState(() {
+      _listening = false;
+      if (generation.intent == AssistantListeningIntent.off) {
+        _alwaysOn = false;
+        _status = 'Stopped.';
+      }
+    });
+  }
+
+  void _fenceListeningSource(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+  ) {
+    if (!_listeningCallbackIsCurrent(generation, session)) return;
+    _listeningGeneration = null;
+    _alwaysOn = false;
+    _listening = false;
+    _quietGate.resetAsr();
+    unawaited(_listeningOwner.revokeExact(generation));
+    if (mounted && !_disposing) {
+      setState(() => _status = 'Listening stopped: capture_source_failed');
+    }
   }
 
   // Live partial from the ASR worker. The worker emits only on change, so this
   // is where "last voice" advances (drives the silence-wait metric) and where
   // barge-in fires.
-  void _onPartial(String partial) {
-    if (_disposing || partial.isEmpty) return;
+  void _onListeningPartial(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+    String partial,
+  ) {
+    if (!_listeningCallbackIsCurrent(generation, session) || partial.isEmpty) {
+      return;
+    }
     _tLastVoice = DateTime.now();
     // TODO(recovered): ASR isolate has no explicit speech-start callback; a
     // non-empty partial is the earliest reliable signal that an utterance is
     // in flight, so calibration stays blocked until the endpoint callback.
     _quietGate.noteAsrStarted(_tLastVoice!);
-    // Barge-in via transcription (complements the energy path): the user talking
-    // — or saying a stop word — while the assistant speaks cuts it off.
+    // Any nontrivial live partial remains the generic transcription barge path.
+    // Control-command semantics apply only to completed/typed exact phrases.
     if (_speaking) {
       _spkPartials++;
-      if (partial.length >= _bargeInChars || _looksLikeStop(partial)) {
+      if (partial.length >= _bargeInChars) {
         _appendBargeLog('partial "$partial"');
         unawaited(_stopSpeaking());
       }
     }
-    if (mounted) {
-      _promptController.value = TextEditingValue(
-        text: partial,
-        selection: TextSelection.collapsed(offset: partial.length),
-      );
-    }
+    _promptController.value = TextEditingValue(
+      text: partial,
+      selection: TextSelection.collapsed(offset: partial.length),
+    );
   }
 
   // A finished utterance from the ASR worker.
-  void _onEndpoint(String utterance) {
-    if (_disposing) return;
+  void _onListeningEndpoint(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+    String utterance,
+  ) {
+    if (!_listeningCallbackIsCurrent(generation, session)) return;
     _quietGate.noteAsrFinished(DateTime.now(), hadSpeech: utterance.isNotEmpty);
     if (utterance.isEmpty) return;
     // A completed utterance supersedes any in-flight reply (its tokens stop
     // feeding TTS) and silences whatever is still playing.
+    final isStop = isStopCommand(utterance);
     _turn++;
+    _replyGeneration = null;
+    unawaited(
+      _replyOwner.cancelCurrent(
+        reason: isStop
+            ? AssistantReplyCancelReason.cancelled
+            : AssistantReplyCancelReason.superseded,
+      ),
+    );
     final playbackGeneration = _ttsPlayback.supersede();
-    if (isStopCommand(utterance) || _looksLikeStop(utterance)) {
+    if (isStop) {
       if (mounted) {
         setState(() {
           _thinking = false;
@@ -453,22 +1016,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
     );
   }
 
-  Future<void> _stopListening() async {
-    await _audioSub?.cancel();
-    _audioSub = null;
-    await _recorder.stop();
-    _quietGate.resetAsr();
-    await _stopSpeaking();
-    if (mounted) setState(() => _listening = false);
-  }
-
-  // Mic bytes (PCM16) on the main isolate: forward to the ASR worker, and while
-  // the assistant is speaking, watch near-end loudness so the user can cut it
-  // off by talking even when the words aren't cleanly transcribed (energy
-  // barge-in, independent of the recognizer).
-  void _onMicChunk(Uint8List chunk) {
-    if (_disposing) return;
-    AsrService.instance.feed(chunk);
+  // Exact-lane mic bytes have already been accepted by AsrService.feed. The UI
+  // sees them only for energy barge-in and quiet-room calibration.
+  void _onListeningMicChunk(
+    _AssistantListeningGeneration generation,
+    AsrSession session,
+    Uint8List chunk,
+  ) {
+    if (!_listeningCallbackIsCurrent(generation, session)) return;
     if (!_speaking) {
       // Genuine-idle window: learn the room's ambient floor only after recent
       // user speech and playback tails have cooled down. `_speaking == false`
@@ -507,14 +1062,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
     return math.sqrt(sumSq / n);
   }
 
-  // Lenient, mobile-local stop check for cutting off playback — broader than the
-  // shared exact-match contract (which mobile and Python pin via golden tests),
-  // so "stop", "stop speaking", "be quiet", etc. all interrupt.
-  bool _looksLikeStop(String text) {
-    final t = text.toLowerCase();
-    return t.contains('stop') || t.contains('quiet') || t.contains('cancel');
-  }
-
   // --- generation ---
 
   // Generate a reply for [prompt] and stream it to TTS. [myTurn] guards against
@@ -525,6 +1072,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
     int myTurn,
     TtsPlaybackGeneration playbackGeneration,
   ) async {
+    if (!_assistantPromptFitsBound(prompt)) {
+      if (!_disposing && mounted) {
+        setState(() => _status = 'Input rejected: input_too_large');
+      }
+      return;
+    }
     if (prompt.isEmpty ||
         !GemmaService.instance.isReady ||
         !_replyIsCurrent(myTurn, playbackGeneration)) {
@@ -542,38 +1095,83 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _tGenDone = null;
     _genTokens = 0;
     _logIndex = null; // a new turn gets a fresh log entry
+    AssistantReplyGeneration? replyGeneration;
+    var finishThinking = false;
     try {
-      await for (final token in GemmaService.instance.reply(prompt)) {
-        if (!_replyIsCurrent(myTurn, playbackGeneration)) return;
-        if (_tFirstToken == null) {
-          _tFirstToken = DateTime.now();
-          _updateMetrics();
-        }
-        _genTokens++;
-        setState(() => _answer += token);
-        ttsBuffer += token;
-        ttsBuffer = _flushSentences(
-          ttsBuffer,
-          playbackGeneration,
-        );
+      final admittedGeneration = _replyOwner.start(
+        prompt: prompt,
+        onToken: (callbackGeneration, token) {
+          if (!identical(callbackGeneration, replyGeneration) ||
+              !identical(_replyGeneration, callbackGeneration) ||
+              !_replyOwner.isAuthoritative(callbackGeneration) ||
+              !_replyIsCurrent(myTurn, playbackGeneration)) {
+            return;
+          }
+          if (_tFirstToken == null) {
+            _tFirstToken = DateTime.now();
+            _updateMetrics();
+          }
+          _genTokens++;
+          setState(() => _answer += token);
+          ttsBuffer += token;
+          ttsBuffer = _flushSentences(
+            ttsBuffer,
+            playbackGeneration,
+          );
+        },
+      );
+      replyGeneration = admittedGeneration;
+      _replyGeneration = admittedGeneration;
+      final done = await admittedGeneration.done;
+      final isExactReply = identical(_replyGeneration, admittedGeneration);
+      final remainingTts = ttsBuffer;
+      ttsBuffer = '';
+      if (!isExactReply || !_replyIsCurrent(myTurn, playbackGeneration)) {
+        return;
       }
-      if (_replyIsCurrent(myTurn, playbackGeneration)) {
+      finishThinking = true;
+      if (done.outcome == AssistantReplyOutcome.completed) {
         _tGenDone = DateTime.now();
         _flushSentences(
-          ttsBuffer,
+          remainingTts,
           playbackGeneration,
           flushAll: true,
         );
         _updateMetrics();
+      } else if (done.failure case final failure?) {
+        setState(() => _answer = 'Generation failed: ${failure.code}');
+        _appendLog(error: failure.code);
       }
-    } catch (e) {
-      if (_replyIsCurrent(myTurn, playbackGeneration)) {
-        setState(() => _answer = 'Generation failed: $e');
-        _appendLog(error: '$e');
+    } on AssistantReplyFailure catch (failure) {
+      final mayMutate = replyGeneration == null
+          ? _replyGeneration == null
+          : identical(_replyGeneration, replyGeneration);
+      if (mayMutate && _replyIsCurrent(myTurn, playbackGeneration)) {
+        finishThinking = true;
+        setState(() => _answer = 'Generation failed: ${failure.code}');
+        _appendLog(error: failure.code);
+      }
+    } catch (_) {
+      final mayMutate = replyGeneration == null
+          ? _replyGeneration == null
+          : identical(_replyGeneration, replyGeneration);
+      if (mayMutate && _replyIsCurrent(myTurn, playbackGeneration)) {
+        finishThinking = true;
+        const code = 'reply_integration_failed';
+        setState(() => _answer = 'Generation failed: $code');
+        _appendLog(error: code);
       }
     } finally {
-      if (_replyIsCurrent(myTurn, playbackGeneration)) {
+      final isExactReply = replyGeneration == null
+          ? _replyGeneration == null
+          : identical(_replyGeneration, replyGeneration);
+      if (finishThinking &&
+          isExactReply &&
+          _replyIsCurrent(myTurn, playbackGeneration)) {
         setState(() => _thinking = false);
+      }
+      if (replyGeneration != null && isExactReply) {
+        _replyGeneration = null;
       }
     }
   }
@@ -590,15 +1188,30 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // Send whatever is typed in the field (the manual fallback to voice).
   Future<void> _submitTyped() async {
     if (_disposing || !mounted) return;
-    final text = _promptController.text.trim();
+    final rawText = _promptController.text;
+    if (!_assistantPromptFitsBound(rawText)) {
+      _promptController.clear();
+      setState(() => _status = 'Input rejected: input_too_large');
+      return;
+    }
+    final text = rawText.trim();
     if (text.isEmpty) return;
     _promptController.clear();
+    final isStop = isStopCommand(text);
     _turn++;
     final myTurn = _turn;
+    _replyGeneration = null;
+    unawaited(
+      _replyOwner.cancelCurrent(
+        reason: isStop
+            ? AssistantReplyCancelReason.cancelled
+            : AssistantReplyCancelReason.superseded,
+      ),
+    );
     final playbackGeneration = _ttsPlayback.supersede();
     await _ttsPlayback.waitForStop(playbackGeneration);
     if (!_replyIsCurrent(myTurn, playbackGeneration)) return;
-    if (isStopCommand(text)) {
+    if (isStop) {
       if (mounted) {
         setState(() {
           _thinking = false;
@@ -615,18 +1228,21 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // Cut all speech now: drop the queue, stop the current clip, and release any
   // coroutine awaiting playback. Idempotent.
   Future<bool> _stopSpeaking() {
+    // Fence reply authority even when exact playback cleanup is already in
+    // flight; playback deduplication must not bypass LLM cancellation.
+    _turn++;
+    _replyGeneration = null;
+    unawaited(_replyOwner.cancelCurrent());
+    if (mounted && !_disposing) {
+      setState(() => _thinking = false);
+    }
+
     final existing = _speechStopInFlight;
     if (existing != null &&
         identical(_speechStopGeneration, _ttsPlayback.generation)) {
       return existing;
     }
 
-    // Barge-in also revokes the reply stream. Without this turn fence, the same
-    // LLM coroutine can enqueue later sentences after its current clip stops.
-    _turn++;
-    if (mounted && !_disposing) {
-      setState(() => _thinking = false);
-    }
     final stopped = _ttsPlayback.interrupt();
     final stopGeneration = _ttsPlayback.generation;
     _speechStopInFlight = stopped;
@@ -706,12 +1322,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   void _onSpeechPlaybackError(
     TtsPlaybackGeneration generation,
-    Object error,
-    StackTrace stackTrace,
+    Object _error,
+    StackTrace _stackTrace,
   ) {
     if (_disposing) return;
     _logLine(
-      'speech playback error (generation ${generation.ordinal}): $error',
+      'speech playback failed (generation ${generation.ordinal}): '
+      'speech_playback_failed',
     );
   }
 
@@ -734,7 +1351,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_tFirstToken != null && _tGenDone != null && _genTokens > 1) {
       final secs = _ms(_tFirstToken!, _tGenDone!) / 1000.0;
       final rate = secs > 0 ? _genTokens / secs : 0.0;
-      lines.add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
+      lines
+          .add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
     }
     final text = lines.join('\n');
     if (mounted) setState(() => _metrics = text);
@@ -788,15 +1406,26 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void dispose() {
     _disposing = true;
     _turn++;
+    _replyGeneration = null;
+    _listeningGeneration = null;
+    // Each owner synchronously revokes its callback authority before returning
+    // a cleanup Future. Start every fence before any asynchronous wait.
+    final replyClose = _replyOwner.close();
+    final listeningClose = _listeningOwner.close();
+    final playbackClose = _ttsPlayback.close();
+    final listeningLifecycle = _listeningLifecycle;
+    final ttsPlayer = _ttsPlayer;
     _thinking = false;
     _alwaysOn = false;
-    _audioSub?.cancel();
-    _recorder.dispose();
-    unawaited(AsrService.instance.stop());
-    unawaited(TtsService.instance.dispose());
+    _listening = false;
     unawaited(() async {
-      await _ttsPlayback.close();
-      await _ttsPlayer.close();
+      await replyClose;
+      final listeningReceipt = await listeningClose;
+      await listeningLifecycle.disposeRecorderAfterExactClose(
+        listeningReceipt,
+      );
+      await playbackClose;
+      await ttsPlayer.close();
     }());
     _promptController.dispose();
     super.dispose();

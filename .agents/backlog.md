@@ -798,10 +798,82 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         derived activity keeps uncertain physical state conservative, cleanup failure
         poisons only that owner instance, barge revokes the LLM turn, and dispose rejects
         late mutations. This closes the within-instance stale-drain/player-identity race.
-      - [ ] Add a cross-widget/process native-player lifecycle fence or prove the
-        plugin contract: disposing/reconstructing the tab can currently create a new
-        owner while an old native start/cleanup remains uncertain, so no no-overlap
-        claim exists across Assistant state instances.
+      - [x] Bounded mobile Gemma generation/chat owner DONE (ADR-0201): one
+        app-lifetime owner in the canonical Flutter UI isolate reserves on
+        listen before chat/model work, retains one active plus one latest pending,
+        fences cancellation/supersession, drains ordinary pause into bounded text,
+        and releases only after exact source done plus exact chat close. Active
+        120-second expiry/ambiguity poisons; a pending-not-started expiry is clean.
+        Bounds are 16 KiB prompt, 4 KiB text event, 64 KiB total/paused text, and
+        2,048 owner-observed adapter data events including non-text. This is
+        fake/static Dart evidence, not native/plugin/model/device proof.
+        Any thrown activation latches same-isolate uncertainty and forbids CPU
+        retry/re-readiness/model-close claims; only a clean GPU null may fall back.
+      - [x] Exact Assistant reply-subscription ownership DONE (ADR-0202): each
+        widget owns only its exact Dart subscription, fences it before playback
+        or plugin waits on replacement/STOP/listening shutdown/dispose, and
+        never uses provider-global cancellation. Upper receipts prove exact
+        Dart settlement only. The lower owner prevents successor Dart chat
+        construction until predecessor true source terminal plus successful
+        exact chat close; a revoked entered predecessor additionally gets one
+        explicit owner-port stop attempt. None proves native cleanup,
+        termination, or return.
+      - [x] Exact mobile ASR-session plus serialized listening ownership DONE
+        (ADR-0203): app-lifetime `AsrService` issues opaque exact sessions and
+        admits a successor reset only after exact predecessor cleanup. An
+        app-side end/failure before reset, with no worker session for that
+        ordinal, settles true locally without an EndAck or worker release.
+        Normal reset-sent end follows matching EndAck after the same stream's
+        Sherpa `free()` wrapper returns. Typed SessionFailure separately covers
+        clean pre-resource or exact stream-release settlement; its
+        `sessionReleased: true` authorizes a higher ordinal only with
+        `workerHealthy: true` and an unpoisoned service/transport. False/timeout
+        cleanup blocks promotion and retains uncertainty; no receipt proves
+        native teardown.
+        Each widget owns one active plus one latest pending listening intent,
+        immutable generation/session/capture callbacks, and ordered exact ASR
+        end → Dart subscription cancel → recorder stop initiation before waits.
+        Exact listening cleanup additionally requires accepted exact ASR end
+        and exact-session cleanup and proves those local calls only. Revoke
+        fences reply/playback before any stale-UI guard. Dispose gates recorder
+        disposal on exact close. Completed/typed STOP now uses shared exact
+        `isStopCommand`; partial-length barge remains separate, and the eight
+        substring-bearing shared-fixture negatives stay non-STOP. Widget
+        disposal calls neither app-global `AsrService.close()` nor
+        `TtsService.dispose()`; process-TTS ownership stays outside ADR-0203.
+        Listening-start TTS warming remains best-effort and supplies no
+        readiness or cleanup authority.
+      - [ ] Land and reconcile the broader ADR-0200 `AgentSession` plus
+        process-TTS composition. The current Assistant remains a parallel Dart
+        loop even though ADR-0203 now aligns completed/typed STOP with the shared
+        exact command contract; supervisor priority/task, tool/confirmation,
+        mode, memory, and process-TTS convergence remain open.
+      - [ ] Add a cross-widget/process plugin lifecycle fence or prove the exact
+        recorder/player contracts. The shared ASR service serializes its own
+        exact sessions, but disposing/reconstructing a tab can still create a
+        new recorder/player owner while old plugin/native cleanup is uncertain.
+        No arbitrary cross-widget/process recorder/player no-overlap claim
+        exists.
+      - [ ] Build a bounded English-only mobile ASR regression packet by reusing
+        the existing retained GSC/ECCC command-noise, DEMAND noise, NOTSOFAR
+        far-field, and PriMock isolated/two-role assets and their current
+        locks/materializers. Fix exact case/byte/license/provenance bounds and
+        publish outside Git; do not redownload sources. External alternatives
+        were researched only. A Romanian packet is blocked on a separate
+        multilingual model/tokenizer plus Unicode normalization/language-label/
+        metric decision; the current mobile Zipformer is English-only. Control
+        normalization lowercases, retains only ASCII `a-z` plus spaces, then
+        collapses spaces and trims; digits and non-ASCII characters are
+        discarded.
+      - [ ] Research, without changing the English default or promoting a
+        production model, a later opt-in Romanian comparison:
+        `ro_stream_nemotron_560` as a true-streaming approximately 685 MB int8
+        profile with fixed `language=ro`, versus a smaller approximately
+        104 MB endpoint-only Whisper-tiny Romanian control. ADR-0091 continues
+        to reject Nemotron for production. First pin the multilingual/tokenizer,
+        Unicode-normalization, language-label, metric, and bounded packet
+        contract; then measure phone CPU/RSS/thermal/live behavior separately.
+        No model, download, test, phone, or quality result exists for this item.
 - [ ] **SQLite + sqlite-vec memory backend** for mobile (the `Memory` protocol makes it
       a drop-in for the Postgres adapter). See unified doc §6.
 

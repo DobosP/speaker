@@ -283,8 +283,68 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
 3. **UI shell — Flutter.** Confirmed and built (`mobile/`).
 4. **Mobile LLM runtime — MediaPipe/LiteRT via `flutter_gemma`** (Gemma 3 1B) in
    the shipped Flutter app; `llama.cpp`/Ollama remain the runtimes for the
-   **Python core**'s desktop/`phone` profiles. (Resolves the
-   llama.cpp-vs-MLC-vs-ExecuTorch question with the de-facto, shipped choice.)
+   **Python core**'s desktop/`phone` profiles. ADR-0201 places shipped Gemma
+   reply/chat admission behind one bounded app-lifetime owner in the canonical
+   Flutter UI isolate, with one active plus one latest pending. It prevents
+   successor Dart chat construction until predecessor true source terminal plus
+   successful exact chat close; a revoked entered predecessor additionally gets
+   one explicit owner-port stop attempt. That Dart owner does not prove native
+   cancellation/return or another FlutterEngine/isolate. A thrown activation
+   latches same-isolate uncertainty and forbids CPU retry, re-readiness, and
+   model-close claims; only a clean GPU `null` permits CPU fallback. Model
+   preparation/readiness/close has no code-owned hard deadline. ADR-0202 adds
+   one exact reply-subscription owner per canonical Assistant widget: every
+   replacement/STOP/listening shutdown/dispose fences the exact subscription
+   before playback/plugin waits, without provider-global cancellation. Its
+   immediate `done` and later cleanup/close receipts prove UI fencing and exact
+   Dart-subscription settlement only; ADR-0201 independently applies that
+   lower/Dart construction gate. Neither layer proves native cleanup,
+   termination, or return. Flutter
+   dispose initiates upper close without awaiting it. (Resolves the runtime and
+   stalled-source widget seam; native/plugin and live/device validation retain
+   the narrower ADR-0201/0202 scope.)
+
+   ADR-0203 adds the exact mobile audio-input ownership seam. The canonical app
+   keeps one app-lifetime `AsrService` and issues owner-keyed `AsrSession`s;
+   successor worker reset waits exact predecessor cleanup, and stale ordinal or
+   sequence traffic is inert. Cleanup true may first be app-side settlement
+   before reset, when no worker session exists for that ordinal; that path has no
+   EndAck or worker release. On normal reset-sent end, matching EndAck follows
+   the same worker stream's Sherpa `free()` wrapper return. Typed SessionFailure
+   separately represents clean pre-resource or exact stream-release settlement;
+   `sessionReleased: true` permits a higher ordinal only with
+   `workerHealthy: true` and an unpoisoned service/transport. App close orders
+   stream free before recognizer free and ShutdownAck. These are bounded
+   Dart/app/worker-port receipts, never native destruction or termination, and
+   a widget does not close the shared service.
+
+   Each canonical Assistant widget also owns one active plus one latest pending
+   listening ON/OFF intent. Immutable generation/session/capture tokens guard
+   every recorder and ASR callback; capture recovery is published before native
+   start. Revocation initiates exact ASR end, Dart subscription cancellation,
+   and recorder stop before any wait. Exact cleanup additionally requires
+   accepted exact ASR end and exact-session cleanup and proves only those local
+   calls. The revoke callback fences reply/playback before any stale-UI guard,
+   and recorder disposal is conditional on that receipt. Cross-widget or
+   process recorder/player exclusion, plugin/device return, and live behavior
+   remain unproved. Completed/typed STOP now uses the shared exact contract;
+   partial-length transcription barge remains separate, and the shared fixture
+   keeps `nonstop`, `stopwatch`, `pit stop`, `stop sign`,
+   `do not stop talking`, `quiet room`, `cancel culture`, and `don't stop`
+   non-STOP. Widget disposal calls neither app-global `AsrService.close()` nor
+   `TtsService.dispose()`; process-TTS ownership stays outside ADR-0203 in the
+   separate unlanded ADR-0200 composition candidate.
+   Listening-start `TtsService.instance.ensureReady()` remains an unawaited
+   best-effort request outside the listening adapter, not readiness or cleanup
+   evidence.
+
+   The shipped mobile Zipformer is English-only. Shared control normalization
+   lowercases, retains only ASCII `a-z` plus spaces, then collapses spaces and
+   trims; digits and non-ASCII characters are discarded. A future bounded data
+   packet will reuse existing retained GSC/ECCC/DEMAND/NOTSOFAR/PriMock assets
+   and current locks/materializers without a new download. External sources
+   have only been researched. Romanian remains blocked on a separate multilingual
+   model/tokenizer, language-label, Unicode-normalization, and metric decision.
 5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search

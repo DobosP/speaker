@@ -1053,19 +1053,41 @@ bus, supervisor/task, tools/capabilities, staged confirmation, memory, payload,
 and general Unicode convergence remains open. The frozen file named ADR-0200
 was never landed and is provenance only;
 ADR-0204 is the accepted hand-composed record, and ADR-0201/0202/0203 remain
-byte-stable. The composition adds no acoustic/corpus artifact and changes only
-the `commands.json` description, not cases; it supplies no ASR-quality or
-dataset-promotion evidence. The bounded English packet and separate Romanian
-opt-in/model/tokenizer/normalization/metric plan remain open.
+byte-stable.
 
-The current mobile Zipformer is English-only. Shared control normalization
-lowercases, retains only ASCII `a-z` plus spaces, then collapses spaces and
-trims; digits and non-ASCII characters are discarded. Future bounded mobile ASR
-data work will reuse the existing retained GSC/ECCC/DEMAND/NOTSOFAR/PriMock assets and
-locks/materializers, with fixed English-only bounds and no new download;
-external sources have only been researched. Romanian remains blocked on a
-multilingual model/tokenizer plus language-label, Unicode-normalization, and
-metric decision. This is future test data, not evidence from ADR-0203.
+The ADR-0204 composition itself added no acoustic/corpus artifact and supplied
+no ASR-quality or dataset-promotion evidence. ADR-0205 now fixes a separate
+offline English packet contract: GSC/ECCC command-noise 57 groups/57 leaves/
+3,714,904 bytes, DEMAND isolated 42/42/26,230,128, NOTSOFAR far-field isolated
+18/18/2,309,120, PriMock isolated 3/3/284,668, and PriMock grouped overlap 3
+groups/9 leaves/6,760,680. The complete envelope is 123 logical groups, 129
+mono-16-kHz f32le leaves, 9,824,875 samples, 39,299,500 bytes, and 614.0546875
+aggregate stored-leaf seconds. One offline no-download assembler preserves the
+five existing schema/grouping/license/lock/receipt and evaluator domains inside a private
+self-contained exact copy with an aggregate/hash-only packet index and terminal
+receipt. A failed call may leave a reserved incomplete root, but it is not a
+packet/success and retry uses a fresh path. It does not flatten the components
+or pool WER, latency, RTF, or promotion scores. Packet model-identity and
+evaluation-result authority are false; packet-level pooled WER is explicitly
+absent while eligible components retain their own ordinary-WER domains.
+
+Exact task-worktree gates pass 19 focused, 264 adjacent, and 6 APM/DTD tests
+with scoped Ruff/format, semantic audit, and diff-check clean, but no production
+packet exists: the exact retained DEMAND derivative and PriMock isolated/
+overlap bundles are absent, and the all-five contract rejects partial
+publication. Ordered retained-input preflight validated GSC/ECCC, then failed
+at absent DEMAND with one path-free error and no output root;
+independent read-only security inspection separately close-validated retained
+NOTSOFAR. No packet materialization or decode/evaluation followed. No new
+source was downloaded and no model, GPU, Flutter plugin,
+audio device, physical phone, or live path ran; no held-out, training-disjoint,
+or qualification authority follows. The current mobile Zipformer is
+English-only and its default remains unchanged; desktop fp32 Zipformer and CUDA
+reference runs are not mobile-model evidence. The next separate slice is a
+hash-only provisioner for the exact mobile hybrid assets plus an endpoint-
+faithful runner. Romanian remains blocked on its own model/export, language
+label, tokenizer/Unicode normalization, metrics, compatible public strata,
+owner recordings, and physical-phone CPU/RSS/thermal/live decision.
 
 **Remote path:** Two FastAPI endpoints in `remote/token_server.py`:
 
@@ -1523,6 +1545,25 @@ Unicode, or plugin/model/device/live claim follows. Frozen ADR-0200 was never la
 ADR-0204 is the accepted hand-composed record and ADR-0201/0202/0203 remain
 byte-stable. See
 [`ADR-0204`](adr/0204-compose-mobile-session-and-ui-isolate-speech-ownership.md).
+
+37. **Fix the five-component English mobile ASR evidence packet
+(2026-08-14).** One offline no-download contract composes exact copies of the
+existing GSC/ECCC command-noise, DEMAND isolated, NOTSOFAR far-field, PriMock
+isolated, and PriMock grouped-overlap bundles without flattening their schemas
+or metrics. Its fixed envelope is 123 logical groups, 129 mono-16-kHz f32le
+leaves, 9,824,875 samples, 39,299,500 bytes, and 614.0546875 aggregate stored-
+leaf seconds.
+Successful publication is private, self-contained, and closed by an aggregate/
+hash-only packet index plus terminal receipt; there is no pooled WER. A failed
+call may leave a reserved incomplete root, but it is not a packet/success and a
+no-clobber retry requires a fresh output path. Exact task-worktree receipts are
+19 focused, 264 adjacent, and 6 APM/DTD with scoped Ruff/format, semantic audit,
+and diff-check clean. The production packet was not materialized because exact
+DEMAND and PriMock inputs are absent. No download, model/GPU, plugin/device/
+live, runtime, or default change occurred. Mobile-model-identity and evaluation-
+result authority are false and pooled WER is absent. Next add the separate hash-
+only exact-mobile-hybrid provisioner and endpoint-faithful runner.
+See [`ADR-0205`](adr/0205-fix-english-mobile-asr-evidence-packet.md).
 
 ---
 

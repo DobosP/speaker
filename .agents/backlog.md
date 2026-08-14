@@ -869,7 +869,7 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         unlanded provenance; ADR-0201/0202/0203 remain byte-stable. This slice
         adds zero acoustic/corpus artifacts; `commands.json` cases are unchanged
         (description only), so no ASR-quality or dataset-promotion evidence
-        follows and the bounded English packet below remains open.
+        follows while ADR-0205 later fixes the bounded English packet contract; production materialization remains unavailable.
       - [ ] Add a platform-native or cross-engine plugin lifecycle fence, or
         prove the exact recorder/player contracts. ADR-0204 excludes overlap
         only among covered shipped paths in the canonical Flutter UI isolate.
@@ -880,17 +880,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         Direct Speak lease wiring is source/compile/analyze-covered without a
         dedicated source-level wiring test. No Dart cleanup, timeout, isolate
         exit, or acknowledgement proves native return.
-      - [ ] Build a bounded English-only mobile ASR regression packet by reusing
-        the existing retained GSC/ECCC command-noise, DEMAND noise, NOTSOFAR
-        far-field, and PriMock isolated/two-role assets and their current
-        locks/materializers. Fix exact case/byte/license/provenance bounds and
-        publish outside Git; do not redownload sources. External alternatives
-        were researched only. A Romanian packet is blocked on a separate
-        multilingual model/tokenizer plus Unicode normalization/language-label/
-        metric decision; the current mobile Zipformer is English-only. Control
-        normalization lowercases, retains only ASCII `a-z` plus spaces, then
-        collapses spaces and trims; digits and non-ASCII characters are
-        discarded.
+      - [x] Fix the bounded English-only mobile ASR evidence-packet contract
+        from the retained GSC/ECCC command-noise, DEMAND noise, NOTSOFAR
+        far-field, and PriMock isolated/two-role component definitions without
+        flattening their metric domains. ADR-0205 ships the exact lock,
+        offline no-download assembler, strict loader, aggregate/hash-only
+        index and terminal-receipt contract, plus deterministic headless
+        coverage. Production materialization remains unavailable because the
+        exact DEMAND derivative and PriMock prepared bundles are absent; no
+        partial packet, model result, quality evidence, or default change
+        follows. The current mobile Zipformer remains English-only.
       - [ ] Research, without changing the English default or promoting a
         production model, a later opt-in Romanian comparison:
         `ro_stream_nemotron_560` as a true-streaming approximately 685 MB int8
@@ -964,6 +963,36 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       acceptable), and any non-screen source (camera/app) if wanted.
 
 ## P2
+- [x] **Fixed five-component English mobile ASR evidence packet — HEADLESS
+      CONTRACT SHIPPED; PRODUCTION PACKET UNAVAILABLE 2026-08-14 (ADR-0205).**
+      The offline no-download lock/assembler/strict-loader contract preserves
+      GSC/ECCC schema-v4 command/noise (57 groups/leaves; 3,714,904 bytes),
+      DEMAND schema-v2 isolated (42; 26,230,128), NOTSOFAR far-field schema-v2
+      isolated (18; 2,309,120), PriMock isolated schema-v2 (3; 284,668), and
+      PriMock grouped overlap (3 groups/9 leaves; 6,760,680) as five separate
+      metric domains. The fixed total is 123 logical groups, 129 mono-16-kHz
+      f32le leaves, 9,824,875 samples, 39,299,500 bytes, and 614.0546875
+      aggregate stored-leaf seconds. Valid publication is a private self-
+      contained exact copy with an aggregate/hash-only packet index and
+      terminal receipt; a reserved incomplete root is invalid and retry uses a
+      fresh path. `mobile_model_identity_authority: false`,
+      `evaluation_result_authority: false`, and packet-level pooled WER is
+      explicitly absent; eligible components retain their own ordinary-WER
+      domains. Exact task-worktree gates pass 19 focused, 264 adjacent, and 6
+      APM/DTD tests; scoped Ruff check/format, semantic reconstruction, and
+      diff-check are clean. Ordered retained-input preflight validated GSC/ECCC,
+      then failed at absent DEMAND with one path-free error and
+      no output root; independent read-only security inspection separately
+      close-validated retained NOTSOFAR. Independent security audit is GO on
+      exact hashes; its focused 19-test gate and Ruff are clean, and no
+      transcript/PCM content crossed output. The exact DEMAND derivative and
+      PriMock isolated/overlap production bundles are absent, so no all-five
+      production packet, report, or model cell was published. No download,
+      model, GPU, plugin, device, or live path ran; no held-out, training-
+      disjoint, or qualification authority follows; the English Zipformer/
+      default is unchanged. NEXT: a separate hash-only exact-mobile-hybrid
+      provisioner and endpoint-faithful runner, followed by recovery/
+      rematerialization of only the already pinned missing components.
 - [x] **NOTSOFAR-1 natural-overlap private bundle — IMPLEMENTED AND VERIFIED
       2026-08-13 (ADR-0194).** The no-download preparer and strict
       retained-bundle loader bind the exact retained CC-BY-4.0 MTG_32006

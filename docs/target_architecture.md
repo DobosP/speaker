@@ -371,18 +371,40 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    candidate was never landed and is provenance only; ADR-0204 is the accepted
    reconciled record and leaves ADR-0201/0202/0203 byte-stable.
 
-   The composition adds no acoustic/corpus artifact and changes only the
-   `commands.json` description, not its cases. It supplies no ASR-quality or
-   dataset-promotion evidence. The bounded English packet and separate Romanian
-   opt-in/model/tokenizer/normalization/metric work below remain open.
+   ADR-0204's composition added no acoustic artifact or quality evidence.
+   ADR-0205 now fixes a separate offline English packet contract without
+   changing runtime behavior: GSC/ECCC command-noise 57 groups/57 leaves/
+   3,714,904 bytes, DEMAND isolated 42/42/26,230,128, NOTSOFAR far-field
+   isolated 18/18/2,309,120, PriMock isolated 3/3/284,668, and PriMock grouped
+   overlap 3 groups/9 leaves/6,760,680. The all-five envelope is 123 logical
+   groups, 129 mono-16-kHz f32le leaves, 9,824,875 samples, 39,299,500 bytes,
+   and 614.0546875 aggregate stored-leaf seconds. The assembler preserves each
+   component's schema, grouping, license, lock/receipt binding, and evaluator domain in a
+   private self-contained exact copy with an aggregate/hash-only packet index
+   and terminal receipt. A failed call may leave a reserved incomplete root,
+   but it is not a packet/success and retry uses a fresh path. It never pools
+   WER, latency, or RTF. Packet model-identity and evaluation-result authority
+   are explicitly false; packet-level pooled WER is absent while eligible
+   components retain their own ordinary-WER domains.
 
-   The shipped mobile Zipformer is English-only. Shared control normalization
-   lowercases, retains only ASCII `a-z` plus spaces, then collapses spaces and
-   trims; digits and non-ASCII characters are discarded. A future bounded data
-   packet will reuse existing retained GSC/ECCC/DEMAND/NOTSOFAR/PriMock assets
-   and current locks/materializers without a new download. External sources
-   have only been researched. Romanian remains blocked on a separate multilingual
-   model/tokenizer, language-label, Unicode-normalization, and metric decision.
+   Exact task-worktree gates pass 19 focused, 264 adjacent, and 6 APM/DTD tests
+   with scoped Ruff/format, semantic audit, and diff-check clean, but the
+   production packet remains unavailable: the exact retained DEMAND derivative
+   and PriMock isolated/overlap bundles are absent, and partial publication is
+   forbidden. Ordered retained-input preflight validated GSC/ECCC, then failed
+   at absent DEMAND with one path-free error and no output root;
+   independent read-only security inspection separately close-validated
+   retained NOTSOFAR. No packet materialization or decode/evaluation followed.
+   No new source was downloaded and no model, GPU, plugin, audio
+   device, physical phone, or live path ran; no held-out, training-disjoint, or
+   qualification authority follows. The shipped mobile Zipformer is
+   English-only and its current default is unchanged; the retained desktop
+   fp32 Zipformer and CUDA references are not mobile-model evidence. The next
+   separate slice is a hash-only provisioner for the exact mobile hybrid assets
+   plus an endpoint-faithful runner. Romanian remains blocked on its own model/
+   export, language label, tokenizer/Unicode normalization, metric, compatible
+   public strata, owner recordings, and physical-phone CPU/RSS/thermal/live
+   decision.
 5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search

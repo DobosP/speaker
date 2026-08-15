@@ -36,6 +36,9 @@ MAX_NEMOTRON_ARTIFACT_BYTES = 3 * 1024 * 1024 * 1024
 MAX_NEMOTRON_TOTAL_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES = 384 * 1024 * 1024
 MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 512 * 1024 * 1024
+MAX_MOBILE_ZIPFORMER_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_MOBILE_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES = 1024 * 1024
 MAX_PARAKEET_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_PARAKEET_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
 MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES = 32 * 1024 * 1024
@@ -64,6 +67,22 @@ _MANIFEST_V6_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V7_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V8_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V9_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V10_FIELDS = {
+    "schema_version",
+    "kind",
+    "model_id",
+    "adapter",
+    "python",
+    "worker",
+    "artifacts",
+    "limits",
+    "mobile_config",
+    "source",
+    "runtime",
+    "artifact_set_sha256",
+    "total_size_bytes",
+    "evidence_scope",
+}
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -134,6 +153,58 @@ _SHERPA_ZIPFORMER_CONFIG_FIELDS = {
     "rule1_min_trailing_silence",
     "rule2_min_trailing_silence",
     "rule3_min_utterance_length",
+}
+_MOBILE_ZIPFORMER_CONFIG_FIELDS = {
+    "package_version",
+    "core_package_version",
+    "numpy_version",
+    "source_repo_id",
+    "source_revision",
+    "variant",
+    "language",
+    "sample_rate",
+    "feature_dim",
+    "num_threads",
+    "provider",
+    "debug",
+    "decoding_method",
+    "max_active_paths",
+    "model_type",
+    "enable_endpoint_detection",
+    "rule1_min_trailing_silence",
+    "rule2_min_trailing_silence",
+    "rule3_min_utterance_length",
+    "native_chunk_samples",
+    "maximum_tail_padding_samples",
+}
+_MOBILE_ZIPFORMER_SOURCE_FIELDS = {
+    "repo_id",
+    "revision",
+    "lock",
+    "lock_recipe_sha256",
+}
+_MOBILE_ZIPFORMER_RUNTIME_FIELDS = {
+    "python",
+    "worker",
+    "distributions",
+    "metadata_only_verified",
+    "packages_imported",
+    "model_loaded",
+}
+_MOBILE_ZIPFORMER_DISTRIBUTION_FIELDS = {
+    "sherpa-onnx",
+    "sherpa-onnx-core",
+    "numpy",
+}
+_MOBILE_ZIPFORMER_EVIDENCE_FIELDS = {
+    "downloaded",
+    "packages_imported",
+    "model_loaded",
+    "model_executed",
+    "gpu_used",
+    "audio_device_opened",
+    "evaluation_result_authority",
+    "mobile_device_evidence",
 }
 _PARAKEET_CONFIG_FIELDS = {
     "python_version",
@@ -291,6 +362,7 @@ MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER = (
 )
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
+MOBILE_ZIPFORMER_ADAPTER = "sherpa-onnx-mobile-zipformer-endpoint-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
 FASTER_WHISPER_ENDPOINT_ADAPTER = "faster-whisper-endpoint-v1"
 PARAKEET_CPP_ADAPTER = "parakeet-cpp-realtime-eou-v1"
@@ -586,6 +658,89 @@ _SHERPA_ZIPFORMER_MODEL_RECEIPTS = {
     name: (sha256, size_bytes)
     for name, _basename, sha256, size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
 }
+MOBILE_ZIPFORMER_ARTIFACT_SPECS = (
+    (
+        "model-encoder",
+        "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "int8",
+        "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        71_083_163,
+    ),
+    (
+        "model-decoder",
+        "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "fp32",
+        "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        2_092_621,
+    ),
+    (
+        "model-joiner",
+        "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "fp32",
+        "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        1_026_405,
+    ),
+    (
+        "model-tokens",
+        "tokens.txt",
+        "text",
+        "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        5_048,
+    ),
+)
+MOBILE_ZIPFORMER_ARTIFACT_NAMES = tuple(
+    name
+    for name, _basename, _precision, _sha256, _size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+)
+_MOBILE_ZIPFORMER_ARTIFACT_BASENAMES = {
+    name: basename
+    for name, basename, _precision, _sha256, _size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+}
+_MOBILE_ZIPFORMER_MODEL_RECEIPTS = {
+    name: (sha256, size_bytes)
+    for name, _basename, _precision, sha256, size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+}
+MOBILE_ZIPFORMER_TOTAL_SIZE_BYTES = sum(
+    size_bytes
+    for _name, _basename, _precision, _sha256, size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+)
+_MOBILE_ZIPFORMER_ARTIFACT_SET_ROWS = [
+    {
+        "name": name,
+        "filename": basename,
+        "precision": precision,
+        "sha256": sha256,
+        "size_bytes": size_bytes,
+    }
+    for name, basename, precision, sha256, size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+]
+MOBILE_ZIPFORMER_ARTIFACT_SET_SHA256 = hashlib.sha256(
+    b"speaker-mobile-zipformer-artifact-set-v1\0"
+    + json.dumps(
+        _MOBILE_ZIPFORMER_ARTIFACT_SET_ROWS,
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+MOBILE_ZIPFORMER_SOURCE_LOCK_RECIPE_SHA256 = (
+    "736d516ceada4bc8864ca0b5de9f03167a415cb93ad66252ab99351028a15c49"
+)
+MOBILE_ZIPFORMER_SOURCE_LOCK_SHA256 = (
+    "3b928f709a1c50f426291968bedff67811f7eed0e1c48e0773df475558520efc"
+)
+MOBILE_ZIPFORMER_SOURCE_LOCK_SIZE_BYTES = 2_335
 PARAKEET_REALTIME_EOU_ARTIFACT_NAMES = (
     "runtime-receipt",
     "runtime-wheel-lock",
@@ -1045,6 +1200,75 @@ class SherpaZipformerConfig:
             "rule2_min_trailing_silence": self.rule2_min_trailing_silence,
             "rule3_min_utterance_length": self.rule3_min_utterance_length,
         }
+
+
+@dataclass(frozen=True)
+class MobileZipformerConfig:
+    """Immutable CPU contract matching the shipped mobile recognizer."""
+
+    package_version: str = "1.13.3"
+    core_package_version: str = "1.13.3"
+    numpy_version: str = "2.4.6"
+    source_repo_id: str = "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+    source_revision: str = "672fbf1b30579d6585301139bb363f42a0ad4a24"
+    variant: str = "epoch-99-avg-1-chunk-16-left-128-mobile-hybrid"
+    language: str = "en"
+    sample_rate: int = 16_000
+    feature_dim: int = 80
+    num_threads: int = 1
+    provider: str = "cpu"
+    debug: bool = True
+    decoding_method: str = "greedy_search"
+    max_active_paths: int = 4
+    model_type: str = "zipformer2"
+    enable_endpoint_detection: bool = True
+    rule1_min_trailing_silence: float = 2.4
+    rule2_min_trailing_silence: float = 0.8
+    rule3_min_utterance_length: float = 20.0
+    native_chunk_samples: int = 1_600
+    maximum_tail_padding_samples: int = 48_000
+
+    def __post_init__(self) -> None:
+        timing = (
+            self.rule1_min_trailing_silence,
+            self.rule2_min_trailing_silence,
+            self.rule3_min_utterance_length,
+        )
+        if (
+            any(type(value) not in {int, float} for value in timing)
+            or self.package_version != "1.13.3"
+            or self.core_package_version != "1.13.3"
+            or self.numpy_version != "2.4.6"
+            or self.source_repo_id
+            != "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+            or self.source_revision != "672fbf1b30579d6585301139bb363f42a0ad4a24"
+            or self.variant != "epoch-99-avg-1-chunk-16-left-128-mobile-hybrid"
+            or self.language != "en"
+            or type(self.sample_rate) is not int
+            or self.sample_rate != 16_000
+            or type(self.feature_dim) is not int
+            or self.feature_dim != 80
+            or type(self.num_threads) is not int
+            or self.num_threads != 1
+            or self.provider != "cpu"
+            or type(self.debug) is not bool
+            or not self.debug
+            or self.decoding_method != "greedy_search"
+            or type(self.max_active_paths) is not int
+            or self.max_active_paths != 4
+            or self.model_type != "zipformer2"
+            or type(self.enable_endpoint_detection) is not bool
+            or not self.enable_endpoint_detection
+            or tuple(float(value) for value in timing) != (2.4, 0.8, 20.0)
+            or type(self.native_chunk_samples) is not int
+            or self.native_chunk_samples != 1_600
+            or type(self.maximum_tail_padding_samples) is not int
+            or self.maximum_tail_padding_samples != 48_000
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in _MOBILE_ZIPFORMER_CONFIG_FIELDS}
 
 
 @dataclass(frozen=True)
@@ -1539,12 +1763,14 @@ class WorkerManifest:
         | MoonshineExternalEndpointConfig
         | NemotronConfig
         | SherpaZipformerConfig
+        | MobileZipformerConfig
         | ParakeetRealtimeEouConfig
         | ParakeetCppConfig
         | FasterWhisperEndpointConfig
         | KyutaiConfig
         | None
     ) = None
+    control_files: tuple[BoundFile, ...] = ()
 
     @property
     def artifact_by_name(self) -> Mapping[str, BoundArtifact]:
@@ -1623,6 +1849,11 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         and artifact_name in SHERPA_ZIPFORMER_ARTIFACT_NAMES
     ):
         return MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES
+    if (
+        adapter == MOBILE_ZIPFORMER_ADAPTER
+        and artifact_name in MOBILE_ZIPFORMER_ARTIFACT_NAMES
+    ):
+        return MAX_MOBILE_ZIPFORMER_ARTIFACT_BYTES
     if (
         adapter == PARAKEET_REALTIME_EOU_ADAPTER
         and artifact_name in PARAKEET_REALTIME_EOU_ARTIFACT_NAMES
@@ -1841,6 +2072,17 @@ def _sherpa_zipformer_config(value: object) -> SherpaZipformerConfig:
             rule3_min_utterance_length=value.get(  # type: ignore[arg-type]
                 "rule3_min_utterance_length"
             ),
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
+def _mobile_zipformer_config(value: object) -> MobileZipformerConfig:
+    if not isinstance(value, dict) or set(value) != _MOBILE_ZIPFORMER_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return MobileZipformerConfig(
+            **{name: value.get(name) for name in _MOBILE_ZIPFORMER_CONFIG_FIELDS}
         )
     except (TypeError, ValueError, ManifestError):
         raise ManifestError() from None
@@ -2110,6 +2352,113 @@ def _validate_sherpa_zipformer_layout(
         or len({artifact.path.parent for artifact in artifacts}) != 1
     ):
         raise ManifestError()
+
+
+def _validate_mobile_zipformer_layout(
+    artifacts: tuple[BoundArtifact, ...],
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    if (
+        tuple(by_name) != MOBILE_ZIPFORMER_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        != MOBILE_ZIPFORMER_TOTAL_SIZE_BYTES
+        or MOBILE_ZIPFORMER_TOTAL_SIZE_BYTES > MAX_MOBILE_ZIPFORMER_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _MOBILE_ZIPFORMER_ARTIFACT_BASENAMES.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in _MOBILE_ZIPFORMER_MODEL_RECEIPTS.items()
+        )
+        or len({artifact.path.parent for artifact in artifacts}) != 1
+    ):
+        raise ManifestError()
+
+
+def _mobile_zipformer_control_files(
+    value: Mapping[str, object],
+    *,
+    python: BoundFile,
+    worker: BoundFile,
+    config: MobileZipformerConfig,
+) -> tuple[BoundFile, ...]:
+    if (
+        value.get("kind") != "mobile-zipformer-provision-v1"
+        or value.get("model_id")
+        != "sherpa-onnx-streaming-zipformer-en-2023-06-26-mobile-hybrid-v1"
+        or value.get("artifact_set_sha256") != MOBILE_ZIPFORMER_ARTIFACT_SET_SHA256
+        or type(value.get("total_size_bytes")) is not int
+        or value.get("total_size_bytes") != MOBILE_ZIPFORMER_TOTAL_SIZE_BYTES
+    ):
+        raise ManifestError()
+    source = value.get("source")
+    if not isinstance(source, dict) or set(source) != _MOBILE_ZIPFORMER_SOURCE_FIELDS:
+        raise ManifestError()
+    if (
+        source.get("repo_id") != config.source_repo_id
+        or source.get("revision") != config.source_revision
+    ):
+        raise ManifestError()
+    if (
+        _sha256(source.get("lock_recipe_sha256"))
+        != MOBILE_ZIPFORMER_SOURCE_LOCK_RECIPE_SHA256
+    ):
+        raise ManifestError()
+    source_lock = _bound_file(
+        source.get("lock"),
+        expected_fields=_FILE_FIELDS,
+        allow_symlink=False,
+        maximum_bytes=MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES,
+    )
+    if (
+        source_lock.path.name != "source-lock.json"
+        or source_lock.sha256 != MOBILE_ZIPFORMER_SOURCE_LOCK_SHA256
+        or source_lock.size_bytes != MOBILE_ZIPFORMER_SOURCE_LOCK_SIZE_BYTES
+    ):
+        raise ManifestError()
+
+    runtime = value.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or set(runtime) != _MOBILE_ZIPFORMER_RUNTIME_FIELDS
+        or runtime.get("python") != value.get("python")
+        or runtime.get("worker") != value.get("worker")
+        or runtime.get("metadata_only_verified") is not True
+        or runtime.get("packages_imported") is not False
+        or runtime.get("model_loaded") is not False
+    ):
+        raise ManifestError()
+    distributions = runtime.get("distributions")
+    if (
+        not isinstance(distributions, dict)
+        or set(distributions) != _MOBILE_ZIPFORMER_DISTRIBUTION_FIELDS
+        or distributions
+        != {
+            "sherpa-onnx": config.package_version,
+            "sherpa-onnx-core": config.core_package_version,
+            "numpy": config.numpy_version,
+        }
+    ):
+        raise ManifestError()
+    evidence_scope = value.get("evidence_scope")
+    if (
+        not isinstance(evidence_scope, dict)
+        or set(evidence_scope) != _MOBILE_ZIPFORMER_EVIDENCE_FIELDS
+        or any(type(item) is not bool or item for item in evidence_scope.values())
+    ):
+        raise ManifestError()
+    if runtime["python"] != {
+        "path": str(python.path),
+        "sha256": python.sha256,
+        "size_bytes": python.size_bytes,
+    } or runtime["worker"] != {
+        "path": str(worker.path),
+        "sha256": worker.sha256,
+        "size_bytes": worker.size_bytes,
+    }:
+        raise ManifestError()
+    return (source_lock,)
 
 
 def _validate_parakeet_layout(
@@ -2671,6 +3020,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         7,
         8,
         9,
+        10,
     }:
         raise ManifestError()
     expected_fields = {
@@ -2683,6 +3033,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         7: _MANIFEST_V7_FIELDS,
         8: _MANIFEST_V8_FIELDS,
         9: _MANIFEST_V9_FIELDS,
+        10: _MANIFEST_V10_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -2701,6 +3052,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         )
         or (schema_version == 8 and adapter != PARAKEET_CPP_ADAPTER)
         or (schema_version == 9 and adapter != KYUTAI_ADAPTER)
+        or (schema_version == 10 and adapter != MOBILE_ZIPFORMER_ADAPTER)
     ):
         raise ManifestError()
 
@@ -2728,6 +3080,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         7: MOONSHINE_ARTIFACT_NAMES,
         8: PARAKEET_CPP_ARTIFACT_NAMES,
         9: KYUTAI_ARTIFACT_NAMES,
+        10: MOBILE_ZIPFORMER_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -2749,6 +3102,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         ),
         8: lambda: _parakeet_cpp_config(value.get("adapter_config")),
         9: lambda: _kyutai_config(value.get("adapter_config")),
+        10: lambda: _mobile_zipformer_config(value.get("mobile_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -2774,6 +3128,19 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 9:
         assert isinstance(adapter_config, KyutaiConfig)
         _validate_kyutai_layout(python, artifacts, adapter_config)
+    elif schema_version == 10:
+        assert isinstance(adapter_config, MobileZipformerConfig)
+        _validate_mobile_zipformer_layout(artifacts)
+
+    control_files: tuple[BoundFile, ...] = ()
+    if schema_version == 10:
+        assert isinstance(adapter_config, MobileZipformerConfig)
+        control_files = _mobile_zipformer_control_files(
+            value,
+            python=python,
+            worker=worker,
+            config=adapter_config,
+        )
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:
@@ -2788,6 +3155,11 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
             maximum=3600.0,
         ),
     )
+    if schema_version == 10 and limits != WorkerLimits(
+        startup_timeout_sec=120.0,
+        case_timeout_sec=300.0,
+    ):
+        raise ManifestError()
     return WorkerManifest(
         path=resolved,
         digest=hashlib.sha256(raw).hexdigest(),
@@ -2798,5 +3170,6 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         worker=worker,
         artifacts=artifacts,
         limits=limits,
+        control_files=control_files,
         adapter_config=adapter_config,
     )

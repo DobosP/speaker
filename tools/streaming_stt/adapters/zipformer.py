@@ -24,32 +24,48 @@ from typing import TypeVar
 
 from ..bounded_io import BoundedReadError, read_regular_bounded
 from ..manifest import (
+    MOBILE_ZIPFORMER_ARTIFACT_SPECS,
+    MobileZipformerConfig,
     SHERPA_ZIPFORMER_ARTIFACT_SPECS,
     SherpaZipformerConfig,
 )
 from ..protocol import (
     MAX_HYPOTHESIS_CHARS,
+    MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS,
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     MAX_RESOURCE_MB,
     MAX_STREAM_SAMPLES,
+    MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
+    MobileZipformerEndpointObservation,
     ResourceUsage,
     TranscribeRequest,
 )
 
 
 _SHERPA_DISTRIBUTION = "sherpa-onnx"
+_SHERPA_CORE_DISTRIBUTION = "sherpa-onnx-core"
 _NUMPY_DISTRIBUTION = "numpy"
 _MAX_DECODE_CALLS_PER_DRAIN = 4096
 _MODEL_FILENAMES = {
     name.removeprefix("model-"): basename
     for name, basename, _sha256, _size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
 }
+_MOBILE_MODEL_FILENAMES = {
+    name.removeprefix("model-"): basename
+    for name, basename, _precision, _sha256, _size_bytes in (
+        MOBILE_ZIPFORMER_ARTIFACT_SPECS
+    )
+}
 _T = TypeVar("_T")
 
 
 class SherpaZipformerAdapterError(RuntimeError):
     """A detail-free runtime, model, or streaming-contract failure."""
+
+
+class MobileZipformerAdapterError(RuntimeError):
+    """A detail-free mobile-runtime or endpoint-contract failure."""
 
 
 @dataclass(frozen=True)
@@ -78,6 +94,46 @@ class SherpaZipformerCase:
     resources: ResourceUsage
 
 
+@dataclass(frozen=True)
+class MobileZipformerReady:
+    model_load_ms: float
+    resources: ResourceUsage
+
+
+@dataclass(frozen=True)
+class MobileZipformerPartial:
+    after_samples: int
+    text: str = field(repr=False)
+    elapsed_ms: float
+    decode_ms: float
+
+
+@dataclass(frozen=True)
+class MobileZipformerCase:
+    partials: tuple[MobileZipformerPartial, ...] = field(repr=False)
+    final: str = field(repr=False)
+    elapsed_ms: float
+    finalization_ms: float
+    compute_ms: float
+    deadline_misses: int
+    max_backlog_ms: float
+    resources: ResourceUsage
+    source_samples: int
+    source_samples_consumed: int
+    declared_tail_samples: int
+    tail_samples_consumed: int
+    chunks_yielded: int
+    model_padding_samples: int
+    endpoint_observations: tuple[MobileZipformerEndpointObservation, ...] = field(
+        repr=False
+    )
+    endpoint_reason: str
+    native_endpoint: bool
+    endpoint_sample: int | None
+    endpoint_latency_ms: float | None
+    authoritative: bool
+
+
 def _candidate_apis(config: SherpaZipformerConfig) -> tuple[object, object]:
     """Import only exact installed production packages; never resolve remotely."""
 
@@ -99,6 +155,35 @@ def _candidate_apis(config: SherpaZipformerConfig) -> tuple[object, object]:
         or getattr(numpy, "__version__", None) != config.numpy_version
     ):
         raise SherpaZipformerAdapterError()
+    return sherpa, numpy
+
+
+def _mobile_candidate_apis(
+    config: MobileZipformerConfig,
+) -> tuple[object, object]:
+    """Import the exact local mobile-compatible runtime and no model resolver."""
+
+    try:
+        if (
+            metadata.version(_SHERPA_DISTRIBUTION) != config.package_version
+            or metadata.version(_SHERPA_CORE_DISTRIBUTION)
+            != config.core_package_version
+            or metadata.version(_NUMPY_DISTRIBUTION) != config.numpy_version
+        ):
+            raise MobileZipformerAdapterError()
+        sherpa = importlib.import_module("sherpa_onnx")
+        numpy = importlib.import_module("numpy")
+    except (
+        ImportError,
+        metadata.PackageNotFoundError,
+        MobileZipformerAdapterError,
+    ):
+        raise MobileZipformerAdapterError() from None
+    if (
+        getattr(sherpa, "__version__", None) != config.package_version
+        or getattr(numpy, "__version__", None) != config.numpy_version
+    ):
+        raise MobileZipformerAdapterError()
     return sherpa, numpy
 
 
@@ -439,7 +524,332 @@ class SherpaZipformerAdapter:
         )
 
 
+class MobileZipformerAdapter:
+    """Endpoint-faithful mobile Zipformer decode with reset-committed epochs."""
+
+    def __init__(
+        self,
+        model_root: Path,
+        *,
+        config: MobileZipformerConfig,
+        api: object | None = None,
+        numpy_api: object | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if type(config) is not MobileZipformerConfig:
+            raise MobileZipformerAdapterError()
+        try:
+            resolved_model_root = Path(model_root).resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise MobileZipformerAdapterError() from None
+        if not resolved_model_root.is_dir():
+            raise MobileZipformerAdapterError()
+        model_paths = {
+            name: resolved_model_root / filename
+            for name, filename in _MOBILE_MODEL_FILENAMES.items()
+        }
+        if any(not path.is_file() for path in model_paths.values()):
+            raise MobileZipformerAdapterError()
+
+        self.config = config
+        self.model_root = resolved_model_root
+        self._clock = clock
+        self._sleeper = sleeper
+        self._closed = False
+        self._recognizer: object | None = None
+        load_started = self._now()
+        if (api is None) != (numpy_api is None):
+            raise MobileZipformerAdapterError()
+        candidate, numpy = (
+            _mobile_candidate_apis(config) if api is None else (api, numpy_api)
+        )
+        if (
+            getattr(candidate, "__version__", None) != config.package_version
+            or getattr(numpy, "__version__", None) != config.numpy_version
+        ):
+            raise MobileZipformerAdapterError()
+        recognizer_type = getattr(candidate, "OnlineRecognizer", None)
+        factory = getattr(recognizer_type, "from_transducer", None)
+        asarray = getattr(numpy, "asarray", None)
+        if not callable(factory) or not callable(asarray):
+            raise MobileZipformerAdapterError()
+        self._numpy = numpy
+        try:
+            self._recognizer = factory(
+                tokens=str(model_paths["tokens"]),
+                encoder=str(model_paths["encoder"]),
+                decoder=str(model_paths["decoder"]),
+                joiner=str(model_paths["joiner"]),
+                num_threads=config.num_threads,
+                provider=config.provider,
+                sample_rate=config.sample_rate,
+                feature_dim=config.feature_dim,
+                enable_endpoint_detection=config.enable_endpoint_detection,
+                decoding_method=config.decoding_method,
+                max_active_paths=config.max_active_paths,
+                rule1_min_trailing_silence=config.rule1_min_trailing_silence,
+                rule2_min_trailing_silence=config.rule2_min_trailing_silence,
+                rule3_min_utterance_length=config.rule3_min_utterance_length,
+                debug=config.debug,
+                model_type=config.model_type,
+            )
+            if self._recognizer is None:
+                raise MobileZipformerAdapterError()
+            self.ready = MobileZipformerReady(
+                model_load_ms=self._duration_ms(load_started, self._now()),
+                resources=_resource_usage(),
+            )
+        except Exception as error:
+            self._recognizer = None
+            if isinstance(error, MobileZipformerAdapterError):
+                raise
+            raise MobileZipformerAdapterError() from None
+
+    def __enter__(self) -> MobileZipformerAdapter:
+        if self._closed:
+            raise MobileZipformerAdapterError()
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._closed = True
+        self._recognizer = None
+
+    def _now(self) -> float:
+        try:
+            value = float(self._clock())
+        except (TypeError, ValueError, OverflowError):
+            raise MobileZipformerAdapterError() from None
+        if not math.isfinite(value):
+            raise MobileZipformerAdapterError()
+        return value
+
+    @staticmethod
+    def _duration_ms(start: float, end: float) -> float:
+        duration = end - start
+        if not math.isfinite(duration) or duration < 0.0:
+            raise MobileZipformerAdapterError()
+        return duration * 1000.0
+
+    def _timed(self, function: Callable[[], _T]) -> tuple[_T, float]:
+        started = self._now()
+        result = function()
+        finished = self._now()
+        return result, self._duration_ms(started, finished)
+
+    def _drain(self, recognizer: object, stream: object) -> float:
+        started = self._now()
+        for _ in range(_MAX_DECODE_CALLS_PER_DRAIN):
+            if not recognizer.is_ready(stream):
+                return self._duration_ms(started, self._now())
+            recognizer.decode_stream(stream)
+        raise MobileZipformerAdapterError()
+
+    def _result(self, recognizer: object, stream: object) -> tuple[str, float]:
+        value, elapsed_ms = self._timed(lambda: recognizer.get_result(stream))
+        if not isinstance(value, str):
+            raise MobileZipformerAdapterError()
+        text = value.strip()
+        if len(text) > MAX_HYPOTHESIS_CHARS:
+            raise MobileZipformerAdapterError()
+        return text, elapsed_ms
+
+    def transcribe(
+        self,
+        request: TranscribeRequest,
+        *,
+        emit_partial: Callable[[int, MobileZipformerPartial], None],
+    ) -> MobileZipformerCase:
+        recognizer = self._recognizer
+        config = self.config
+        if (
+            self._closed
+            or recognizer is None
+            or request.protocol_version != MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
+            or request.stream.chunk_samples != config.native_chunk_samples
+            or request.stream.tail_padding_samples > config.maximum_tail_padding_samples
+        ):
+            raise MobileZipformerAdapterError()
+        try:
+            source = _read_pcm(request)
+        except SherpaZipformerAdapterError:
+            raise MobileZipformerAdapterError() from None
+        if (
+            request.pcm.samples + request.stream.tail_padding_samples
+            > MAX_STREAM_SAMPLES
+        ):
+            raise MobileZipformerAdapterError()
+
+        case_started = self._now()
+        stream: object | None = None
+        compute_ms = 0.0
+        partials: list[MobileZipformerPartial] = []
+        observations: list[MobileZipformerEndpointObservation] = []
+        deadline_misses = 0
+        max_backlog_ms = 0.0
+        source_consumed = 0
+        tail_consumed = 0
+        chunks_yielded = 0
+        terminal_endpoint = False
+        last_hypothesis = ""
+        finalization_started = case_started
+        try:
+            stream, create_ms = self._timed(recognizer.create_stream)
+            compute_ms += create_ms
+            if stream is None:
+                raise MobileZipformerAdapterError()
+            stream_started = self._now()
+
+            def process_chunk(chunk: list[float], *, source_complete: bool) -> bool:
+                nonlocal compute_ms
+                nonlocal chunks_yielded
+                nonlocal deadline_misses
+                nonlocal last_hypothesis
+                nonlocal max_backlog_ms
+                samples_before = source_consumed + tail_consumed - len(chunk)
+                if request.stream.pace == "realtime":
+                    target = stream_started + samples_before / config.sample_rate
+                    before_wait = self._now()
+                    if before_wait < target:
+                        self._sleeper(target - before_wait)
+                    if self._now() < target:
+                        raise MobileZipformerAdapterError()
+                native = self._numpy.asarray(chunk, dtype="float32")
+                _, accept_ms = self._timed(
+                    lambda: stream.accept_waveform(config.sample_rate, native)
+                )
+                drain_ms = self._drain(recognizer, stream)
+                text, result_ms = self._result(recognizer, stream)
+                endpoint, endpoint_ms = self._timed(
+                    lambda: recognizer.is_endpoint(stream)
+                )
+                if type(endpoint) is not bool:
+                    raise MobileZipformerAdapterError()
+                compute_ms += accept_ms + drain_ms + result_ms + endpoint_ms
+                chunks_yielded += 1
+                observed_sample = source_consumed + tail_consumed
+                reset_ms = 0.0
+                if endpoint:
+                    if len(observations) >= MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS:
+                        raise MobileZipformerAdapterError()
+                    try:
+                        _, reset_ms = self._timed(lambda: recognizer.reset(stream))
+                    except Exception:
+                        raise MobileZipformerAdapterError() from None
+                    compute_ms += reset_ms
+                    observations.append(
+                        MobileZipformerEndpointObservation(
+                            text=text,
+                            observed_sample=observed_sample,
+                            source_complete=source_complete,
+                        )
+                    )
+                if text != last_hypothesis:
+                    if len(partials) >= MAX_PARTIALS_PER_CASE:
+                        raise MobileZipformerAdapterError()
+                    partial = MobileZipformerPartial(
+                        after_samples=observed_sample,
+                        text=text,
+                        elapsed_ms=self._duration_ms(case_started, self._now()),
+                        decode_ms=drain_ms + result_ms + endpoint_ms + reset_ms,
+                    )
+                    emit_partial(len(partials), partial)
+                    partials.append(partial)
+                last_hypothesis = text
+                if request.stream.pace == "realtime":
+                    deadline = stream_started + observed_sample / config.sample_rate
+                    backlog_ms = max(
+                        0.0,
+                        self._duration_ms(deadline, max(deadline, self._now())),
+                    )
+                    max_backlog_ms = max(max_backlog_ms, backlog_ms)
+                    if backlog_ms > 0.0:
+                        deadline_misses += 1
+                return endpoint
+
+            for offset in range(0, request.pcm.samples, config.native_chunk_samples):
+                count = min(
+                    config.native_chunk_samples,
+                    request.pcm.samples - offset,
+                )
+                source_consumed += count
+                endpoint = process_chunk(
+                    list(source[offset : offset + count]),
+                    source_complete=source_consumed == request.pcm.samples,
+                )
+                if endpoint and source_consumed == request.pcm.samples:
+                    terminal_endpoint = True
+                    break
+            if source_consumed != request.pcm.samples:
+                raise MobileZipformerAdapterError()
+
+            finalization_started = self._now()
+            if not terminal_endpoint:
+                for offset in range(
+                    0,
+                    request.stream.tail_padding_samples,
+                    config.native_chunk_samples,
+                ):
+                    count = min(
+                        config.native_chunk_samples,
+                        request.stream.tail_padding_samples - offset,
+                    )
+                    tail_consumed += count
+                    if process_chunk([0.0] * count, source_complete=True):
+                        terminal_endpoint = True
+                        break
+        except MobileZipformerAdapterError:
+            raise
+        except Exception:
+            raise MobileZipformerAdapterError() from None
+
+        final_text = " ".join(
+            observation.text for observation in observations if observation.text
+        )
+        if len(final_text) > MAX_HYPOTHESIS_CHARS:
+            raise MobileZipformerAdapterError()
+        finished = self._now()
+        endpoint_sample = (
+            observations[-1].observed_sample if terminal_endpoint else None
+        )
+        try:
+            resources = _resource_usage()
+        except SherpaZipformerAdapterError:
+            raise MobileZipformerAdapterError() from None
+        return MobileZipformerCase(
+            partials=tuple(partials),
+            final=final_text,
+            elapsed_ms=self._duration_ms(case_started, finished),
+            finalization_ms=self._duration_ms(finalization_started, finished),
+            compute_ms=compute_ms,
+            deadline_misses=deadline_misses,
+            max_backlog_ms=max_backlog_ms,
+            resources=resources,
+            source_samples=request.pcm.samples,
+            source_samples_consumed=source_consumed,
+            declared_tail_samples=request.stream.tail_padding_samples,
+            tail_samples_consumed=tail_consumed,
+            chunks_yielded=chunks_yielded,
+            model_padding_samples=0,
+            endpoint_observations=tuple(observations),
+            endpoint_reason=("endpoint" if terminal_endpoint else "tail_exhausted"),
+            native_endpoint=terminal_endpoint,
+            endpoint_sample=endpoint_sample,
+            endpoint_latency_ms=(tail_consumed / 16.0 if terminal_endpoint else None),
+            authoritative=terminal_endpoint,
+        )
+
+
 __all__ = [
+    "MobileZipformerAdapter",
+    "MobileZipformerAdapterError",
+    "MobileZipformerCase",
+    "MobileZipformerConfig",
+    "MobileZipformerPartial",
+    "MobileZipformerReady",
     "SherpaZipformerAdapter",
     "SherpaZipformerAdapterError",
     "SherpaZipformerCase",

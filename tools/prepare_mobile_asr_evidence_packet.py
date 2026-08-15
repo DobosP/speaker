@@ -158,6 +158,120 @@ _EXPECTED_PRIVACY = {
     "packet_receipt": "aggregate-path-transcript-error-free-v1",
     "stdout": "aggregate-path-transcript-error-free-v1",
 }
+_PRIMOCK_FIXTURE_ID = "primock57-consultation01-v1"
+_PRIMOCK_LICENSE_ID = "CC-BY-4.0"
+_PRIMOCK_LOCK_RECIPE_SHA256 = (
+    "2bc14c4114959fe1323d843ed6bb1b17cf81aa46f620b6805a98dd380a1e17ef"
+)
+_PRIMOCK_ISOLATED_SELECTION_SHA256 = (
+    "9de94461889750796720f658b7ef3109179d075ef86d2b7cda2fc608ddae640a"
+)
+_PRIMOCK_OVERLAP_SELECTION_SHA256 = (
+    "f91c56ec722a8958802fedac92ba45d04920df534b4c6a9bd90cb2f1cb8bb05e"
+)
+_PRIMOCK_ISOLATED_SOURCE_CONTRACT_SHA256 = (
+    "6c098e29916a98073cfa89b546e9eb85d140392e20e4aeb0bfc5ad490bdf139b"
+)
+_PRIMOCK_OVERLAP_SOURCE_CONTRACT_SHA256 = (
+    "506a1e24e44e26f724952a18de95a5f7f862c65c910c3943671d2b0d90806646"
+)
+_PRIMOCK_SOURCE_ROWS_SHA256 = (
+    "fc2edca789bc69a6ce5f2ea5530782091685469415565051033c6f13c1e0d641"
+)
+_PRIMOCK_PREPARER_ROWS_SHA256 = (
+    "f4a032fb8595686897183f16ed75e8c62de2714b76a48feac1ee0e370199b116"
+)
+_PRIMOCK_SOURCE_LOCK_BYTES = 8_181
+_PRIMOCK_SOURCE_LOCK_SHA256 = (
+    "058da5caf533a771b276f81323c5f011d35ac406fa4f91c51cec5a0ed25c2031"
+)
+_PRIMOCK_SOURCE_LOCK_PROJECTION_SHA256 = (
+    "8d55bc03251933e9cd89280d22b658733c127019c9568c93ea08388934f99e43"
+)
+_PRIMOCK_SOURCE_LOCK = (
+    Path(__file__).resolve().parent
+    / "streaming_stt"
+    / "primock57-consultation01-v1.lock.json"
+)
+_PRIMOCK_SOURCE_ROLES = (
+    "role-a-audio",
+    "role-b-audio",
+    "role-a-annotation",
+    "role-b-annotation",
+    "license",
+)
+_PRIMOCK_SOURCE_PATHS = (
+    "audio/day1_consultation01_doctor.wav",
+    "audio/day1_consultation01_patient.wav",
+    "transcripts/day1_consultation01_doctor.TextGrid",
+    "transcripts/day1_consultation01_patient.TextGrid",
+    "LICENSE.md",
+)
+_PRIMOCK_PREPARER_ROWS = (
+    (
+        "tools/__init__.py",
+        63,
+        "ca607a54b592e2879ed4f3daac2fd7aad1a8223087f74986b59cc9d98534c426",
+    ),
+    (
+        "tools/streaming_stt/__init__.py",
+        1_682,
+        "db337b8d55d685071cee59b0984b3dc1da8505587a78faded46770f6d671e923",
+    ),
+    (
+        "tools/prepare_primock57_conversation_fixture.py",
+        119_417,
+        "41f498d1b1f4160e160f697bbcd0c48a3f7b5a4d44eeb2cebac934239ff3fbf6",
+    ),
+    (
+        "core/__init__.py",
+        1_535,
+        "ca29bb32269447ee053a0aec163b2105e7450cd9be5328c460412f03e1ccaa03",
+    ),
+    (
+        "core/wer.py",
+        2_816,
+        "0e58dabb21985a56322646bab9d89e71a726a73a733593238ed3e4bf792a03d2",
+    ),
+    (
+        "tools/streaming_stt/bounded_io.py",
+        10_409,
+        "cedf3e81b9fb58ba1f1dc978525a0672db280f52fe0c4648c849af2752a3843e",
+    ),
+    (
+        "tools/streaming_stt/corpus.py",
+        15_834,
+        "b0f25101f9dad861b66d13582cf80e3a995c241e929a75ee7cdbc035dbe63618",
+    ),
+    (
+        "tools/streaming_stt/corpus_writer.py",
+        26_555,
+        "42eba5892d6291bfef4685d39ab0c9f380246dbcfb9dc6abba2dc854b910081a",
+    ),
+    (
+        "tools/streaming_stt/private_diagnostic_receipt.py",
+        8_996,
+        "5b54ae30660279e38f0ce22595cbb8e687cfd804873dabcb142f887d714f5194",
+    ),
+    (
+        "tools/streaming_stt/protocol.py",
+        37_701,
+        "2f776b24df02dd02a7d9b9c9520afac148d2bddfad2257002227250311ec746c",
+    ),
+)
+_PRIMOCK_RECEIPT_PRIVACY = {
+    "local_paths_in_receipt": False,
+    "raw_role_labels_in_receipt": False,
+    "transcripts_in_receipt": False,
+}
+_PRIMOCK_ISOLATED_PURPOSE = (
+    "PriMock57 consultation 01 marker-free, zero-other-role-intersection "
+    "isolated hard WER"
+)
+_PRIMOCK_OVERLAP_MANIFEST = "primock57-two-role-overlap-diagnostic-v1.json"
+_PRIMOCK_OVERLAP_KIND = "primock57-two-role-overlap-diagnostic-v1"
+_PRIMOCK_ISOLATED_RECEIPT_KIND = "primock57-isolated-preparation-receipt-v1"
+_PRIMOCK_OVERLAP_RECEIPT_KIND = "primock57-overlap-preparation-receipt-v1"
 _EXPECTED_EVIDENCE_SCOPE = {
     "default_authority": False,
     "device_authority": False,
@@ -650,18 +764,353 @@ def _validate_generic(root: Path, spec: ComponentSpec) -> tuple[_Artifact, ...]:
         raise MobileAsrEvidencePacketError() from None
 
 
+def _load_locked_primock_source_rows() -> list[dict[str, object]]:
+    try:
+        snapshot = read_regular_bounded(
+            _PRIMOCK_SOURCE_LOCK,
+            maximum_bytes=_MAX_LOCK_BYTES,
+            expected_bytes=_PRIMOCK_SOURCE_LOCK_BYTES,
+        )
+        if (
+            snapshot.path != _PRIMOCK_SOURCE_LOCK
+            or hashlib.sha256(snapshot.data).hexdigest() != _PRIMOCK_SOURCE_LOCK_SHA256
+        ):
+            raise MobileAsrEvidencePacketError()
+        value = _strict_json(snapshot.data)
+        expected_fields = {
+            "schema_version",
+            "kind",
+            "fixture_id",
+            "license_id",
+            "repository",
+            "revision",
+            "sample_format",
+            "selection",
+            "output_artifacts",
+            "source",
+            "privacy",
+            "evidence_scope",
+            "recipe_digest_rule",
+            "recipe_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != expected_fields:
+            raise MobileAsrEvidencePacketError()
+        projection = {
+            name: value[name]
+            for name in (
+                "fixture_id",
+                "license_id",
+                "output_artifacts",
+                "recipe_sha256",
+                "selection",
+                "source",
+            )
+        }
+        recipe_body = dict(value)
+        recipe_body.pop("recipe_sha256")
+        source = value.get("source")
+        if (
+            value.get("schema_version") != 1
+            or value.get("kind") != "primock57-conversation-fixture-lock-v1"
+            or value.get("fixture_id") != _PRIMOCK_FIXTURE_ID
+            or value.get("license_id") != _PRIMOCK_LICENSE_ID
+            or value.get("recipe_sha256") != _PRIMOCK_LOCK_RECIPE_SHA256
+            or value.get("recipe_digest_rule")
+            != "sha256-canonical-json-without-recipe_sha256-v1"
+            or _canonical_sha256(recipe_body) != _PRIMOCK_LOCK_RECIPE_SHA256
+            or _canonical_sha256(projection) != _PRIMOCK_SOURCE_LOCK_PROJECTION_SHA256
+            or not isinstance(source, dict)
+            or not isinstance(source.get("files"), list)
+            or len(source["files"]) != len(_PRIMOCK_SOURCE_PATHS)
+        ):
+            raise MobileAsrEvidencePacketError()
+        rows: list[dict[str, object]] = []
+        for raw, path, role in zip(
+            source["files"],
+            _PRIMOCK_SOURCE_PATHS,
+            _PRIMOCK_SOURCE_ROLES,
+            strict=True,
+        ):
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != {"git_blob", "path", "role", "sha256", "size_bytes"}
+                or raw.get("path") != path
+                or raw.get("role") != role
+                or type(raw.get("size_bytes")) is not int
+                or int(raw["size_bytes"]) <= 0
+            ):
+                raise MobileAsrEvidencePacketError()
+            rows.append(
+                {
+                    "role": role,
+                    "sha256": _sha256(raw.get("sha256")),
+                    "size_bytes": int(raw["size_bytes"]),
+                }
+            )
+        if _canonical_sha256(rows) != _PRIMOCK_SOURCE_ROWS_SHA256:
+            raise MobileAsrEvidencePacketError()
+        return rows
+    except MobileAsrEvidencePacketError:
+        raise
+    except (BoundedReadError, OSError, RuntimeError, TypeError, ValueError):
+        raise MobileAsrEvidencePacketError() from None
+
+
+def _primock_source_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) != len(_PRIMOCK_SOURCE_ROLES):
+        raise MobileAsrEvidencePacketError()
+    rows: list[dict[str, object]] = []
+    for index, (row, role) in enumerate(zip(value, _PRIMOCK_SOURCE_ROLES, strict=True)):
+        maximum = 16 * 1024 * 1024 if index < 2 else 64 * 1024
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"role", "sha256", "size_bytes"}
+            or row.get("role") != role
+            or type(row.get("size_bytes")) is not int
+            or not 0 < int(row["size_bytes"]) <= maximum
+        ):
+            raise MobileAsrEvidencePacketError()
+        rows.append(
+            {
+                "role": role,
+                "sha256": _sha256(row.get("sha256")),
+                "size_bytes": int(row["size_bytes"]),
+            }
+        )
+    if _canonical_sha256(rows) != _PRIMOCK_SOURCE_ROWS_SHA256:
+        raise MobileAsrEvidencePacketError()
+    if rows != _load_locked_primock_source_rows():
+        raise MobileAsrEvidencePacketError()
+    return rows
+
+
+def _primock_preparer_rows(value: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, list) or len(value) != len(_PRIMOCK_PREPARER_ROWS):
+        raise MobileAsrEvidencePacketError()
+    rows: list[dict[str, object]] = []
+    for row, expected in zip(value, _PRIMOCK_PREPARER_ROWS, strict=True):
+        path, size_bytes, sha256 = expected
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "sha256", "size_bytes"}
+            or row.get("path") != path
+            or row.get("size_bytes") != size_bytes
+            or row.get("sha256") != sha256
+        ):
+            raise MobileAsrEvidencePacketError()
+        rows.append(
+            {
+                "path": path,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+            }
+        )
+    if _canonical_sha256(rows) != _PRIMOCK_PREPARER_ROWS_SHA256:
+        raise MobileAsrEvidencePacketError()
+    return tuple(rows)
+
+
+def _primock_source_contract_sha256(
+    *,
+    source_rows: list[dict[str, object]],
+    preparer_rows: tuple[dict[str, object], ...],
+    selection_sha256: str,
+) -> str:
+    return _canonical_sha256(
+        {
+            "accepted_license": _PRIMOCK_LICENSE_ID,
+            "fixture_id": _PRIMOCK_FIXTURE_ID,
+            "lock_recipe_sha256": _PRIMOCK_LOCK_RECIPE_SHA256,
+            "preparer_files": list(preparer_rows),
+            "production_evidence": True,
+            "selection_sha256": selection_sha256,
+            "source_files": source_rows,
+        }
+    )
+
+
+def _parse_locked_primock_receipt(
+    raw: bytes,
+    *,
+    overlap: bool,
+) -> dict[str, object]:
+    value = _strict_json(raw)
+    common_fields = {
+        "accepted_license",
+        "fixture_id",
+        "kind",
+        "lock_recipe_sha256",
+        "preparer_files",
+        "privacy",
+        "production_evidence",
+        "schema_version",
+        "selection_sha256",
+        "source_files",
+        "totals",
+    }
+    expected_fields = (
+        common_fields | {"manifest", "source_contract_sha256"}
+        if overlap
+        else common_fields
+    )
+    expected_selection = (
+        _PRIMOCK_OVERLAP_SELECTION_SHA256
+        if overlap
+        else _PRIMOCK_ISOLATED_SELECTION_SHA256
+    )
+    expected_kind = (
+        _PRIMOCK_OVERLAP_RECEIPT_KIND if overlap else _PRIMOCK_ISOLATED_RECEIPT_KIND
+    )
+    expected_totals = {"cases": 3, "pcm_files": 9} if overlap else {"cases": 3}
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or _canonical_json(value, newline=True) != raw
+        or value.get("schema_version") != 1
+        or value.get("kind") != expected_kind
+        or value.get("accepted_license") != _PRIMOCK_LICENSE_ID
+        or value.get("fixture_id") != _PRIMOCK_FIXTURE_ID
+        or value.get("lock_recipe_sha256") != _PRIMOCK_LOCK_RECIPE_SHA256
+        or value.get("production_evidence") is not True
+        or value.get("privacy") != _PRIMOCK_RECEIPT_PRIVACY
+        or value.get("selection_sha256") != expected_selection
+        or value.get("totals") != expected_totals
+    ):
+        raise MobileAsrEvidencePacketError()
+    source_rows = _primock_source_rows(value.get("source_files"))
+    preparer_rows = _primock_preparer_rows(value.get("preparer_files"))
+    source_contract = _primock_source_contract_sha256(
+        source_rows=source_rows,
+        preparer_rows=preparer_rows,
+        selection_sha256=expected_selection,
+    )
+    expected_source_contract = (
+        _PRIMOCK_OVERLAP_SOURCE_CONTRACT_SHA256
+        if overlap
+        else _PRIMOCK_ISOLATED_SOURCE_CONTRACT_SHA256
+    )
+    if source_contract != expected_source_contract:
+        raise MobileAsrEvidencePacketError()
+    if overlap:
+        manifest = value.get("manifest")
+        if (
+            value.get("source_contract_sha256") != expected_source_contract
+            or not isinstance(manifest, dict)
+            or set(manifest) != {"bytes", "file", "sha256"}
+            or manifest.get("file") != _PRIMOCK_OVERLAP_MANIFEST
+            or type(manifest.get("bytes")) is not int
+            or int(manifest.get("bytes", 0)) <= 0
+        ):
+            raise MobileAsrEvidencePacketError()
+        _sha256(manifest.get("sha256"))
+    value["source_files"] = source_rows
+    value["preparer_files"] = list(preparer_rows)
+    return value
+
+
+def _primock_int(value: object, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise MobileAsrEvidencePacketError()
+    return value
+
+
+def _primock_overlap_artifact(value: object) -> dict[str, object]:
+    expected = {
+        "activity_end_sample",
+        "activity_start_sample",
+        "bytes",
+        "file",
+        "interval_index",
+        "reference",
+        "reference_sha256",
+        "sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise MobileAsrEvidencePacketError()
+    _safe_leaf(value.get("file"))
+    _sha256(value.get("sha256"))
+    _primock_int(value.get("bytes"), minimum=1)
+    _primock_int(value.get("activity_start_sample"))
+    _primock_int(value.get("activity_end_sample"), minimum=1)
+    _primock_int(value.get("interval_index"), minimum=1)
+    reference = value.get("reference")
+    if (
+        not isinstance(reference, str)
+        or not reference
+        or len(reference) > 4096
+        or hashlib.sha256(reference.encode("utf-8")).hexdigest()
+        != _sha256(value.get("reference_sha256"))
+    ):
+        raise MobileAsrEvidencePacketError()
+    return value
+
+
+def _require_committed_component_spec(
+    spec: ComponentSpec,
+    *,
+    component_id: str,
+) -> None:
+    """Keep historical compatibility subordinate to the exact v2 lock."""
+
+    selected = load_packet_lock()
+    matches = tuple(
+        item for item in selected.components if item.component_id == component_id
+    )
+    if type(spec) is not ComponentSpec or matches != (spec,):
+        raise MobileAsrEvidencePacketError()
+
+
 def _validate_primock_isolated(
     root: Path,
     spec: ComponentSpec,
 ) -> tuple[_Artifact, ...]:
     try:
-        from tools import prepare_primock57_conversation_fixture as primock57
-
-        bundle = primock57.load_primock57_isolated_bundle(root)
-        primock57.verify_primock57_isolated_bundle(bundle)
-        if bundle.production_evidence is not True:
+        _require_committed_component_spec(spec, component_id="primock-isolated")
+        receipt = _locked_file(
+            root,
+            spec.receipt_file,
+            spec.receipt_sha256,
+            _MAX_RECEIPT_BYTES,
+        )
+        manifest = _locked_file(
+            root,
+            spec.manifest_file,
+            spec.manifest_sha256,
+            _MAX_MANIFEST_BYTES,
+        )
+        receipt_value = _parse_locked_primock_receipt(
+            receipt.payload,
+            overlap=False,
+        )
+        corpus = load_corpus(root / spec.manifest_file)
+        verify_corpus_snapshot(corpus)
+        source_rows = receipt_value["source_files"]
+        if (
+            manifest.sha256 != corpus.digest
+            or corpus.schema_version != 2
+            or len(corpus.cases) != spec.logical_cases
+            or corpus.purpose != _PRIMOCK_ISOLATED_PURPOSE
+            or corpus.provenance is None
+            or corpus.provenance.kind != "public-voice-v1"
+            or corpus.provenance.suite != _PRIMOCK_FIXTURE_ID
+            or corpus.provenance.manifest_sha256 != _PRIMOCK_LOCK_RECIPE_SHA256
+            or corpus.provenance.metadata_sha256 != _canonical_sha256(source_rows[2:4])
+            or corpus.provenance.source_set_sha256 != receipt.sha256
+        ):
             raise MobileAsrEvidencePacketError()
-        return _corpus_artifacts(root, spec, bundle.corpus)
+        for index, case in enumerate(corpus.cases):
+            if (
+                case.case_id != f"primock57-isolated-{index:02d}"
+                or case.source_path.name != f"{case.case_id}.f32le"
+                or case.assertion != "transcript"
+                or case.commands
+                or case.forbidden_commands
+                or len(case.tags) != 3
+                or case.tags[:2] != ("primock57", "isolated")
+                or case.tags[2] not in {"role-a", "role-b"}
+            ):
+                raise MobileAsrEvidencePacketError()
+        return _corpus_artifacts(root, spec, corpus)
     except MobileAsrEvidencePacketError:
         raise
     except Exception:
@@ -726,20 +1175,9 @@ def _validate_primock_overlap(
     spec: ComponentSpec,
 ) -> tuple[_Artifact, ...]:
     try:
-        from tools import prepare_primock57_conversation_fixture as primock57
+        _require_committed_component_spec(spec, component_id="primock-overlap")
+        import numpy as np
 
-        bundle = primock57.load_primock57_overlap_bundle(root)
-        current = primock57.load_primock57_overlap_bundle(root)
-        if (
-            current != bundle
-            or bundle.production_evidence is not True
-            or bundle.path.parent != root
-            or bundle.path.name != spec.manifest_file
-            or bundle.digest != spec.manifest_sha256
-            or bundle.receipt_sha256 != spec.receipt_sha256
-            or len(bundle.cases) != spec.logical_cases
-        ):
-            raise MobileAsrEvidencePacketError()
         manifest = _locked_file(
             root,
             spec.manifest_file,
@@ -752,15 +1190,218 @@ def _validate_primock_overlap(
             spec.receipt_sha256,
             _MAX_RECEIPT_BYTES,
         )
+        receipt_value = _parse_locked_primock_receipt(
+            receipt.payload,
+            overlap=True,
+        )
+        receipt_manifest = receipt_value["manifest"]
+        if (
+            not isinstance(receipt_manifest, dict)
+            or receipt_manifest["file"] != spec.manifest_file
+            or receipt_manifest["bytes"] != len(manifest.payload)
+            or receipt_manifest["sha256"] != manifest.sha256
+        ):
+            raise MobileAsrEvidencePacketError()
+        manifest_value = _strict_json(manifest.payload)
+        if not isinstance(manifest_value, dict) or set(manifest_value) != {
+            "cases",
+            "evidence_scope",
+            "fixture_id",
+            "kind",
+            "lock_recipe_sha256",
+            "production_evidence",
+            "sample_format",
+            "schema_version",
+            "source_contract_sha256",
+        }:
+            raise MobileAsrEvidencePacketError()
+        cases = manifest_value.get("cases")
+        if (
+            _canonical_json(manifest_value, newline=True) != manifest.payload
+            or manifest_value.get("schema_version") != 1
+            or manifest_value.get("kind") != _PRIMOCK_OVERLAP_KIND
+            or manifest_value.get("fixture_id") != _PRIMOCK_FIXTURE_ID
+            or manifest_value.get("production_evidence") is not True
+            or manifest_value.get("source_contract_sha256")
+            != receipt_value["source_contract_sha256"]
+            or manifest_value.get("lock_recipe_sha256") != _PRIMOCK_LOCK_RECIPE_SHA256
+            or manifest_value.get("sample_format")
+            != {
+                "channels": 1,
+                "encoding": "f32le",
+                "sample_conversion": "pcm-s16le-to-f32le-divide-32768-v1",
+                "sample_rate_hz": 16_000,
+            }
+            or manifest_value.get("evidence_scope")
+            != {
+                "diagnostic_only": True,
+                "natural_conversation_alignment": True,
+                "ordinary_wer": False,
+                "original_device_mix": False,
+                "overlap_metric": "not-implemented",
+                "promotion_authority": False,
+                "qualification_authority": False,
+            }
+            or not isinstance(cases, list)
+            or len(cases) != spec.logical_cases
+        ):
+            raise MobileAsrEvidencePacketError()
         pcm = _load_declared_overlap_pcm(
             root,
-            bundle.cases,
+            cases,
             expected_inputs=spec.pcm_inputs,
             expected_bytes=spec.pcm_bytes,
             sidecars=frozenset({spec.manifest_file, spec.receipt_file}),
         )
-        if len(pcm) != spec.pcm_inputs or any(
-            not item.payload or len(item.payload) % 4 for item in pcm
+        by_name = {item.name: item for item in pcm}
+        observed_artifact_pins: dict[str, tuple[int, str]] = {}
+        selection_rows: list[dict[str, object]] = []
+        previous_source_end = -1
+        for index, case in enumerate(cases):
+            if not isinstance(case, dict) or set(case) != {
+                "case_id",
+                "envelope",
+                "mix",
+                "overlap",
+                "role_a",
+                "role_b",
+            }:
+                raise MobileAsrEvidencePacketError()
+            case_id = f"primock57-overlap-{index:02d}"
+            envelope = case.get("envelope")
+            overlap = case.get("overlap")
+            mix = case.get("mix")
+            if (
+                case.get("case_id") != case_id
+                or not isinstance(envelope, dict)
+                or set(envelope)
+                != {"samples", "source_end_sample", "source_start_sample"}
+                or not isinstance(overlap, dict)
+                or set(overlap)
+                != {"relative_end_sample", "relative_start_sample", "samples"}
+                or not isinstance(mix, dict)
+                or set(mix) != {"arithmetic", "bytes", "file", "sha256"}
+            ):
+                raise MobileAsrEvidencePacketError()
+            samples = _primock_int(envelope.get("samples"), minimum=1)
+            source_start = _primock_int(envelope.get("source_start_sample"))
+            source_end = _primock_int(envelope.get("source_end_sample"), minimum=1)
+            overlap_start = _primock_int(overlap.get("relative_start_sample"))
+            overlap_end = _primock_int(overlap.get("relative_end_sample"), minimum=1)
+            overlap_samples = _primock_int(overlap.get("samples"), minimum=1)
+            mix_name = _safe_leaf(mix.get("file"))
+            mix_sha256 = _sha256(mix.get("sha256"))
+            if (
+                source_end - source_start != samples
+                or source_start < previous_source_end
+                or overlap_end - overlap_start != overlap_samples
+                or not 0 <= overlap_start < overlap_end <= samples
+                or mix.get("arithmetic") != "float32-add-then-multiply-float32-0.5-v1"
+                or _primock_int(mix.get("bytes"), minimum=1) != samples * 4
+                or mix_name != f"{case_id}-mix.f32le"
+            ):
+                raise MobileAsrEvidencePacketError()
+            previous_source_end = source_end
+            role_a = _primock_overlap_artifact(case.get("role_a"))
+            role_b = _primock_overlap_artifact(case.get("role_b"))
+            arrays: dict[str, np.ndarray] = {}
+            for key, row, suffix in (
+                ("role_a", role_a, "role-a"),
+                ("role_b", role_b, "role-b"),
+            ):
+                name = _safe_leaf(row["file"])
+                artifact = by_name.get(name)
+                start = _primock_int(row["activity_start_sample"])
+                end = _primock_int(row["activity_end_sample"], minimum=1)
+                if (
+                    name != f"{case_id}-{suffix}.f32le"
+                    or artifact is None
+                    or len(artifact.payload) != samples * 4
+                    or row["bytes"] != samples * 4
+                    or artifact.sha256 != row["sha256"]
+                    or not 0 <= start < end <= samples
+                ):
+                    raise MobileAsrEvidencePacketError()
+                array = np.frombuffer(artifact.payload, dtype="<f4")
+                if (
+                    array.size != samples
+                    or not np.isfinite(array).all()
+                    or np.any(array[:start] != 0)
+                    or np.any(array[end:] != 0)
+                ):
+                    raise MobileAsrEvidencePacketError()
+                arrays[key] = array
+                observed_artifact_pins[name] = (samples, artifact.sha256)
+            if (
+                max(
+                    _primock_int(role_a["activity_start_sample"]),
+                    _primock_int(role_b["activity_start_sample"]),
+                )
+                != overlap_start
+                or min(
+                    _primock_int(role_a["activity_end_sample"], minimum=1),
+                    _primock_int(role_b["activity_end_sample"], minimum=1),
+                )
+                != overlap_end
+            ):
+                raise MobileAsrEvidencePacketError()
+            mix_artifact = by_name.get(mix_name)
+            recomputed = np.multiply(
+                np.add(arrays["role_a"], arrays["role_b"], dtype=np.float32),
+                np.float32(0.5),
+                dtype=np.float32,
+            )
+            if (
+                mix_artifact is None
+                or len(mix_artifact.payload) != samples * 4
+                or mix_artifact.sha256 != mix_sha256
+                or mix_artifact.payload != np.asarray(recomputed, dtype="<f4").tobytes()
+            ):
+                raise MobileAsrEvidencePacketError()
+            observed_artifact_pins[mix_name] = (samples, mix_artifact.sha256)
+            role_a_start = source_start + _primock_int(role_a["activity_start_sample"])
+            role_a_end = source_start + _primock_int(
+                role_a["activity_end_sample"], minimum=1
+            )
+            role_b_start = source_start + _primock_int(role_b["activity_start_sample"])
+            role_b_end = source_start + _primock_int(
+                role_b["activity_end_sample"], minimum=1
+            )
+            selection_rows.append(
+                {
+                    "case_id": case_id,
+                    "overlap_end_sample": source_start + overlap_end,
+                    "overlap_relative_end_sample": overlap_end,
+                    "overlap_relative_start_sample": overlap_start,
+                    "overlap_samples": overlap_samples,
+                    "overlap_start_sample": source_start + overlap_start,
+                    "role_a": {
+                        "end_sample": role_a_end,
+                        "interval_index": _primock_int(
+                            role_a["interval_index"], minimum=1
+                        ),
+                        "reference_sha256": _sha256(role_a["reference_sha256"]),
+                        "role": "role-a",
+                        "start_sample": role_a_start,
+                    },
+                    "role_b": {
+                        "end_sample": role_b_end,
+                        "interval_index": _primock_int(
+                            role_b["interval_index"], minimum=1
+                        ),
+                        "reference_sha256": _sha256(role_b["reference_sha256"]),
+                        "role": "role-b",
+                        "start_sample": role_b_start,
+                    },
+                    "source_end_sample": source_end,
+                    "source_start_sample": source_start,
+                }
+            )
+        selection_sha256 = hashlib.sha256(_canonical_json(selection_rows)).hexdigest()
+        if (
+            selection_sha256 != receipt_value["selection_sha256"]
+            or set(by_name) != set(observed_artifact_pins)
+            or len(pcm) != spec.pcm_inputs
         ):
             raise MobileAsrEvidencePacketError()
         return (manifest, receipt, *pcm)

@@ -14,28 +14,35 @@ from typing import Mapping
 # Nemotron, and Zipformer workers. Version 3 is opt-in for the NeMo reference's
 # probability-bearing native endpoint. Version 4 carries parakeet.cpp's typed,
 # timestamped EOU/EOB event instead; it must not invent an endpoint probability.
+# Version 5 records every reset-committed mobile Zipformer endpoint while
+# retaining one terminal for the complete source. It never promotes an
+# unterminated partial to final text.
 PROTOCOL_VERSION = 2
 NATIVE_ENDPOINT_PROTOCOL_VERSION = 3
 PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION = 4
+MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION = 5
 SUPPORTED_PROTOCOL_VERSIONS = frozenset(
     {
         PROTOCOL_VERSION,
         NATIVE_ENDPOINT_PROTOCOL_VERSION,
         PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+        MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
     }
 )
 MAX_LINE_BYTES = 64 * 1024
 MAX_HYPOTHESIS_CHARS = 4096
 MAX_PARTIALS_PER_CASE = 256
 MAX_PARAKEET_CPP_OBSERVED_EVENTS = 64
+MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS = 64
 PARAKEET_CPP_NATIVE_CHUNK_SAMPLES = 1_280
+MOBILE_ZIPFORMER_NATIVE_CHUNK_SAMPLES = 1_600
 MAX_PCM_BYTES = 8 * 1024 * 1024
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
 # Protocol v2 keeps its original one-second tail and total-stream bounds.
-# Native-endpoint protocol v3 may offer up to three seconds so the model can
-# emit its own EOU/EOB marker without weakening any legacy worker contract.
+# Native-endpoint protocols v3-v5 may offer up to three seconds so the model
+# can emit its own endpoint without weakening any legacy worker contract.
 MAX_TAIL_PADDING_SAMPLES = 16_000
 MAX_NATIVE_TAIL_PADDING_SAMPLES = 48_000
 MAX_MODEL_PADDING_SAMPLES = 32_000
@@ -80,6 +87,12 @@ _PARAKEET_CPP_OBSERVED_EVENT_FIELDS = {
     "encoder_time_seconds",
 }
 _PARAKEET_CPP_OBSERVED_EVENT_ORIGINS = {"feed", "finalize"}
+_MOBILE_ZIPFORMER_ENDPOINT_REASONS = {"endpoint", "tail_exhausted"}
+_MOBILE_ZIPFORMER_OBSERVATION_FIELDS = {
+    "text",
+    "observed_sample",
+    "source_complete",
+}
 
 
 class ProtocolError(RuntimeError):
@@ -279,6 +292,47 @@ class ParakeetCppFinalEvent:
 
 
 @dataclass(frozen=True)
+class MobileZipformerEndpointObservation:
+    """One native endpoint whose stream reset completed successfully."""
+
+    text: str = field(repr=False)
+    observed_sample: int
+    source_complete: bool
+
+
+@dataclass(frozen=True)
+class MobileZipformerFinalEvent:
+    """One source-complete terminal retaining every native endpoint epoch."""
+
+    request_id: str
+    seq: int
+    text: str = field(repr=False)
+    samples_seen: int
+    elapsed_ms: float
+    finalization_ms: float
+    compute_ms: float
+    audio_seconds: float
+    chunks: int
+    deadline_misses: int
+    max_backlog_ms: float
+    resources: ResourceUsage
+    model_padding_samples: int
+    source_samples: int
+    source_samples_consumed: int
+    declared_tail_samples: int
+    tail_samples_consumed: int
+    endpoint_observations: tuple[MobileZipformerEndpointObservation, ...] = field(
+        repr=False
+    )
+    endpoint_reason: str
+    native_endpoint: bool
+    endpoint_sample: int | None
+    endpoint_latency_ms: float | None
+    authoritative: bool
+    protocol_version: int = MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
+
+
+@dataclass(frozen=True)
 class ErrorEvent:
     request_id: str
     code: str
@@ -303,6 +357,7 @@ Response = (
     | FinalEvent
     | NativeFinalEvent
     | ParakeetCppFinalEvent
+    | MobileZipformerFinalEvent
     | ErrorEvent
     | ShutdownEvent
     | ByeEvent
@@ -312,7 +367,12 @@ Response = (
 @dataclass(frozen=True)
 class CaseTrace:
     partials: tuple[PartialEvent, ...] = field(repr=False)
-    final: FinalEvent | NativeFinalEvent | ParakeetCppFinalEvent = field(repr=False)
+    final: (
+        FinalEvent
+        | NativeFinalEvent
+        | ParakeetCppFinalEvent
+        | MobileZipformerFinalEvent
+    ) = field(repr=False)
 
 
 def _bad() -> object:
@@ -544,6 +604,56 @@ def _parakeet_cpp_observed_events(
     return tuple(events)
 
 
+def _mobile_zipformer_endpoint_observations(
+    value: object,
+    *,
+    source_samples: int,
+    samples_seen: int,
+) -> tuple[MobileZipformerEndpointObservation, ...]:
+    if (
+        not isinstance(value, list)
+        or len(value) > MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS
+    ):
+        raise ProtocolError()
+    observations: list[MobileZipformerEndpointObservation] = []
+    last_observed_sample = 0
+    source_complete_seen = False
+    total_text_chars = 0
+    for raw_observation in value:
+        if (
+            not isinstance(raw_observation, dict)
+            or set(raw_observation) != _MOBILE_ZIPFORMER_OBSERVATION_FIELDS
+        ):
+            raise ProtocolError()
+        text = _text(raw_observation.get("text"))
+        observed_sample = _integer(
+            raw_observation.get("observed_sample"),
+            minimum=1,
+            maximum=samples_seen,
+        )
+        source_complete = raw_observation.get("source_complete")
+        if (
+            type(source_complete) is not bool
+            or observed_sample <= last_observed_sample
+            or source_complete != (observed_sample >= source_samples)
+            or source_complete_seen
+        ):
+            raise ProtocolError()
+        total_text_chars += len(text)
+        if total_text_chars > MAX_HYPOTHESIS_CHARS:
+            raise ProtocolError()
+        observations.append(
+            MobileZipformerEndpointObservation(
+                text=text,
+                observed_sample=observed_sample,
+                source_complete=source_complete,
+            )
+        )
+        last_observed_sample = observed_sample
+        source_complete_seen = source_complete
+    return tuple(observations)
+
+
 def _pcm(value: object) -> PcmInput:
     if not isinstance(value, dict) or set(value) != _PCM_FIELDS:
         raise ProtocolError()
@@ -599,6 +709,7 @@ def _stream(value: object, *, protocol_version: int) -> StreamConfig:
                 in {
                     NATIVE_ENDPOINT_PROTOCOL_VERSION,
                     PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+                    MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
                 }
                 else MAX_TAIL_PADDING_SAMPLES
             ),
@@ -640,6 +751,7 @@ def parse_response(raw: bytes) -> Response:
         in {
             NATIVE_ENDPOINT_PROTOCOL_VERSION,
             PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+            MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
         }
         else MAX_LEGACY_STREAM_SAMPLES
     )
@@ -1138,6 +1250,172 @@ def parse_response(raw: bytes) -> Response:
             endpoint_sample=endpoint_sample,
             endpoint_latency_ms=endpoint_latency_ms,
             authoritative=bool(authoritative),
+            protocol_version=protocol_version,
+        )
+    if event_type == "mobile_zipformer_final":
+        if protocol_version != MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION:
+            raise ProtocolError()
+        expected_fields = {
+            "v",
+            "id",
+            "type",
+            "seq",
+            "text",
+            "samples_seen",
+            "elapsed_ms",
+            "finalization_ms",
+            "compute_ms",
+            "audio_seconds",
+            "chunks",
+            "deadline_misses",
+            "max_backlog_ms",
+            "model_padding_samples",
+            "resources",
+            "source_samples",
+            "source_samples_consumed",
+            "declared_tail_samples",
+            "tail_samples_consumed",
+            "endpoint_observations",
+            "endpoint_reason",
+            "native_endpoint",
+            "endpoint_sample",
+            "endpoint_latency_ms",
+            "authoritative",
+        }
+        if set(value) != expected_fields:
+            raise ProtocolError()
+        endpoint_reason = value.get("endpoint_reason")
+        native_endpoint = value.get("native_endpoint")
+        authoritative = value.get("authoritative")
+        if (
+            endpoint_reason not in _MOBILE_ZIPFORMER_ENDPOINT_REASONS
+            or type(native_endpoint) is not bool
+            or type(authoritative) is not bool
+        ):
+            raise ProtocolError()
+        samples_seen = _integer(
+            value.get("samples_seen"),
+            minimum=1,
+            maximum=MAX_NATIVE_STREAM_SAMPLES,
+        )
+        source_samples = _integer(
+            value.get("source_samples"),
+            minimum=1,
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        source_samples_consumed = _integer(
+            value.get("source_samples_consumed"),
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        declared_tail_samples = _integer(
+            value.get("declared_tail_samples"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        tail_samples_consumed = _integer(
+            value.get("tail_samples_consumed"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        model_padding_samples = _integer(
+            value.get("model_padding_samples"),
+            maximum=MAX_MODEL_PADDING_SAMPLES,
+        )
+        endpoint_sample = _optional_integer(
+            value.get("endpoint_sample"),
+            minimum=1,
+            maximum=MAX_NATIVE_STREAM_SAMPLES,
+        )
+        endpoint_latency_ms = _optional_number(
+            value.get("endpoint_latency_ms"),
+            maximum=MAX_CASE_EVENT_MS,
+        )
+        observations = _mobile_zipformer_endpoint_observations(
+            value.get("endpoint_observations"),
+            source_samples=source_samples,
+            samples_seen=samples_seen,
+        )
+        expected_chunks = (
+            source_samples + MOBILE_ZIPFORMER_NATIVE_CHUNK_SAMPLES - 1
+        ) // MOBILE_ZIPFORMER_NATIVE_CHUNK_SAMPLES + (
+            tail_samples_consumed + MOBILE_ZIPFORMER_NATIVE_CHUNK_SAMPLES - 1
+        ) // MOBILE_ZIPFORMER_NATIVE_CHUNK_SAMPLES
+        text = _text(value.get("text"))
+        endpoint_text = " ".join(
+            observation.text for observation in observations if observation.text
+        )
+        if (
+            source_samples_consumed != source_samples
+            or samples_seen != source_samples + tail_samples_consumed
+            or tail_samples_consumed > declared_tail_samples
+            or model_padding_samples != 0
+            or _integer(
+                value.get("chunks"),
+                minimum=1,
+                maximum=MAX_NATIVE_STREAM_SAMPLES,
+            )
+            != expected_chunks
+            or text != endpoint_text
+        ):
+            raise ProtocolError()
+        terminal_observation = observations[-1] if observations else None
+        if native_endpoint:
+            expected_latency = tail_samples_consumed / 16.0
+            if (
+                endpoint_reason != "endpoint"
+                or terminal_observation is None
+                or not terminal_observation.source_complete
+                or endpoint_sample != terminal_observation.observed_sample
+                or endpoint_sample != samples_seen
+                or not authoritative
+                or endpoint_latency_ms is None
+                or not math.isclose(
+                    endpoint_latency_ms,
+                    expected_latency,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                )
+            ):
+                raise ProtocolError()
+        elif (
+            endpoint_reason != "tail_exhausted"
+            or endpoint_sample is not None
+            or endpoint_latency_ms is not None
+            or authoritative
+            or tail_samples_consumed != declared_tail_samples
+            or any(observation.source_complete for observation in observations)
+        ):
+            raise ProtocolError()
+        return MobileZipformerFinalEvent(
+            request_id=_safe_id(value.get("id")),
+            seq=_integer(value.get("seq"), maximum=MAX_PARTIALS_PER_CASE),
+            text=text,
+            samples_seen=samples_seen,
+            elapsed_ms=_number(value.get("elapsed_ms"), maximum=MAX_CASE_EVENT_MS),
+            finalization_ms=_number(
+                value.get("finalization_ms"), maximum=MAX_CASE_EVENT_MS
+            ),
+            compute_ms=_number(value.get("compute_ms"), maximum=MAX_CASE_EVENT_MS),
+            audio_seconds=_number(
+                value.get("audio_seconds"), maximum=MAX_AUDIO_SECONDS
+            ),
+            chunks=expected_chunks,
+            deadline_misses=_integer(
+                value.get("deadline_misses"), maximum=MAX_NATIVE_STREAM_SAMPLES
+            ),
+            max_backlog_ms=_number(
+                value.get("max_backlog_ms"), maximum=MAX_CASE_EVENT_MS
+            ),
+            resources=_resources(value.get("resources")),
+            model_padding_samples=model_padding_samples,
+            source_samples=source_samples,
+            source_samples_consumed=source_samples_consumed,
+            declared_tail_samples=declared_tail_samples,
+            tail_samples_consumed=tail_samples_consumed,
+            endpoint_observations=observations,
+            endpoint_reason=str(endpoint_reason),
+            native_endpoint=native_endpoint,
+            endpoint_sample=endpoint_sample,
+            endpoint_latency_ms=endpoint_latency_ms,
+            authoritative=authoritative,
             protocol_version=protocol_version,
         )
     if event_type == "error":

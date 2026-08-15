@@ -401,11 +401,25 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    endpoint/latency measurement, quality verdict, held-out/training-disjoint,
    qualification, promotion, default, or live authority follows. The shipped
    mobile Zipformer is English-only and its default is unchanged; retained
-   desktop/CUDA references are not mobile-model evidence. ADR-0207 separately
-   owns the exact hybrid provisioner, endpoint-faithful protocol-v5 runner, and
-   five-domain evaluator. Romanian remains blocked on its own model/export,
-   language label, tokenizer/Unicode normalization, metric, compatible public
-   strata, owner recordings, and physical-phone CPU/RSS/thermal/live decision.
+   desktop/CUDA references are not mobile-model evidence.
+
+   ADR-0207 links the exact 74,207,237-byte English mobile-hybrid tuple,
+   schema-10/protocol-5 native endpoint worker, and packet-v2's five separate
+   domains to one strictly verified aggregate report `264f4396…e796`. The
+   config-faithful desktop CPU proxy completed all 129 leaves with 198
+   reset-committed endpoints. Its exact component metrics and authority limits
+   are recorded only in ADR-0207; no pooled metric exists.
+
+   That report authorizes exact desktop CPU model identity/execution, the
+   production packet, and five unpooled result cells only. It does not authorize
+   a quality/default/promotion/qualification decision, held-out or training-
+   disjoint status, latency/RTF, Flutter/Android/native equivalence, phone CPU/
+   RSS/thermal behavior, microphone/device behavior, or live quality. No
+   network, GPU, CUDA, audio device, phone, or live path ran. Romanian remains
+   blocked on its own model/export, language label, tokenizer/Unicode
+   normalization, metric, compatible public strata, owner recordings, and
+   physical-phone CPU/RSS/thermal/live decision. See
+   [`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
 5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search

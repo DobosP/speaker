@@ -47,6 +47,12 @@ _BOOTSTRAP_SOURCE_FILES = (
 )
 _BOOTSTRAP_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
+# Existing adapters retain the generic 32 MiB cumulative-input authority.  The
+# exact schema-v10 mobile evaluation composes five separately bounded packet
+# components whose locked total is 39,299,500 bytes, so it receives the
+# smallest whole-MiB ceiling above that packet. Per-input limits are unchanged.
+_MOBILE_ZIPFORMER_MAX_CORPUS_BYTES = 38 * 1024 * 1024
+
 
 def _bootstrap_argument(name: str) -> str:
     try:
@@ -427,6 +433,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
     ManifestError,
+    MOBILE_ZIPFORMER_ADAPTER,
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
@@ -435,6 +442,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     KyutaiConfig,
+    MobileZipformerConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
@@ -445,16 +453,20 @@ from tools.streaming_stt.manifest import (  # noqa: E402
 )
 from tools.streaming_stt.protocol import (  # noqa: E402
     MAX_CORPUS_BYTES,
+    MAX_HYPOTHESIS_CHARS,
     MAX_LINE_BYTES,
+    MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS,
     MAX_MODEL_PADDING_SAMPLES,
     MAX_PARAKEET_CPP_OBSERVED_EVENTS,
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     MAX_STREAM_SAMPLES,
+    MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
     PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     ParakeetCppObservedEvent,
+    MobileZipformerEndpointObservation,
     ProtocolError,
     ShutdownRequest,
     TranscribeRequest,
@@ -518,6 +530,8 @@ def _wire_protocol_version(manifest: WorkerManifest) -> int:
         return NATIVE_ENDPOINT_PROTOCOL_VERSION
     if manifest.adapter == PARAKEET_CPP_ADAPTER:
         return PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+        return MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
     return PROTOCOL_VERSION
 
 
@@ -887,6 +901,159 @@ def _parakeet_cpp_final_payload(
     }
 
 
+def _mobile_zipformer_final_payload(
+    request: TranscribeRequest,
+    case,
+    config: MobileZipformerConfig,
+    *,
+    partial_count: int,
+) -> dict[str, object]:
+    """Validate and serialize reset-committed mobile endpoint evidence."""
+
+    integer_fields = {
+        "source_samples": getattr(case, "source_samples", None),
+        "source_samples_consumed": getattr(case, "source_samples_consumed", None),
+        "declared_tail_samples": getattr(case, "declared_tail_samples", None),
+        "tail_samples_consumed": getattr(case, "tail_samples_consumed", None),
+        "chunks_yielded": getattr(case, "chunks_yielded", None),
+        "model_padding_samples": getattr(case, "model_padding_samples", None),
+    }
+    if any(type(value) is not int or value < 0 for value in integer_fields.values()):
+        raise ProtocolError()
+    source_samples = integer_fields["source_samples"]
+    source_consumed = integer_fields["source_samples_consumed"]
+    declared_tail = integer_fields["declared_tail_samples"]
+    tail_consumed = integer_fields["tail_samples_consumed"]
+    chunks = integer_fields["chunks_yielded"]
+    model_padding = integer_fields["model_padding_samples"]
+    assert isinstance(source_samples, int)
+    assert isinstance(source_consumed, int)
+    assert isinstance(declared_tail, int)
+    assert isinstance(tail_consumed, int)
+    assert isinstance(chunks, int)
+    assert isinstance(model_padding, int)
+    observations = getattr(case, "endpoint_observations", None)
+    reason = getattr(case, "endpoint_reason", None)
+    native = getattr(case, "native_endpoint", None)
+    endpoint_sample = getattr(case, "endpoint_sample", None)
+    endpoint_latency = getattr(case, "endpoint_latency_ms", None)
+    authoritative = getattr(case, "authoritative", None)
+    samples_seen = source_consumed + tail_consumed
+    expected_chunks = (
+        source_samples + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples + (
+        tail_consumed + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples
+    if (
+        source_samples != request.pcm.samples
+        or source_consumed != source_samples
+        or declared_tail != request.stream.tail_padding_samples
+        or tail_consumed > declared_tail
+        or chunks != expected_chunks
+        or model_padding != 0
+        or type(observations) is not tuple
+        or len(observations) > MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS
+        or type(native) is not bool
+        or type(authoritative) is not bool
+    ):
+        raise ProtocolError()
+
+    serialized_observations: list[dict[str, object]] = []
+    last_observed_sample = 0
+    source_complete_seen = False
+    total_text_chars = 0
+    for observation in observations:
+        if type(observation) is not MobileZipformerEndpointObservation:
+            raise ProtocolError()
+        if (
+            type(observation.text) is not str
+            or len(observation.text) > MAX_HYPOTHESIS_CHARS
+            or type(observation.observed_sample) is not int
+            or not 0 < observation.observed_sample <= samples_seen
+            or type(observation.source_complete) is not bool
+            or observation.observed_sample <= last_observed_sample
+            or observation.source_complete
+            != (observation.observed_sample >= source_samples)
+            or source_complete_seen
+        ):
+            raise ProtocolError()
+        total_text_chars += len(observation.text)
+        if total_text_chars > MAX_HYPOTHESIS_CHARS:
+            raise ProtocolError()
+        serialized_observations.append(
+            {
+                "text": observation.text,
+                "observed_sample": observation.observed_sample,
+                "source_complete": observation.source_complete,
+            }
+        )
+        last_observed_sample = observation.observed_sample
+        source_complete_seen = observation.source_complete
+
+    endpoint_text = " ".join(
+        observation.text for observation in observations if observation.text
+    )
+    terminal_observation = observations[-1] if observations else None
+    if getattr(case, "final", None) != endpoint_text:
+        raise ProtocolError()
+    if native:
+        expected_latency = tail_consumed / 16.0
+        if (
+            reason != "endpoint"
+            or terminal_observation is None
+            or not terminal_observation.source_complete
+            or endpoint_sample != terminal_observation.observed_sample
+            or endpoint_sample != samples_seen
+            or not authoritative
+            or isinstance(endpoint_latency, bool)
+            or not isinstance(endpoint_latency, (int, float))
+            or not math.isfinite(float(endpoint_latency))
+            or not math.isclose(
+                float(endpoint_latency),
+                expected_latency,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise ProtocolError()
+    elif (
+        reason != "tail_exhausted"
+        or endpoint_sample is not None
+        or endpoint_latency is not None
+        or authoritative
+        or tail_consumed != declared_tail
+        or any(observation.source_complete for observation in observations)
+    ):
+        raise ProtocolError()
+    return {
+        "v": MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
+        "id": request.request_id,
+        "type": "mobile_zipformer_final",
+        "seq": partial_count,
+        "text": endpoint_text,
+        "samples_seen": samples_seen,
+        "elapsed_ms": case.elapsed_ms,
+        "finalization_ms": case.finalization_ms,
+        "compute_ms": case.compute_ms,
+        "audio_seconds": request.pcm.samples / request.pcm.sample_rate,
+        "chunks": chunks,
+        "deadline_misses": case.deadline_misses,
+        "max_backlog_ms": case.max_backlog_ms,
+        "model_padding_samples": model_padding,
+        "resources": _resource_dict(case.resources),
+        "source_samples": source_samples,
+        "source_samples_consumed": source_consumed,
+        "declared_tail_samples": declared_tail,
+        "tail_samples_consumed": tail_consumed,
+        "endpoint_observations": serialized_observations,
+        "endpoint_reason": reason,
+        "native_endpoint": native,
+        "endpoint_sample": endpoint_sample,
+        "endpoint_latency_ms": endpoint_latency,
+        "authoritative": authoritative,
+    }
+
+
 def _load_pcm(request: TranscribeRequest, scratch_root: Path) -> bytes:
     try:
         snapshot = read_regular_bounded(
@@ -974,7 +1141,10 @@ def _verify_runtime_receipt(
         ):
             raise ManifestError()
         return None
-    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+    if manifest.adapter in {
+        MOBILE_ZIPFORMER_ADAPTER,
+        SHERPA_ZIPFORMER_ADAPTER,
+    }:
         return None
     if manifest.adapter not in {
         FASTER_WHISPER_ENDPOINT_ADAPTER,
@@ -1214,10 +1384,20 @@ def _activate_candidate_runtime(
         if receipt is not None:
             raise ManifestError()
         return
-    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+    if manifest.adapter in {
+        MOBILE_ZIPFORMER_ADAPTER,
+        SHERPA_ZIPFORMER_ADAPTER,
+    }:
         module_prefixes = ("numpy", "sherpa_onnx", "_sherpa_onnx")
         if (
             receipt is not None
+            or (
+                manifest.adapter == MOBILE_ZIPFORMER_ADAPTER
+                and (
+                    manifest.schema_version != 10
+                    or type(manifest.adapter_config) is not MobileZipformerConfig
+                )
+            )
             or sys.flags.no_site != 0
             or sys.flags.no_user_site != 1
             or sys.flags.ignore_environment != 1
@@ -1410,6 +1590,7 @@ def _create_adapter(manifest: WorkerManifest):
     model_root = model_roots.pop()
     if manifest.adapter in {
         KYUTAI_ADAPTER,
+        MOBILE_ZIPFORMER_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
     }:
@@ -1504,6 +1685,20 @@ def _create_adapter(manifest: WorkerManifest):
             SherpaZipformerAdapter(model_root, config=manifest.adapter_config),
             SherpaZipformerAdapterError,
         )
+    if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+        if manifest.schema_version != 10 or not isinstance(
+            manifest.adapter_config, MobileZipformerConfig
+        ):
+            raise ManifestError()
+        from tools.streaming_stt.adapters.zipformer import (  # noqa: PLC0415
+            MobileZipformerAdapter,
+            MobileZipformerAdapterError,
+        )
+
+        return (
+            MobileZipformerAdapter(model_root, config=manifest.adapter_config),
+            MobileZipformerAdapterError,
+        )
     if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
         if not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig):
             raise ManifestError()
@@ -1528,6 +1723,44 @@ def _close_adapter(adapter) -> None:
     close = getattr(adapter, "close", None)
     if close is not None:
         close()
+
+
+def _worker_corpus_limit_bytes(manifest: WorkerManifest) -> int:
+    if manifest.schema_version == 10 and manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+        return _MOBILE_ZIPFORMER_MAX_CORPUS_BYTES
+    return MAX_CORPUS_BYTES
+
+
+def _account_unique_pcm(
+    consumed_inputs: set[str],
+    consumed_bytes: int,
+    *,
+    pcm_sha256: str,
+    size_bytes: int,
+    maximum_bytes: int,
+) -> int:
+    """Apply one closed cumulative byte budget without double-counting PCM."""
+
+    if (
+        type(consumed_inputs) is not set
+        or type(consumed_bytes) is not int
+        or consumed_bytes < 0
+        or type(pcm_sha256) is not str
+        or _BOOTSTRAP_SHA256_RE.fullmatch(pcm_sha256) is None
+        or type(size_bytes) is not int
+        or size_bytes <= 0
+        or type(maximum_bytes) is not int
+        or maximum_bytes <= 0
+        or consumed_bytes > maximum_bytes
+    ):
+        raise ProtocolError()
+    if pcm_sha256 in consumed_inputs:
+        return consumed_bytes
+    projected = consumed_bytes + size_bytes
+    if projected > maximum_bytes:
+        raise ProtocolError()
+    consumed_inputs.add(pcm_sha256)
+    return projected
 
 
 def _run(
@@ -1619,6 +1852,7 @@ def _run(
 
     consumed_bytes = 0
     consumed_inputs: set[str] = set()
+    corpus_limit_bytes = _worker_corpus_limit_bytes(manifest)
     adapter_closed = False
     try:
         while True:
@@ -1680,13 +1914,24 @@ def _run(
                         > config.maximum_tail_padding_samples
                     ):
                         raise ProtocolError()
+                if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+                    config = manifest.adapter_config
+                    if (
+                        not isinstance(config, MobileZipformerConfig)
+                        or request.stream.chunk_samples != config.native_chunk_samples
+                        or request.stream.tail_padding_samples
+                        > config.maximum_tail_padding_samples
+                    ):
+                        raise ProtocolError()
 
                 pcm = _load_pcm(request, scratch_root)
-                if request.pcm.sha256 not in consumed_inputs:
-                    consumed_inputs.add(request.pcm.sha256)
-                    consumed_bytes += len(pcm)
-                if consumed_bytes > MAX_CORPUS_BYTES:
-                    raise ProtocolError()
+                consumed_bytes = _account_unique_pcm(
+                    consumed_inputs,
+                    consumed_bytes,
+                    pcm_sha256=request.pcm.sha256,
+                    size_bytes=len(pcm),
+                    maximum_bytes=corpus_limit_bytes,
+                )
 
                 partial_count = 0
 
@@ -1728,6 +1973,19 @@ def _run(
                         raise ProtocolError()
                     _write(
                         _parakeet_cpp_final_payload(
+                            request,
+                            case,
+                            config,
+                            partial_count=partial_count,
+                        )
+                    )
+                    continue
+                if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+                    config = manifest.adapter_config
+                    if not isinstance(config, MobileZipformerConfig):
+                        raise ProtocolError()
+                    _write(
+                        _mobile_zipformer_final_payload(
                             request,
                             case,
                             config,

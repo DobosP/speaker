@@ -12,6 +12,7 @@ from tools.streaming_stt.protocol import (
     MAX_NATIVE_STREAM_SAMPLES,
     MAX_PARAKEET_CPP_OBSERVED_EVENTS,
     MAX_STREAM_CHUNK_SAMPLES,
+    MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
     PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
@@ -61,6 +62,7 @@ def test_transcribe_request_round_trips_the_exact_v2_contract(tmp_path):
         (PROTOCOL_VERSION, 16_000, 16_001),
         (NATIVE_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
         (PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
+        (MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
     ],
 )
 def test_request_tail_bound_is_exact_for_each_protocol_version(
@@ -99,6 +101,11 @@ def test_request_tail_bound_is_exact_for_each_protocol_version(
         ),
         (
             PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
+            MAX_NATIVE_STREAM_SAMPLES,
+            MAX_NATIVE_STREAM_SAMPLES + 1,
+        ),
+        (
+            MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
             MAX_NATIVE_STREAM_SAMPLES,
             MAX_NATIVE_STREAM_SAMPLES + 1,
         ),

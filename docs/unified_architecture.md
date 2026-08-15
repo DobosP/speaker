@@ -1083,12 +1083,24 @@ clean (`0.01s`/`21,248 KiB`), format is `2/2` unchanged (`0.02s`/
 loaded, or decoded. The packet has no endpoint, latency, held-out/training-
 disjoint, qualification, quality, promotion, default, device, or live
 authority. The current mobile Zipformer is English-only and its default is
-unchanged; desktop/CUDA references are not mobile-model evidence. ADR-0207
-separately owns the exact hybrid provisioner, endpoint-faithful protocol-v5
-runner, and five-domain evaluator. Romanian remains blocked on its own model/
-export, language label, tokenizer/Unicode normalization, metrics, compatible
-public strata, owner recordings, and physical-phone CPU/RSS/thermal/live
-decision.
+unchanged; desktop/CUDA references are not mobile-model evidence.
+
+ADR-0207 links the exact 74,207,237-byte English mobile-hybrid tuple,
+schema-10/protocol-5 native endpoint worker, and packet-v2's five independent
+domains to the strictly verified aggregate report `264f4396…e796`. The
+config-faithful desktop CPU proxy completed all 129 leaves and recorded 198
+reset-committed endpoints. The five exact result cells and their interpretation
+limits live in ADR-0207; there is no pooled metric.
+
+The report authorizes exact desktop CPU model identity/execution, the production
+packet, and five unpooled cells only. It grants no quality/default/promotion/
+qualification, held-out/training-disjoint, latency/RTF, Flutter/Android/native,
+phone/device/microphone/thermal, or live authority. No network, GPU, CUDA,
+audio device, phone, or live path ran. Romanian remains blocked on its own
+model/export, language label, tokenizer/Unicode normalization, metrics,
+compatible public strata, owner recordings, and physical-phone CPU/RSS/
+thermal/live decision. See
+[`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
 
 **Remote path:** Two FastAPI endpoints in `remote/token_server.py`:
 
@@ -1564,10 +1576,23 @@ publication, and strict reload at lock/index/receipt `c81a89a7…cc11`/
 `232e4230…835c`/`36eec947…f51f`. Final gates pass 20 focused, 264 adjacent,
 and 6 APM/DTD tests with scoped Ruff/format and independent packet-code audit
 green. No model was loaded or decoded, and mobile-model identity/evaluation-result authority remain
-false with pooled WER absent. ADR-0207 owns the separate exact-mobile-hybrid
-provisioner, endpoint-faithful runner, and five-domain evaluator.
+false with pooled WER absent. ADR-0207 implements the separate exact-mobile-
+hybrid evidence path described in the next entry.
 See [`ADR-0205`](adr/0205-fix-english-mobile-asr-evidence-packet.md) and
 [`ADR-0206`](adr/0206-accept-and-materialize-mobile-asr-evidence-packet-v2.md).
+
+38. **Bind and run the exact mobile-hybrid Zipformer endpoint evidence path
+(2026-08-15).** ADR-0207 records the exact hash-only provision, schema-10/
+protocol-5 endpoint worker, mobile-only 38 MiB unique-PCM lifetime ceiling,
+packet historical-closure compatibility, and one-repeat/129-leaf evaluator.
+The strictly verified aggregate report `264f4396…e796` completed every leaf and
+retains five unpooled cells plus endpoint-integrity counts. It is
+config-faithful desktop CPU proxy evidence only: exact model identity/execution,
+production packet, and the five cells are authoritative; pooled metrics,
+quality/default/promotion/qualification, held-out/training-disjoint, latency/
+RTF, Flutter/Android/native/phone/device/microphone/thermal, and live claims are
+not. No network, GPU, CUDA, audio device, phone, or live path ran. See
+[`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
 
 ---
 

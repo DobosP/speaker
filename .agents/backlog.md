@@ -870,8 +870,25 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         adds zero acoustic/corpus artifacts; `commands.json` cases are unchanged
         (description only), so no ASR-quality or dataset-promotion evidence
         follows. ADR-0205 fixes the bounded English packet contract and
-        ADR-0206 later records its exact private v2 materialization; neither
-        supplies ASR-quality or dataset-promotion authority.
+        ADR-0206 records its exact private v2 materialization; neither supplies
+        ASR-quality or dataset-promotion authority.
+      - [x] Exact mobile-hybrid Zipformer config-faithful desktop CPU evidence
+        DONE (ADR-0207). The hash-only provisioner binds the four-artifact
+        74,207,237-byte tuple; schema 10/protocol 5 preserves reset-committed
+        native endpoints and never calls `input_finished` or promotes a last
+        partial. The worker keeps generic input accounting at 32 MiB and grants
+        only exact schema-10 mobile workers a 38 MiB unique-PCM lifetime ceiling.
+        The fixed evaluator completed all 129 packet-v2 leaves in five unpooled
+        domains. Preserve provision manifest/receipt `d628380b…1641`/
+        `aa053ed6…04b4`, aggregate report `264f4396…e796`, scratch, and all
+        failed attempts. Final integrated headless verification is 444 passed,
+        one environmental skip, and two known warnings; Ruff 13/13 and diff are
+        clean. The report authorizes exact desktop CPU model identity/execution,
+        the production packet, and five unpooled cells only. It supplies no
+        pooled metric, quality/default/promotion/qualification, held-out/
+        training-disjoint, latency/RTF, Flutter/native/phone/device/microphone/
+        thermal, network/GPU, or live authority. NEXT: add a private owner-
+        recorded disjoint holdout and actual Flutter/native phone gates.
       - [ ] Add a platform-native or cross-engine plugin lifecycle fence, or
         prove the exact recorder/player contracts. ADR-0204 excludes overlap
         only among covered shipped paths in the canonical Flutter UI isolate.
@@ -984,11 +1001,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       `2.99s`, `118,636 KiB`); Ruff is clean (`0.01s`, `21,248 KiB`), format is
       `2/2` unchanged (`0.02s`, `19,712 KiB`), and the independent packet-code
       audit is GO. Data restoration/download was exact and bounded; packet
-      assembly/reload was offline and capped. No model import/load/decode, GPU,
-      plugin, device, live, held-out, training-disjoint, qualification,
-      promotion, or default authority follows. NEXT: ADR-0207's hash-only
-      exact-mobile-hybrid provisioner, endpoint-faithful protocol-v5 runner,
-      and five-domain evaluator, then bounded execution.
+      assembly/reload was offline and capped. ADR-0207 adds the exact
+      74,207,237-byte hash-only mobile-hybrid provisioner, schema-10/protocol-5
+      endpoint worker, packet historical-closure compatibility, mobile-only
+      38 MiB unique-PCM lifetime ceiling, and fixed five-domain evaluator. The
+      config-faithful desktop CPU proxy completed 129/129 evaluations and
+      published the strictly verified aggregate report `264f4396…e796`.
+      Final integrated headless verification is 444 passed plus one
+      environmental skip and two known warnings; Ruff 13/13 and diff are clean.
+      Preserve every private provision/report/scratch and failed attempt. The
+      five result cells remain unpooled and non-promotional, with no quality,
+      default, qualification, held-out/training-disjoint, latency/RTF,
+      Flutter/native/phone/device/microphone/thermal, network/GPU, or live
+      authority. NEXT: private owner-recorded disjoint holdout plus actual
+      Flutter/native phone resource and live validation.
 - [x] **NOTSOFAR-1 natural-overlap private bundle — IMPLEMENTED AND VERIFIED
       2026-08-13 (ADR-0194).** The no-download preparer and strict
       retained-bundle loader bind the exact retained CC-BY-4.0 MTG_32006

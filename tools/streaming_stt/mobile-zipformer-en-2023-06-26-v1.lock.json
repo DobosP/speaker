@@ -1,0 +1,69 @@
+{
+  "artifacts": [
+    {
+      "filename": "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+      "name": "model-encoder",
+      "precision": "int8",
+      "sha256": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+      "size_bytes": 71083163
+    },
+    {
+      "filename": "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+      "name": "model-decoder",
+      "precision": "fp32",
+      "sha256": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+      "size_bytes": 2092621
+    },
+    {
+      "filename": "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+      "name": "model-joiner",
+      "precision": "fp32",
+      "sha256": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+      "size_bytes": 1026405
+    },
+    {
+      "filename": "tokens.txt",
+      "name": "model-tokens",
+      "precision": "text",
+      "sha256": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+      "size_bytes": 5048
+    }
+  ],
+  "kind": "mobile-zipformer-source-lock-v1",
+  "mobile_config": {
+    "core_package_version": "1.13.3",
+    "debug": true,
+    "decoding_method": "greedy_search",
+    "enable_endpoint_detection": true,
+    "feature_dim": 80,
+    "language": "en",
+    "max_active_paths": 4,
+    "maximum_tail_padding_samples": 48000,
+    "model_type": "zipformer2",
+    "native_chunk_samples": 1600,
+    "num_threads": 1,
+    "numpy_version": "2.4.6",
+    "package_version": "1.13.3",
+    "provider": "cpu",
+    "rule1_min_trailing_silence": 2.4,
+    "rule2_min_trailing_silence": 0.8,
+    "rule3_min_utterance_length": 20.0,
+    "sample_rate": 16000,
+    "source_repo_id": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
+    "source_revision": "672fbf1b30579d6585301139bb363f42a0ad4a24",
+    "variant": "epoch-99-avg-1-chunk-16-left-128-mobile-hybrid"
+  },
+  "model_id": "sherpa-onnx-streaming-zipformer-en-2023-06-26-mobile-hybrid-v1",
+  "recipe_sha256": "736d516ceada4bc8864ca0b5de9f03167a415cb93ad66252ab99351028a15c49",
+  "runtime_distributions": {
+    "numpy": "2.4.6",
+    "sherpa-onnx": "1.13.3",
+    "sherpa-onnx-core": "1.13.3"
+  },
+  "schema_version": 1,
+  "source": {
+    "repo_id": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
+    "revision": "672fbf1b30579d6585301139bb363f42a0ad4a24"
+  },
+  "total_size_bytes": 74207237
+}

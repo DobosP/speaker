@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import inspect
 import json
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import prepare_mobile_asr_evidence_packet as packet
+from tools import prepare_primock57_conversation_fixture as primock57
 
 
 def _private_file(path: Path, raw: bytes) -> None:
@@ -134,12 +136,17 @@ def test_lock_rejects_alternate_path_and_recomputed_raw_tamper(tmp_path: Path) -
 
 
 def test_public_production_api_has_no_lock_or_digest_override() -> None:
-    assert "lock" not in inspect.signature(packet.preflight_packet).parameters
-    assert "lock" not in inspect.signature(packet.publish_packet).parameters
-    assert (
-        "lock"
-        not in inspect.signature(packet.load_mobile_asr_evidence_packet).parameters
-    )
+    for function in (
+        packet.preflight_packet,
+        packet.publish_packet,
+        packet.load_mobile_asr_evidence_packet,
+    ):
+        parameters = inspect.signature(function).parameters
+        assert all(
+            forbidden not in name
+            for name in parameters
+            for forbidden in ("lock", "receipt", "digest", "closure")
+        )
     with pytest.raises(packet.MobileAsrEvidencePacketError):
         packet._parse_cli(
             [
@@ -366,6 +373,181 @@ def _synthetic_overlap_bundle(root: Path) -> tuple[packet.ComponentSpec, object]
         receipt_sha256=spec.receipt_sha256,
     )
     return spec, bundle
+
+
+def _locked_primock_receipt(*, overlap: bool) -> dict[str, object]:
+    source_rows = packet._load_locked_primock_source_rows()
+    preparer_rows = [
+        {"path": path, "sha256": sha256, "size_bytes": size_bytes}
+        for path, size_bytes, sha256 in packet._PRIMOCK_PREPARER_ROWS
+    ]
+    selection = (
+        packet._PRIMOCK_OVERLAP_SELECTION_SHA256
+        if overlap
+        else packet._PRIMOCK_ISOLATED_SELECTION_SHA256
+    )
+    value: dict[str, object] = {
+        "accepted_license": packet._PRIMOCK_LICENSE_ID,
+        "fixture_id": packet._PRIMOCK_FIXTURE_ID,
+        "kind": (
+            packet._PRIMOCK_OVERLAP_RECEIPT_KIND
+            if overlap
+            else packet._PRIMOCK_ISOLATED_RECEIPT_KIND
+        ),
+        "lock_recipe_sha256": packet._PRIMOCK_LOCK_RECIPE_SHA256,
+        "preparer_files": preparer_rows,
+        "privacy": packet._PRIMOCK_RECEIPT_PRIVACY,
+        "production_evidence": True,
+        "schema_version": 1,
+        "selection_sha256": selection,
+        "source_files": source_rows,
+        "totals": {"cases": 3, "pcm_files": 9} if overlap else {"cases": 3},
+    }
+    if overlap:
+        value.update(
+            {
+                "manifest": {
+                    "bytes": 1,
+                    "file": packet._PRIMOCK_OVERLAP_MANIFEST,
+                    "sha256": "a" * 64,
+                },
+                "source_contract_sha256": (
+                    packet._PRIMOCK_OVERLAP_SOURCE_CONTRACT_SHA256
+                ),
+            }
+        )
+    return value
+
+
+@pytest.mark.parametrize("drift", ["add", "remove", "rename"])
+def test_locked_primock_receipts_ignore_current_preparer_shape_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    current = list(primock57._PREPARER_FILES)
+    if drift == "add":
+        current.append("tools/streaming_stt/new-runtime.py")
+    elif drift == "remove":
+        current.pop()
+    else:
+        current[-1] = "tools/streaming_stt/protocol-next.py"
+    monkeypatch.setattr(primock57, "_PREPARER_FILES", tuple(current))
+    source_roles = list(primock57._SOURCE_ROLES)
+    source_paths = list(primock57._SOURCE_PATHS)
+    if drift == "add":
+        source_roles.append("new-role")
+        source_paths.append("new-source")
+    elif drift == "remove":
+        source_roles.pop()
+        source_paths.pop()
+    else:
+        source_roles[-1] = "renamed-license"
+        source_paths[-1] = "RENAMED-LICENSE.md"
+    monkeypatch.setattr(primock57, "_SOURCE_ROLES", tuple(source_roles))
+    monkeypatch.setattr(primock57, "_SOURCE_PATHS", tuple(source_paths))
+    monkeypatch.setattr(
+        primock57,
+        "_preparer_closure",
+        lambda: (_ for _ in ()).throw(AssertionError("must stay packet-local")),
+    )
+    for overlap in (False, True):
+        value = _locked_primock_receipt(overlap=overlap)
+        raw = packet._canonical_json(value, newline=True)
+        parsed = packet._parse_locked_primock_receipt(raw, overlap=overlap)
+        assert parsed["production_evidence"] is True
+
+
+def test_locked_primock_receipts_reject_identity_and_closure_mutations() -> None:
+    for overlap in (False, True):
+        pristine = _locked_primock_receipt(overlap=overlap)
+        canonical = packet._canonical_json(pristine, newline=True)
+        with pytest.raises(packet.MobileAsrEvidencePacketError):
+            packet._parse_locked_primock_receipt(canonical + b" ", overlap=overlap)
+        mutations = [
+            lambda value: value.update({"accepted_license": "CC0-1.0"}),
+            lambda value: value.update({"production_evidence": False}),
+            lambda value: value.update({"selection_sha256": "0" * 64}),
+            lambda value: value["preparer_files"].append(
+                {"path": "extra.py", "sha256": "0" * 64, "size_bytes": 1}
+            ),
+            lambda value: value["preparer_files"].pop(),
+            lambda value: value["preparer_files"][0].update({"path": "renamed.py"}),
+            lambda value: value["preparer_files"][0].update({"sha256": "0" * 64}),
+            lambda value: value["source_files"][0].update({"role": "other"}),
+            lambda value: value["source_files"][0].update({"sha256": "0" * 64}),
+        ]
+        if overlap:
+            mutations.append(
+                lambda value: value.update({"source_contract_sha256": "0" * 64})
+            )
+        for mutate in mutations:
+            value = json.loads(packet._canonical_json(pristine))
+            mutate(value)
+            raw = packet._canonical_json(value, newline=True)
+            with pytest.raises(packet.MobileAsrEvidencePacketError):
+                packet._parse_locked_primock_receipt(raw, overlap=overlap)
+
+
+def test_primock_source_lock_and_component_specs_stay_exactly_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = packet._PRIMOCK_SOURCE_LOCK.read_bytes()
+    assert len(raw) == packet._PRIMOCK_SOURCE_LOCK_BYTES == 8_181
+    assert hashlib.sha256(raw).hexdigest() == packet._PRIMOCK_SOURCE_LOCK_SHA256
+    source_lock = json.loads(raw)
+    projection = {
+        name: source_lock[name]
+        for name in (
+            "fixture_id",
+            "license_id",
+            "output_artifacts",
+            "recipe_sha256",
+            "selection",
+            "source",
+        )
+    }
+    assert packet._canonical_sha256(projection) == (
+        packet._PRIMOCK_SOURCE_LOCK_PROJECTION_SHA256
+    )
+    assert len(packet._load_locked_primock_source_rows()) == 5
+    packet_lock = json.loads(packet.DEFAULT_LOCK.read_bytes())
+    primock = {
+        row["id"]: row["upstream"]
+        for row in packet_lock["components"]
+        if row["id"].startswith("primock-")
+    }
+    assert primock["primock-isolated"] == {
+        "lock_file": "tools/streaming_stt/primock57-consultation01-v1.lock.json",
+        "lock_recipe_sha256": packet._PRIMOCK_LOCK_RECIPE_SHA256,
+        "lock_sha256": packet._PRIMOCK_SOURCE_LOCK_SHA256,
+    }
+    assert primock["primock-overlap"]["source_lock_recipe_sha256"] == (
+        packet._PRIMOCK_LOCK_RECIPE_SHA256
+    )
+    assert primock["primock-overlap"]["source_lock_sha256"] == (
+        packet._PRIMOCK_SOURCE_LOCK_SHA256
+    )
+    selected = packet.load_packet_lock()
+    for component_id in ("primock-isolated", "primock-overlap"):
+        spec = next(
+            item for item in selected.components if item.component_id == component_id
+        )
+        packet._require_committed_component_spec(spec, component_id=component_id)
+        with pytest.raises(packet.MobileAsrEvidencePacketError):
+            packet._require_committed_component_spec(
+                replace(spec, receipt_sha256="0" * 64),
+                component_id=component_id,
+            )
+
+    real_read = packet.read_regular_bounded
+
+    def tampered_read(*args: object, **kwargs: object) -> SimpleNamespace:
+        loaded = real_read(*args, **kwargs)
+        return SimpleNamespace(path=loaded.path, data=loaded.data + b" ")
+
+    monkeypatch.setattr(packet, "read_regular_bounded", tampered_read)
+    with pytest.raises(packet.MobileAsrEvidencePacketError):
+        packet._load_locked_primock_source_rows()
 
 
 def test_overlap_copy_uses_exact_loaded_leaf_map_and_rejects_extras(

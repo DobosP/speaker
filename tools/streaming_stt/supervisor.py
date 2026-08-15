@@ -32,7 +32,9 @@ from .manifest import (
     FASTER_WHISPER_VOCABULARY_FILES,
     KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
+    MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES,
     MAX_WORKER_BYTES,
+    MOBILE_ZIPFORMER_ADAPTER,
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
     NEMOTRON_ADAPTER,
@@ -41,6 +43,7 @@ from .manifest import (
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     KyutaiConfig,
+    MobileZipformerConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
     ParakeetCppConfig,
@@ -53,17 +56,22 @@ from .protocol import (
     CaseTrace,
     ErrorEvent,
     FinalEvent,
+    MAX_HYPOTHESIS_CHARS,
     MAX_LINE_BYTES,
+    MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS,
     MAX_PARAKEET_CPP_OBSERVED_EVENTS,
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     MAX_STDERR_BYTES,
     MAX_STDOUT_BYTES,
+    MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
     NativeFinalEvent,
     PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION,
     ParakeetCppFinalEvent,
     ParakeetCppObservedEvent,
+    MobileZipformerEndpointObservation,
+    MobileZipformerFinalEvent,
     PROTOCOL_VERSION,
     PartialEvent,
     ProtocolError,
@@ -367,6 +375,8 @@ def _wire_protocol_version(manifest: WorkerManifest) -> int:
         return NATIVE_ENDPOINT_PROTOCOL_VERSION
     if manifest.adapter == PARAKEET_CPP_ADAPTER:
         return PARAKEET_CPP_ENDPOINT_PROTOCOL_VERSION
+    if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+        return MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
     return PROTOCOL_VERSION
 
 
@@ -626,6 +636,113 @@ def _validate_parakeet_cpp_final(
         or event.authoritative is not False
         or not source_complete
         or event.tail_samples_consumed != event.tail_samples_offered
+    ):
+        raise WorkerError("worker_protocol")
+
+
+def _validate_mobile_zipformer_final(
+    manifest: WorkerManifest,
+    request: TranscribeRequest,
+    event: MobileZipformerFinalEvent,
+    *,
+    expected_seq: int,
+    last_samples: int,
+    last_elapsed: float,
+) -> None:
+    """Independently validate reset-committed mobile endpoint epochs."""
+
+    config = manifest.adapter_config
+    if (
+        not isinstance(config, MobileZipformerConfig)
+        or request.protocol_version != MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
+        or request.stream.chunk_samples != config.native_chunk_samples
+        or request.stream.tail_padding_samples > config.maximum_tail_padding_samples
+    ):
+        raise WorkerError("worker_protocol")
+    expected_chunks = (
+        request.pcm.samples + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples + (
+        event.tail_samples_consumed + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples
+    if (
+        event.protocol_version != MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
+        or event.request_id != request.request_id
+        or event.seq != expected_seq
+        or event.source_samples != request.pcm.samples
+        or event.source_samples_consumed != request.pcm.samples
+        or event.declared_tail_samples != request.stream.tail_padding_samples
+        or event.tail_samples_consumed > request.stream.tail_padding_samples
+        or event.samples_seen != request.pcm.samples + event.tail_samples_consumed
+        or event.samples_seen < last_samples
+        or event.elapsed_ms < last_elapsed
+        or event.finalization_ms > event.elapsed_ms
+        or event.chunks != expected_chunks
+        or event.model_padding_samples != 0
+        or abs(event.audio_seconds - request.pcm.samples / request.pcm.sample_rate)
+        > 1e-6
+        or type(event.endpoint_observations) is not tuple
+        or len(event.endpoint_observations) > MAX_MOBILE_ZIPFORMER_ENDPOINT_OBSERVATIONS
+    ):
+        raise WorkerError("worker_protocol")
+
+    last_observed_sample = 0
+    source_complete_seen = False
+    total_text_chars = 0
+    for observation in event.endpoint_observations:
+        if (
+            type(observation) is not MobileZipformerEndpointObservation
+            or len(observation.text) > MAX_HYPOTHESIS_CHARS
+            or type(observation.observed_sample) is not int
+            or not 0 < observation.observed_sample <= event.samples_seen
+            or type(observation.source_complete) is not bool
+            or observation.observed_sample <= last_observed_sample
+            or observation.source_complete
+            != (observation.observed_sample >= request.pcm.samples)
+            or source_complete_seen
+        ):
+            raise WorkerError("worker_protocol")
+        total_text_chars += len(observation.text)
+        if total_text_chars > MAX_HYPOTHESIS_CHARS:
+            raise WorkerError("worker_protocol")
+        last_observed_sample = observation.observed_sample
+        source_complete_seen = observation.source_complete
+
+    expected_text = " ".join(
+        observation.text
+        for observation in event.endpoint_observations
+        if observation.text
+    )
+    terminal = event.endpoint_observations[-1] if event.endpoint_observations else None
+    if event.text != expected_text:
+        raise WorkerError("worker_protocol")
+    if event.native_endpoint:
+        expected_latency = event.tail_samples_consumed / 16.0
+        if (
+            event.endpoint_reason != "endpoint"
+            or terminal is None
+            or not terminal.source_complete
+            or event.endpoint_sample != terminal.observed_sample
+            or event.endpoint_sample != event.samples_seen
+            or event.authoritative is not True
+            or event.endpoint_latency_ms is None
+            or not math.isclose(
+                event.endpoint_latency_ms,
+                expected_latency,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise WorkerError("worker_protocol")
+        return
+    if (
+        event.endpoint_reason != "tail_exhausted"
+        or event.endpoint_sample is not None
+        or event.endpoint_latency_ms is not None
+        or event.authoritative is not False
+        or event.tail_samples_consumed != request.stream.tail_padding_samples
+        or any(
+            observation.source_complete for observation in event.endpoint_observations
+        )
     ):
         raise WorkerError("worker_protocol")
 
@@ -1976,6 +2093,7 @@ def _zipformer_bwrap_command(
         manifest.worker.path,
         venv_root,
         model_root,
+        *(control.path for control in manifest.control_files),
     )
     if any(not path.is_absolute() or "\x00" in str(path) for path in required_paths):
         raise WorkerError("worker_prerequisite")
@@ -2006,6 +2124,8 @@ def _zipformer_bwrap_command(
         manifest.worker.path,
     )
     _append_mount(command, "--ro-bind", manifest.path)
+    for control_file in manifest.control_files:
+        _append_mount(command, "--ro-bind", control_file.path)
     _append_mount(command, "--ro-bind", venv_root)
     _append_mount(command, "--ro-bind", model_root)
 
@@ -2165,6 +2285,17 @@ class StreamingWorker:
                 raise WorkerError("worker_protocol")
         elif self.manifest.schema_version == 9:
             raise WorkerError("worker_protocol")
+        if self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+            config = self.manifest.adapter_config
+            if (
+                self.manifest.schema_version != 10
+                or type(config) is not MobileZipformerConfig
+                or config.native_chunk_samples != 1_600
+                or config.maximum_tail_padding_samples != 48_000
+            ):
+                raise WorkerError("worker_protocol")
+        elif self.manifest.schema_version == 10:
+            raise WorkerError("worker_protocol")
         try:
             lexical_scratch = Path(os.path.abspath(self.scratch_root))
             with opened_directory_nofollow(
@@ -2184,11 +2315,15 @@ class StreamingWorker:
             NEMOTRON_ADAPTER,
             PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
+            MOBILE_ZIPFORMER_ADAPTER,
             SHERPA_ZIPFORMER_ADAPTER,
         }:
             if os.name != "posix" or not Path("/proc/self/fd").is_dir():
                 raise WorkerError("worker_prerequisite")
-        if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+        if self.manifest.adapter in {
+            MOBILE_ZIPFORMER_ADAPTER,
+            SHERPA_ZIPFORMER_ADAPTER,
+        }:
             system_ro_paths = _core_system_ro_paths()
         if self.manifest.adapter == PARAKEET_CPP_ADAPTER:
             system_ro_paths = _core_system_ro_paths()
@@ -2236,6 +2371,7 @@ class StreamingWorker:
                 NEMOTRON_ADAPTER,
                 PARAKEET_CPP_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
+                MOBILE_ZIPFORMER_ADAPTER,
                 SHERPA_ZIPFORMER_ADAPTER,
             }:
                 self._bwrap_descriptor = _open_bwrap_descriptor()
@@ -2251,7 +2387,8 @@ class StreamingWorker:
         bundle_root = Path(f"/proc/self/fd/{self._bundle_descriptor}")
         interpreter_flags = (
             ["-I", "-B"]
-            if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
+            if self.manifest.adapter
+            in {MOBILE_ZIPFORMER_ADAPTER, SHERPA_ZIPFORMER_ADAPTER}
             else ["-I", "-S", "-B"]
         )
         worker_command = [
@@ -2346,7 +2483,10 @@ class StreamingWorker:
             # process group. Bubblewrap forks its namespace child before the
             # required --new-session setsid(), so the inner session remains
             # independent and die-with-parent links both lifecycle layers.
-        elif self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+        elif self.manifest.adapter in {
+            MOBILE_ZIPFORMER_ADAPTER,
+            SHERPA_ZIPFORMER_ADAPTER,
+        }:
             try:
                 command = _zipformer_bwrap_command(
                     self.manifest,
@@ -2374,6 +2514,9 @@ class StreamingWorker:
             environment["XDG_RUNTIME_DIR"] = str(user_runtime_directory)
         if self.manifest.adapter == PARAKEET_CPP_ADAPTER:
             environment["PARAKEET_DEVICE"] = "cpu"
+            environment["CUDA_VISIBLE_DEVICES"] = ""
+            environment.pop("CUDA_DEVICE_ORDER", None)
+        if self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
             environment["CUDA_VISIBLE_DEVICES"] = ""
             environment.pop("CUDA_DEVICE_ORDER", None)
         if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
@@ -2607,6 +2750,15 @@ class StreamingWorker:
                 raise WorkerError("worker_protocol")
             if self.manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
                 _expected_final_evidence(self.manifest, checked)
+            if self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+                config = self.manifest.adapter_config
+                if (
+                    not isinstance(config, MobileZipformerConfig)
+                    or checked.stream.chunk_samples != config.native_chunk_samples
+                    or checked.stream.tail_padding_samples
+                    > config.maximum_tail_padding_samples
+                ):
+                    raise WorkerError("invalid_request")
             self._verify_pcm(checked)
             self._send(encoded)
             partials: list[PartialEvent] = []
@@ -2622,6 +2774,13 @@ class StreamingWorker:
                         or event.request_id != checked.request_id
                         or event.seq != len(partials)
                         or event.samples_seen < last_samples
+                        or (
+                            self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER
+                            and (
+                                event.samples_seen <= last_samples
+                                or (partials and event.text == partials[-1].text)
+                            )
+                        )
                         or event.samples_seen
                         > checked.pcm.samples + checked.stream.tail_padding_samples
                         or event.elapsed_ms < last_elapsed
@@ -2659,6 +2818,20 @@ class StreamingWorker:
                     if type(event) is not ParakeetCppFinalEvent:
                         raise WorkerError("worker_protocol")
                     _validate_parakeet_cpp_final(
+                        self.manifest,
+                        checked,
+                        event,
+                        expected_seq=len(partials),
+                        last_samples=last_samples,
+                        last_elapsed=last_elapsed,
+                    )
+                    return self._complete_trace(
+                        CaseTrace(partials=tuple(partials), final=event)
+                    )
+                if self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+                    if type(event) is not MobileZipformerFinalEvent:
+                        raise WorkerError("worker_protocol")
+                    _validate_mobile_zipformer_final(
                         self.manifest,
                         checked,
                         event,
@@ -2811,6 +2984,15 @@ class StreamingWorker:
                     ).sha256
                     != artifact.sha256
                     for artifact in self.manifest.artifacts
+                )
+                or any(
+                    hash_regular_bounded(
+                        control.path,
+                        maximum_bytes=MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES,
+                        expected_bytes=control.size_bytes,
+                    ).sha256
+                    != control.sha256
+                    for control in self.manifest.control_files
                 )
             ):
                 raise WorkerError("worker_artifact_changed")

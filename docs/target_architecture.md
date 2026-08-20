@@ -420,6 +420,23 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    normalization, metric, compatible public strata, owner recordings, and
    physical-phone CPU/RSS/thermal/live decision. See
    [`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
+
+   ADR-0208 accepts a separate evidence-only comparator: ADR-0207's exact
+   Zipformer rerun remains the sole source of 198 endpoint epochs and every
+   control/application decision, while the exact 160,626,066-byte
+   MobileWhisper base.en INT8 tuple receives one complete-PCM final request with
+   zero evaluator/adapter-appended PCM padding per inherited epoch. Its
+   aggregate report `0ae9424d…e625` is mixed:
+   both models hit 18/26 command targets with two gains/two losses, forbidden
+   hits rise 0→7/355, command-subset WER worsens `.6809`→`2.3404`, four acoustic
+   WER cells improve, and all 59 literal-empty baseline epochs become candidate
+   literal-nonempty. This accepts no candidate endpoint/control/tool/session,
+   pooled-quality/default/promotion/qualification, held-out/training-disjoint,
+   latency/RTF, Flutter/native/phone/device/microphone/thermal/live, GPU/network,
+   redistribution, or Romanian authority. A disjoint owner holdout and actual
+   Flutter/native physical-phone gates remain prerequisites for any later
+   adoption decision. See
+   [`ADR-0208`](adr/0208-accept-mobile-whisper-endpoint-epoch-comparison.md).
 5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search

@@ -39,6 +39,9 @@ MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_MOBILE_ZIPFORMER_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_MOBILE_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES = 1024 * 1024
+MAX_MOBILE_WHISPER_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_MOBILE_WHISPER_TOTAL_ARTIFACT_BYTES = 192 * 1024 * 1024
+MAX_MOBILE_WHISPER_SOURCE_LOCK_BYTES = 1024 * 1024
 MAX_PARAKEET_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_PARAKEET_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
 MAX_FASTER_WHISPER_CONTROL_ARTIFACT_BYTES = 32 * 1024 * 1024
@@ -83,6 +86,7 @@ _MANIFEST_V10_FIELDS = {
     "total_size_bytes",
     "evidence_scope",
 }
+_MANIFEST_V11_FIELDS = _MANIFEST_V10_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -206,6 +210,61 @@ _MOBILE_ZIPFORMER_EVIDENCE_FIELDS = {
     "evaluation_result_authority",
     "mobile_device_evidence",
 }
+_MOBILE_WHISPER_CONFIG_FIELDS = {
+    "package_version",
+    "core_package_version",
+    "numpy_version",
+    "source_repo_id",
+    "source_revision",
+    "variant",
+    "language",
+    "task",
+    "sample_rate",
+    "feature_dim",
+    "num_threads",
+    "provider",
+    "debug",
+    "decoding_method",
+    "model_type",
+    "tail_paddings",
+    "enable_token_timestamps",
+    "enable_segment_timestamps",
+    "rule_fsts",
+    "rule_fars",
+    "hr_dict_dir",
+    "hr_rule_fsts",
+    "hr_lexicon",
+    "native_chunk_samples",
+    "maximum_tail_padding_samples",
+    "execution_mode",
+    "segmentation_mode",
+    "endpoint_owner",
+    "control_authority",
+}
+_MOBILE_WHISPER_SOURCE_FIELDS = {
+    "repo_id",
+    "revision",
+    "lock",
+    "lock_recipe_sha256",
+    "conversion_license_artifact_present",
+    "artifact_license_status",
+    "conversion_origin_revision_status",
+    "exact_conversion_recipe_status",
+    "upstream_project",
+    "upstream_evidence_revision",
+    "upstream_evidence_scope",
+    "upstream_code_license",
+    "upstream_license_url",
+    "upstream_license_sha256",
+    "upstream_license_size_bytes",
+    "upstream_model_map_url",
+    "upstream_model_map_sha256",
+    "upstream_model_map_size_bytes",
+    "upstream_base_en_checkpoint_sha256",
+}
+_MOBILE_WHISPER_RUNTIME_FIELDS = _MOBILE_ZIPFORMER_RUNTIME_FIELDS
+_MOBILE_WHISPER_DISTRIBUTION_FIELDS = _MOBILE_ZIPFORMER_DISTRIBUTION_FIELDS
+_MOBILE_WHISPER_EVIDENCE_FIELDS = _MOBILE_ZIPFORMER_EVIDENCE_FIELDS
 _PARAKEET_CONFIG_FIELDS = {
     "python_version",
     "nemo_version",
@@ -363,6 +422,7 @@ MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER = (
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 MOBILE_ZIPFORMER_ADAPTER = "sherpa-onnx-mobile-zipformer-endpoint-v1"
+MOBILE_WHISPER_ADAPTER = "sherpa-onnx-mobile-whisper-final-v1"
 PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
 FASTER_WHISPER_ENDPOINT_ADAPTER = "faster-whisper-endpoint-v1"
 PARAKEET_CPP_ADAPTER = "parakeet-cpp-realtime-eou-v1"
@@ -741,6 +801,83 @@ MOBILE_ZIPFORMER_SOURCE_LOCK_SHA256 = (
     "3b928f709a1c50f426291968bedff67811f7eed0e1c48e0773df475558520efc"
 )
 MOBILE_ZIPFORMER_SOURCE_LOCK_SIZE_BYTES = 2_335
+MOBILE_WHISPER_ARTIFACT_SPECS = (
+    (
+        "model-encoder",
+        "base.en-encoder.int8.onnx",
+        "int8",
+        "ef6b936f4c9b1d90a3b68634b60c4ed8576b26172b33c2535ec0e933c9edb823",
+        29_120_534,
+    ),
+    (
+        "model-decoder",
+        "base.en-decoder.int8.onnx",
+        "int8",
+        "f7162ad6db2dbef16cfaeaa7f945b9d7dd9c1b8d472f6aca82f2273d185e4d41",
+        130_669_978,
+    ),
+    (
+        "model-tokens",
+        "base.en-tokens.txt",
+        "text",
+        "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
+        835_554,
+    ),
+)
+MOBILE_WHISPER_ARTIFACT_NAMES = tuple(
+    name
+    for name, _basename, _precision, _sha256, _size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+)
+_MOBILE_WHISPER_ARTIFACT_BASENAMES = {
+    name: basename
+    for name, basename, _precision, _sha256, _size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+}
+_MOBILE_WHISPER_MODEL_RECEIPTS = {
+    name: (sha256, size_bytes)
+    for name, _basename, _precision, sha256, size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+}
+MOBILE_WHISPER_TOTAL_SIZE_BYTES = sum(
+    size_bytes
+    for _name, _basename, _precision, _sha256, size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+)
+_MOBILE_WHISPER_ARTIFACT_SET_ROWS = [
+    {
+        "name": name,
+        "filename": basename,
+        "precision": precision,
+        "sha256": sha256,
+        "size_bytes": size_bytes,
+    }
+    for name, basename, precision, sha256, size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+]
+MOBILE_WHISPER_ARTIFACT_SET_SHA256 = hashlib.sha256(
+    b"speaker-mobile-whisper-artifact-set-v1\0"
+    + json.dumps(
+        _MOBILE_WHISPER_ARTIFACT_SET_ROWS,
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+# Filled from the canonical source lock; both values are deliberately exact.
+MOBILE_WHISPER_SOURCE_LOCK_RECIPE_SHA256 = (
+    "aeb7b5bbba9c558120bf68ac7a9d7dca671e75115c2f42d8897bfa31153b6087"
+)
+MOBILE_WHISPER_SOURCE_LOCK_SHA256 = (
+    "0fac7fee4e4b73f29b23130e1ee449501c4324211bae9e5da888b10483a3e496"
+)
+MOBILE_WHISPER_SOURCE_LOCK_SIZE_BYTES = 3_314
 PARAKEET_REALTIME_EOU_ARTIFACT_NAMES = (
     "runtime-receipt",
     "runtime-wheel-lock",
@@ -1272,6 +1409,83 @@ class MobileZipformerConfig:
 
 
 @dataclass(frozen=True)
+class MobileWhisperConfig:
+    """Exact final-only CPU contract for the bundled mobile Whisper model."""
+
+    package_version: str = "1.13.3"
+    core_package_version: str = "1.13.3"
+    numpy_version: str = "2.4.6"
+    source_repo_id: str = "csukuangfj/sherpa-onnx-whisper-base.en"
+    source_revision: str = "59eea950fc76df2453efb57e6c0fd334548e8ffe"
+    variant: str = "base.en-int8"
+    language: str = "en"
+    task: str = "transcribe"
+    sample_rate: int = 16_000
+    feature_dim: int = 80
+    num_threads: int = 1
+    provider: str = "cpu"
+    debug: bool = True
+    decoding_method: str = "greedy_search"
+    model_type: str = "whisper"
+    tail_paddings: int = -1
+    enable_token_timestamps: bool = False
+    enable_segment_timestamps: bool = False
+    rule_fsts: str = ""
+    rule_fars: str = ""
+    hr_dict_dir: str = ""
+    hr_rule_fsts: str = ""
+    hr_lexicon: str = ""
+    native_chunk_samples: int = 1_600
+    maximum_tail_padding_samples: int = 0
+    execution_mode: str = "complete-endpoint-epoch-final-only"
+    segmentation_mode: str = "external-mobile-zipformer-endpoint-epoch"
+    endpoint_owner: str = "mobile-zipformer"
+    control_authority: bool = False
+
+    def __post_init__(self) -> None:
+        exact = {
+            "package_version": "1.13.3",
+            "core_package_version": "1.13.3",
+            "numpy_version": "2.4.6",
+            "source_repo_id": "csukuangfj/sherpa-onnx-whisper-base.en",
+            "source_revision": "59eea950fc76df2453efb57e6c0fd334548e8ffe",
+            "variant": "base.en-int8",
+            "language": "en",
+            "task": "transcribe",
+            "sample_rate": 16_000,
+            "feature_dim": 80,
+            "num_threads": 1,
+            "provider": "cpu",
+            "debug": True,
+            "decoding_method": "greedy_search",
+            "model_type": "whisper",
+            "tail_paddings": -1,
+            "enable_token_timestamps": False,
+            "enable_segment_timestamps": False,
+            "rule_fsts": "",
+            "rule_fars": "",
+            "hr_dict_dir": "",
+            "hr_rule_fsts": "",
+            "hr_lexicon": "",
+            "native_chunk_samples": 1_600,
+            "maximum_tail_padding_samples": 0,
+            "execution_mode": "complete-endpoint-epoch-final-only",
+            "segmentation_mode": "external-mobile-zipformer-endpoint-epoch",
+            "endpoint_owner": "mobile-zipformer",
+            "control_authority": False,
+        }
+        if any(
+            type(getattr(self, name)) is not type(expected)
+            or getattr(self, name) != expected
+            for name, expected in exact.items()
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in _MOBILE_WHISPER_CONFIG_FIELDS}
+
+
+@dataclass(frozen=True)
 class ParakeetRealtimeEouConfig:
     """Exact model semantics plus a receipt-bound disposable NeMo runtime."""
 
@@ -1764,6 +1978,7 @@ class WorkerManifest:
         | NemotronConfig
         | SherpaZipformerConfig
         | MobileZipformerConfig
+        | MobileWhisperConfig
         | ParakeetRealtimeEouConfig
         | ParakeetCppConfig
         | FasterWhisperEndpointConfig
@@ -1854,6 +2069,11 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         and artifact_name in MOBILE_ZIPFORMER_ARTIFACT_NAMES
     ):
         return MAX_MOBILE_ZIPFORMER_ARTIFACT_BYTES
+    if (
+        adapter == MOBILE_WHISPER_ADAPTER
+        and artifact_name in MOBILE_WHISPER_ARTIFACT_NAMES
+    ):
+        return MAX_MOBILE_WHISPER_ARTIFACT_BYTES
     if (
         adapter == PARAKEET_REALTIME_EOU_ADAPTER
         and artifact_name in PARAKEET_REALTIME_EOU_ARTIFACT_NAMES
@@ -2083,6 +2303,17 @@ def _mobile_zipformer_config(value: object) -> MobileZipformerConfig:
     try:
         return MobileZipformerConfig(
             **{name: value.get(name) for name in _MOBILE_ZIPFORMER_CONFIG_FIELDS}
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
+def _mobile_whisper_config(value: object) -> MobileWhisperConfig:
+    if not isinstance(value, dict) or set(value) != _MOBILE_WHISPER_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return MobileWhisperConfig(
+            **{name: value.get(name) for name in _MOBILE_WHISPER_CONFIG_FIELDS}
         )
     except (TypeError, ValueError, ManifestError):
         raise ManifestError() from None
@@ -2445,6 +2676,138 @@ def _mobile_zipformer_control_files(
     if (
         not isinstance(evidence_scope, dict)
         or set(evidence_scope) != _MOBILE_ZIPFORMER_EVIDENCE_FIELDS
+        or any(type(item) is not bool or item for item in evidence_scope.values())
+    ):
+        raise ManifestError()
+    if runtime["python"] != {
+        "path": str(python.path),
+        "sha256": python.sha256,
+        "size_bytes": python.size_bytes,
+    } or runtime["worker"] != {
+        "path": str(worker.path),
+        "sha256": worker.sha256,
+        "size_bytes": worker.size_bytes,
+    }:
+        raise ManifestError()
+    return (source_lock,)
+
+
+def _validate_mobile_whisper_layout(
+    artifacts: tuple[BoundArtifact, ...],
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    if (
+        tuple(by_name) != MOBILE_WHISPER_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        != MOBILE_WHISPER_TOTAL_SIZE_BYTES
+        or MOBILE_WHISPER_TOTAL_SIZE_BYTES > MAX_MOBILE_WHISPER_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _MOBILE_WHISPER_ARTIFACT_BASENAMES.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in _MOBILE_WHISPER_MODEL_RECEIPTS.items()
+        )
+        or len({artifact.path.parent for artifact in artifacts}) != 1
+    ):
+        raise ManifestError()
+
+
+def _mobile_whisper_control_files(
+    value: Mapping[str, object],
+    *,
+    python: BoundFile,
+    worker: BoundFile,
+    config: MobileWhisperConfig,
+) -> tuple[BoundFile, ...]:
+    if (
+        value.get("kind") != "mobile-whisper-provision-v1"
+        or value.get("model_id")
+        != "sherpa-onnx-whisper-base.en-mobile-int8-v1"
+        or value.get("artifact_set_sha256") != MOBILE_WHISPER_ARTIFACT_SET_SHA256
+        or type(value.get("total_size_bytes")) is not int
+        or value.get("total_size_bytes") != MOBILE_WHISPER_TOTAL_SIZE_BYTES
+    ):
+        raise ManifestError()
+    source = value.get("source")
+    if not isinstance(source, dict) or set(source) != _MOBILE_WHISPER_SOURCE_FIELDS:
+        raise ManifestError()
+    if (
+        source.get("repo_id") != config.source_repo_id
+        or source.get("revision") != config.source_revision
+        or source.get("conversion_license_artifact_present") is not False
+        or source.get("artifact_license_status") != "unverified"
+        or source.get("conversion_origin_revision_status") != "unverified"
+        or source.get("exact_conversion_recipe_status") != "unavailable"
+        or source.get("upstream_project") != "openai/whisper"
+        or source.get("upstream_evidence_revision")
+        != "5f86d1d86363843179951550570367b37c5d6f78"
+        or source.get("upstream_evidence_scope")
+        != "license-and-base.en-checkpoint-map-only"
+        or source.get("upstream_code_license") != "MIT"
+        or source.get("upstream_license_url")
+        != (
+            "https://raw.githubusercontent.com/openai/whisper/"
+            "5f86d1d86363843179951550570367b37c5d6f78/LICENSE"
+        )
+        or source.get("upstream_license_sha256")
+        != "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+        or source.get("upstream_license_size_bytes") != 1_063
+        or source.get("upstream_model_map_url")
+        != (
+            "https://raw.githubusercontent.com/openai/whisper/"
+            "5f86d1d86363843179951550570367b37c5d6f78/whisper/__init__.py"
+        )
+        or source.get("upstream_model_map_sha256")
+        != "79ecbed714783b6230931a3dba6d5da6d386e2d44f9fc27256e4fc72751e1f62"
+        or source.get("upstream_model_map_size_bytes") != 7_432
+        or source.get("upstream_base_en_checkpoint_sha256")
+        != "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead"
+        or _sha256(source.get("lock_recipe_sha256"))
+        != MOBILE_WHISPER_SOURCE_LOCK_RECIPE_SHA256
+    ):
+        raise ManifestError()
+    source_lock = _bound_file(
+        source.get("lock"),
+        expected_fields=_FILE_FIELDS,
+        allow_symlink=False,
+        maximum_bytes=MAX_MOBILE_WHISPER_SOURCE_LOCK_BYTES,
+    )
+    if (
+        source_lock.path.name != "source-lock.json"
+        or source_lock.sha256 != MOBILE_WHISPER_SOURCE_LOCK_SHA256
+        or source_lock.size_bytes != MOBILE_WHISPER_SOURCE_LOCK_SIZE_BYTES
+    ):
+        raise ManifestError()
+
+    runtime = value.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or set(runtime) != _MOBILE_WHISPER_RUNTIME_FIELDS
+        or runtime.get("python") != value.get("python")
+        or runtime.get("worker") != value.get("worker")
+        or runtime.get("metadata_only_verified") is not True
+        or runtime.get("packages_imported") is not False
+        or runtime.get("model_loaded") is not False
+    ):
+        raise ManifestError()
+    distributions = runtime.get("distributions")
+    if (
+        not isinstance(distributions, dict)
+        or set(distributions) != _MOBILE_WHISPER_DISTRIBUTION_FIELDS
+        or distributions
+        != {
+            "sherpa-onnx": config.package_version,
+            "sherpa-onnx-core": config.core_package_version,
+            "numpy": config.numpy_version,
+        }
+    ):
+        raise ManifestError()
+    evidence_scope = value.get("evidence_scope")
+    if (
+        not isinstance(evidence_scope, dict)
+        or set(evidence_scope) != _MOBILE_WHISPER_EVIDENCE_FIELDS
         or any(type(item) is not bool or item for item in evidence_scope.values())
     ):
         raise ManifestError()
@@ -3021,6 +3384,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         8,
         9,
         10,
+        11,
     }:
         raise ManifestError()
     expected_fields = {
@@ -3034,6 +3398,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         8: _MANIFEST_V8_FIELDS,
         9: _MANIFEST_V9_FIELDS,
         10: _MANIFEST_V10_FIELDS,
+        11: _MANIFEST_V11_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -3053,6 +3418,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         or (schema_version == 8 and adapter != PARAKEET_CPP_ADAPTER)
         or (schema_version == 9 and adapter != KYUTAI_ADAPTER)
         or (schema_version == 10 and adapter != MOBILE_ZIPFORMER_ADAPTER)
+        or (schema_version == 11 and adapter != MOBILE_WHISPER_ADAPTER)
     ):
         raise ManifestError()
 
@@ -3081,6 +3447,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         8: PARAKEET_CPP_ARTIFACT_NAMES,
         9: KYUTAI_ARTIFACT_NAMES,
         10: MOBILE_ZIPFORMER_ARTIFACT_NAMES,
+        11: MOBILE_WHISPER_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -3103,6 +3470,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         8: lambda: _parakeet_cpp_config(value.get("adapter_config")),
         9: lambda: _kyutai_config(value.get("adapter_config")),
         10: lambda: _mobile_zipformer_config(value.get("mobile_config")),
+        11: lambda: _mobile_whisper_config(value.get("mobile_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -3131,11 +3499,22 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 10:
         assert isinstance(adapter_config, MobileZipformerConfig)
         _validate_mobile_zipformer_layout(artifacts)
+    elif schema_version == 11:
+        assert isinstance(adapter_config, MobileWhisperConfig)
+        _validate_mobile_whisper_layout(artifacts)
 
     control_files: tuple[BoundFile, ...] = ()
     if schema_version == 10:
         assert isinstance(adapter_config, MobileZipformerConfig)
         control_files = _mobile_zipformer_control_files(
+            value,
+            python=python,
+            worker=worker,
+            config=adapter_config,
+        )
+    elif schema_version == 11:
+        assert isinstance(adapter_config, MobileWhisperConfig)
+        control_files = _mobile_whisper_control_files(
             value,
             python=python,
             worker=worker,
@@ -3156,6 +3535,11 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         ),
     )
     if schema_version == 10 and limits != WorkerLimits(
+        startup_timeout_sec=120.0,
+        case_timeout_sec=300.0,
+    ):
+        raise ManifestError()
+    if schema_version == 11 and limits != WorkerLimits(
         startup_timeout_sec=120.0,
         case_timeout_sec=300.0,
     ):

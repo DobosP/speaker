@@ -1,0 +1,85 @@
+{
+  "artifacts": [
+    {
+      "filename": "base.en-encoder.int8.onnx",
+      "name": "model-encoder",
+      "precision": "int8",
+      "sha256": "ef6b936f4c9b1d90a3b68634b60c4ed8576b26172b33c2535ec0e933c9edb823",
+      "size_bytes": 29120534
+    },
+    {
+      "filename": "base.en-decoder.int8.onnx",
+      "name": "model-decoder",
+      "precision": "int8",
+      "sha256": "f7162ad6db2dbef16cfaeaa7f945b9d7dd9c1b8d472f6aca82f2273d185e4d41",
+      "size_bytes": 130669978
+    },
+    {
+      "filename": "base.en-tokens.txt",
+      "name": "model-tokens",
+      "precision": "text",
+      "sha256": "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
+      "size_bytes": 835554
+    }
+  ],
+  "kind": "mobile-whisper-source-lock-v1",
+  "mobile_config": {
+    "control_authority": false,
+    "core_package_version": "1.13.3",
+    "debug": true,
+    "decoding_method": "greedy_search",
+    "enable_segment_timestamps": false,
+    "enable_token_timestamps": false,
+    "endpoint_owner": "mobile-zipformer",
+    "execution_mode": "complete-endpoint-epoch-final-only",
+    "feature_dim": 80,
+    "hr_dict_dir": "",
+    "hr_lexicon": "",
+    "hr_rule_fsts": "",
+    "language": "en",
+    "maximum_tail_padding_samples": 0,
+    "model_type": "whisper",
+    "native_chunk_samples": 1600,
+    "num_threads": 1,
+    "numpy_version": "2.4.6",
+    "package_version": "1.13.3",
+    "provider": "cpu",
+    "rule_fars": "",
+    "rule_fsts": "",
+    "sample_rate": 16000,
+    "segmentation_mode": "external-mobile-zipformer-endpoint-epoch",
+    "source_repo_id": "csukuangfj/sherpa-onnx-whisper-base.en",
+    "source_revision": "59eea950fc76df2453efb57e6c0fd334548e8ffe",
+    "tail_paddings": -1,
+    "task": "transcribe",
+    "variant": "base.en-int8"
+  },
+  "model_id": "sherpa-onnx-whisper-base.en-mobile-int8-v1",
+  "recipe_sha256": "aeb7b5bbba9c558120bf68ac7a9d7dca671e75115c2f42d8897bfa31153b6087",
+  "runtime_distributions": {
+    "numpy": "2.4.6",
+    "sherpa-onnx": "1.13.3",
+    "sherpa-onnx-core": "1.13.3"
+  },
+  "schema_version": 1,
+  "source": {
+    "artifact_license_status": "unverified",
+    "conversion_license_artifact_present": false,
+    "conversion_origin_revision_status": "unverified",
+    "exact_conversion_recipe_status": "unavailable",
+    "repo_id": "csukuangfj/sherpa-onnx-whisper-base.en",
+    "revision": "59eea950fc76df2453efb57e6c0fd334548e8ffe",
+    "upstream_base_en_checkpoint_sha256": "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead",
+    "upstream_code_license": "MIT",
+    "upstream_license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+    "upstream_license_size_bytes": 1063,
+    "upstream_license_url": "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/LICENSE",
+    "upstream_model_map_sha256": "79ecbed714783b6230931a3dba6d5da6d386e2d44f9fc27256e4fc72751e1f62",
+    "upstream_model_map_size_bytes": 7432,
+    "upstream_model_map_url": "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/__init__.py",
+    "upstream_evidence_revision": "5f86d1d86363843179951550570367b37c5d6f78",
+    "upstream_evidence_scope": "license-and-base.en-checkpoint-map-only",
+    "upstream_project": "openai/whisper"
+  },
+  "total_size_bytes": 160626066
+}

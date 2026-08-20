@@ -1102,6 +1102,21 @@ compatible public strata, owner recordings, and physical-phone CPU/RSS/
 thermal/live decision. See
 [`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
 
+ADR-0208 adds an evidence-only comparator without entering the mobile runtime.
+The exact ADR-0207 Zipformer rerun continues to own all 198 reset-committed
+endpoint epochs and every application/control decision. The exact
+160,626,066-byte MobileWhisper base.en INT8 candidate gets one final-only,
+complete-PCM request with zero evaluator/adapter-appended PCM padding for each
+inherited epoch and zero app admissions.
+Its report `0ae9424d…e625` is deliberately mixed and unpooled: command targets
+remain 18/26 with two gains/two losses, forbidden hits rise 0→7/355, command
+WER worsens, four acoustic WER cells improve, and every one of 59 literal-empty
+baseline epochs becomes candidate literal-nonempty. It establishes no candidate
+endpoint/control/tool/session, quality/default/promotion/qualification,
+held-out/training-disjoint, latency/RTF, Flutter/native/phone/device/microphone/
+thermal/live, network/GPU, redistribution, or Romanian authority. See
+[`ADR-0208`](adr/0208-accept-mobile-whisper-endpoint-epoch-comparison.md).
+
 **Remote path:** Two FastAPI endpoints in `remote/token_server.py`:
 
 - `GET /token?identity=&room=` — mints a LiveKit JWT (requires `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` in env). Auth: `Authorization: Bearer <token>` matching `SPEAKER_REMOTE_TOKEN`, or dev opt-in via `SPEAKER_REMOTE_ALLOW_NOAUTH=1`.
@@ -1593,6 +1608,22 @@ quality/default/promotion/qualification, held-out/training-disjoint, latency/
 RTF, Flutter/Android/native/phone/device/microphone/thermal, and live claims are
 not. No network, GPU, CUDA, audio device, phone, or live path ran. See
 [`ADR-0207`](adr/0207-bind-mobile-zipformer-endpoint-evidence.md).
+
+39. **Accept the exact MobileWhisper endpoint-epoch comparison as evidence only
+(2026-08-20).** ADR-0208 binds the three-file/160,626,066-byte base.en INT8
+tuple, hash-only schema-11 provision, one-thread CPU final-only worker, and a
+62 MiB candidate-only cumulative decoded-request PCM ceiling while leaving
+generic/schema-10 lifetime unique-PCM ceilings at 32/38 MiB. The comparator
+first reproduces ADR-0207, then submits one complete-PCM candidate request with
+zero evaluator/adapter-appended PCM padding for each of its 198 inherited
+epochs; candidate app admissions remain zero. V1 and v2 failed closed with no
+report before narrow scratch-witness and literal-empty-accounting fixes. V3
+publishes aggregate report `0ae9424d…e625`; its mixed command/acoustic/empty-
+epoch observations authorize neither a winner nor runtime wiring. No endpoint,
+control, tool, agent-session, pooled-quality/default/promotion/qualification,
+held-out/training-disjoint, latency/RTF, Flutter/native/phone/device/microphone/
+thermal/live, GPU/network, redistribution, or Romanian authority follows. See
+[`ADR-0208`](adr/0208-accept-mobile-whisper-endpoint-epoch-comparison.md).
 
 ---
 

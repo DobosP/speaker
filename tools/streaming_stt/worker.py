@@ -52,6 +52,25 @@ _BOOTSTRAP_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # components whose locked total is 39,299,500 bytes, so it receives the
 # smallest whole-MiB ceiling above that packet. Per-input limits are unchanged.
 _MOBILE_ZIPFORMER_MAX_CORPUS_BYTES = 38 * 1024 * 1024
+# Schema v11 evaluates every reset-committed endpoint epoch, including copied
+# terminal tail intervals. Its closed worst case is 64,067,500 bytes, so only
+# this adapter receives the smallest whole-MiB ceiling above that value.
+_MOBILE_WHISPER_MAX_CORPUS_BYTES = 62 * 1024 * 1024
+_MOBILE_WHISPER_REQUIRED_ENV = {
+    "CUDA_VISIBLE_DEVICES": "",
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "HF_HUB_OFFLINE": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONNOUSERSITE": "1",
+    "TOKENIZERS_PARALLELISM": "false",
+    "TRANSFORMERS_OFFLINE": "1",
+}
 
 
 def _bootstrap_argument(name: str) -> str:
@@ -433,6 +452,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
     ManifestError,
+    MOBILE_WHISPER_ADAPTER,
     MOBILE_ZIPFORMER_ADAPTER,
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
@@ -442,6 +462,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     KyutaiConfig,
+    MobileWhisperConfig,
     MobileZipformerConfig,
     MoonshineConfig,
     MoonshineExternalEndpointConfig,
@@ -1142,6 +1163,7 @@ def _verify_runtime_receipt(
             raise ManifestError()
         return None
     if manifest.adapter in {
+        MOBILE_WHISPER_ADAPTER,
         MOBILE_ZIPFORMER_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     }:
@@ -1376,6 +1398,42 @@ def _verify_kyutai_cuda_preflight(
         raise ManifestError() from None
 
 
+def _mobile_whisper_site_packages(manifest: WorkerManifest) -> Path:
+    """Bind the exact venv import root without processing startup hooks."""
+
+    python = manifest.python.path
+    try:
+        if python.parent.name != "bin" or python.parent.parent == python.parent:
+            raise ManifestError()
+        candidate = (
+            python.parent.parent
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+        )
+        with opened_directory_nofollow(candidate) as (stable, descriptor):
+            metadata = os.fstat(descriptor)
+            if (
+                stable != candidate
+                or not stat.S_ISDIR(metadata.st_mode)
+                or (
+                    hasattr(os, "geteuid")
+                    and metadata.st_uid != os.geteuid()
+                )
+            ):
+                raise ManifestError()
+        return candidate
+    except (BoundedReadError, OSError, RuntimeError, ValueError):
+        raise ManifestError() from None
+
+
+def _mobile_whisper_environment_is_exact() -> bool:
+    return (
+        all(os.environ.get(name) == value for name, value in _MOBILE_WHISPER_REQUIRED_ENV.items())
+        and "CUDA_DEVICE_ORDER" not in os.environ
+    )
+
+
 def _activate_candidate_runtime(
     manifest: WorkerManifest,
     receipt: RuntimeTreeReceipt | None,
@@ -1385,10 +1443,18 @@ def _activate_candidate_runtime(
             raise ManifestError()
         return
     if manifest.adapter in {
+        MOBILE_WHISPER_ADAPTER,
         MOBILE_ZIPFORMER_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     }:
-        module_prefixes = ("numpy", "sherpa_onnx", "_sherpa_onnx")
+        mobile_whisper = manifest.adapter == MOBILE_WHISPER_ADAPTER
+        module_prefixes = (
+            "numpy",
+            "sherpa_onnx",
+            "sherpa_onnx_core",
+            "_sherpa_onnx",
+            "sherpa_onnx.lib._sherpa_onnx",
+        )
         if (
             receipt is not None
             or (
@@ -1398,11 +1464,19 @@ def _activate_candidate_runtime(
                     or type(manifest.adapter_config) is not MobileZipformerConfig
                 )
             )
-            or sys.flags.no_site != 0
+            or (
+                manifest.adapter == MOBILE_WHISPER_ADAPTER
+                and (
+                    manifest.schema_version != 11
+                    or type(manifest.adapter_config) is not MobileWhisperConfig
+                )
+            )
+            or sys.flags.no_site != (1 if mobile_whisper else 0)
             or sys.flags.no_user_site != 1
             or sys.flags.ignore_environment != 1
             or sys.flags.isolated != 1
             or sys.flags.dont_write_bytecode != 1
+            or (mobile_whisper and not _mobile_whisper_environment_is_exact())
             or any(
                 any(
                     name == prefix or name.startswith(prefix + ".")
@@ -1412,6 +1486,13 @@ def _activate_candidate_runtime(
             )
         ):
             raise ManifestError()
+        if mobile_whisper:
+            runtime_root = str(_mobile_whisper_site_packages(manifest))
+            if not sys.path or runtime_root in sys.path:
+                raise ManifestError()
+            # Direct insertion does not process .pth files or sitecustomize;
+            # the verified source bundle retains precedence at index zero.
+            sys.path.insert(1, runtime_root)
         return
     if manifest.adapter == PARAKEET_CPP_ADAPTER:
         if (
@@ -1590,6 +1671,7 @@ def _create_adapter(manifest: WorkerManifest):
     model_root = model_roots.pop()
     if manifest.adapter in {
         KYUTAI_ADAPTER,
+        MOBILE_WHISPER_ADAPTER,
         MOBILE_ZIPFORMER_ADAPTER,
         NEMOTRON_ADAPTER,
         PARAKEET_REALTIME_EOU_ADAPTER,
@@ -1699,6 +1781,23 @@ def _create_adapter(manifest: WorkerManifest):
             MobileZipformerAdapter(model_root, config=manifest.adapter_config),
             MobileZipformerAdapterError,
         )
+    if manifest.adapter == MOBILE_WHISPER_ADAPTER:
+        if manifest.schema_version != 11 or not isinstance(
+            manifest.adapter_config, MobileWhisperConfig
+        ):
+            raise ManifestError()
+        from tools.streaming_stt.adapters.zipformer import (  # noqa: PLC0415
+            MobileWhisperAdapterError,
+            MobileWhisperOfflineAdapter,
+        )
+
+        return (
+            MobileWhisperOfflineAdapter(
+                model_root,
+                config=manifest.adapter_config,
+            ),
+            MobileWhisperAdapterError,
+        )
     if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
         if not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig):
             raise ManifestError()
@@ -1728,6 +1827,8 @@ def _close_adapter(adapter) -> None:
 def _worker_corpus_limit_bytes(manifest: WorkerManifest) -> int:
     if manifest.schema_version == 10 and manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
         return _MOBILE_ZIPFORMER_MAX_CORPUS_BYTES
+    if manifest.schema_version == 11 and manifest.adapter == MOBILE_WHISPER_ADAPTER:
+        return _MOBILE_WHISPER_MAX_CORPUS_BYTES
     return MAX_CORPUS_BYTES
 
 
@@ -1760,6 +1861,30 @@ def _account_unique_pcm(
     if projected > maximum_bytes:
         raise ProtocolError()
     consumed_inputs.add(pcm_sha256)
+    return projected
+
+
+def _account_request_pcm(
+    consumed_bytes: int,
+    *,
+    size_bytes: int,
+    maximum_bytes: int,
+) -> int:
+    """Count every decoded request byte; failed projections mutate no state."""
+
+    if (
+        type(consumed_bytes) is not int
+        or consumed_bytes < 0
+        or type(size_bytes) is not int
+        or size_bytes <= 0
+        or type(maximum_bytes) is not int
+        or maximum_bytes <= 0
+        or consumed_bytes > maximum_bytes
+    ):
+        raise ProtocolError()
+    projected = consumed_bytes + size_bytes
+    if projected > maximum_bytes:
+        raise ProtocolError()
     return projected
 
 
@@ -1798,8 +1923,14 @@ def _run(
     runtime_receipt = _verify_worker_state(manifest, source_bundle)
     _activate_candidate_runtime(manifest, runtime_receipt)
     _verify_kyutai_cuda_preflight(manifest)
-    final_only_endpoint = manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
-    if final_only_endpoint and manifest.schema_version != 6:
+    final_only_endpoint = manifest.adapter in {
+        FASTER_WHISPER_ENDPOINT_ADAPTER,
+        MOBILE_WHISPER_ADAPTER,
+    }
+    if final_only_endpoint and (
+        (manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER and manifest.schema_version != 6)
+        or (manifest.adapter == MOBILE_WHISPER_ADAPTER and manifest.schema_version != 11)
+    ):
         raise ManifestError()
     adapter, adapter_error = _create_adapter(manifest)
     if manifest.adapter == PARAKEET_CPP_ADAPTER:
@@ -1923,15 +2054,32 @@ def _run(
                         > config.maximum_tail_padding_samples
                     ):
                         raise ProtocolError()
+                if manifest.adapter == MOBILE_WHISPER_ADAPTER:
+                    config = manifest.adapter_config
+                    if (
+                        not isinstance(config, MobileWhisperConfig)
+                        or request.stream.chunk_samples != config.native_chunk_samples
+                        or request.stream.tail_padding_samples
+                        != config.maximum_tail_padding_samples
+                        or request.stream.pace != "burst"
+                    ):
+                        raise ProtocolError()
 
                 pcm = _load_pcm(request, scratch_root)
-                consumed_bytes = _account_unique_pcm(
-                    consumed_inputs,
-                    consumed_bytes,
-                    pcm_sha256=request.pcm.sha256,
-                    size_bytes=len(pcm),
-                    maximum_bytes=corpus_limit_bytes,
-                )
+                if manifest.adapter == MOBILE_WHISPER_ADAPTER:
+                    consumed_bytes = _account_request_pcm(
+                        consumed_bytes,
+                        size_bytes=len(pcm),
+                        maximum_bytes=corpus_limit_bytes,
+                    )
+                else:
+                    consumed_bytes = _account_unique_pcm(
+                        consumed_inputs,
+                        consumed_bytes,
+                        pcm_sha256=request.pcm.sha256,
+                        size_bytes=len(pcm),
+                        maximum_bytes=corpus_limit_bytes,
+                    )
 
                 partial_count = 0
 
@@ -1999,6 +2147,10 @@ def _run(
                     or not isinstance(model_padding_samples, int)
                     or model_padding_samples < 0
                     or model_padding_samples > MAX_MODEL_PADDING_SAMPLES
+                    or (
+                        manifest.adapter == MOBILE_WHISPER_ADAPTER
+                        and model_padding_samples != 0
+                    )
                 ):
                     raise ProtocolError()
                 total_samples = (

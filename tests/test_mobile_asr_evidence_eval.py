@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import signal
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -828,6 +830,99 @@ def test_report_recovers_truthfully_if_link_succeeds_then_raises(
     assert hashlib.sha256(loaded.path.read_bytes()).hexdigest() == loaded.digest
 
 
+def test_publication_fsync_failure_stays_linked_but_not_durable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parent = _private(tmp_path / "reports")
+    output = parent / "report.json"
+    state = evaluate._CommitState()
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("synthetic directory fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(evaluate.os, "fsync", fail_directory_fsync)
+    with pytest.raises(evaluate.MobileAsrEvidenceEvalError):
+        evaluate._publish_report(
+            output,
+            {"ok": True},
+            guard=lambda: None,
+            state=state,
+        )
+    assert output.exists()
+    assert state.linked is True
+    assert state.committed is False
+    assert state.digest == ""
+    with pytest.raises(evaluate.MobileAsrEvidenceEvalError):
+        evaluate._publish_report(
+            output,
+            {"ok": True},
+            guard=lambda: None,
+            state=evaluate._CommitState(),
+        )
+
+
+def test_publication_rejects_parent_replacement_after_directory_fsync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parent = _private(tmp_path / "reports")
+    moved = tmp_path / "moved-reports"
+    output = parent / "report.json"
+    state = evaluate._CommitState()
+    real_fsync = os.fsync
+    replaced = False
+
+    def replace_parent_after_fsync(descriptor: int) -> None:
+        nonlocal replaced
+        real_fsync(descriptor)
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode) and not replaced:
+            replaced = True
+            parent.rename(moved)
+            parent.mkdir(mode=0o700)
+
+    monkeypatch.setattr(evaluate.os, "fsync", replace_parent_after_fsync)
+    with pytest.raises(evaluate.MobileAsrEvidenceEvalError):
+        evaluate._publish_report(
+            output,
+            {"ok": True},
+            guard=lambda: None,
+            state=state,
+        )
+    assert replaced is True
+    assert state.linked is True
+    assert state.committed is False
+    assert not output.exists()
+    assert (moved / output.name).exists()
+
+
+def test_post_link_signal_unmasks_only_after_durable_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_fsync = os.fsync
+    real_pthread_sigmask = signal.pthread_sigmask
+    events: list[str] = []
+
+    def observed_fsync(descriptor: int) -> None:
+        real_fsync(descriptor)
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            events.append("directory-fsync")
+
+    def interrupt_after_unmask(how, mask):
+        restored = real_pthread_sigmask(how, mask)
+        if how == signal.SIG_SETMASK:
+            events.append("signal-unmask")
+            raise KeyboardInterrupt()
+        return restored
+
+    monkeypatch.setattr(evaluate.os, "fsync", observed_fsync)
+    monkeypatch.setattr(evaluate.signal, "pthread_sigmask", interrupt_after_unmask)
+    loaded = _run(tmp_path)
+    assert loaded.path.exists()
+    assert events == ["directory-fsync", "signal-unmask"]
+
+
 def test_publication_blocks_exact_plain_int_signals_and_restores(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -938,6 +1033,32 @@ def test_cli_parse_failure_does_not_echo_private_argument(capsys) -> None:
     assert json.loads(captured.out) == evaluate._SAFE_ERROR
     assert captured.err == ""
     assert "/private/do-not-echo" not in captured.out
+
+
+def test_cli_closed_stdout_pipe_is_controlled_and_silent() -> None:
+    read_descriptor, write_descriptor = os.pipe()
+    os.close(read_descriptor)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "tools.mobile_asr_evidence_eval",
+                "--unknown",
+                "/private/do-not-echo",
+            ],
+            cwd=Path(evaluate.__file__).resolve().parents[1],
+            stdin=subprocess.DEVNULL,
+            stdout=write_descriptor,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+        )
+    finally:
+        os.close(write_descriptor)
+    assert completed.returncode == 2
+    assert completed.stderr == b""
 
 
 def test_synthetic_scratch_stages_and_close_revalidates(tmp_path: Path) -> None:

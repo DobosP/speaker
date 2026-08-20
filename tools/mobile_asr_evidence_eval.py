@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 import re
 import signal
 import stat
+import sys
 from typing import Callable, Final, Mapping, Sequence
 
 from core.wer import normalize, word_error_rate
@@ -112,6 +113,7 @@ _EXPECTED_COMPONENTS = (
 )
 _DEMAND_STRATA = ("dkitchen", "dliving", "dwashing", "snr0", "snr10", "snr20")
 _MAX_REPORT_BYTES = 256 * 1024
+_MAX_PUBLIC_OUTPUT_BYTES = 4 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ERROR = {
     "error": "mobile_asr_evidence_eval_prerequisites_unavailable",
@@ -284,6 +286,7 @@ class LoadedMobileAsrEvidenceEvalReport:
 
 @dataclass(slots=True)
 class _CommitState:
+    linked: bool = False
     committed: bool = False
     digest: str = ""
 
@@ -2346,6 +2349,61 @@ def _publication_signal_numbers() -> tuple[int, ...]:
     return normalized
 
 
+def _publication_parent_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return _snapshot(metadata)[:6]
+
+
+def _linked_report_matches(
+    *,
+    path: Path,
+    parent: Path,
+    directory_fd: int,
+    descriptor: int,
+    parent_identity: tuple[int, ...],
+    encoded: bytes,
+    digest: str,
+) -> bool:
+    try:
+        directory = os.fstat(directory_fd)
+        lexical_parent = parent.lstat()
+        current = os.fstat(descriptor)
+        published = os.stat(
+            path.name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        lexical = path.lstat()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        observed = os.read(descriptor, len(encoded) + 1)
+        return (
+            _publication_parent_identity(directory) == parent_identity
+            and _publication_parent_identity(lexical_parent) == parent_identity
+            and path.parent == parent
+            and (current.st_dev, current.st_ino)
+            == (published.st_dev, published.st_ino)
+            == (lexical.st_dev, lexical.st_ino)
+            and stat.S_ISREG(current.st_mode)
+            and stat.S_ISREG(published.st_mode)
+            and stat.S_ISREG(lexical.st_mode)
+            and stat.S_IMODE(current.st_mode) == 0o600
+            and stat.S_IMODE(published.st_mode) == 0o600
+            and stat.S_IMODE(lexical.st_mode) == 0o600
+            and current.st_uid == os.getuid()
+            and published.st_uid == os.getuid()
+            and lexical.st_uid == os.getuid()
+            and current.st_nlink == 1
+            and published.st_nlink == 1
+            and lexical.st_nlink == 1
+            and current.st_size == len(encoded)
+            and published.st_size == len(encoded)
+            and lexical.st_size == len(encoded)
+            and observed == encoded
+            and hashlib.sha256(observed).hexdigest() == digest
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _publish_report(
     path: Path,
     report: Mapping[str, object],
@@ -2355,7 +2413,7 @@ def _publish_report(
 ) -> str:
     descriptor = -1
     try:
-        if state.committed or state.digest:
+        if state.linked or state.committed or state.digest:
             raise MobileAsrEvidenceEvalError()
         parent = _stable_private_directory(path.parent)
         if path.parent != parent or path.exists() or path.is_symlink():
@@ -2369,6 +2427,7 @@ def _publish_report(
             if stable != parent:
                 raise MobileAsrEvidenceEvalError()
             before_parent = _snapshot(os.fstat(directory_fd))
+            parent_identity = _publication_parent_identity(os.fstat(directory_fd))
             temporary = getattr(os, "O_TMPFILE", 0)
             if not temporary:
                 raise MobileAsrEvidenceEvalError()
@@ -2404,7 +2463,6 @@ def _publish_report(
             previous = signal.pthread_sigmask(
                 signal.SIG_BLOCK, _publication_signal_numbers()
             )
-            linked = False
             try:
                 try:
                     os.link(
@@ -2413,46 +2471,45 @@ def _publish_report(
                         dst_dir_fd=directory_fd,
                         follow_symlinks=True,
                     )
-                    linked = True
-                finally:
-                    if linked:
-                        state.committed = True
-                        state.digest = digest
-                    else:
-                        try:
-                            published = os.stat(
-                                path.name,
-                                dir_fd=directory_fd,
-                                follow_symlinks=False,
-                            )
-                            current = os.fstat(descriptor)
-                        except OSError:
-                            pass
-                        else:
-                            if (
-                                (current.st_dev, current.st_ino)
-                                == (published.st_dev, published.st_ino)
-                                and stat.S_ISREG(current.st_mode)
-                                and stat.S_ISREG(published.st_mode)
-                                and stat.S_IMODE(current.st_mode) == 0o600
-                                and stat.S_IMODE(published.st_mode) == 0o600
-                                and current.st_uid == os.getuid()
-                                and published.st_uid == os.getuid()
-                                and current.st_nlink == 1
-                                and published.st_nlink == 1
-                                and current.st_size == len(encoded)
-                                and published.st_size == len(encoded)
-                            ):
-                                state.committed = True
-                                state.digest = digest
+                except BaseException:
+                    if not _linked_report_matches(
+                        path=path,
+                        parent=parent,
+                        directory_fd=directory_fd,
+                        descriptor=descriptor,
+                        parent_identity=parent_identity,
+                        encoded=encoded,
+                        digest=digest,
+                    ):
+                        raise
+                if not _linked_report_matches(
+                    path=path,
+                    parent=parent,
+                    directory_fd=directory_fd,
+                    descriptor=descriptor,
+                    parent_identity=parent_identity,
+                    encoded=encoded,
+                    digest=digest,
+                ):
+                    raise MobileAsrEvidenceEvalError()
+                state.linked = True
+                os.fsync(directory_fd)
+                if not _linked_report_matches(
+                    path=path,
+                    parent=parent,
+                    directory_fd=directory_fd,
+                    descriptor=descriptor,
+                    parent_identity=parent_identity,
+                    encoded=encoded,
+                    digest=digest,
+                ):
+                    raise MobileAsrEvidenceEvalError()
+                state.committed = True
+                state.digest = digest
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous)
             if not state.committed:
                 raise MobileAsrEvidenceEvalError()
-            try:
-                os.fsync(directory_fd)
-            except OSError:
-                pass
         return digest
     except BaseException as error:
         if state.committed:
@@ -2918,6 +2975,37 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _emit_public(value: object) -> bool:
+    """Attempt one bounded binary stdout write and flush without retrying."""
+
+    try:
+        raw = _canonical_json(value) + b"\n"
+        if len(raw) > _MAX_PUBLIC_OUTPUT_BYTES:
+            return False
+        if sys.stdout.buffer.write(raw) != len(raw):
+            return False
+        sys.stdout.buffer.flush()
+        return True
+    except Exception:
+        replacement = -1
+        try:
+            replacement = os.open(
+                os.devnull,
+                os.O_WRONLY | getattr(os, "O_CLOEXEC", 0),
+            )
+            os.dup2(
+                replacement,
+                sys.stdout.buffer.fileno(),
+                inheritable=False,
+            )
+        except Exception:
+            pass
+        finally:
+            if replacement >= 0:
+                os.close(replacement)
+        return False
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -2938,12 +3026,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "ok": True,
                 "report_sha256": loaded.digest,
             }
-        print(_canonical_json(result).decode("ascii"))
-        return 0
+        return 0 if _emit_public(result) else 2
     except KeyboardInterrupt:
         return 130
     except (MobileAsrEvidenceEvalError, OSError, RuntimeError, TypeError, ValueError):
-        print(_canonical_json(_SAFE_ERROR).decode("ascii"))
+        _emit_public(_SAFE_ERROR)
         return 2
 
 

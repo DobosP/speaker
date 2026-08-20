@@ -889,6 +889,33 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         training-disjoint, latency/RTF, Flutter/native/phone/device/microphone/
         thermal, network/GPU, or live authority. NEXT: add a private owner-
         recorded disjoint holdout and actual Flutter/native phone gates.
+      - [x] Exact MobileWhisper base.en endpoint-epoch comparator evidence DONE
+        (ADR-0208). The hash-only provision binds the three-file/160,626,066-
+        byte INT8 tuple and schema-11 one-thread CPU final-only worker. The exact
+        ADR-0207 rerun stays the sole owner of all 198 endpoint epochs and every
+        control/app decision; Whisper gets one complete-PCM request with zero
+        evaluator/adapter-appended PCM padding per inherited epoch and zero app
+        admissions. Schema-11's 62 MiB ceiling counts cumulative decoded-request
+        bytes, including repeats; generic/schema-10 unique-PCM accounting stays
+        unchanged. Preserve candidate manifest/
+        receipt `4195ecd3…ff8b`/`8a52ee00…918b`, v3 report
+        `0ae9424d…e625`, private scratch/logs, both failed attempts, and the
+        superseding v3 package. Report evidence is mixed: targets remain 18/26
+        with 2 gained/2 lost; forbidden hits rise 0→7/355; command WER worsens
+        `.6809`→`2.3404`; four acoustic WER cells improve; all 59 literal-empty
+        baseline epochs become candidate nonempty; normalized agreement is
+        39/198. V1/v2 failed closed before scratch-witness and literal-empty
+        comparison fixes; v3 completed with 155.771 CPU-seconds/623.803 seconds
+        wall, direct live peak 994,983,936 bytes, zero swap/events, and six
+        tasks. Final replay gates pass 85 focused, 150+1 skip composed, 354+1
+        skip adjacent, 6 APM/DTD, 5 targeted, Ruff11, scoped format2, diff, and
+        independent audits. This is evidence-only: no runtime wiring, winner,
+        endpoint/control/tool/session, pooled-quality/default/promotion/
+        qualification, held-out/training-disjoint, latency/RTF, Flutter/native/
+        phone/device/microphone/thermal/live, GPU/network, redistribution, or
+        Romanian authority. NEXT: a tuning-disjoint owner holdout, then actual
+        Flutter/native physical-phone CPU/RSS/thermal/microphone/lifecycle/live
+        validation before any adoption decision.
       - [ ] Add a platform-native or cross-engine plugin lifecycle fence, or
         prove the exact recorder/player contracts. ADR-0204 excludes overlap
         only among covered shipped paths in the canonical Flutter UI isolate.
@@ -1014,7 +1041,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       default, qualification, held-out/training-disjoint, latency/RTF,
       Flutter/native/phone/device/microphone/thermal, network/GPU, or live
       authority. NEXT: private owner-recorded disjoint holdout plus actual
-      Flutter/native phone resource and live validation.
+      Flutter/native phone resource and live validation. ADR-0208 now accepts
+      the exact MobileWhisper endpoint-epoch comparator/report as a separate
+      evidence-only slice while retaining that same next gate. It does not
+      promote or wire the candidate; exact mixed metrics, failed-run history,
+      provision/package hashes, and authority exclusions live in ADR-0208.
 - [x] **NOTSOFAR-1 natural-overlap private bundle — IMPLEMENTED AND VERIFIED
       2026-08-13 (ADR-0194).** The no-download preparer and strict
       retained-bundle loader bind the exact retained CC-BY-4.0 MTG_32006

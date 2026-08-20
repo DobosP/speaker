@@ -32,8 +32,10 @@ from .manifest import (
     FASTER_WHISPER_VOCABULARY_FILES,
     KYUTAI_ADAPTER,
     MAX_PYTHON_BYTES,
+    MAX_MOBILE_WHISPER_SOURCE_LOCK_BYTES,
     MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES,
     MAX_WORKER_BYTES,
+    MOBILE_WHISPER_ADAPTER,
     MOBILE_ZIPFORMER_ADAPTER,
     MOONSHINE_ADAPTER,
     MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER,
@@ -43,6 +45,7 @@ from .manifest import (
     SHERPA_ZIPFORMER_ADAPTER,
     FasterWhisperEndpointConfig,
     KyutaiConfig,
+    MobileWhisperConfig,
     MobileZipformerConfig,
     MoonshineExternalEndpointConfig,
     NemotronConfig,
@@ -107,6 +110,7 @@ _KILL_GRACE_SEC = 2.0
 _QUEUE_CAPACITY = MAX_PARTIALS_PER_CASE + 16
 _BWRAP_PATH = Path("/usr/bin/bwrap")
 _SYSTEMD_RUN_PATH = Path("/usr/bin/systemd-run")
+_CANONICAL_REPO_ROOT = Path(__file__).resolve().parents[2]
 _USER_RUNTIME_ROOT = Path("/run/user")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_ROOT = Path("/proc")
@@ -324,6 +328,23 @@ def _expected_final_evidence(
             total_samples + config.input_chunk_samples - 1
         ) // config.input_chunk_samples
         return chunks, (-total_samples) % config.input_chunk_samples
+    if manifest.adapter == MOBILE_WHISPER_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            not isinstance(config, MobileWhisperConfig)
+            or manifest.schema_version != 11
+            or request.stream.chunk_samples != config.native_chunk_samples
+            or request.stream.tail_padding_samples
+            != config.maximum_tail_padding_samples
+            or request.stream.pace != "burst"
+        ):
+            raise WorkerError("invalid_request")
+        chunks = (
+            total_samples + config.native_chunk_samples - 1
+        ) // config.native_chunk_samples
+        # This is only adapter/evaluator-appended PCM alignment padding. Sherpa's
+        # internal tail_paddings=-1 behavior is intentionally opaque here.
+        return chunks, 0
     if manifest.adapter != NEMOTRON_ADAPTER:
         chunks = (
             total_samples + request.stream.chunk_samples - 1
@@ -378,6 +399,16 @@ def _wire_protocol_version(manifest: WorkerManifest) -> int:
     if manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
         return MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION
     return PROTOCOL_VERSION
+
+
+def _worker_interpreter_flags(manifest: WorkerManifest) -> tuple[str, ...]:
+    """Keep schema-11 startup hooks disabled without changing older adapters."""
+
+    if manifest.adapter == MOBILE_WHISPER_ADAPTER:
+        return ("-I", "-S", "-B")
+    if manifest.adapter in {MOBILE_ZIPFORMER_ADAPTER, SHERPA_ZIPFORMER_ADAPTER}:
+        return ("-I", "-B")
+    return ("-I", "-S", "-B")
 
 
 def _validate_native_final(
@@ -1409,6 +1440,65 @@ def _path_is_within(path: Path, root: Path) -> bool:
     return True
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return _path_is_within(left, right) or _path_is_within(right, left)
+
+
+def _validate_mobile_whisper_scratch_authorities(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+) -> None:
+    """Keep schema-11 writable scratch outside every external authority."""
+
+    if manifest.adapter != MOBILE_WHISPER_ADAPTER:
+        return
+    try:
+        model_roots = {
+            artifact.path.parent
+            for artifact in manifest.artifacts
+            if artifact.name.startswith("model-")
+        }
+        venv_root = manifest.python.path.parent.parent
+        provision_root = manifest.path.parent
+        protected_roots = (
+            venv_root,
+            provision_root,
+            *model_roots,
+            _CANONICAL_REPO_ROOT,
+        )
+        protected_paths = (
+            manifest.worker.path,
+            *(control.path for control in manifest.control_files),
+        )
+        required = (
+            scratch,
+            source_bundle.root,
+            source_bundle.worker_path,
+            *protected_roots,
+            *protected_paths,
+        )
+        if (
+            manifest.schema_version != 11
+            or type(manifest.adapter_config) is not MobileWhisperConfig
+            or len(model_roots) != 1
+            or any(
+                not path.is_absolute() or "\x00" in str(path)
+                for path in required
+            )
+            or any(_paths_overlap(scratch, path) for path in protected_roots)
+            or any(_paths_overlap(scratch, path) for path in protected_paths)
+            # The verified staged bundle is intentionally placed beneath
+            # scratch and overlaid read-only. The reverse topology is unsafe.
+            or _path_is_within(scratch, source_bundle.root)
+        ):
+            raise WorkerError("worker_prerequisite")
+    except WorkerError:
+        raise
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        raise WorkerError("worker_prerequisite") from None
+
+
 def _verify_nemotron_runtime_layout(
     manifest: WorkerManifest,
     receipt: RuntimeTreeReceipt,
@@ -2084,6 +2174,11 @@ def _zipformer_bwrap_command(
         model_root = model_roots.pop()
     except (OSError, RuntimeError, ValueError):
         raise WorkerError("worker_prerequisite") from None
+    _validate_mobile_whisper_scratch_authorities(
+        manifest,
+        scratch,
+        source_bundle,
+    )
     venv_root = manifest.python.path.parent.parent
     required_paths = (
         scratch,
@@ -2130,6 +2225,7 @@ def _zipformer_bwrap_command(
     _append_mount(command, "--ro-bind", model_root)
 
     bundle_root = Path(f"/proc/self/fd/{bundle_descriptor}")
+    interpreter_flags = _worker_interpreter_flags(manifest)
     command.extend(
         (
             "--chdir",
@@ -2138,8 +2234,7 @@ def _zipformer_bwrap_command(
             str(manifest.python.path),
             "--",
             f"/proc/self/fd/{python_descriptor}",
-            "-I",
-            "-B",
+            *interpreter_flags,
             f"/proc/self/fd/{worker_descriptor}",
             "--manifest",
             str(manifest.path),
@@ -2296,6 +2391,20 @@ class StreamingWorker:
                 raise WorkerError("worker_protocol")
         elif self.manifest.schema_version == 10:
             raise WorkerError("worker_protocol")
+        if self.manifest.adapter == MOBILE_WHISPER_ADAPTER:
+            config = self.manifest.adapter_config
+            if (
+                self.manifest.schema_version != 11
+                or type(config) is not MobileWhisperConfig
+                or config.native_chunk_samples != 1_600
+                or config.maximum_tail_padding_samples != 0
+                or config.execution_mode != "complete-endpoint-epoch-final-only"
+                or config.endpoint_owner != "mobile-zipformer"
+                or config.control_authority is not False
+            ):
+                raise WorkerError("worker_protocol")
+        elif self.manifest.schema_version == 11:
+            raise WorkerError("worker_protocol")
         try:
             lexical_scratch = Path(os.path.abspath(self.scratch_root))
             with opened_directory_nofollow(
@@ -2305,6 +2414,11 @@ class StreamingWorker:
                 pass
         except (OSError, RuntimeError, BoundedReadError):
             raise WorkerError("worker_prerequisite") from None
+        _validate_mobile_whisper_scratch_authorities(
+            self.manifest,
+            scratch,
+            self.source_bundle,
+        )
         device_nodes: tuple[Path, ...] = ()
         system_ro_paths: tuple[Path, ...] = ()
         proc_driver_available = False
@@ -2312,6 +2426,7 @@ class StreamingWorker:
         if self.manifest.adapter in {
             FASTER_WHISPER_ENDPOINT_ADAPTER,
             KYUTAI_ADAPTER,
+            MOBILE_WHISPER_ADAPTER,
             NEMOTRON_ADAPTER,
             PARAKEET_CPP_ADAPTER,
             PARAKEET_REALTIME_EOU_ADAPTER,
@@ -2321,6 +2436,7 @@ class StreamingWorker:
             if os.name != "posix" or not Path("/proc/self/fd").is_dir():
                 raise WorkerError("worker_prerequisite")
         if self.manifest.adapter in {
+            MOBILE_WHISPER_ADAPTER,
             MOBILE_ZIPFORMER_ADAPTER,
             SHERPA_ZIPFORMER_ADAPTER,
         }:
@@ -2371,6 +2487,7 @@ class StreamingWorker:
                 NEMOTRON_ADAPTER,
                 PARAKEET_CPP_ADAPTER,
                 PARAKEET_REALTIME_EOU_ADAPTER,
+                MOBILE_WHISPER_ADAPTER,
                 MOBILE_ZIPFORMER_ADAPTER,
                 SHERPA_ZIPFORMER_ADAPTER,
             }:
@@ -2385,12 +2502,7 @@ class StreamingWorker:
             self._close_bundle_descriptors()
             raise WorkerError("worker_prerequisite") from None
         bundle_root = Path(f"/proc/self/fd/{self._bundle_descriptor}")
-        interpreter_flags = (
-            ["-I", "-B"]
-            if self.manifest.adapter
-            in {MOBILE_ZIPFORMER_ADAPTER, SHERPA_ZIPFORMER_ADAPTER}
-            else ["-I", "-S", "-B"]
-        )
+        interpreter_flags = _worker_interpreter_flags(self.manifest)
         worker_command = [
             str(self.manifest.python.path),
             *interpreter_flags,
@@ -2484,6 +2596,7 @@ class StreamingWorker:
             # required --new-session setsid(), so the inner session remains
             # independent and die-with-parent links both lifecycle layers.
         elif self.manifest.adapter in {
+            MOBILE_WHISPER_ADAPTER,
             MOBILE_ZIPFORMER_ADAPTER,
             SHERPA_ZIPFORMER_ADAPTER,
         }:
@@ -2516,7 +2629,10 @@ class StreamingWorker:
             environment["PARAKEET_DEVICE"] = "cpu"
             environment["CUDA_VISIBLE_DEVICES"] = ""
             environment.pop("CUDA_DEVICE_ORDER", None)
-        if self.manifest.adapter == MOBILE_ZIPFORMER_ADAPTER:
+        if self.manifest.adapter in {
+            MOBILE_WHISPER_ADAPTER,
+            MOBILE_ZIPFORMER_ADAPTER,
+        }:
             environment["CUDA_VISIBLE_DEVICES"] = ""
             environment.pop("CUDA_DEVICE_ORDER", None)
         if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
@@ -2743,9 +2859,18 @@ class StreamingWorker:
             expected_protocol = _wire_protocol_version(self.manifest)
             if checked.protocol_version != expected_protocol:
                 raise WorkerError("invalid_request")
-            schema_v6_final_only = self.manifest.schema_version == 6
-            if schema_v6_final_only != (
-                self.manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER
+            final_only = self.manifest.adapter in {
+                FASTER_WHISPER_ENDPOINT_ADAPTER,
+                MOBILE_WHISPER_ADAPTER,
+            }
+            if final_only != (self.manifest.schema_version in {6, 11}):
+                raise WorkerError("worker_protocol")
+            if (
+                self.manifest.schema_version == 6
+                and self.manifest.adapter != FASTER_WHISPER_ENDPOINT_ADAPTER
+            ) or (
+                self.manifest.schema_version == 11
+                and self.manifest.adapter != MOBILE_WHISPER_ADAPTER
             ):
                 raise WorkerError("worker_protocol")
             if self.manifest.adapter == MOONSHINE_EXTERNAL_ENDPOINT_ADAPTER:
@@ -2759,6 +2884,16 @@ class StreamingWorker:
                     > config.maximum_tail_padding_samples
                 ):
                     raise WorkerError("invalid_request")
+            if self.manifest.adapter == MOBILE_WHISPER_ADAPTER:
+                config = self.manifest.adapter_config
+                if (
+                    not isinstance(config, MobileWhisperConfig)
+                    or checked.stream.chunk_samples != config.native_chunk_samples
+                    or checked.stream.tail_padding_samples
+                    != config.maximum_tail_padding_samples
+                    or checked.stream.pace != "burst"
+                ):
+                    raise WorkerError("invalid_request")
             self._verify_pcm(checked)
             self._send(encoded)
             partials: list[PartialEvent] = []
@@ -2769,7 +2904,7 @@ class StreamingWorker:
                 event = self._next_event(max(0.0, case_deadline - self._monotonic()))
                 if type(event) is PartialEvent:
                     if (
-                        schema_v6_final_only
+                        final_only
                         or event.protocol_version != expected_protocol
                         or event.request_id != checked.request_id
                         or event.seq != len(partials)
@@ -2852,7 +2987,7 @@ class StreamingWorker:
                     event.protocol_version != PROTOCOL_VERSION
                     or event.request_id != checked.request_id
                     or event.seq != len(partials)
-                    or (schema_v6_final_only and event.seq != 0)
+                    or (final_only and event.seq != 0)
                     or event.samples_seen
                     != checked.pcm.samples + checked.stream.tail_padding_samples
                     or event.samples_seen < last_samples
@@ -2988,7 +3123,11 @@ class StreamingWorker:
                 or any(
                     hash_regular_bounded(
                         control.path,
-                        maximum_bytes=MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES,
+                        maximum_bytes=(
+                            MAX_MOBILE_WHISPER_SOURCE_LOCK_BYTES
+                            if self.manifest.adapter == MOBILE_WHISPER_ADAPTER
+                            else MAX_MOBILE_ZIPFORMER_SOURCE_LOCK_BYTES
+                        ),
                         expected_bytes=control.size_bytes,
                     ).sha256
                     != control.sha256

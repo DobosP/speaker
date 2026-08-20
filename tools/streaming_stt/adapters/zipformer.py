@@ -24,7 +24,9 @@ from typing import TypeVar
 
 from ..bounded_io import BoundedReadError, read_regular_bounded
 from ..manifest import (
+    MOBILE_WHISPER_ARTIFACT_SPECS,
     MOBILE_ZIPFORMER_ARTIFACT_SPECS,
+    MobileWhisperConfig,
     MobileZipformerConfig,
     SHERPA_ZIPFORMER_ARTIFACT_SPECS,
     SherpaZipformerConfig,
@@ -38,6 +40,7 @@ from ..protocol import (
     MAX_STREAM_SAMPLES,
     MOBILE_ZIPFORMER_ENDPOINT_PROTOCOL_VERSION,
     MobileZipformerEndpointObservation,
+    PROTOCOL_VERSION,
     ResourceUsage,
     TranscribeRequest,
 )
@@ -57,6 +60,12 @@ _MOBILE_MODEL_FILENAMES = {
         MOBILE_ZIPFORMER_ARTIFACT_SPECS
     )
 }
+_MOBILE_WHISPER_MODEL_FILENAMES = {
+    name.removeprefix("model-"): basename
+    for name, basename, _precision, _sha256, _size_bytes in (
+        MOBILE_WHISPER_ARTIFACT_SPECS
+    )
+}
 _T = TypeVar("_T")
 
 
@@ -66,6 +75,10 @@ class SherpaZipformerAdapterError(RuntimeError):
 
 class MobileZipformerAdapterError(RuntimeError):
     """A detail-free mobile-runtime or endpoint-contract failure."""
+
+
+class MobileWhisperAdapterError(RuntimeError):
+    """A detail-free mobile Whisper final-only contract failure."""
 
 
 @dataclass(frozen=True)
@@ -134,6 +147,30 @@ class MobileZipformerCase:
     authoritative: bool
 
 
+@dataclass(frozen=True)
+class MobileWhisperReady:
+    model_load_ms: float
+    resources: ResourceUsage
+
+
+@dataclass(frozen=True)
+class MobileWhisperCase:
+    """Final-only evidence; padding counts only adapter-appended PCM zeros."""
+
+    partials: tuple[()] = field(default=(), repr=False)
+    final: str = field(default="", repr=False)
+    elapsed_ms: float = 0.0
+    finalization_ms: float = 0.0
+    compute_ms: float = 0.0
+    deadline_misses: int = 0
+    max_backlog_ms: float = 0.0
+    resources: ResourceUsage = field(
+        default_factory=lambda: ResourceUsage(0.0, 1, None)
+    )
+    # Sherpa's internal tail_paddings=-1 behavior is opaque and not represented.
+    model_padding_samples: int = 0
+
+
 def _candidate_apis(config: SherpaZipformerConfig) -> tuple[object, object]:
     """Import only exact installed production packages; never resolve remotely."""
 
@@ -184,6 +221,35 @@ def _mobile_candidate_apis(
         or getattr(numpy, "__version__", None) != config.numpy_version
     ):
         raise MobileZipformerAdapterError()
+    return sherpa, numpy
+
+
+def _mobile_whisper_candidate_apis(
+    config: MobileWhisperConfig,
+) -> tuple[object, object]:
+    """Import only the exact local mobile-compatible offline runtime."""
+
+    try:
+        if (
+            metadata.version(_SHERPA_DISTRIBUTION) != config.package_version
+            or metadata.version(_SHERPA_CORE_DISTRIBUTION)
+            != config.core_package_version
+            or metadata.version(_NUMPY_DISTRIBUTION) != config.numpy_version
+        ):
+            raise MobileWhisperAdapterError()
+        sherpa = importlib.import_module("sherpa_onnx")
+        numpy = importlib.import_module("numpy")
+    except (
+        ImportError,
+        metadata.PackageNotFoundError,
+        MobileWhisperAdapterError,
+    ):
+        raise MobileWhisperAdapterError() from None
+    if (
+        getattr(sherpa, "__version__", None) != config.package_version
+        or getattr(numpy, "__version__", None) != config.numpy_version
+    ):
+        raise MobileWhisperAdapterError()
     return sherpa, numpy
 
 
@@ -843,7 +909,203 @@ class MobileZipformerAdapter:
         )
 
 
+class MobileWhisperOfflineAdapter:
+    """One offline decode for an externally committed Zipformer epoch."""
+
+    def __init__(
+        self,
+        model_root: Path,
+        *,
+        config: MobileWhisperConfig,
+        api: object | None = None,
+        numpy_api: object | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        if type(config) is not MobileWhisperConfig:
+            raise MobileWhisperAdapterError()
+        try:
+            resolved_model_root = Path(model_root).resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise MobileWhisperAdapterError() from None
+        if not resolved_model_root.is_dir():
+            raise MobileWhisperAdapterError()
+        model_paths = {
+            name: resolved_model_root / filename
+            for name, filename in _MOBILE_WHISPER_MODEL_FILENAMES.items()
+        }
+        if any(not path.is_file() for path in model_paths.values()):
+            raise MobileWhisperAdapterError()
+
+        self.config = config
+        self.model_root = resolved_model_root
+        self._clock = clock
+        self._closed = False
+        self._recognizer: object | None = None
+        load_started = self._now()
+        if (api is None) != (numpy_api is None):
+            raise MobileWhisperAdapterError()
+        candidate, numpy = (
+            _mobile_whisper_candidate_apis(config)
+            if api is None
+            else (api, numpy_api)
+        )
+        if (
+            getattr(candidate, "__version__", None) != config.package_version
+            or getattr(numpy, "__version__", None) != config.numpy_version
+        ):
+            raise MobileWhisperAdapterError()
+        recognizer_type = getattr(candidate, "OfflineRecognizer", None)
+        factory = getattr(recognizer_type, "from_whisper", None)
+        asarray = getattr(numpy, "asarray", None)
+        if not callable(factory) or not callable(asarray):
+            raise MobileWhisperAdapterError()
+        self._numpy = numpy
+        try:
+            self._recognizer = factory(
+                encoder=str(model_paths["encoder"]),
+                decoder=str(model_paths["decoder"]),
+                tokens=str(model_paths["tokens"]),
+                language=config.language,
+                task=config.task,
+                num_threads=config.num_threads,
+                decoding_method=config.decoding_method,
+                debug=config.debug,
+                provider=config.provider,
+                tail_paddings=config.tail_paddings,
+                enable_token_timestamps=config.enable_token_timestamps,
+                enable_segment_timestamps=config.enable_segment_timestamps,
+                rule_fsts=config.rule_fsts,
+                rule_fars=config.rule_fars,
+                hr_dict_dir=config.hr_dict_dir,
+                hr_rule_fsts=config.hr_rule_fsts,
+                hr_lexicon=config.hr_lexicon,
+            )
+            if self._recognizer is None:
+                raise MobileWhisperAdapterError()
+            self.ready = MobileWhisperReady(
+                model_load_ms=self._duration_ms(load_started, self._now()),
+                resources=_resource_usage(),
+            )
+        except Exception as error:
+            self._recognizer = None
+            if isinstance(error, MobileWhisperAdapterError):
+                raise
+            raise MobileWhisperAdapterError() from None
+
+    def __enter__(self) -> MobileWhisperOfflineAdapter:
+        if self._closed:
+            raise MobileWhisperAdapterError()
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._closed = True
+        self._recognizer = None
+
+    def _now(self) -> float:
+        try:
+            value = float(self._clock())
+        except (TypeError, ValueError, OverflowError):
+            raise MobileWhisperAdapterError() from None
+        if not math.isfinite(value):
+            raise MobileWhisperAdapterError()
+        return value
+
+    @staticmethod
+    def _duration_ms(start: float, end: float) -> float:
+        duration = end - start
+        if not math.isfinite(duration) or duration < 0.0:
+            raise MobileWhisperAdapterError()
+        return duration * 1000.0
+
+    def _timed(self, function: Callable[[], _T]) -> tuple[_T, float]:
+        started = self._now()
+        result = function()
+        finished = self._now()
+        return result, self._duration_ms(started, finished)
+
+    def transcribe(
+        self,
+        request: TranscribeRequest,
+        *,
+        emit_partial: Callable[[int, object], None],
+    ) -> MobileWhisperCase:
+        recognizer = self._recognizer
+        config = self.config
+        if (
+            self._closed
+            or recognizer is None
+            or not callable(emit_partial)
+            or request.protocol_version != PROTOCOL_VERSION
+            or request.stream.chunk_samples != config.native_chunk_samples
+            or request.stream.tail_padding_samples
+            != config.maximum_tail_padding_samples
+            or request.stream.pace != "burst"
+            or request.pcm.samples > MAX_STREAM_SAMPLES
+        ):
+            raise MobileWhisperAdapterError()
+        try:
+            source = _read_pcm(request)
+        except SherpaZipformerAdapterError:
+            raise MobileWhisperAdapterError() from None
+
+        case_started = self._now()
+        compute_ms = 0.0
+        finalization_started = case_started
+        try:
+            stream, create_ms = self._timed(recognizer.create_stream)
+            compute_ms += create_ms
+            if stream is None:
+                raise MobileWhisperAdapterError()
+            accept_waveform = getattr(stream, "accept_waveform", None)
+            decode_stream = getattr(recognizer, "decode_stream", None)
+            if not callable(accept_waveform) or not callable(decode_stream):
+                raise MobileWhisperAdapterError()
+            native = self._numpy.asarray(source, dtype="float32")
+            _, accept_ms = self._timed(
+                lambda: accept_waveform(config.sample_rate, native)
+            )
+            compute_ms += accept_ms
+            finalization_started = self._now()
+            _, decode_ms = self._timed(lambda: decode_stream(stream))
+            result, result_ms = self._timed(lambda: getattr(stream, "result", None))
+            compute_ms += decode_ms + result_ms
+            text = getattr(result, "text", None)
+            if not isinstance(text, str):
+                raise MobileWhisperAdapterError()
+            final_text = text.strip()
+            if len(final_text) > MAX_HYPOTHESIS_CHARS:
+                raise MobileWhisperAdapterError()
+        except MobileWhisperAdapterError:
+            raise
+        except Exception:
+            raise MobileWhisperAdapterError() from None
+
+        finished = self._now()
+        try:
+            resources = _resource_usage()
+        except SherpaZipformerAdapterError:
+            raise MobileWhisperAdapterError() from None
+        return MobileWhisperCase(
+            partials=(),
+            final=final_text,
+            elapsed_ms=self._duration_ms(case_started, finished),
+            finalization_ms=self._duration_ms(finalization_started, finished),
+            compute_ms=compute_ms,
+            deadline_misses=0,
+            max_backlog_ms=0.0,
+            resources=resources,
+        )
+
+
 __all__ = [
+    "MobileWhisperAdapterError",
+    "MobileWhisperCase",
+    "MobileWhisperConfig",
+    "MobileWhisperOfflineAdapter",
+    "MobileWhisperReady",
     "MobileZipformerAdapter",
     "MobileZipformerAdapterError",
     "MobileZipformerCase",

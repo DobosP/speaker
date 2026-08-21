@@ -222,7 +222,9 @@
         "asr_num_threads": 4,
         "tts_num_threads": 2,
         "resampler_quality": "VHQ",
-        "playback_fifo_sec": 1.5
+        "playback_fifo_sec": 1.5,
+        "tts_output_leveler": false,
+        "barge_word_cut_require_speaker": true
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3},

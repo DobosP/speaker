@@ -966,13 +966,19 @@ class OllamaLease:
 
         log_path = run_dir / "ollama-serve.log"
         lease.log_handle = log_path.open("ab")
+        server_env = dict(env)
+        # Current Ollama may prefer a more featureful embedded GGUF template
+        # over the alias's verified Go template unless this is explicit.  Scope
+        # the override to the daemon this lease owns; client/doctor/core
+        # environments and a reused daemon remain untouched.
+        server_env["OLLAMA_GO_TEMPLATE"] = "1"
         try:
             old_mask = _block_lifecycle_signals()
             try:
                 try:
                     lease.process = ops.popen(
                         ["ollama", "serve"],
-                        env=env,
+                        env=server_env,
                         stdout=lease.log_handle,
                         stderr=subprocess.STDOUT,
                         start_new_session=True,

@@ -2404,6 +2404,12 @@ class SherpaOnnxEngine(AudioEngine):
         # off-thread. Plain ints -> GIL-atomic, alloc-free, real-time safe.
         self._underrun_blocks: int = 0
         self._underrun_at_reply_start: int = 0
+        # Native output callback underflows are reported by PortAudio itself and
+        # are distinct from the application FIFO starvation counted above.  Keep
+        # a separate RT-safe counter so a device/route scheduling miss is never
+        # misdiagnosed as slow TTS (or vice versa).
+        self._native_output_underflow_blocks: int = 0
+        self._native_output_underflow_at_reply_start: int = 0
         # Dry-gap counter: the partial-read counter above cannot see a block where
         # the FIFO was ALREADY fully empty (n == 0) -- with whole-clip leveler
         # synthesis the audible failure mode is dead air BETWEEN sentences, which
@@ -2420,11 +2426,10 @@ class SherpaOnnxEngine(AudioEngine):
         # only); None while closed or when the device accepts the TTS rate.
         self._play_resampler: Optional[AudioResampler] = None
         # Fix 5b: self-sizing playback FIFO lead. Seeded from playback_fifo_sec and
-        # then DERIVED at runtime from the measured per-reply underrun count -- grow
-        # the buffer when a reply starved (the leveler forces whole-clip synth, so a
-        # long next sentence can out-run a shallow FIFO -> inter-sentence gaps),
+        # then DERIVED at runtime from both measured per-reply partial underruns and
+        # fully-empty dry gaps -- grow the buffer when either says the reply starved,
         # slow-decay on clean replies. No per-machine constant: it converges to just
-        # above THIS box's worst inter-sentence synth spike, bounded by a UX ceiling.
+        # above THIS box's worst synthesis spike, bounded by a UX ceiling.
         self._playback_fifo_sec_cur: float = float(config.playback_fifo_sec)
         # Input-clipping diagnostic (one-shot WARNING): a mic gain so hot that the
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
@@ -3554,6 +3559,30 @@ class SherpaOnnxEngine(AudioEngine):
                     "inference is busy"
                 )
 
+    def _require_word_cut_speaker_authority(self) -> None:
+        """Fail startup closed when the selected word-cut policy needs identity."""
+
+        activation = resolve_speaker_identity_activation(
+            speaker_enroll_embedding=self.config.speaker_enroll_embedding,
+            speaker_enroll_wav=self.config.speaker_enroll_wav,
+            barge_in_enabled=self.config.barge_in_enabled,
+            barge_word_cut_enabled=self.config.barge_word_cut_enabled,
+            aec_enabled=self.config.aec_enabled,
+            barge_word_cut_require_speaker=(
+                self.config.barge_word_cut_require_speaker
+            ),
+        )
+        if not activation.word_cut_requires_speaker:
+            return
+        if self._speaker_gate is None or not self._speaker_gate.is_enrolled:
+            raise RuntimeError(
+                "active word-cut requires a compatible speaker enrollment"
+            )
+        if not self._warm_speaker_gate():
+            raise RuntimeError(
+                "active word-cut speaker model could not warm off capture"
+            )
+
     def _bind_virtual_capture_route(self) -> None:
         binder = self._virtual_audio_binder
         if binder is None:
@@ -4235,39 +4264,49 @@ class SherpaOnnxEngine(AudioEngine):
         tracker = self._acoustic_turn_tracker
         acoustic = None
         revision = 0
-        if tracker is not None:
-            acoustic, revision = tracker.advance(
-                emitted_at=detected_at,
-                speech_start_at=(
-                    speech_start_at if speech_start_at is not None else detected_at
-                ),
-            )
-        if self._cb.on_barge_in_result is not None:
-            delivered = self._emit_capture_callback(
-                self._cb.on_barge_in_result,
-                AcousticSignal(
+
+        def publish_barge() -> None:
+            # Publication is one admitted capture effect.  A stale epoch must
+            # neither advance the acoustic turn nor leave diagnostic evidence.
+            # Conversely, user code may synchronously abort the new turn, so
+            # BARGE_DETECTED and its span binding must precede that callback.
+            nonlocal acoustic, revision
+            if tracker is not None:
+                acoustic, revision = tracker.advance(
+                    emitted_at=detected_at,
+                    speech_start_at=(
+                        speech_start_at
+                        if speech_start_at is not None
+                        else detected_at
+                    ),
+                )
+            if self._diagnostic_bundle is not None:
+                from ..diagnostic_bundle import DiagnosticStage
+
+                if diagnostic_span is not None:
+                    self._bind_diagnostic_span(acoustic, diagnostic_span)
+                self._diagnostic_observe(
+                    DiagnosticStage.BARGE_DETECTED,
+                    at=detected_at,
+                    bundle_span=diagnostic_span,
                     acoustic=acoustic,
                     revision=revision,
-                    detected_at=detected_at,
-                ),
-                capture_epoch=capture_epoch,
-            )
-        else:
-            delivered = self._emit_capture_callback(
-                self._cb.on_barge_in,
-                capture_epoch=capture_epoch,
-            )
-        if delivered and self._diagnostic_bundle is not None:
-            from ..diagnostic_bundle import DiagnosticStage
+                )
+            if self._cb.on_barge_in_result is not None:
+                self._cb.on_barge_in_result(
+                    AcousticSignal(
+                        acoustic=acoustic,
+                        revision=revision,
+                        detected_at=detected_at,
+                    )
+                )
+            else:
+                self._cb.on_barge_in()
 
-            self._diagnostic_observe(
-                DiagnosticStage.BARGE_DETECTED,
-                at=detected_at,
-                bundle_span=diagnostic_span,
-                acoustic=acoustic,
-                revision=revision,
-            )
-        return delivered
+        return self._emit_capture_callback(
+            publish_barge,
+            capture_epoch=capture_epoch,
+        )
 
     def _emit_command_callback(
         self,
@@ -4348,10 +4387,12 @@ class SherpaOnnxEngine(AudioEngine):
         )
 
     def _bind_diagnostic_span(self, acoustic, bundle_span) -> None:
-        """Bind lifecycle events to the endpoint frame only.
+        """Bind lifecycle events to one real synchronized capture frame.
 
         A turn sample count is not a packed-bundle coordinate: word-cut and
-        confirmed-barge handoffs may prepend/replay non-contiguous PCM.
+        confirmed-barge handoffs may prepend/replay non-contiguous PCM.  Later
+        explicit observations replace an onset binding, so an endpoint frame
+        remains the terminal authority when one exists.
         """
         key = self._diagnostic_acoustic_key(acoustic)
         if key is not None and bundle_span is not None:
@@ -4424,6 +4465,12 @@ class SherpaOnnxEngine(AudioEngine):
                 trailing_silence_sec=trailing_silence_sec,
                 utterance_elapsed_sec=utterance_elapsed_sec,
             )
+            # Any typed acoustic observation carrying an explicit coordinate is
+            # also lifecycle authority for a later span-less terminal event.
+            # Bind only after schema construction succeeds, but before handing
+            # the observation to the bundle writer.
+            if key is not None and bundle_span is not None:
+                self._bind_diagnostic_span(acoustic, bundle_span)
             accepted = self.record_diagnostic_observation(observation)
         except Exception:  # noqa: BLE001 - evidence cannot break the audio loop
             bundle = self._diagnostic_bundle
@@ -5485,25 +5532,7 @@ class SherpaOnnxEngine(AudioEngine):
             actual_selector = getattr(self._stream_in, "actual_device", in_dev)
             self._resolve_capture_domain(sd, actual_selector, startup=True)
             self._rebind_speech_evidence_domain()
-            speaker_identity = resolve_speaker_identity_activation(
-                speaker_enroll_embedding=self.config.speaker_enroll_embedding,
-                speaker_enroll_wav=self.config.speaker_enroll_wav,
-                barge_in_enabled=self.config.barge_in_enabled,
-                barge_word_cut_enabled=self.config.barge_word_cut_enabled,
-                aec_enabled=self.config.aec_enabled,
-                barge_word_cut_require_speaker=(
-                    self.config.barge_word_cut_require_speaker
-                ),
-            )
-            if speaker_identity.word_cut_requires_speaker:
-                if self._speaker_gate is None or not self._speaker_gate.is_enrolled:
-                    raise RuntimeError(
-                        "active word-cut requires a compatible speaker enrollment"
-                    )
-                if not self._warm_speaker_gate():
-                    raise RuntimeError(
-                        "active word-cut speaker model could not warm off capture"
-                    )
+            self._require_word_cut_speaker_authority()
         except Exception:
             self._running.clear()
             if self._stream_in.close(teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC):
@@ -6198,16 +6227,55 @@ class SherpaOnnxEngine(AudioEngine):
 
         # TTS (vits) -- the biggest cold cost. Under the lock so it never races a
         # live first-reply synthesis; skipped if something is already speaking.
+        # When the streaming-compatible normalize-RMS path is selected, retain
+        # only the discarded warm clip's scalar gain. That lets the first audible
+        # fragment use the callback path instead of paying one whole-clip render
+        # merely to establish the feed-forward gain.
         tts = self._tts
         if tts is not None and not self._speaking.is_set():
             try:
+                tts_warmed = False
                 with self._tts_lock:
-                    tts.generate(
-                        "ok",
-                        sid=self.config.tts_speaker_id,
-                        speed=self.config.tts_speed,
-                    )
-                log.info("sherpa TTS warm-up complete")
+                    # Recheck after acquiring the model lock: a first reply may
+                    # have claimed playback while this warm thread was waiting.
+                    if self._speaking.is_set():
+                        warm_audio = None
+                    else:
+                        warm_audio = tts.generate(
+                            "ok",
+                            sid=self.config.tts_speaker_id,
+                            speed=self.config.tts_speed,
+                        )
+                        tts_warmed = True
+                    if (
+                        warm_audio is not None
+                        and self.config.tts_target_rms > 0.0
+                        and not self.config.tts_output_leveler
+                    ):
+                        warm_samples = np.asarray(
+                            getattr(warm_audio, "samples", ()), dtype="float32"
+                        ).reshape(-1)
+                        if self.config.tts_dc_block:
+                            warm_sr = int(
+                                getattr(warm_audio, "sample_rate", 0)
+                                or getattr(tts, "sample_rate", 0)
+                                or self._tts_sr
+                                or 22050
+                            )
+                            # Match the live synth chain's RMS domain without
+                            # polluting its long-lived cross-sentence filter
+                            # state with audio that is never played.
+                            warm_samples = DCBlocker(
+                                warm_sr, self.config.tts_dc_block_hz
+                            ).process(warm_samples)
+                        warm_rms = rms_of(warm_samples)
+                        if warm_rms > 1e-6:
+                            self._tts_normalize_gain = min(
+                                float(self.config.tts_target_rms) / warm_rms,
+                                20.0,
+                            )
+                if tts_warmed:
+                    log.info("sherpa TTS warm-up complete")
             except Exception:  # noqa: BLE001 - warm-up is best-effort, never fatal
                 log.debug("sherpa TTS warm-up failed", exc_info=True)
         # Punctuation restorer -- runs only on a final, so it's cold on turn 1.
@@ -9962,6 +10030,8 @@ class SherpaOnnxEngine(AudioEngine):
                                             block_context
                                         )
                                     ),
+                                    capture_epoch=capture_epoch,
+                                    diagnostic_span=diagnostic_frame_span,
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 if not isinstance(
@@ -10020,6 +10090,8 @@ class SherpaOnnxEngine(AudioEngine):
                                         block_context
                                     )
                                 ),
+                                capture_epoch=capture_epoch,
+                                diagnostic_span=diagnostic_frame_span,
                             )
                         except _BargeConfirmContinuityFault as exc:
                             recover_playback_native_error(
@@ -10438,6 +10510,11 @@ class SherpaOnnxEngine(AudioEngine):
                                 )
                         if first_vad_onset:
                             acoustic_turn.ensure_started(segment.first_speech_at)
+                            if diagnostic_frame_span is not None:
+                                self._bind_diagnostic_span(
+                                    acoustic_turn.current(emitted_at=clock_now),
+                                    diagnostic_frame_span,
+                                )
                             # The normal recognizer listens continuously so it
                             # can retain model lookback, but any hypothesis it
                             # formed before independent VAD onset belongs to no
@@ -12168,9 +12245,9 @@ class SherpaOnnxEngine(AudioEngine):
         HARD REAL-TIME RULES (kept as tight as the design allows): no Python
         logging, no f-strings, no exception may escape into PortAudio (bare
         try/except around the whole body), no ``_out_lock``/``_tts_lock``, no
-        ``_play_q``, no ``FIFO.write``, no blocking wait. ``status`` (underflow) is
-        ignored -- an underrun is a silent zero-fill from ``read_into``, never a
-        stall.
+        ``_play_q``, no ``FIFO.write``, no blocking wait. ``status`` contributes
+        only a separate native-output-underflow counter; application FIFO
+        starvation remains the silent zero-fill returned by ``read_into``.
 
         Locks taken here are all short copy locks: the FIFO's own (+ a
         non-blocking notify) and ``FarEndRing``'s (a microsecond slice copy,
@@ -12192,6 +12269,14 @@ class SherpaOnnxEngine(AudioEngine):
             # advances the playback clock too, which is required to snapshot the
             # exact far coordinate for a later-processed capture block.
             n = fifo.read_into(view)
+            # PortAudio reports an output-device/route scheduling miss separately
+            # from an application FIFO read that returned short.  Count only on
+            # this RT thread; the playback worker reports the per-reply delta.
+            try:
+                if status is not None and bool(status.output_underflow):
+                    self._native_output_underflow_blocks += 1
+            except Exception:  # noqa: BLE001 - status telemetry must not break audio
+                pass
             # Duck-then-confirm barge gate: while a confirm window is open the
             # capture thread sets _duck_gain < 1.0 and playback is attenuated
             # IN PLACE, BEFORE the echo-reference tees below -- so the far-end
@@ -12355,6 +12440,9 @@ class SherpaOnnxEngine(AudioEngine):
                     self._barge_in_fired_this_run = False
                     self._reset_word_cut_energy_epoch()
                     self._underrun_at_reply_start = self._underrun_blocks
+                    self._native_output_underflow_at_reply_start = (
+                        self._native_output_underflow_blocks
+                    )
                     self._drygap_at_reply_start = self._drygap_blocks
                     # Fresh reply: drop the playback resampler's FIR tail from the
                     # previous (possibly barged) reply so it can't bleed into this
@@ -12663,6 +12751,18 @@ class SherpaOnnxEngine(AudioEngine):
                                 _ur,
                             )
                             self._cb.on_metric("playback_underrun")
+                        _native_ur = (
+                            self._native_output_underflow_blocks
+                            - self._native_output_underflow_at_reply_start
+                        )
+                        if _native_ur > 0:
+                            log.warning(
+                                "playback native output underflowed %d callbacks this "
+                                "reply -- the output device/route missed its callback "
+                                "deadline (distinct from TTS FIFO starvation)",
+                                _native_ur,
+                            )
+                            self._cb.on_metric("playback_native_output_underflow")
                         # Inter-sentence dry gaps: fully-empty blocks while a later
                         # sentence was still being synthesized -- audible dead air
                         # the underrun counter above cannot see (whole-clip leveler
@@ -12678,8 +12778,9 @@ class SherpaOnnxEngine(AudioEngine):
                                 _dg,
                             )
                             self._cb.on_metric("playback_dry_gap")
-                        # Fix 5b: self-size the FIFO lead from THIS reply's underrun
-                        # count -- grow when it starved, slow-decay toward the seed
+                        # Fix 5b: self-size the FIFO lead from THIS reply's partial
+                        # underrun and dry-gap counts -- grow when either says it
+                        # starved, slow-decay toward the seed
                         # when clean. Recreated HERE only: the queue is empty and the
                         # drain wait above completed, so the old FIFO is spent and the
                         # audio callback (which snapshots self._fifo then zero-fills an
@@ -12687,7 +12788,7 @@ class SherpaOnnxEngine(AudioEngine):
                         seed = float(self.config.playback_fifo_sec)
                         prev = self._playback_fifo_sec_cur
                         self._playback_fifo_sec_cur = self._next_fifo_sec(
-                            prev, _ur, seed
+                            prev, _ur, _dg, seed
                         )
                         if (
                             playback_drained
@@ -12699,10 +12800,12 @@ class SherpaOnnxEngine(AudioEngine):
                                 event_queue=self._receipt_events,
                             )
                             log.info(
-                                "playback FIFO lead -> %.2fs (seed %.2fs, underran %d)",
+                                "playback FIFO lead -> %.2fs (seed %.2fs, underran "
+                                "%d, dry-gapped %d)",
                                 self._playback_fifo_sec_cur,
                                 seed,
                                 _ur,
+                                _dg,
                             )
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._last_playback_at = 0.0
@@ -12862,16 +12965,18 @@ class SherpaOnnxEngine(AudioEngine):
         return False
 
     @staticmethod
-    def _next_fifo_sec(prev: float, ur: int, seed: float) -> float:
-        """Self-size the playback FIFO lead from a reply's underrun count (fix 5b).
+    def _next_fifo_sec(prev: float, ur: int, drygap: int, seed: float) -> float:
+        """Self-size playback lead from one reply's starvation counts (fix 5b).
 
-        Grow (multiplicatively, fast converge) when the reply STARVED (ur>2 -- 1-2
-        is the benign end-of-utterance straddle), slow-decay toward the ``seed``
-        floor when clean, bounded by the ``_FIFO_SEC_MAX`` UX-latency ceiling. Pure
-        + static so the control law is unit-tested without driving the audio loop.
-        No per-machine operating value: the ceiling/rates are bounds, the operating
-        depth is derived from THIS box's measured underruns."""
-        if ur > 2:
+        Grow (multiplicatively, fast converge) when the reply STARVED: more than
+        two partial-read underruns or more than two fully-empty dry-gap callbacks.
+        One or two partial reads remain the benign end-of-utterance straddle.
+        Slow-decay toward the ``seed`` floor only when neither starvation signal
+        fired, bounded by the ``_FIFO_SEC_MAX`` UX-latency ceiling. Pure + static
+        so the control law is unit-tested without driving the audio loop. No
+        per-machine operating value: the operating depth is derived from this
+        box's observed playback starvation."""
+        if ur > 2 or drygap > 2:
             return min(_FIFO_SEC_MAX, prev * _FIFO_GROW)
         if prev > seed:
             return max(seed, prev * _FIFO_DECAY)
@@ -12954,35 +13059,41 @@ class SherpaOnnxEngine(AudioEngine):
             stream_sr = int(getattr(tts, "sample_rate", 0) or self._tts_sr or 22050)
         except (TypeError, ValueError):
             stream_sr = 22050
-        carried_gain = getattr(self, "_tts_normalize_gain", None)
-        streaming_candidate = bool(
-            self._tts_can_stream
-            and not leveler_on
-            and (target_rms <= 0.0 or (target_rms > 0.0 and carried_gain is not None))
-        )
-        log.info(
-            "tts resolved: %s",
-            json.dumps(
-                {
-                    "text": text,
-                    "sid": sid,
-                    "speed": round(float(speed), 4),
-                    "directives": directives or {},
-                    "sample_rate": stream_sr,
-                    "streaming_candidate": streaming_candidate,
-                    "lowpass_hz": round(float(lowpass_hz), 1),
-                    "target_rms": round(float(target_rms), 4),
-                    "leveler": bool(leveler_on),
-                    "declick": bool(self.config.tts_declick),
-                },
-                sort_keys=True,
-                ensure_ascii=True,
-                default=str,
-            ),
-        )
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
+            # Read the warm seed only after acquiring the model lock. A startup
+            # warm may have established it while this first reply waited here;
+            # sampling before the lock would retain stale None and redundantly
+            # force another whole-clip render.
+            carried_gain = getattr(self, "_tts_normalize_gain", None)
+            streaming_candidate = bool(
+                self._tts_can_stream
+                and not leveler_on
+                and (
+                    target_rms <= 0.0 or (target_rms > 0.0 and carried_gain is not None)
+                )
+            )
+            log.info(
+                "tts resolved: %s",
+                json.dumps(
+                    {
+                        "text": text,
+                        "sid": sid,
+                        "speed": round(float(speed), 4),
+                        "directives": directives or {},
+                        "sample_rate": stream_sr,
+                        "streaming_candidate": streaming_candidate,
+                        "lowpass_hz": round(float(lowpass_hz), 1),
+                        "target_rms": round(float(target_rms), 4),
+                        "leveler": bool(leveler_on),
+                        "declick": bool(self.config.tts_declick),
+                    },
+                    sort_keys=True,
+                    ensure_ascii=True,
+                    default=str,
+                ),
+            )
             # Streaming path (first samples play before the whole sentence is
             # synthesized). The output_leveler still owns a whole-clip AGC2-style
             # stage and stays non-streaming. normalize_rms can stream after the
@@ -13680,6 +13791,8 @@ class SherpaOnnxEngine(AudioEngine):
         mic_raw=None,
         *,
         control_effect_guard: Optional[Callable[[], bool]] = None,
+        capture_epoch: Optional[int] = None,
+        diagnostic_span=None,
     ) -> bool:
         """One capture block inside an active confirm window.
 
@@ -13929,6 +14042,8 @@ class SherpaOnnxEngine(AudioEngine):
                 if not self._emit_barge_in_callback(
                     detected_at=at,
                     speech_start_at=handoff_start,
+                    capture_epoch=capture_epoch,
+                    diagnostic_span=diagnostic_span,
                 ):
                     return False
                 # The confirm-window audio is already IN the stream: the user's
@@ -15503,6 +15618,8 @@ class SherpaOnnxEngine(AudioEngine):
         speaker_authority_available: Optional[bool] = None,
         allow_control_effect: bool = True,
         control_effect_guard: Optional[Callable[[], bool]] = None,
+        capture_epoch: Optional[int] = None,
+        diagnostic_span=None,
     ) -> bool:
         """One playback block on the continuous no-duck word-cut path. Feeds the
         recognizer THIS block (OS-cancelled mic, clean of the assistant's echo) and
@@ -15877,6 +15994,8 @@ class SherpaOnnxEngine(AudioEngine):
             if not self._emit_barge_in_callback(
                 detected_at=now,
                 speech_start_at=max(0.0, now - pending_sec),
+                capture_epoch=capture_epoch,
+                diagnostic_span=diagnostic_span,
             ):
                 return False
             return True

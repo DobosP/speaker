@@ -2358,7 +2358,14 @@ def test_check_ollama_minicpm_uses_template_aware_setup_hint():
     assert model.hint == "python -m tools.setup_minicpm"
 
 
-def _minicpm_show(*, digest=None, template=None, parameters=None, quantization="Q8_0"):
+def _minicpm_show(
+    *,
+    digest=None,
+    template=None,
+    parameters=None,
+    quantization="Q8_0",
+    capabilities=("completion",),
+):
     digest = digest or MINICPM_Q8_CONTRACT.blob_sha256
     alias = {
         "modelfile": f"FROM /models/sha256-{digest}",
@@ -2368,6 +2375,7 @@ def _minicpm_show(*, digest=None, template=None, parameters=None, quantization="
             "temperature 0.7\ntop_p 0.95\nnum_ctx 8192"
         ),
         "details": {"quantization_level": quantization},
+        "capabilities": capabilities,
     }
     source = {"modelfile": f"FROM /models/sha256-{MINICPM_Q8_CONTRACT.blob_sha256}"}
     return lambda model: alias if model == MINICPM_Q8_CONTRACT.alias else source
@@ -2391,6 +2399,8 @@ def test_check_ollama_minicpm_present_requires_canonical_identity():
         _minicpm_show(digest="a" * 64),
         _minicpm_show(template="{{ .Prompt }}"),
         _minicpm_show(quantization="Q4_K_M"),
+        _minicpm_show(capabilities=None),
+        _minicpm_show(capabilities=("tools", "thinking", "completion")),
         _minicpm_show(
             parameters=(
                 'stop "<|im_end|>"\nstop "</s>"\nstop "extra"\n'

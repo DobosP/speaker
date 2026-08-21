@@ -80,3 +80,22 @@ def test_playback_fifo_default_and_capable_profile_override():
     for profile in ("phone", "phone_lite"):
         merged = apply_device_profile(config, profile)["sherpa"]
         assert merged.get("playback_fifo_sec", 1.0) == 1.0, profile
+
+
+def test_desktop_gpu_4090_uses_streaming_compatible_tts_leveling():
+    """The next-live 4090 profile avoids the whole-clip output leveler while
+    preserving the fleet default and every unrelated device profile."""
+    import json
+
+    config = json.load(open("config.json"))
+    assert config["sherpa"]["tts_output_leveler"] is True
+    assert (
+        apply_device_profile(config, "desktop_gpu_4090")["sherpa"][
+            "tts_output_leveler"
+        ]
+        is False
+    )
+    assert (
+        apply_device_profile(config, "desktop")["sherpa"]["tts_output_leveler"]
+        is True
+    )

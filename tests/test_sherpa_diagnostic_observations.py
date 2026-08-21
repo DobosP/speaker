@@ -21,7 +21,8 @@ from core.diagnostic_bundle import (
     SynchronizedDiagnosticBundle,
     validate_manifest,
 )
-from core.engine import EngineCallbacks
+from core.engine import EngineCallbacks, TranscriptAbortReason
+from core.engines._acoustic_turn import AcousticTurnTracker
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.media_session import CapturedBlock
 
@@ -92,6 +93,199 @@ def _record_endpoint(engine, acoustic: AcousticLineage, frame_span) -> None:
         revision=1,
         outcome="nonempty",
     )
+
+
+def _write_diagnostic_frame(engine: SherpaOnnxEngine, captured: CapturedBlock):
+    count = int(captured.source_sample_end - captured.source_sample_start)
+    return engine._write_recording_frame(
+        np.zeros(count, dtype="float32"),
+        np.zeros(count, dtype="float32"),
+        asr_input_samples=np.zeros(count, dtype="float32"),
+        captured_reference=np.zeros(count, dtype="float32"),
+        captured=captured,
+    )
+
+
+def test_explicit_acoustic_span_rebinds_onset_for_later_final_abort(tmp_path) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    engine.set_record_path(str(tmp_path / "abort.wav"))
+    engine._open_recorders()
+    count = 160
+    onset_span = _write_diagnostic_frame(engine, _captured(count))
+    later = CapturedBlock(
+        pcm=np.zeros(count, dtype="float32"),
+        sample_rate_hz=16000,
+        sequence=2,
+        captured_started_at=10.01,
+        captured_at=10.02,
+        capture_epoch=2,
+        source_generation=3,
+        capture_generation=4,
+        source_sample_start=count,
+        source_sample_end=2 * count,
+    )
+    partial_span = _write_diagnostic_frame(engine, later)
+    assert onset_span is not None and partial_span is not None
+
+    tracker = AcousticTurnTracker("sherpa-22222222222222222222222222222222")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=4)
+    tracker.ensure_started(10.0)
+    engine._bind_diagnostic_span(tracker.current(emitted_at=10.0), onset_span)
+    acoustic, revision = tracker.advance(emitted_at=10.1)
+    assert engine._diagnostic_observe(
+        DiagnosticStage.ASR_PARTIAL,
+        at=10.1,
+        bundle_span=partial_span,
+        acoustic=acoustic,
+        revision=revision,
+    )
+    key = engine._diagnostic_acoustic_key(acoustic)
+    assert key is not None
+    assert engine._diagnostic_spans[key] == partial_span
+
+    assert engine._abort_active_acoustic_turn(
+        tracker,
+        TranscriptAbortReason.SHUTDOWN,
+        emitted_at=10.2,
+    )
+    assert key not in engine._diagnostic_spans
+    engine._close_recorders(log_completed=True)
+
+    manifest = tmp_path / "abort.diagnostic.json"
+    assert validate_manifest(manifest)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "abort.timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    observations = [row for row in records if row.get("kind") == "observation"]
+    assert [row["stage"] for row in observations] == [
+        DiagnosticStage.ASR_PARTIAL.value,
+        DiagnosticStage.FINAL_ABORTED.value,
+    ]
+    aborted = observations[-1]
+    assert aborted["reason"] == TranscriptAbortReason.SHUTDOWN.value
+    assert aborted["stream_id"] == acoustic.spans[-1].stream_id
+    assert aborted["utterance_id"] == acoustic.spans[-1].utterance_id
+    assert aborted["revision"] == revision + 1
+    assert aborted["bundle_sample_start"] == count
+    assert aborted["bundle_sample_end"] == 2 * count
+
+
+def test_barge_precedes_synchronous_callback_abort_and_clears_span(tmp_path) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    engine.set_record_path(str(tmp_path / "barge.wav"))
+    engine._open_recorders()
+    frame_span = _write_diagnostic_frame(engine, _captured(160))
+    assert frame_span is not None
+
+    tracker = AcousticTurnTracker("sherpa-33333333333333333333333333333333")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=4)
+    engine._acoustic_turn_tracker = tracker
+    seen = []
+    abort_results = []
+
+    def on_barge(signal) -> None:
+        key = engine._diagnostic_acoustic_key(signal.acoustic)
+        assert key is not None
+        assert engine._diagnostic_spans[key] == frame_span
+        seen.append(signal)
+        abort_results.append(
+            engine._abort_active_acoustic_turn(
+                tracker,
+                TranscriptAbortReason.BACKPRESSURE,
+                emitted_at=10.2,
+            )
+        )
+        assert key not in engine._diagnostic_spans
+
+    engine._cb = EngineCallbacks(on_barge_in_result=on_barge)
+    assert engine._emit_barge_in_callback(
+        detected_at=10.1,
+        speech_start_at=10.0,
+        diagnostic_span=frame_span,
+    )
+    assert len(seen) == 1
+    assert abort_results == [True]
+    key = engine._diagnostic_acoustic_key(seen[0].acoustic)
+    assert key is not None and key not in engine._diagnostic_spans
+    engine._close_recorders(log_completed=True)
+
+    manifest = tmp_path / "barge.diagnostic.json"
+    assert validate_manifest(manifest)
+    observations = [
+        row
+        for row in (
+            json.loads(line)
+            for line in (tmp_path / "barge.timeline.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        if row.get("kind") == "observation"
+    ]
+    assert [row["stage"] for row in observations] == [
+        DiagnosticStage.BARGE_DETECTED.value,
+        DiagnosticStage.FINAL_ABORTED.value,
+    ]
+    assert observations[-1]["reason"] == TranscriptAbortReason.BACKPRESSURE.value
+    assert observations[-1]["bundle_sample_start"] == 0
+    assert observations[-1]["bundle_sample_end"] == 160
+
+
+def test_stale_barge_effect_emits_no_callback_or_diagnostic(tmp_path) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    engine.set_record_path(str(tmp_path / "stale-barge.wav"))
+    engine._open_recorders()
+    frame_span = _write_diagnostic_frame(engine, _captured(160))
+    assert frame_span is not None
+
+    tracker = AcousticTurnTracker("sherpa-44444444444444444444444444444444")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=4)
+    engine._acoustic_turn_tracker = tracker
+    engine._capture_epoch = 3
+    callbacks = []
+    engine._cb = EngineCallbacks(on_barge_in_result=callbacks.append)
+
+    assert not engine._emit_barge_in_callback(
+        detected_at=10.1,
+        speech_start_at=10.0,
+        capture_epoch=2,
+        diagnostic_span=frame_span,
+    )
+    assert callbacks == []
+    assert not tracker.active
+    assert engine._diagnostic_spans == {}
+    engine._close_recorders(log_completed=True)
+
+    manifest = tmp_path / "stale-barge.diagnostic.json"
+    assert validate_manifest(manifest)
+    observations = [
+        row
+        for row in (
+            json.loads(line)
+            for line in (tmp_path / "stale-barge.timeline.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        if row.get("kind") == "observation"
+    ]
+    assert observations == []
 
 
 def test_final_selection_and_dispatch_share_audio_coordinate_without_text(

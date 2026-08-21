@@ -42,6 +42,7 @@ class MiniCPMQ8Contract:
     quantization: str
     template: str
     parameters: tuple[tuple[str, tuple[str, ...]], ...]
+    capabilities: tuple[str, ...]
     modelfile: Path
 
 
@@ -59,6 +60,7 @@ MINICPM_Q8_CONTRACT = MiniCPMQ8Contract(
         ("top_p", ("0.95",)),
         ("num_ctx", ("8192",)),
     ),
+    capabilities=("completion",),
     modelfile=(
         Path(__file__).resolve().parents[1]
         / "deploy"
@@ -82,6 +84,8 @@ class ModelIdentity:
     q8: bool
     template_match: bool
     parameters_match: bool
+    capabilities: tuple[str, ...]
+    capabilities_match: bool
     effective_config_sha256: str
     ok: bool
     error: str = ""
@@ -260,13 +264,28 @@ def _parameters_match(
     return _parameters_match_values(_parameter_values(show_result), contract)
 
 
-def _effective_config_digest(show_result: object) -> str:
+def _capabilities(show_result: object) -> tuple[str, ...]:
+    raw = _field(show_result, "capabilities", None)
+    if not isinstance(raw, (list, tuple)) or not all(
+        isinstance(item, str) for item in raw
+    ):
+        return ()
+    return tuple(raw)
+
+
+def _effective_config_digest(
+    show_result: object,
+    *,
+    bind_capabilities: bool = False,
+) -> str:
     modelfile = str(_field(show_result, "modelfile", "") or "")
     payload = {
         "modelfile": modelfile.replace("\r\n", "\n").strip(),
         "template": _template(show_result),
         "parameters": _parameter_values(show_result),
     }
+    if bind_capabilities:
+        payload["capabilities"] = _capabilities(show_result)
     canonical = json.dumps(
         payload,
         ensure_ascii=False,
@@ -356,7 +375,12 @@ def verify_minicpm_q8_identity(
         q8 = quantization.upper() == contract.quantization
         template_match = _template(alias_show) == contract.template
         parameters_match = _parameters_match(alias_show, contract)
-        effective_config_sha256 = _effective_config_digest(alias_show)
+        capabilities = _capabilities(alias_show)
+        capabilities_match = capabilities == contract.capabilities
+        effective_config_sha256 = _effective_config_digest(
+            alias_show,
+            bind_capabilities=True,
+        )
         alias_template_count = sum(
             directive == "TEMPLATE"
             for directive, _value in _top_level_directives(alias_modelfile)
@@ -392,6 +416,12 @@ def verify_minicpm_q8_identity(
             failures.append("alias template differs from the canonical ChatML template")
         if not parameters_match:
             failures.append("alias parameters differ from the canonical exact set")
+        if not capabilities_match:
+            selected = ", ".join(capabilities) if capabilities else "missing"
+            failures.append(
+                "selected capabilities are "
+                f"{selected}, expected completion only"
+            )
         if unexpected:
             failures.append(
                 "alias has unsupported Modelfile directives: "
@@ -411,6 +441,8 @@ def verify_minicpm_q8_identity(
             q8=q8,
             template_match=template_match,
             parameters_match=parameters_match,
+            capabilities=capabilities,
+            capabilities_match=capabilities_match,
             effective_config_sha256=effective_config_sha256,
             ok=not failures,
             error="; ".join(failures),
@@ -429,6 +461,8 @@ def verify_minicpm_q8_identity(
             q8=False,
             template_match=False,
             parameters_match=False,
+            capabilities=(),
+            capabilities_match=False,
             effective_config_sha256="",
             ok=False,
             error=f"{type(exc).__name__}: {exc}",

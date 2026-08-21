@@ -1189,6 +1189,7 @@ def _fake_show_pair(*, digest: str, source_digest: str | None = None, template: 
             "num_ctx 8192"
         ),
         "details": {"quantization_level": "Q8_0"},
+        "capabilities": ["completion"],
     }
     source = {
         "modelfile": f"FROM /models/sha256-{source_digest or digest}",

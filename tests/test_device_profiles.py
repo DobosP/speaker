@@ -59,6 +59,28 @@ def test_profile_overrides_are_recursively_merged_per_section():
     assert config["llm"]["backend"] == "ollama"
 
 
+def test_4090_profile_requires_speaker_authority_over_local_false():
+    # load_config applies config.local.json before device selection.  Recreate
+    # that ordering explicitly: the shipped 4090 leaf must win over a machine-
+    # local legacy false rather than silently reopening identity-free cuts.
+    import json
+    from pathlib import Path
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    local_effective = deep_merge(
+        config,
+        {"sherpa": {"barge_word_cut_require_speaker": False}},
+    )
+
+    assert local_effective["sherpa"]["barge_word_cut_require_speaker"] is False
+    effective = apply_device_profile(local_effective, "desktop_gpu_4090")
+    assert effective["sherpa"]["barge_word_cut_require_speaker"] is True
+
+
 def test_unknown_device_is_noop():
     config = {"llm": {"backend": "ollama"}}
     assert _apply_device_profile(config, "watch") is config

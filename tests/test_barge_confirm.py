@@ -203,6 +203,32 @@ def test_new_words_confirm_and_fire():
     assert eng._barge_in_fired_this_run is True  # latch burned only on a REAL fire
 
 
+def test_confirm_forwards_current_capture_diagnostic_authority():
+    eng = _engine()
+    recognizer, stream = _FakeRecognizer(["", "hey wait"]), _FakeStream()
+    span = object()
+    observed = {}
+
+    def emit_barge(**kwargs):
+        observed.update(kwargs)
+        return True
+
+    eng._emit_barge_in_callback = emit_barge
+    now = time.monotonic()
+    eng._begin_barge_confirm(recognizer, stream, now)
+    assert eng._barge_confirm_step(
+        recognizer,
+        stream,
+        _BLOCK,
+        now + 0.1,
+        capture_epoch=19,
+        diagnostic_span=span,
+    )
+    assert observed["detected_at"] == now + 0.1
+    assert observed["capture_epoch"] == 19
+    assert observed["diagnostic_span"] is span
+
+
 def test_stop_command_confirms_alone():
     rec = _Rec()
     eng = _engine(rec, barge_confirm_min_words=2)

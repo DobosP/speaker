@@ -296,6 +296,31 @@ def test_four_novel_words_cut_with_no_duck():
     assert eng._word_cut_fed_stream is False           # user words kept as pre-roll
 
 
+def test_word_cut_forwards_current_capture_diagnostic_authority():
+    eng = _engine()
+    recognizer = _FakeRecognizer(["switch to ancient Roman architecture"])
+    span = object()
+    observed = {}
+
+    def emit_barge(**kwargs):
+        observed.update(kwargs)
+        return True
+
+    eng._emit_barge_in_callback = emit_barge
+    now = time.monotonic()
+    assert eng._barge_word_cut_step(
+        recognizer,
+        _FakeStream(),
+        _BLOCK,
+        now,
+        capture_epoch=17,
+        diagnostic_span=span,
+    )
+    assert observed["detected_at"] == now
+    assert observed["capture_epoch"] == 17
+    assert observed["diagnostic_span"] is span
+
+
 @pytest.mark.parametrize(
     "text",
     ["", "hello", "hello there", "hello there friend"],

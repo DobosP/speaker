@@ -11,6 +11,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from core.engine import OwnerVerification
 from core.engines._kws_speaker_inference_owner import (
@@ -213,6 +214,24 @@ def test_active_os_word_cut_speaker_filter_allocates_gate_without_enrollment(
 
     assert [model_path for model_path, _kwargs in calls] == [str(model)]
     assert engine._speaker_gate is allocated_gate
+
+
+def test_required_word_cut_incompatible_enrollment_fails_start_policy():
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            barge_in_enabled=True,
+            barge_word_cut_enabled=True,
+            barge_word_cut_require_speaker=True,
+            aec_enabled=False,
+        )
+    )
+    engine._speaker_gate = _gate(USER, enrolled_to=None)
+
+    with pytest.raises(
+        RuntimeError,
+        match="active word-cut requires a compatible speaker enrollment",
+    ):
+        engine._require_word_cut_speaker_authority()
 
 
 def test_in_app_aec_keeps_unenrolled_speaker_model_inactive(monkeypatch, tmp_path):

@@ -592,7 +592,7 @@ def check_ollama(
                 identity.ok,
                 (
                     f"pinned {identity.quantization} sha256:{identity.alias_blob}; "
-                    "template + parameters verified"
+                    "template + parameters + completion-only capabilities verified"
                     if identity.ok
                     else f"identity mismatch: {identity.error}"
                 ),

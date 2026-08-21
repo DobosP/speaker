@@ -17,7 +17,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.audio_frontend import AudioResampler, InputAGC, apply_gain_soft_limit
+from core.audio_frontend import (
+    AudioResampler,
+    DCBlocker,
+    InputAGC,
+    apply_gain_soft_limit,
+    rms_of,
+)
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import (
     SherpaConfig,
@@ -117,11 +123,11 @@ class _ManualOutputStream:
     def start(self):
         self.active = True
 
-    def pull(self, frames):
+    def pull(self, frames, *, status=None):
         out = np.zeros((int(frames), self.channels), dtype="float32")
         self.pull_thread_ids.append(threading.get_ident())
         if self.callback is not None:
-            self.callback(out, int(frames), None, None)
+            self.callback(out, int(frames), None, status)
         return out
 
     def stop(self):
@@ -2027,6 +2033,52 @@ def test_audio_cb_partial_underrun_is_not_double_counted_as_dry_gap():
     assert eng._drygap_blocks == 0
 
 
+def test_audio_cb_counts_native_output_underflow_separately_from_fifo_starvation():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate
+    eng._fifo = PlaybackFIFO(8)
+    eng._fifo.write(np.full(4, 0.1, dtype="float32"), lambda: False)
+    eng._speaking.set()
+
+    eng._audio_cb(
+        _outbuf(4),
+        4,
+        None,
+        SimpleNamespace(output_underflow=True),
+    )
+
+    assert eng._native_output_underflow_blocks == 1
+    assert eng._underrun_blocks == 0
+    assert eng._drygap_blocks == 0
+
+
+def test_native_output_underflow_is_reported_as_a_distinct_reply_metric(
+    monkeypatch, caplog
+):
+    engine = _engine(_FixedTts(20))
+    metrics: list[str] = []
+    engine._cb.on_metric = metrics.append
+    holder = _start_playback_harness(monkeypatch, engine)
+    try:
+        with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
+            engine.speak("native route miss")
+            assert _wait_until(
+                lambda: "stream" in holder and _fifo_count_is(engine, 20)
+            )
+            holder["stream"].pull(
+                20,
+                status=SimpleNamespace(output_underflow=True),
+            )
+            assert _wait_until(lambda: not engine._speaking.is_set())
+
+        assert "playback native output underflowed 1 callbacks" in caplog.text
+        assert "distinct from TTS FIFO starvation" in caplog.text
+        assert "playback underran" not in caplog.text
+        assert metrics == ["tts_first_audio", "playback_native_output_underflow"]
+    finally:
+        engine.stop()
+
+
 # --- dead-input escalation: one-shot ERROR + metric after 5 silent beats ----
 
 
@@ -2158,6 +2210,144 @@ def test_target_rms_wholeclip_on_first_sentence_sets_carry():
     assert tts.callback_used == [False]  # whole-clip path (no callback)
     assert eng._tts_normalize_gain is not None  # carry established
     assert eng._tts_normalize_gain > 0.0
+
+
+def test_warm_seeds_normalize_gain_so_first_live_fragment_streams():
+    samp = _sine(rms=0.4)
+    tts = _TrackingTts(samp)
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.12,
+            tts_output_leveler=False,
+            tts_declick=False,
+            tts_dc_block=False,
+        )
+    )
+    eng._tts = tts
+
+    eng.warm()
+
+    assert tts.callback_used == [False]
+    assert eng._tts_normalize_gain == pytest.approx(0.3, rel=1e-3)
+    written: list = []
+    eng._synthesize("first live fragment", written.append)
+    assert tts.callback_used == [False, True]
+    assert written
+
+
+def test_concurrent_warm_seed_is_visible_to_first_live_synthesis():
+    class _ObservedLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self._count_lock = threading.Lock()
+            self._entries = 0
+            self.second_entry = threading.Event()
+
+        def __enter__(self):
+            with self._count_lock:
+                self._entries += 1
+                if self._entries == 2:
+                    self.second_entry.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._lock.release()
+
+    class _BlockingWarmTts(_TrackingTts):
+        def __init__(self, samples):
+            super().__init__(samples)
+            self.warm_started = threading.Event()
+            self.release_warm = threading.Event()
+
+        def generate(self, text, sid=0, speed=1.0, callback=None):
+            if text == "ok" and callback is None:
+                self.warm_started.set()
+                assert self.release_warm.wait(timeout=1.0)
+            return super().generate(text, sid=sid, speed=speed, callback=callback)
+
+    tts = _BlockingWarmTts(_sine(rms=0.4))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.12,
+            tts_output_leveler=False,
+            tts_declick=False,
+            tts_dc_block=False,
+        )
+    )
+    eng._tts = tts
+    observed_lock = _ObservedLock()
+    eng._tts_lock = observed_lock
+    errors: list[BaseException] = []
+    written: list = []
+
+    def run(call):
+        try:
+            call()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    warm_thread = threading.Thread(target=run, args=(eng.warm,))
+    warm_thread.start()
+    assert tts.warm_started.wait(timeout=1.0)
+    synth_thread = threading.Thread(
+        target=run,
+        args=(lambda: eng._synthesize("first live fragment", written.append),),
+    )
+    synth_thread.start()
+    assert observed_lock.second_entry.wait(timeout=1.0)
+    tts.release_warm.set()
+    warm_thread.join(timeout=1.0)
+    synth_thread.join(timeout=1.0)
+
+    assert not warm_thread.is_alive()
+    assert not synth_thread.is_alive()
+    assert errors == []
+    assert tts.callback_used == [False, True]
+    assert written
+
+
+def test_warm_seed_uses_dc_blocked_domain_without_mutating_live_filter():
+    target_rms = 0.12
+    samples = (_sine(rms=0.08) + np.float32(0.2)).astype("float32")
+    tts = _TrackingTts(samples)
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=target_rms,
+            tts_output_leveler=False,
+            tts_declick=False,
+            tts_dc_block=True,
+            tts_dc_block_hz=20.0,
+        )
+    )
+    eng._tts = tts
+    expected_signal = DCBlocker(tts.sample_rate, 20.0).process(samples)
+    expected_gain = target_rms / rms_of(expected_signal)
+    pre_dc_gain = target_rms / rms_of(samples)
+
+    eng.warm()
+
+    assert eng._tts_normalize_gain == pytest.approx(expected_gain, rel=1e-4)
+    assert abs(expected_gain - pre_dc_gain) > 0.1
+    assert eng._tts_dc_blocker is None
+
+
+def test_warm_does_not_seed_normalize_gain_while_whole_clip_leveler_owns_output():
+    tts = _TrackingTts(_sine(rms=0.4))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.12,
+            tts_output_leveler=True,
+            tts_declick=False,
+            tts_dc_block=False,
+        )
+    )
+    eng._tts = tts
+
+    eng.warm()
+
+    assert tts.callback_used == [False]
+    assert eng._tts_normalize_gain is None
 
 
 def test_target_rms_streaming_on_second_sentence_applies_carry():
@@ -2304,15 +2494,19 @@ def test_next_fifo_sec_self_sizes_from_underruns():
     f = SherpaOnnxEngine._next_fifo_sec
     seed = 1.0
     # starved (ur>2) grows multiplicatively
-    assert f(1.0, 18, seed) == pytest.approx(1.5)
-    assert f(1.5, 5, seed) == pytest.approx(2.25)
+    assert f(1.0, 18, 0, seed) == pytest.approx(1.5)
+    assert f(1.5, 5, 0, seed) == pytest.approx(2.25)
     # benign 0-2 underruns do NOT grow (end-of-utterance straddle)
-    assert f(1.5, 2, seed) == pytest.approx(1.5 * 0.9)  # clean-ish -> decays
-    assert f(1.0, 2, seed) == pytest.approx(1.0)  # at seed, stays
+    assert f(1.5, 2, 0, seed) == pytest.approx(1.5 * 0.9)  # clean-ish -> decays
+    assert f(1.0, 2, 0, seed) == pytest.approx(1.0)  # at seed, stays
+    # A fully-empty inter-sentence gap is starvation too, even when the partial
+    # underrun count alone would have (incorrectly) decayed the lead.
+    assert f(1.5, 1, 3, seed) == pytest.approx(2.25)
+    assert f(1.5, 0, 887, seed) == pytest.approx(2.25)
     # clean reply slow-decays toward the seed but never below it
-    assert f(2.25, 0, seed) == pytest.approx(2.25 * 0.9)
-    assert f(1.05, 0, seed) == pytest.approx(1.0)  # clamps to the seed floor
-    assert f(1.0, 0, seed) == pytest.approx(1.0)
+    assert f(2.25, 0, 0, seed) == pytest.approx(2.25 * 0.9)
+    assert f(1.05, 0, 0, seed) == pytest.approx(1.0)  # clamps to the seed floor
+    assert f(1.0, 0, 0, seed) == pytest.approx(1.0)
     # bounded by the ceiling
-    assert f(_FIFO_SEC_MAX, 50, seed) == pytest.approx(_FIFO_SEC_MAX)
-    assert f(3.5, 50, seed) == pytest.approx(_FIFO_SEC_MAX)  # 3.5*1.5=5.25 -> clamped
+    assert f(_FIFO_SEC_MAX, 50, 0, seed) == pytest.approx(_FIFO_SEC_MAX)
+    assert f(3.5, 50, 0, seed) == pytest.approx(_FIFO_SEC_MAX)  # clamped

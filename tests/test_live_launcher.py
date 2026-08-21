@@ -339,6 +339,37 @@ def test_one_command_creates_private_recorded_session_and_cleans_owned_resources
     assert "do not commit, push, or upload" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("ambient_value", (None, "0"))
+def test_owned_ollama_forces_go_template_only_for_server_process(
+    tmp_path, monkeypatch, ambient_value
+):
+    if ambient_value is None:
+        monkeypatch.delenv("OLLAMA_GO_TEMPLATE", raising=False)
+    else:
+        monkeypatch.setenv("OLLAMA_GO_TEMPLATE", ambient_value)
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+
+    assert _run_session([], ops=ops, root=tmp_path) == 0
+
+    server_env = next(
+        kwargs["env"]
+        for command, kwargs in ops.popen_calls
+        if command == ("ollama", "serve")
+    )
+    doctor_env = next(
+        env
+        for command, env in ops.run_envs
+        if len(command) >= 3 and command[1:3] == ("-m", "tools.doctor")
+    )
+    assert server_env["OLLAMA_GO_TEMPLATE"] == "1"
+    if ambient_value is None:
+        assert "OLLAMA_GO_TEMPLATE" not in doctor_env
+        assert "OLLAMA_GO_TEMPLATE" not in ops.last_voice_env
+    else:
+        assert doctor_env["OLLAMA_GO_TEMPLATE"] == ambient_value
+        assert ops.last_voice_env["OLLAMA_GO_TEMPLATE"] == ambient_value
+
+
 def test_existing_ollama_and_echo_route_are_reused_not_destroyed(tmp_path):
     ops = _FakeOps(nodes=True, module_loaded=True, ollama_healthy=True)
 

@@ -31,6 +31,7 @@ def _show_pair(
     quantization: str = "Q8_0",
     template: str = MINICPM_Q8_CONTRACT.template,
     parameters: str | None = None,
+    capabilities: object = ("completion",),
     alias_modelfile: str | None = None,
     source_modelfile: str | None = None,
 ):
@@ -45,6 +46,7 @@ def _show_pair(
             "num_ctx 8192"
         ),
         "details": {"quantization_level": quantization},
+        "capabilities": capabilities,
     }
     source = {
         "modelfile": source_modelfile or f"FROM /models/sha256-{source_digest}"
@@ -176,6 +178,39 @@ def test_nonbehavioral_ollama_license_metadata_is_allowed():
     identity = verify_minicpm_q8_identity(show=show)
 
     assert identity.ok
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    (
+        None,
+        (),
+        ("completion", "tools"),
+        ("tools", "thinking", "completion"),
+        "completion",
+    ),
+)
+def test_identity_requires_exact_completion_only_selected_capabilities(capabilities):
+    identity = verify_minicpm_q8_identity(
+        show=_show_pair(capabilities=capabilities)
+    )
+
+    assert identity.ok is False
+    assert identity.capabilities_match is False
+    assert "capabilities" in identity.error
+
+
+def test_effective_identity_digest_binds_selected_capabilities():
+    completion_only = verify_minicpm_q8_identity(show=_show_pair())
+    embedded_template = verify_minicpm_q8_identity(
+        show=_show_pair(capabilities=("tools", "thinking", "completion"))
+    )
+
+    assert completion_only.capabilities == ("completion",)
+    assert completion_only.capabilities_match is True
+    assert completion_only.effective_config_sha256 != (
+        embedded_template.effective_config_sha256
+    )
 
 
 def test_command_failure_skips_post_create_show():

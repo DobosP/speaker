@@ -285,6 +285,7 @@ def test_minicpm_identity_retains_full_pinned_blob_and_effective_contract():
             "num_ctx 8192"
         ),
         "details": {"quantization_level": "Q8_0"},
+        "capabilities": ["completion"],
     }
     source = {"modelfile": f"FROM /models/sha256-{digest}"}
 

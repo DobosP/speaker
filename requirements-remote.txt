@@ -14,9 +14,9 @@
 # (STT/LLM/TTS still run locally via the base requirements; LiveKit is only the
 # WebRTC transport, so fully-local is preserved.)
 
-livekit==1.1.14            # exact RTC pair reviewed with LiveKit Agents 1.6.8
-livekit-agents==1.6.8      # reviewed optional publisher-session composition
-livekit-api==1.2.0         # reviewed AccessToken / VideoGrants API
-livekit-protocol==1.1.21   # release-matched shared protocol closure
-fastapi>=0.110             # token server + /chat + static web hosting
-uvicorn>=0.29              # ASGI server for the token/web server
+livekit==1.1.16            # exact RTC pair reviewed with LiveKit Agents 1.6.8
+livekit-agents==1.7.1      # reviewed optional publisher-session composition
+livekit-api==1.2.1         # reviewed AccessToken / VideoGrants API
+livekit-protocol==1.1.26   # release-matched shared protocol closure
+fastapi>=0.141.1             # token server + /chat + static web hosting
+uvicorn>=0.52.4              # ASGI server for the token/web server

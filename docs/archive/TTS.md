@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-09-05):** pre-refactor guide — `scripts/test_tts_playback.py`,
+> `main.py`, `SPEAKER_TTS_DEBUG` and the log markers it names no longer exist (the
+> monolith and `scripts/` were deleted, ADR-0002; verified 2026-09-05: `scripts/` absent,
+> `SPEAKER_TTS_DEBUG` appears nowhere in `core/ tools/ always_on_agent/`). Kokoro adoption
+> is ADR-0010; the current capture/playback guide is
+> [`../audio_pipeline.md`](../audio_pipeline.md). Historical record only.
+
 # TTS and speaker playback
 
 The assistant synthesizes speech locally (Kokoro, Piper, MeloTTS, or Supertonic) and plays it on your speakers. If you see **Assistant:** text but hear nothing, use this guide.

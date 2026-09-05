@@ -82,7 +82,7 @@ without invocation is a valid, high-severity security report.
 
 ### Secrets: the env-only golden rule (`CREDENTIALS.md`)
 
-Every credential (`GIT_HUB_TOKEN`, `HUGGINGFACE_TOKEN`/`HF_TOKEN`, `LIVEKIT_*`,
+Every credential (`GIT_HUB_ACCESS_TOKEN`, `HUGGINGFACE_TOKEN`/`HF_TOKEN`, `LIVEKIT_*`,
 `DATABASE_URL`) is read from the environment at runtime. **Never hard-code,
 echo, log, commit, or write a token into a file — reference it only as `$VAR`.**
 Repo tooling redacts tokens in all output (see `tools/gh_admin.py`), and a

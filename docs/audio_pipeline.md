@@ -2,8 +2,9 @@
 
 How the capture and playback paths are cleaned today, **why Microsoft Teams
 sounds better than a raw-mic app on the same laptop**, and the concrete knobs to
-close that gap on desktop and mobile. This is the current-truth companion to
-`docs/TTS.md`; `STATUS.md` is authoritative for current barge state, and the
+close that gap on desktop and mobile. This is the current capture/playback
+guide (the pre-refactor TTS guide is archived at [`archive/TTS.md`](archive/TTS.md));
+`STATUS.md` is authoritative for current barge state, and the
 decision chain continues through ADR-0036, ADR-0042, and ADR-0072 (the DTLN-era
 internals doc is archived at `docs/archive/open_speaker_barge_in.md`).
 

@@ -2,7 +2,7 @@
 
 The single source of truth for every credential this repo uses: where each one
 comes from, what it unlocks, and how it is consumed. **This guide is the
-reference; `CLAUDE.md` only points here.**
+reference; `AGENTS.md` only points here.**
 
 > **Golden rule (applies to every token below):** read the value from the
 > environment at runtime. **Never** hard-code, echo, log, or commit a token, and
@@ -28,13 +28,13 @@ reference; `CLAUDE.md` only points here.**
 > `GIT_HUB_ACCESS_TOKEN` from the agent-ops SOPS bundle
 > (`agent-ops/secrets/secrets.manifest.yaml`; refresh via `bootstrap.sh secrets-pull`).
 
-> **Policy scope (fleet git standard 2026-06-24 — `AGENTS.md`, `docs/adr/0007`):**
-> having this token is **not** authorization to use it. Agents never push, merge
-> to `main`, delete branches, or run any of the admin operations below without
-> Paul's **explicit ask**. The one sanctioned write path is an
-> explicitly-authorized landing — feature branch → PR → merge — per
-> [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md), where
-> `gh`/`$GIT_HUB_ACCESS_TOKEN` performs the PR create/merge the SSH transport cannot.
+> **Policy scope (ADR-0014, `AGENTS.md` Parallel work):** having this token is
+> **not** authorization to use it. The orchestrating session lands green work on
+> `main` directly over SSH (ADR-0014) and finishes the landing per agent-ops
+> ADR-0037; workers never push. The admin operations below (branch delete,
+> workflow dispatch/rerun, Actions secrets) run only on Paul's **explicit ask**.
+> The retired PR-only flow (ADR-0007) is archived at
+> [`docs/archive/windows_landing_workflow.md`](docs/archive/windows_landing_workflow.md).
 
 Ordinary git transport and GitHub reads/writes go through the **session
 harness** (git proxy + repo-scoped GitHub MCP) or SSH with no stored

@@ -3,7 +3,8 @@
 A running list of decisions to pin down before/while building. Answer inline
 (replace the `> _answer:_` lines). Unanswered items are open. This file is the
 source of truth for *intent*; `docs/target_architecture.md` is the source of
-truth for the *technical plan*. Claude reads both each session.
+truth for the *technical plan*. `AGENTS.md`'s read-first order points here for
+product intent.
 
 Legend: ⭐ = blocks real work until answered. 💡 = my current recommendation.
 

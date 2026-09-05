@@ -30,7 +30,7 @@ pulls from. One-time setup:
    fetches the gated model and publishes it to the `gemma-model` release.
 
 > See [`CREDENTIALS.md`](../CREDENTIALS.md) for the full token reference
-> (`HF_TOKEN`, `HUGGINGFACE_TOKEN`, `GIT_HUB_TOKEN`, `LIVEKIT_*`) — where each
+> (`HF_TOKEN`, `HUGGINGFACE_TOKEN`, `GIT_HUB_ACCESS_TOKEN`, `LIVEKIT_*`) — where each
 > lives and what it unlocks.
 
 The app downloads from

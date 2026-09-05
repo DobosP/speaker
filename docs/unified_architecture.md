@@ -1,5 +1,7 @@
 # Speaker — Unified Architecture
 
+Read this when: you need how speaker is actually built today — process boundaries, the audio path, or where a component lives — before changing any of it.
+
 > Single current-truth architecture doc. Pairs with docs/target_architecture.md (north-star); the old as-built snapshot is archived at docs/archive/architecture.md. Last consolidated 2026-07-16.
 
 ## Table of contents
@@ -32,7 +34,7 @@ This doc absorbs the durable truths from ~14 subsystem and design docs (listed i
 
 ### What this doc defers to
 
-- **[`CLAUDE.md`](../CLAUDE.md)** — session workflow, conventions, run logs, testing, git policy.
+- **[`AGENTS.md`](../AGENTS.md)** — the operating contract (commands, safety, docs discipline); `STATUS.md` is current truth.
 - **[`MEMORY.md`](../MEMORY.md)** — the memory system (Postgres on desktop, SQLite on mobile). Detailed in [§6](#6--memory-architecture).
 - **[`SETUP.md`](../SETUP.md)** — installation, environment, and first run.
 - **[`docs/debugging.md`](debugging.md)** — run artifacts, observability, and how to diagnose failures. Summarized in [§11](#11--observability-testing--device-profiles).
@@ -1397,7 +1399,7 @@ Ranked by field impact:
 
 ### Explicitly out of scope
 
-- **End-to-end speech-to-speech models** (Moshi/GPT-4o realtime) for the always-on loop — cascaded ASR→LLM→TTS is the 2025–26 consensus for tool use, content filtering, and on-device control. If adopted at all, route to the optional cloud thinking tier; document in `docs/target_architecture.md` §9.7.
+- **End-to-end speech-to-speech models** (Moshi and the vendors' realtime speech-to-speech APIs) for the always-on loop — cascaded ASR→LLM→TTS is the 2025–26 consensus for tool use, content filtering, and on-device control. If adopted at all, route to the optional cloud thinking tier; document in `docs/target_architecture.md` §9.7.
 - **Mobile Rust/FFI core** — defer until drift hurts or iOS-background forces it (Phase 3 roadmap). The current ~4-function pure-function sharing + golden contract suite is adequate for now (see [§10](#10--cross-platform-contract--mobile)).
 - **OSS segmentation library** — the current regex is adequate; revisit only if the golden suite surfaces real edge-case failures.
 

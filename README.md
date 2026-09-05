@@ -12,6 +12,7 @@ Linux/Windows/macOS and (later) Android/iOS.
 > **Current architecture:** [`docs/unified_architecture.md`](docs/unified_architecture.md) — the single current-truth overview.
 > **North-star & roadmap:** [`docs/target_architecture.md`](docs/target_architecture.md).
 > **Working notes & open decisions:** [`docs/PROJECT_KICKOFF.md`](docs/PROJECT_KICKOFF.md).
+> **Current truth:** [`STATUS.md`](STATUS.md) · **Agent contract:** [`AGENTS.md`](AGENTS.md)
 
 ## Design
 
@@ -69,13 +70,13 @@ granted during installation or changed later without a tool-specific launcher:
 
 ```bash
 ./install.sh \
-  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --obsidian-vault ~/work/dobo-brain/paul-brain \
   --enable-reminders \
   --trust-app obsidian=obsidian.desktop
 
 # Equivalent after installation:
 .venv/bin/python -m tools.setup_assistant \
-  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --obsidian-vault ~/work/dobo-brain/paul-brain \
   --enable-reminders \
   --trust-app obsidian=obsidian.desktop
 ```
@@ -183,15 +184,55 @@ captures evidence but does not itself validate barge-in.
 python -m pytest tests -q
 ```
 
-- `tests/test_core_runtime.py` — fast logic (scripted engine + fake LLM).
-- `tests/test_sandbox_middle_layer.py` — **realistic-timing** scenarios across
-  device profiles (slow phone → fast desktop), modeling STT partial cadence,
-  LLM time-to-first-token/per-token latency, and TTS playback. Catches
-  concurrency bugs (e.g. barge-in during LLM generation).
-- `tests/test_speaker_gate.py` — speaker-ID gate policy.
-- `tests/test_always_on_agent.py` — brain unit tests.
+The Tier-0 logic suite: no audio hardware, models, or Ollama. Tiers, markers and
+the staged runner: [`docs/testing.md`](docs/testing.md); agent gates and the
+before-commit checklist: [`docs/agent-testing.md`](docs/agent-testing.md).
 
-All run with no audio hardware, no models, and no Ollama.
+## Documentation
+
+Every non-history document is one hop from this table. Decisions live in
+`docs/adr/` (append-only); dated journals are history.
+
+| Doc | Read it for |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | The operating contract: read-first order, commands, safety, docs discipline. |
+| [`STATUS.md`](STATUS.md) | Current truth: state, open gates, next, verification record. |
+| [`WORKLOG.md`](WORKLOG.md) | Dated history and the frozen receipts trimmed from `STATUS.md`. |
+| [`docs/agent-map.md`](docs/agent-map.md) | Entry points, task routes, do-not-load list, pitfalls. |
+| [`docs/agent-testing.md`](docs/agent-testing.md) | Gate commands with expected output, before-commit checklist, known flaky. |
+| [`docs/testing.md`](docs/testing.md) | Test tiers, markers, staged runner, CI, per-feature gate matrix. |
+| [`docs/dev_guide.md`](docs/dev_guide.md) | Day-to-day development loop, layout, environment notes. |
+| [`docs/debugging.md`](docs/debugging.md) | Run logs, bundles, PII scrubbing before `git add`. |
+| [`docs/deployment_profiles.md`](docs/deployment_profiles.md) | Device profiles and what transport each selects. |
+| [`docs/docker_quickstart.md`](docs/docker_quickstart.md) | Container path for the cloud middle layer. |
+| [`docs/audio_pipeline.md`](docs/audio_pipeline.md) | Current capture/playback guide (AEC, DSP, TTS output). |
+| [`docs/asr_biasing.md`](docs/asr_biasing.md) | Streaming hotwords and contextual biasing. |
+| [`docs/voice_evidence.md`](docs/voice_evidence.md) | Recorded and live evidence protocol. |
+| [`docs/public_voice_evaluation_matrix.md`](docs/public_voice_evaluation_matrix.md) | Public STT evaluation matrix: tracks, sources, exclusions. |
+| [`docs/public_voice_regression.md`](docs/public_voice_regression.md) | Public voice regression procedure. |
+| [`docs/evaluation_runbooks.md`](docs/evaluation_runbooks.md) | Protected benchmark and diagnostic runbooks, harness semantics. |
+| [`docs/unified_architecture.md`](docs/unified_architecture.md) | Current architecture overview. |
+| [`docs/target_architecture.md`](docs/target_architecture.md) | North star, §9 structural decisions, §9.7 local/cloud boundary. |
+| [`docs/PROJECT_KICKOFF.md`](docs/PROJECT_KICKOFF.md) | Product intent and open product questions. |
+| [`MEMORY.md`](MEMORY.md) | Postgres-backed smart memory design and operation. |
+| [`SETUP.md`](SETUP.md) | Database and environment setup. |
+| [`CREDENTIALS.md`](CREDENTIALS.md) | Secret and token names (values never live in git). |
+| [`SECURITY.md`](SECURITY.md) | Threat model, egress boundary, reporting. |
+| [`always_on_agent/README.md`](always_on_agent/README.md) | Control-plane brain: modes, event bus, supervisor. |
+| [`mobile/README.md`](mobile/README.md) | Flutter Android shell: build and on-device models. |
+| [`tools/autotest/README.md`](tools/autotest/README.md) | Autonomous voice/barge stress harness. |
+| [`.agents/backlog.md`](.agents/backlog.md) | Work queue read by `tools/session_bootstrap.py`; `STATUS.md` Next wins. |
+| [`docs/adr/`](docs/adr/) | Decisions, append-only. |
+| [`docs/archive/`](docs/archive/) | Superseded documents, kept as history. |
+
+Design plans (snapshots; verify against [`STATUS.md`](STATUS.md)):
+
+- [`docs/cross_device_audio_quality.md`](docs/cross_device_audio_quality.md) — output-side loudness/limiter plan (2026-06-22).
+- [`docs/memory_layers_enhancement_plan.md`](docs/memory_layers_enhancement_plan.md) — memory layers ([ADR-0009](docs/adr/0009-memory-layers-approved-deferred.md)).
+- [`docs/voice_upgrade_plan.md`](docs/voice_upgrade_plan.md) — voice upgrade ([ADR-0010](docs/adr/0010-kokoro-tts-adopted.md)).
+
+Dated journals (`docs/session_*.md`, `docs/*_2026-*.md`, `docs/2026-*.md`) are
+history and are deliberately not indexed.
 
 ## License
 

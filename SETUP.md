@@ -2,7 +2,7 @@
 
 This guide will help you set up the voice assistant with persistent memory.
 
-> **Credentials & API tokens** (HuggingFace, the `GIT_HUB_TOKEN` admin key,
+> **Credentials & API tokens** (HuggingFace, the `GIT_HUB_ACCESS_TOKEN` admin key,
 > LiveKit) are documented separately in [`CREDENTIALS.md`](CREDENTIALS.md). This
 > guide covers the local PostgreSQL memory store only.
 
@@ -135,7 +135,7 @@ the normal chatbot. Grant them atomically in the machine-local configuration:
 
 ```bash
 .venv/bin/python -m tools.setup_assistant \
-  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --obsidian-vault ~/work/dobo-brain/paul-brain \
   --enable-reminders \
   --trust-app obsidian=obsidian.desktop
 ```

@@ -6,7 +6,9 @@ How the runtime is sized per machine and deployed per platform. Config lives in
 > **Note:** the pre-refactor knobs `profile` / `runtime_profile` /
 > `transport_mode` and the `python main.py --profile …` CLI are **gone** (they
 > belonged to the deleted `main.py`). Sizing is now `device_profiles`; transport
-> is the choice of **engine** (`sherpa` local vs. `livekit` remote).
+> is the `--session` choice (`local` on-device; `trusted-lan` per ADR-0097,
+> unselectable until owner live A/B — `STATUS.md`); `--engine` is the legacy
+> alias (`core/app.py:1159-1164`).
 
 ## Device profiles (`device` + `device_profiles`)
 

@@ -1,5 +1,14 @@
 # Public voice evaluation matrix
 
+Read this when: you need to know which public corpus a voice or STT claim may be measured on, what each track isolates, and which sources are deliberately excluded.
+
+## Contents
+
+- [Public conversation/STT fixture](#public-conversationstt-fixture)
+- [Public short-command/noise fixture](#public-short-commandnoise-fixture)
+- [Common Voice spontaneous English P0](#common-voice-spontaneous-english-p0)
+- [Zipformer comparison control](#zipformer-comparison-control)
+
 Architecture and evidence policy are recorded in
 [ADR-0098](adr/0098-separate-public-voice-evidence-and-bind-production-baseline.md)
 and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). The AMI-only

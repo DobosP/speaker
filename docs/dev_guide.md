@@ -5,34 +5,23 @@ Living doc (extracted from CLAUDE.md 2026-07-02). Architecture truth is
 [`testing.md`](testing.md); run-log debugging is [`debugging.md`](debugging.md);
 device/LLM config is [`deployment_profiles.md`](deployment_profiles.md).
 
-## Session bootstrap (run first every session)
-
-This project is worked on from **multiple machines**, and per-user Claude memory
-does **not** travel between them — prior-session state lives in the repo. At the
-start of a session, reconstruct where things left off **before touching code**:
+## Session bootstrap (optional, advisory)
 
 ```
 python -m tools.session_bootstrap   # pure-local, stdlib-only, <1s, no deps
 ```
 
-It prints a one-page briefing assembled in this read order, then a
-**Recommended working strategy** block:
+It prints a one-page briefing and writes a copy to the gitignored
+`logs/session_<ts>_bootstrap.md`. It changes no config and no git state. Read
+order: `.agents/status.json`, the newest `docs/session_*.md`, the 3 newest
+`logs/runs/*.summary.json`, then OPEN P0 items of `.agents/backlog.md`. The
+first two inputs have been frozen since 2026-07-02/2026-07-04, so its "last
+tests" and "next" lines lag — **`STATUS.md` wins on conflict.**
 
-1. `.agents/status.json` — machine profile + last test verdict (green/red + counts)
-2. `docs/session_*.md` (newest by filename) — headline, branch, first 3 next-steps
-3. `logs/runs/*.summary.json` (3 newest) — per-run `stuck_hints`, errors, slow turns
-4. `.agents/backlog.md` — OPEN P0 items only
-
-The briefing is **advisory** — it sets direction, it does not change config or
-git state. If the tool is unavailable, walk the read order above by hand. A copy
-is written to `logs/session_<ts>_bootstrap.md` (gitignored).
-
-**At session END**, if meaningful work landed, refresh `.agents/status.json`
-(machine + `last_verdict` + `next`) and write a
-`docs/session_<YYYY-MM-DD>_<slug>.md` handoff (header / branch-commit map /
-what-landed / environment-on-`<machine>` / **Next steps (pick up here)**) so the
-next session's bootstrap reads fresh state. See `tools/session_bootstrap.py` for
-the exact fields it parses.
+**At session END**, update `STATUS.md` (facts plus `Last verified: YYYY-MM-DD`)
+in the same commit as the change, and keep continuation in the tab handoff and
+the vault task note (agent-ops ADR-0078). Do **not** write a new dated
+`docs/session_*.md` handoff (`AGENTS.md`, Docs discipline).
 
 ## Repo layout
 
@@ -51,8 +40,9 @@ the exact fields it parses.
   (`VoiceRuntime` orchestrator), `app.py` (CLI; builds models from the `llm`
   config block and applies the selected device profile).
 - `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
-  supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
-  `README.md` and `docs/archive/always_on_agent_layer.md`. Its `events.py`
+  supervisor, cancellable threaded tasks, intent analyzer). The keeper. See
+  [`always_on_agent/README.md`](../always_on_agent/README.md) and
+  `docs/archive/always_on_agent_layer.md`. Its `events.py`
   (`AgentEvent`/`Mode`) is **the shell↔core contract** every platform shares.
 - `mobile/` — **on-device Android app** (Flutter): ASR/LLM/TTS fully local via
   `sherpa_onnx` + `flutter_gemma` (Gemma 3 1B, MediaPipe/LiteRT). Today it is a
@@ -95,8 +85,10 @@ the exact fields it parses.
   over recorded `.npy`/`.wav` fixtures (no sound card).
 - `--session trusted-lan` — see ADR-0096 and ADR-0097.
 - Sessions: `--session {console,local,replay,trusted-lan}`; LLM:
-  `--llm {echo,ollama,llamacpp}`; profile: `--device <name>` (default from
-  `config.device`; profiles + the `llm` block: `deployment_profiles.md`).
+  `--llm {echo,ollama}` (`core/app.py:1189`); `llamacpp` is selected by the
+  `phone`/`phone_lite` device profiles' `llm` block, not by the CLI; profile:
+  `--device <name>` (default from `config.device`; profiles + the `llm` block:
+  [`deployment_profiles.md`](deployment_profiles.md)).
 - Latency instrumentation (`core/metrics.py`) and run-log capture are described
   in `unified_architecture.md` §11 and `debugging.md`.
 
@@ -135,7 +127,8 @@ the exact fields it parses.
 
 ## Self-monitoring / autofix loop
 
-Put work in a PR, then a Claude session can `subscribe` to that PR's activity to
+Landing is direct per ADR-0014 (`AGENTS.md`, Parallel work); when work does go
+through a PR, a Claude session can `subscribe` to that PR's activity to
 receive its CI results (from `tests.yml`) and review comments as events, and
 push fixes until checks pass. The loop is driven by the live session
 (subscription is per-session, not stored state); on merge/abandon, unsubscribe.
@@ -147,11 +140,16 @@ trigger/re-run a workflow or create Actions secrets from its in-session toolset
 ## Environment notes
 
 - Web sessions run in an ephemeral container; commit anything worth keeping
-  (commit only — pushing stays gated by the fleet git policy, ADR-0007).
+  (commit only — workers never push; the orchestrating session lands green work,
+  ADR-0014; see `AGENTS.md`).
 - Pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). Surface it — it's an environment permission, not a
-  code problem (and `GIT_HUB_TOKEN` does not change it; see `CREDENTIALS.md`).
-- `GIT_HUB_TOKEN` (maximum-access GitHub key) + the `tools/gh_admin.py` wrapper:
+  code problem (and `GIT_HUB_ACCESS_TOKEN` does not change it; see `CREDENTIALS.md`).
+- `GIT_HUB_ACCESS_TOKEN` (maximum-access GitHub key) + the `tools/gh_admin.py` wrapper:
   fully documented in `CREDENTIALS.md`. Never print tokens.
-- Windows landing procedure (guard hook, SSH identity, PR flow):
-  `windows_landing_workflow.md`.
+- Windows box: the remote is `git@github-personal:DobosP/speaker.git` (personal
+  key via the `github-personal` SSH alias); run the suite with
+  `.venv\Scripts\python.exe -m pytest tests -q` (git-bash `python` is system 3.10
+  and lacks `onnxruntime`/`sherpa_onnx`); a machine-local, untracked PreToolUse
+  hook blocks the work identity. The retired PR-landing flow is archived at
+  [`archive/windows_landing_workflow.md`](archive/windows_landing_workflow.md).

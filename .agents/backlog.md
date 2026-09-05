@@ -1,5 +1,25 @@
 # Improvement backlog
 
+Read this when: you are picking the next piece of work and need the open queue in priority order — P0 blockers first, each item carrying the analysis already done on it.
+
+## Contents
+
+- [P0 — correctness / blocker](#p0--correctness--blocker)
+- [P1 — Windows live session findings (2026-07-02, owner-directed next to-dos)](#p1--windows-live-session-findings-2026-07-02-owner-directed-next-to-dos)
+- [P1 — MiniCPM5 migration and model/runtime follow-ups](#p1--minicpm5-migration-and-modelruntime-follow-ups)
+- [P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)](#p1--voice--audio-follow-ups-from-the-2026-06-10-live-iteration-5-rounds-with-the-owner)
+- [P1 — voice / audio (migrated from session_2026-06-01 handoff)](#p1--voice--audio-migrated-from-session_2026-06-01-handoff)
+- [P2 — runtime robustness (2026-07-06 codex-fleet recon; every item below adversarially verified against the code)](#p2--runtime-robustness-2026-07-06-codex-fleet-recon-every-item-below-adversarially-verified-against-the-code)
+- [Smart routing — phase-2 audit (2026-06-08, 6-dimension fan-out: 28 findings, 19 confirmed)](#smart-routing--phase-2-audit-2026-06-08-6-dimension-fan-out-28-findings-19-confirmed)
+- [P1 — desktop / 4090 fit](#p1--desktop--4090-fit)
+- [P1 — architecture / cross-platform](#p1--architecture--cross-platform)
+- [Gemma 4 — ADOPTED 2026-06-05 (gemma4:12b)](#gemma-4--adopted-2026-06-05-gemma412b)
+- [Barge-in coherence-primary — v2 AND-gate LANDED + self-interrupt VALIDATED 2026-06-07](#barge-in-coherence-primary--v2-and-gate-landed--self-interrupt-validated-2026-06-07)
+- [P1 — capability / testing (from 2026-06-05 test-unification pass)](#p1--capability--testing-from-2026-06-05-test-unification-pass)
+- [P2](#p2)
+- [Shipped this session (2026-06-02)](#shipped-this-session-2026-06-02)
+- [Landed on `main` from the other machine (origin/main voice batch, 2026-06-02)](#landed-on-main-from-the-other-machine-originmain-voice-batch-2026-06-02)
+
 Priority queue. `[ ]` = open, `[x]` = shipped (see `changelog.md`).
 P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 

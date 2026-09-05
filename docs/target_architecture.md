@@ -1,5 +1,21 @@
 # Target Architecture: Fully On-Device, Cross-Platform Voice Assistant
 
+Read this when: you need the north-star structural decisions behind a refactor — portable core plus thin per-platform shells; for how the system is wired today read `unified_architecture.md` instead.
+
+## Contents
+
+- [0. One app or many? (the headline decision)](#0-one-app-or-many-the-headline-decision)
+- [1. Goals and constraints](#1-goals-and-constraints)
+- [2. Why the current repo can't be the mobile foundation](#2-why-the-current-repo-cant-be-the-mobile-foundation)
+- [3. Root cause of today's problems](#3-root-cause-of-todays-problems)
+- [4. Target architecture (layered)](#4-target-architecture-layered)
+- [5. The brain stays — and it's good](#5-the-brain-stays--and-its-good)
+- [6. Keep / Replace / Delete map](#6-keep--replace--delete-map)
+- [7. Portable-core module boundaries (target)](#7-portable-core-module-boundaries-target)
+- [8. Phased migration (each step independently useful)](#8-phased-migration-each-step-independently-useful)
+- [9. Decisions (resolved 2026-05)](#9-decisions-resolved-2026-05)
+- [10. Performance plan — balanced cost × speed × intelligence](#10-performance-plan--balanced-cost--speed--intelligence)
+
 > For the consolidated **current-truth** architecture (how it's wired today, with
 > this doc's §9/§9.7/§10 decisions woven in), see
 > [`unified_architecture.md`](unified_architecture.md). This doc remains the

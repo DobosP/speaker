@@ -1,5 +1,9 @@
 # Cross-device audio quality: concepts + implementation plan
 
+> Design plan, snapshot as of 2026-06-22 — verify against `STATUS.md` and
+> [`audio_pipeline.md`](audio_pipeline.md) before acting; the output-side items
+> (LUFS, limiter, per-device target) are unimplemented as of 2026-09-05.
+
 > **One-line thesis.** Teams/Zoom don't *calibrate per device* — they defer to a per-device, OEM-tuned **OS voice-communication path** for the device-specific acoustics, then run their **own WebRTC APM** on top as a single device-agnostic loudness/echo policy. This repo today does *neither* cleanly on output: it grabs the **raw** default device and levels the TTS with a per-sentence **linear RMS** hack (`tts_target_rms=0.12`) — no LUFS, no limiter, no per-device target, no OS comm path on render. Closing that two-layer gap is the whole job. Most of the win is configuration + ~200 lines of pure-DSP port, not new infrastructure.
 
 ---

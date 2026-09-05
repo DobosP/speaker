@@ -6,10 +6,10 @@ class machine (16 GB VRAM + 32 GB RAM): Ollama lives in one container
 with GPU passthrough, the speaker app lives in another and just speaks
 HTTP to it.
 
-This is the developer flow for verifying PR-1's cloud middle layer
+This is the developer flow for verifying the cloud middle layer
 end-to-end without setting up audio hardware or sherpa-onnx models.
 For the on-device desktop runtime (with audio), skip Docker and run
-`python -m core --engine sherpa --device desktop_gpu_4090` directly.
+`python -m core --session local --device desktop_gpu_4090` directly.
 
 ## What you'll have running
 
@@ -29,6 +29,11 @@ For the on-device desktop runtime (with audio), skip Docker and run
   └───────────────────────────────────┘
 ```
 
+`--engine` is the legacy alias that `core` still accepts (`console` →
+`--session console`, `sherpa` → `--session local`; `core/app.py:1159-1164`,
+translated in `core/voice_session.py:152-191`);
+`docker/docker-compose.yml:109` still uses the alias.
+
 Two services, one bridge network, one persistent volume for the Ollama
 models. Total disk: ~9 GB models + ~200 MB image. Total VRAM when both
 models are warm: ~9 GB (fits comfortably in 16 GB).
@@ -42,7 +47,7 @@ models are warm: ~9 GB (fits comfortably in 16 GB).
   Verify with `docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi`.
 - A cloud LLM key for at least one provider. **`OPENROUTER_API_KEY` is the
   recommended US default** (P3): one key fronts the default `public` chain
-  (`gpt-oss-120b` / `llama-3.3-70b`, US-hosted). The PR-1 keys (Cerebras / Groq
+  (`gpt-oss-120b` / `llama-3.3-70b`, US-hosted, as of 2026-07). The PR-1 keys (Cerebras / Groq
   / DeepSeek / Moonshot) still work alongside it. Signup links are in
   `docker/.env.example`. **DeepSeek and Moonshot are PRC-hosted (host=CN) and
   stay disabled** unless you opt in with `ALLOW_PRC=1` in your `.env` (default
@@ -142,7 +147,7 @@ docker compose -f docker/docker-compose.yml run --rm \
 
 # Run a different device profile (e.g. force fallback strategy).
 docker compose -f docker/docker-compose.yml run --rm \
-    speaker --engine console --llm ollama --device cpu_laptop
+    speaker --session console --llm ollama --device cpu_laptop
 ```
 
 ## Teardown
@@ -185,7 +190,7 @@ docker compose -f docker/docker-compose.yml down --volumes  # also delete pulled
 
 - **Audio hardware passthrough**. Containers + microphones on Linux is
   doable (`--device /dev/snd`) but ugly + platform-specific. For audio,
-  run the desktop runtime directly: `python -m core --engine sherpa`.
+  run the desktop runtime directly: `python -m core --session local`.
 - **The LiveKit remote/host path**. That's a separate docker-compose
   setup that reuses the same `Dockerfile` with `python -m remote.worker`
   as the command. See the legacy `docker/.env.example` Flow B section.

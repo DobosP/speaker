@@ -1208,11 +1208,13 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       effects/logs/finalizers, observer process controls, unrelated task/controller
       exceptions, same-process mutation, resource containment, and billing
       remain outside the claim.
-      Frozen fake/headless gates pass 14 focused, 262 adjacent, 319 current
-      cloud-stage, 88 task/cancellation, 315 import, and 6 APM/DTD tests. AST5,
-      scoped Ruff with eight base-identical findings, inherited-only formatter
-      debt, diff-check, STATUS100, exact hashes/inventory, receipt audit, and
-      architecture review, and final independent landing audit are GO; that
+      Re-verified on main `523f22f` (2026-09-07): 14 focused, 262 adjacent, 397
+      cloud-stage, 89 task/cancellation, 322 import, 30 published-gate, and 6
+      APM/DTD tests pass, and all five frozen hashes reproduce byte-for-byte (the
+      frozen 2026-08-12 numbers were 319/88/315). AST5, scoped Ruff with eight
+      base-identical findings, inherited-only formatter debt, diff-check, exact
+      hashes/inventory, receipt audit, and architecture review, and final
+      independent landing audit are GO; that
       audit also passed 30 relevant tests/hostile probes against the exact frozen
       11-path inventory. No network, provider, model, GPU, audio, microphone,
       device, billing, or live path ran.
@@ -1229,10 +1231,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       checkpoints are truthful about pre/post-attempt egress, and logs/receipts
       retain only stable codes or exception types. Legacy custom backends keep
       one positional argument and do not inherit shipped transport bounds.
-      Final rebased fake/headless gates pass 136 focused, 186 adjacent, 108
-      sensitivity/LLM-egress, 315 imports, and 6 APM/DTD; config JSON, AST2,
-      exact dependency pin, scoped Ruff, diff-check, core format, inherited-test
-      format parity, STATUS100, hashes, and the ten-path inventory are green.
+      Re-verified on main `523f22f` (2026-09-07): 136 focused, 186 adjacent, 108
+      sensitivity/LLM-egress, 322 imports (frozen 315), and 6 APM/DTD pass, and
+      both frozen Python hashes reproduce byte-for-byte; config JSON, AST2, exact
+      dependency pin, scoped Ruff, diff-check, core format, inherited-test format
+      parity, hashes, and the ten-path inventory are green.
       Independent rebased code/security audit is GO. Synchronous factory/enter/
       read/exit and active JSON parse remain non-preemptible; the body cap
       excludes DNS/TLS/headers/one chunk/copies/parser-graph amplification;

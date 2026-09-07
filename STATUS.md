@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-09-05 (docs plus the gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
+Last verified: 2026-09-07 (docs plus the gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 
 ## Current state — runtime
@@ -23,6 +23,14 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Bounded PRIVATE vault search, reminders and trusted apps are opt-in; mutations need unchanged direct speech plus confirmation,
   `web.search` admits only `current_turn_only`, and retained context forces monotonic `local_only`. Residuals: cleaner byte channel,
   `last_source` race, blocking-backend cancellation, raw-gate false negatives (ADR-0003/0060/0073/0074/0076/0187/0189).
+- ADR-0191 bounds the shipped SearXNG reader: `httpx==0.28.1`, one context-managed identity raw stream, clamped frozen
+  `WebSearchConfig` budgets (`max_results` 1-8), a cooperative monotonic total deadline plus `Event` checkpoints, and detail-free refusal
+  codes for bad content type/encoding/length, oversized bodies, non-strict UTF-8 and non-exact JSON/result shapes. Web search stays
+  disabled by default and injected custom backends keep the one-argument `search(query)` protocol, inheriting no transport bound.
+- ADR-0192 makes `CapabilityRegistry` return one fixed `capability_provider_failed` for any unexpected provider exception or
+  non-`CapabilityResult` return, never binding, stringifying, typing or logging the thrown object, so no tool/backend detail reaches an
+  observer, `TASK_FAILED` or the next ReAct prompt. Provider-authored errors pass through byte-for-byte and `BaseException` still
+  propagates after one fixed finished receipt; residual: `error` is now coarse, so callers cannot distinguish unexpected failure kinds.
 - Factory-built Hedges publish one owner per source worker and BUSY never waits or spawns, but a hung owner can hold a billable cloud
   request per key (ADR-0021/0030/0189/0190); model-setup archive writes go through one bounded no-follow extractor (ADR-0165/0167). Only
   case, ordinary surrounding spaces and one trailing terminator keep final text trusted; any other rewrite loses direct-live and owner
@@ -90,7 +98,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Repeat isolated enrollment on the active 4090 route before the next desktop-GPU live start, then the owner bare-speaker A/B (ADR-0209);
   continue Common Voice acceptance and publisher, mobile and remote work separately.
 
-## Verification record (2026-09-05)
+## Verification record (2026-09-07)
 | Check | Command | Result |
 |---|---|---|
 | Docs | `python3 ~/work/agent-ops/scripts/check_docs.py .` | `files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0` |
@@ -98,8 +106,11 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 | Staged runner | `~/work/speaker/.venv/bin/python tools/run_tests.py list` | 11 stages, `core` through `full` |
 | Entry points | `-m tools.doctor --help`; `-m core --help`; `-m tools.session_bootstrap` | all exit 0; flags per `AGENTS.md` |
 | Doc parsers | `~/work/speaker/.venv/bin/python -m pytest tests/test_session_bootstrap.py tests/test_golden_contract.py tests/test_diagnose_run.py -q` | `100 passed`; the `Read this when:` + `## Contents` header added to `.agents/backlog.md`, `docs/target_architecture.md` and `docs/public_voice_evaluation_matrix.md` leaves `open_p0` at the same 3 items |
+| Bounded SearXNG ingestion | `pytest tests/test_websearch.py -q`; `+ test_capability_context_isolation test_react_planner`; `test_sensitivity + test_llm_egress_policy` | `136 passed` / `186 passed` / `108 passed` (ADR-0191) |
+| Capability exception sanitization | `pytest tests/test_capability_exception_sanitization.py tests/test_capability_context_isolation.py tests/test_failure_cascades.py -q`; adjacent 7-file set | `30 passed` / `262 passed` (ADR-0192) |
+| Cloud stage / task set / imports | `tools/run_tests.py cloud`; ADR-0192's 6-file task set; `tests/test_imports_smoke.py` | `397` / `89` / `322 passed` |
 | Whitespace | `git diff --check` | no output |
-| Budgets | `wc -l` AGENTS/STATUS/agent-map/agent-testing; CLAUDE.md non-blank | 79 / 108 / 59 / 50; 5 non-blank (STATUS budget 120) |
+| Budgets | `wc -l` AGENTS/STATUS/agent-map/agent-testing; CLAUDE.md non-blank | 79 / 120 / 59 / 52; 5 non-blank (STATUS budget 120) |
 | Not re-run | broad non-real suite, `real_model`, `live` | last receipts 2026-08-21, verbatim in `WORKLOG.md` |
 
 ## Doc map

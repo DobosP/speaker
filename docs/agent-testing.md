@@ -1,6 +1,6 @@
 # Agent Testing Guide — speaker
 
-Last verified: 2026-09-05
+Last verified: 2026-09-07
 
 ## Environment
 - Preferred interpreter: `~/work/speaker/.venv/bin/python` — it works from any worktree.
@@ -17,6 +17,8 @@ Last verified: 2026-09-05
 | APM / double-talk | `~/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q` | `6 passed` |
 | Live-launcher lifecycle (headless) | `~/work/speaker/.venv/bin/python -m pytest tests/test_live_launcher.py tests/test_capture_integration.py tests/test_setup_doctor.py -q` | setup/reuse/failure/cleanup/private-path/doctor contracts pass without opening audio |
 | Bounded-read race (isolated) | `SPEAKER_TEST_LOG=0 ~/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_streaming_stt_manifest.py::test_bound_file_hash_rejects_in_place_mutation_during_streaming_read -q` | `1 passed`; keep it isolated from the broad streaming-manifest gate and report both conditions |
+| Bounded SearXNG ingestion (headless) | `~/work/speaker/.venv/bin/python -m pytest tests/test_websearch.py -q` | `136 passed`; no network — the shipped transport runs through an injected stream factory (ADR-0191) |
+| Capability exception sanitization (headless) | `~/work/speaker/.venv/bin/python -m pytest tests/test_capability_exception_sanitization.py tests/test_capability_context_isolation.py tests/test_failure_cascades.py -q` | `30 passed`; provider detail must never reach `error` (ADR-0192) |
 | Whitespace | `git diff --check` | no output |
 | Scoped lint | `ruff check --select E9,F63,F7,F82 <changed files>` | clean. Whole-file lint carries inherited E731/E402/F401 debt — never claim a full-format-clean result. |
 | Readiness (no audio) | `python -m tools.doctor --defer-ollama` | `BASE READY`; this path can never issue full `READY`; run from `~/work/speaker` (models and `config.local.json` are not in task worktrees); the host must also have the ADR-0013 echo-cancel module loaded |

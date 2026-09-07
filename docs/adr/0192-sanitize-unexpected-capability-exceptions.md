@@ -179,3 +179,35 @@ No network, provider, model, GPU, audio, microphone, device, billing-bearing, or
 live path ran. These receipts prove deterministic Python control-plane behavior
 only; the explicit trust boundaries and lifecycle/resource nonclaims above
 remain.
+
+## Re-verification on current `main` (2026-09-07)
+
+The decision above was written against `0223a2f` (2026-08-12) and landed only on
+2026-09-07 against `main` `523f22f`. Main did not touch
+`always_on_agent/capabilities.py`, `always_on_agent/tasks.py`,
+`tests/test_capability_context_isolation.py` or `tests/test_failure_cascades.py`
+in between, so all five frozen SHA-256 values reproduce byte-for-byte on the
+merged tree.
+
+Re-run with `env SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+/home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider`:
+
+- the focused four-selector set: `14 passed` (unchanged);
+- the adjacent seven-file set: `262 passed` (unchanged);
+- the eleven-file cloud stage: `397 passed` — main grew that stage from the
+  frozen `319`; `python tools/run_tests.py cloud` reports the same `397`;
+- the six-file task/cancellation set: `89 passed` — main added one test to
+  `tests/test_always_on_agent.py` since the frozen `88`;
+- `tests/test_imports_smoke.py -q`: `322 passed` (frozen `315`);
+- `tests/test_apm_double_talk.py -q`: `6 passed` (unchanged);
+- the three-file gate now published in `docs/agent-testing.md`
+  (`tests/test_capability_exception_sanitization.py`,
+  `tests/test_capability_context_isolation.py`,
+  `tests/test_failure_cascades.py`): `30 passed`.
+
+The "exact 100-line STATUS" check in the frozen receipts is retired: `STATUS.md`
+is now governed by the ≤120-line budget in `AGENTS.md`. The `STATUS.md`,
+`docs/agent-map.md` and `docs/agent-testing.md` hunks written for this decision
+were discarded rather than applied, because `523f22f` rewrote all three into the
+fleet doc convention; equivalent content was rewritten in that convention instead.

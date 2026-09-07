@@ -213,6 +213,40 @@ are:
 - `tests/test_websearch.py`:
   `b97ddee2303d9d18f9fdcbef37eb54bfe5923f5166d983f28c148b52d7d33802`
 - `config.json`:
-  `0ffe35d339c192de47801c0caa5da6932d90a436cd35fc6dd7532d2a124d6c49`
+  `47c3036eb1b51d88c1e30404cb8ed3423f09764445a42988e7d968296d042c14`
+  (the base-`0223a2f` value was
+  `0ffe35d339c192de47801c0caa5da6932d90a436cd35fc6dd7532d2a124d6c49`; the file
+  now also carries main's `tts_output_leveler` and
+  `barge_word_cut_require_speaker` device-profile keys from `3173d07`, which
+  this decision does not touch)
 - `requirements.txt`:
   `7672bea6122a301685c609e86d43da77e2bfed800971ffad9cdc3da837f8b18d`
+
+## Re-verification on current `main` (2026-09-07)
+
+The decision above was written against `0223a2f` (2026-08-12) and landed only on
+2026-09-07 against `main` `523f22f`. Main did not touch `core/websearch.py`,
+`tests/test_websearch.py` or `requirements.txt` in between, so both frozen Python
+hashes and the `requirements.txt` hash reproduce byte-for-byte on the merged
+tree; only `config.json` differs, for the reason recorded above.
+
+Re-run with `env SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+/home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider`:
+
+- `tests/test_websearch.py -q`: `136 passed` (unchanged);
+- `+ tests/test_capability_context_isolation.py tests/test_react_planner.py`:
+  `186 passed` (unchanged);
+- `tests/test_sensitivity.py tests/test_llm_egress_policy.py -q`: `108 passed`
+  (unchanged);
+- `tests/test_imports_smoke.py -q`: `322 passed` — main added seven importable
+  modules since the frozen `315`;
+- `tests/test_apm_double_talk.py -q`: `6 passed` (unchanged).
+
+`config.json` still parses and `WebSearchConfig.from_dict` returns the clamped
+shipped defaults. The "exact 100-line STATUS" check in the frozen receipts is
+retired: `STATUS.md` is now governed by the ≤120-line budget in `AGENTS.md`.
+The three agent-facing document hunks written for this decision were discarded
+rather than applied, because `523f22f` rewrote `STATUS.md`, `docs/agent-map.md`
+and `docs/agent-testing.md` into the fleet doc convention; equivalent content was
+rewritten in that convention instead.

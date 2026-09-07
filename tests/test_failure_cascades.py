@@ -24,6 +24,7 @@ from __future__ import annotations
 import threading
 from typing import Iterator, Optional, Sequence
 
+from always_on_agent.capabilities import CAPABILITY_PROVIDER_FAILED
 from always_on_agent.events import Mode
 
 from core.capabilities import RecallConfig
@@ -142,9 +143,7 @@ def test_llm_stream_raising_mid_token_does_not_wedge_the_runtime():
         assert runtime.supervisor.state.queued_tasks == []
         # The failure was surfaced (TASK_FAILED -> supervisor.failures), not
         # swallowed into a silent dead thread.
-        assert any("exploded" in f or "RuntimeError" in f
-                   for f in runtime.supervisor.state.failures), \
-            runtime.supervisor.state.failures
+        assert list(runtime.supervisor.state.failures) == [CAPABILITY_PROVIDER_FAILED]
         assert boom.stream_calls == 1, "the failing capability never actually ran"
     finally:
         runtime.stop()
@@ -207,9 +206,7 @@ def test_capability_raising_fails_the_turn_then_runtime_serves_the_next():
         engine.final("anything at all")
         assert runtime.wait_idle(timeout=WAIT), "runtime wedged on a raising capability"
         assert runtime.supervisor.state.active_tasks == {}
-        assert any("blew up" in f or "ValueError" in f
-                   for f in runtime.supervisor.state.failures), \
-            runtime.supervisor.state.failures
+        assert list(runtime.supervisor.state.failures) == [CAPABILITY_PROVIDER_FAILED]
         # A failed turn now speaks an apology instead of dead air (sr-2).
         from always_on_agent.supervisor import _FAILURE_APOLOGY
         assert engine.spoken == [_FAILURE_APOLOGY], \

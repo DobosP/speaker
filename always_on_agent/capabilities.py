@@ -5,11 +5,14 @@ from enum import Enum
 from threading import Lock
 import time
 from types import MappingProxyType
-from typing import Callable, Literal, Mapping, Optional, Sequence
+from typing import Callable, Final, Literal, Mapping, Optional, Sequence
 
 from .memory import Memory, SessionMemory
 from .origin import Origin
 from .text import keywords, normalize_text
+
+
+CAPABILITY_PROVIDER_FAILED: Final = "capability_provider_failed"
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,12 @@ class CapabilityResult:
     data: dict[str, object] = field(default_factory=dict)
     citations: tuple[str, ...] = ()
     error: str = ""
+
+
+def _provider_failed_result() -> CapabilityResult:
+    """Return one fresh, detail-free unexpected-provider failure."""
+
+    return CapabilityResult(False, "", error=CAPABILITY_PROVIDER_FAILED)
 
 
 @dataclass(frozen=True)
@@ -255,9 +264,23 @@ class CapabilityRegistry:
         if refusal is not None:
             return refusal
         try:
-            return provider(query, context)
-        except Exception as exc:
-            return CapabilityResult(False, "", error=str(exc))
+            result = provider(query, context)
+        except Exception:
+            # A provider can include private tool/backend state in its exception
+            # message, and even stringifying an exception can execute arbitrary
+            # same-process hooks.  This result can flow into observers, task
+            # events, and the next ReAct/cloud prompt, so expose one stable code
+            # without retaining or inspecting the thrown object.  Explicitly
+            # returned CapabilityResult errors remain provider-owned and pass
+            # through byte-for-byte.
+            return _provider_failed_result()
+        # Provider-return proxies and subclasses can execute attribute hooks
+        # when an observer or planner reads them.  Only the exact typed return
+        # contract is intentional provider-authored data; fail closed before
+        # anything downstream inspects a malformed object.
+        if type(result) is not CapabilityResult:
+            return _provider_failed_result()
+        return result
 
     def invoke(self, name: str, query: str, context: dict[str, object] | None = None) -> CapabilityResult:
         # Preserve every explicitly supplied context, including an empty or
@@ -308,7 +331,24 @@ class CapabilityRegistry:
             ),
             observers,
         )
-        result = self._call_provider(name, provider, query, context)
+        try:
+            result = self._call_provider(name, provider, query, context)
+        except BaseException:
+            # Direct process-control exceptions keep propagating, but an opted-in
+            # trajectory must not be left with a permanently open invocation or
+            # receive provider detail.  Publish the same fixed terminal receipt,
+            # then re-raise the original object without inspecting it.
+            self._notify_invocation(
+                CapabilityInvocation(
+                    phase="finished",
+                    timestamp=time.time(),
+                    monotonic=time.monotonic(),
+                    result=_invocation_result(_provider_failed_result()),
+                    **common,
+                ),
+                observers,
+            )
+            raise
         self._notify_invocation(
             CapabilityInvocation(
                 phase="finished",

@@ -1176,7 +1176,8 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       arbitrary same-process mutation remain outside the claim. The deliberate
       case/spacing/ASCII-punctuation byte/covert channel, composer surfaces that
       are not globally hook-free, shared `last_source` diagnostic race, and
-      untagged unexpected private-tool exception strings also remain. Frozen
+      provider-authored explicit error/data remain; ADR-0192 takes the separate
+      untagged unexpected private-tool exception-string residual. Frozen
       fake/headless receipts pass 262 focused changed-surface, 275 exact cloud
       stage, 101 declared adjacent, 1,196 broad policy/context/ReAct/vault, 103
       resume integration, 314 imports, and 6 APM/DTD tests. AST13, scoped Ruff
@@ -1188,6 +1189,33 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       full-format-clean claim follows.
       No network, SearXNG, cloud provider/model, GPU, audio, microphone, device,
       or live path ran.
+- [x] **Unexpected capability-exception disclosure — IMPLEMENTED AND VERIFIED
+      (ADR-0192).** The common registry publishes exact
+      `CAPABILITY_PROVIDER_FAILED = "capability_provider_failed"` and converts
+      an ordinary raised provider exception or non-exact/foreign return to a
+      fresh exact empty failed `CapabilityResult` before finished observers,
+      tasks, textual/native ReAct, or a later otherwise-authorized planner prompt
+      can consume it. The catch neither binds nor inspects, types, stringifies,
+      reprs, logs, or retains the exception; exact-type validation rejects
+      proxies/subclasses before attribute hooks. Only `type(result) is
+      CapabilityResult` remains unchanged, including explicit error/data;
+      missing-capability and authority results retain compatibility. Direct
+      registry `BaseException` still reraises unchanged, after a paired fixed
+      finished receipt when observers are subscribed. TaskRuntime pops/clears
+      one contained provider-thread `BaseException` and returns the same exact
+      failed result so `TASK_FAILED` exposes only the bare code with no synthetic
+      exception log. Direct calls, deliberately returned detail, provider prior
+      effects/logs/finalizers, observer process controls, unrelated task/controller
+      exceptions, same-process mutation, resource containment, and billing
+      remain outside the claim.
+      Frozen fake/headless gates pass 14 focused, 262 adjacent, 319 current
+      cloud-stage, 88 task/cancellation, 315 import, and 6 APM/DTD tests. AST5,
+      scoped Ruff with eight base-identical findings, inherited-only formatter
+      debt, diff-check, STATUS100, exact hashes/inventory, receipt audit, and
+      architecture review, and final independent landing audit are GO; that
+      audit also passed 30 relevant tests/hostile probes against the exact frozen
+      11-path inventory. No network, provider, model, GPU, audio, microphone,
+      device, billing, or live path ran.
 
 ## Shipped this session (2026-06-02)
 - [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged

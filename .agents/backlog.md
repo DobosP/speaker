@@ -1216,6 +1216,31 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       audit also passed 30 relevant tests/hostile probes against the exact frozen
       11-path inventory. No network, provider, model, GPU, audio, microphone,
       device, billing, or live path ran.
+- [x] **Bound shipped SearXNG ingestion — IMPLEMENTED; INDEPENDENT AUDIT GO
+      (ADR-0191).** Keep ADR-0187/0189 admission unchanged, require exact-True
+      enablement plus an exact-string base URL, clamp the phase/cooperative-total,
+      response, result, field, and output budgets, and pin `httpx==0.28.1`.
+      The shipped path uses one context-managed identity/raw stream and rejects
+      unsafe content type/encoding/length, oversized bodies, BOM/non-UTF-8,
+      duplicate/non-finite/recursion-invalid JSON, malformed roots/results/hits,
+      and non-string fields. It parses the whole bounded JSON body but validates
+      and copies only the configured prefix; provider normalization consumes the
+      same prefix and bounds every field plus rendered output. Exact Event/deadline
+      checkpoints are truthful about pre/post-attempt egress, and logs/receipts
+      retain only stable codes or exception types. Legacy custom backends keep
+      one positional argument and do not inherit shipped transport bounds.
+      Final rebased fake/headless gates pass 136 focused, 186 adjacent, 108
+      sensitivity/LLM-egress, 315 imports, and 6 APM/DTD; config JSON, AST2,
+      exact dependency pin, scoped Ruff, diff-check, core format, inherited-test
+      format parity, STATUS100, hashes, and the ten-path inventory are green.
+      Independent rebased code/security audit is GO. Synchronous factory/enter/
+      read/exit and active JSON parse remain non-preemptible; the body cap
+      excludes DNS/TLS/headers/one chunk/copies/parser-graph amplification;
+      code-point caps do not sanitize escaped lone UTF-16 surrogates, and the
+      exact Event remains a trusted same-process primitive;
+      custom/direct calls and configured endpoint/proxy/same-process code remain
+      trusted. No network, SearXNG, provider/model, GPU, audio, microphone,
+      device, or live path ran.
 
 ## Shipped this session (2026-06-02)
 - [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged

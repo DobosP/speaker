@@ -435,11 +435,17 @@
     }
   },
   "web_search": {
-    "_comment": "FLAT web.search config (P3, Decision 3). Disabled by default: the runtime ships corpus-only (search.local). To enable real web research, set enabled=true and base_url to your self-hosted SearXNG (keyless). Every query is routed through the Â§9.7 egress gate (core.sensitivity.may_leave_device) BEFORE any network call -- PII/personal queries never egress (corpus only). timeout_s bounds the connect+read GET (BR7; the only wedge bound since a blocking GET can't poll cancel). max_results caps mapped hits.",
+    "_comment": "FLAT web.search config (P3, Decision 3). Disabled by default: the runtime ships corpus-only (search.local). To enable real web research, set enabled=true and base_url to your self-hosted SearXNG (keyless). Every query is routed through the Â§9.7 egress gate before transport admission. timeout_s is the HTTPX per-phase inactivity bound; total_timeout_s is a cooperative checkpoint budget and cannot preempt a blocked synchronous transport read. Response, result, field, and output caps are hard-clamped in code.",
     "enabled": false,
     "base_url": "http://localhost:8888",
     "timeout_s": 4,
-    "max_results": 5
+    "total_timeout_s": 8,
+    "max_response_bytes": 262144,
+    "max_results": 5,
+    "max_title_chars": 256,
+    "max_summary_chars": 2048,
+    "max_url_chars": 2048,
+    "max_output_chars": 16384
   },
   "remote": {
     "room": "assistant",

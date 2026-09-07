@@ -18,6 +18,7 @@ import time
 
 import pytest
 
+from always_on_agent.capabilities import CAPABILITY_PROVIDER_FAILED
 from always_on_agent.events import Mode
 from always_on_agent.models import IntentKind
 
@@ -329,7 +330,7 @@ def test_escalated_turn_resets_context_on_failure_path():
     )
     # registry.invoke swallowed the planner's RuntimeError into a failed result.
     assert not result.ok
-    assert "planner boom" in result.error
+    assert result.error == CAPABILITY_PROVIDER_FAILED
     assert capability_context.get() == {}, (
         "context leaked after the escalated planner raised"
     )

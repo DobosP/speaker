@@ -10,7 +10,11 @@ import uuid
 
 log = logging.getLogger("speaker.tasks")
 
-from .capabilities import CapabilityRegistry, CapabilityResult
+from .capabilities import (
+    CAPABILITY_PROVIDER_FAILED,
+    CapabilityRegistry,
+    CapabilityResult,
+)
 from .events import AgentEvent, EventKind, Mode
 from .models import IntentDecision, IntentKind
 from .planner import TaskPlan, TaskPlanner
@@ -858,11 +862,16 @@ class TaskRuntime:
         # the same scheduling window.  _run_plan performs a final guard too.
         if operation_cancel.is_set():
             raise _TaskCancelled
-        error = outcome.get("error")
+        error = outcome.pop("error", None)
         if isinstance(error, BaseException):
             if isinstance(error, Exception):
                 raise error
-            raise RuntimeError(f"capability provider aborted: {type(error).__name__}")
+            # Process-control BaseExceptions still propagate from a direct
+            # registry call.  A TaskRuntime provider thread must contain them so
+            # the task reaches a terminal state, but neither the exception
+            # object nor its type/name hooks may enter TASK_FAILED or logs.
+            del error
+            return CapabilityResult(False, "", error=CAPABILITY_PROVIDER_FAILED)
         result = outcome.get("result")
         if not isinstance(result, CapabilityResult):
             raise TypeError("capability provider returned no CapabilityResult")

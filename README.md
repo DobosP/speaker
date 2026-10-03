@@ -212,6 +212,7 @@ Every non-history document is one hop from this table. Decisions live in
 | [`docs/public_voice_regression.md`](docs/public_voice_regression.md) | Public voice regression procedure. |
 | [`docs/evaluation_runbooks.md`](docs/evaluation_runbooks.md) | Protected benchmark and diagnostic runbooks, harness semantics. |
 | [`docs/unified_architecture.md`](docs/unified_architecture.md) | Current architecture overview. |
+| [`docs/local_voice_performance.md`](docs/local_voice_performance.md) | Reproduced voice failures, repair scope, on-device research and remaining physical acceptance gates; rewrite decision in ADR-0214. |
 | [`docs/target_architecture.md`](docs/target_architecture.md) | North star, §9 structural decisions, §9.7 local/cloud boundary. |
 | [`docs/PROJECT_KICKOFF.md`](docs/PROJECT_KICKOFF.md) | Product intent and open product questions. |
 | [`MEMORY.md`](MEMORY.md) | Postgres-backed smart memory design and operation. |

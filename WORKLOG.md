@@ -119,3 +119,49 @@ Valid until: a newer verification run supersedes these receipts — then treat a
 | Whitespace | `git diff --check` | no output |
 | Budgets | `wc -l` AGENTS/STATUS/agent-map/agent-testing; CLAUDE.md non-blank | 79 / 120 / 59 / 52; 5 non-blank (STATUS budget 120) |
 | Not re-run | broad non-real suite, `real_model`, `live` | last receipts 2026-08-21, verbatim in `WORKLOG.md` |
+
+Valid until: a newer run supersedes these receipts — then treat as history.
+
+## Local voice review and repair verification — 2026-10-04
+
+Four separate behavior repairs: rendered playback onset ownership (ADR-0210), one mobile TTS
+lookahead (ADR-0211), bounded capture coalescing with original endpoint boundaries (ADR-0212),
+and media-first warming on the existing worker (ADR-0213). ADR-0214 records the native-media
+architecture/rewrite criterion; ADR-0215 repairs existing prospective evaluator gate debt.
+
+Python validation used CPython 3.12.3 and the shared speaker .venv with:
+`SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 ~/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests -q --ignore=tests/test_livekit_audio.py --ignore=tests/test_livekit_engine.py --basetemp=<fresh-private-framework-fixture-root>`.
+The final full gate passed **11268**, skipped **42**, and emitted **9** dependency warnings in
+**429.71 seconds**. The two excluded files match CI. Skips/model absence do not establish native
+model quality or a physical route. Warnings are Sherpa SWIG and inherited Pillow deprecations.
+
+The first broad run using default /tmp failed **89**, passed **11179**, skipped **42**, with
+**9** warnings in **524.07 seconds**. Paired pristine-dab5e15/current tests proved two stale eager
+import lists and public repository lock permission assumptions; ADR-0215's focused six and
+complete AMI/Microsoft/Parakeet three-module gate passed **6**/**187** after repair. Default
+framework fixtures also encountered /tmp/.git and /home/dobo/work/.git markers. The unchanged
+Anyreach file passed **36/36 on each tree** using fresh private hermetic fixtures outside those
+markers. Privacy/source/model guards and old locks/receipts were not relaxed. Completed
+synthetic framework fixtures were moved into canonical _temp scratch for cleanup; task source,
+reports and commits stayed in the prescribed worktrees.
+
+Focused desktop audio gate passed **479**, skipped **1** missing DTLN model; final callback-slot
+retest passed **60**, skipped **1**. Independent diagnostic observation and all-Sherpa sets
+passed **7**/**238**. These use synthetic PCM and no microphone or speaker. The startup
+readiness/runtime set passed **70**. The APM/double-talk six cases are included in the audio
+and full gates. Scoped Ruff used `~/.local/bin/ruff check --no-cache --select E9,F63,F7,F82`
+on changed Python implementation/tests; it and git diff --check were clean.
+
+Mobile used `/home/dobo/flutter/bin/flutter` **3.44.2** and Dart **3.12.2**. The initial TTS
+full suite passed **243**; the combined TTS/ASR suite passed **252** in **7 seconds** of reported
+test execution. Independent ASR owner **52** and TTS/path **26** cases passed. Full
+`flutter analyze` reported **No issues found**. These are Dart/widget/adapter checks, not native
+plugin, model, microphone, physical-phone, audibility or thermal validation.
+
+`python3 ~/work/agent-ops/scripts/check_docs.py .` returned
+`files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0`. Compact-file budgets are
+AGENTS79 / STATUS120 / agent-map59 / agent-testing52. `tools.doctor --defer-ollama` returned
+**BASE NOT READY**: no visible device for the selected CUDA verifier, input/output query
+failures and unavailable pactl echo-route inspection. No route changed and no repaired live
+A/B, offline physical-device acceptance, WER/CER, end-to-end acoustic latency, CPU/RSS/PSS,
+battery or thermal result is claimed.

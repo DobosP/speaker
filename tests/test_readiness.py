@@ -1,13 +1,15 @@
 """Tests for startup readiness / pre-warm (ask #3: loaded & ready to fire).
 
-The runtime pre-warms the answering models (with the REAL system prompt so the
-cacheable prefix is filled), the input gate + cleaner, and the engine (a real
-``warm()`` -- previously dead code), then raises ``warm_ready``. These pin the
+The runtime pre-warms the engine, answering models (with the REAL system prompt
+so the cacheable prefix is filled), and input gate + cleaner, then raises
+``warm_ready``. These pin the
 WIRING (no models needed); the actual cold-vs-warm latency is a bench concern.
 """
 from __future__ import annotations
 
 import threading
+
+import pytest
 
 from always_on_agent.events import Mode
 
@@ -126,6 +128,132 @@ def test_engine_warm_is_invoked_during_prewarm():
     try:
         assert runtime.warm_ready.wait(timeout=3.0)
         assert engine.warmed.is_set()
+    finally:
+        runtime.stop()
+
+
+def test_media_warm_finishes_before_a_blocked_llm_warm():
+    media_warmed = threading.Event()
+    llm_entered = threading.Event()
+    release_llm = threading.Event()
+
+    class _WarmEngine(ScriptedEngine):
+        def warm(self):
+            media_warmed.set()
+
+    class _BlockedLLM(_WarmRecordingLLM):
+        def generate(self, prompt, *, system=None, images=None):
+            llm_entered.set()
+            assert release_llm.wait(timeout=3.0)
+            return super().generate(prompt, system=system, images=images)
+
+    runtime = VoiceRuntime(_WarmEngine(), _BlockedLLM(), warm_on_start=True)
+    runtime.start(run_bus=False)
+    try:
+        assert llm_entered.wait(timeout=3.0)
+        assert media_warmed.is_set()
+        # Readiness still means all existing warm stages have finished.
+        assert not runtime.warm_ready.is_set()
+        release_llm.set()
+        assert runtime.warm_ready.wait(timeout=3.0)
+    finally:
+        release_llm.set()
+        runtime.warm_ready.wait(timeout=3.0)
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "failed_step", [None, "engine", "fast", "main", "addressing", "cleaner"]
+)
+def test_media_first_warm_is_sequential_and_isolates_each_failure(failed_step):
+    calls = []
+    caller_thread = threading.get_ident()
+
+    def record(step):
+        calls.append((step, threading.get_ident()))
+        if failed_step == step:
+            raise RuntimeError("synthetic warm failure")
+
+    class _WarmEngine(ScriptedEngine):
+        def warm(self):
+            record("engine")
+
+    class _WarmLLM(_WarmRecordingLLM):
+        def __init__(self, step):
+            super().__init__()
+            self.step = step
+
+        def generate(self, prompt, *, system=None, images=None):
+            record(self.step)
+            return "ok"
+
+    class _Addressing:
+        def classify(self, text, *, recent=()):
+            record("addressing")
+            return ACT
+
+    class _Cleaner:
+        def clean(self, text, *, recent=()):
+            record("cleaner")
+            return text
+
+    runtime = VoiceRuntime(
+        _WarmEngine(),
+        _WarmLLM("main"),
+        fast_llm=_WarmLLM("fast"),
+        addressing=_Addressing(),
+        cleaner=_Cleaner(),
+        warm_on_start=True,
+    )
+    runtime.start(run_bus=False)
+    try:
+        assert runtime.warm_ready.wait(timeout=3.0)
+        assert [step for step, _ in calls] == [
+            "engine", "fast", "main", "addressing", "cleaner"
+        ]
+        worker_threads = {thread_id for _, thread_id in calls}
+        assert len(worker_threads) == 1
+        assert caller_thread not in worker_threads
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("fallback_fails", [False, True])
+def test_media_first_warm_preserves_legacy_llm_fallback(fallback_fails):
+    calls = []
+
+    class _WarmEngine(ScriptedEngine):
+        def warm(self):
+            calls.append("engine")
+
+    class _LegacyLLM(_WarmRecordingLLM):
+        def generate(self, prompt):
+            calls.append("legacy")
+            if fallback_fails:
+                raise RuntimeError("synthetic fallback failure")
+            return "ok"
+
+    class _Addressing:
+        def classify(self, text, *, recent=()):
+            calls.append("addressing")
+            return ACT
+
+    class _Cleaner:
+        def clean(self, text, *, recent=()):
+            calls.append("cleaner")
+            return text
+
+    runtime = VoiceRuntime(
+        _WarmEngine(),
+        _LegacyLLM(),
+        addressing=_Addressing(),
+        cleaner=_Cleaner(),
+        warm_on_start=True,
+    )
+    runtime.start(run_bus=False)
+    try:
+        assert runtime.warm_ready.wait(timeout=3.0)
+        assert calls == ["engine", "legacy", "addressing", "cleaner"]
     finally:
         runtime.stop()
 

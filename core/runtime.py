@@ -605,9 +605,9 @@ class VoiceRuntime:
         # warm-up of the answering models (and the engine, if it exposes
         # ``warm()``) so the load is paid before the user speaks. Off by default
         # so library/test construction is byte-identical; the CLI opts in via
-        # ``config.warm_on_start``. ``fast_llm`` is warmed first (it answers the
-        # common case); duplicates are collapsed by identity so a collapsed
-        # fast/main pair is only warmed once.
+        # ``config.warm_on_start``. Media is warmed first, then ``fast_llm``
+        # (it answers the common case). Duplicates are collapsed by identity so
+        # a collapsed fast/main pair is only warmed once.
         #
         # §9.7 gate: warm ONLY purely-local tiers. ``_answers_locally`` is the
         # canonical "this model cannot reach cloud" predicate (False for a
@@ -773,7 +773,7 @@ class VoiceRuntime:
             self.warm_ready.set()
 
     def _warm(self) -> None:
-        """Pre-load the answering models, the gate/cleaner, and the engine so
+        """Pre-load the engine, answering models, and gate/cleaner so
         turn 1 isn't cold; then raise ``warm_ready``.
 
         Best-effort: a warm-up failure (model not pulled yet, server down) must
@@ -783,6 +783,14 @@ class VoiceRuntime:
         prefix cold), and the input gate / cleaner are exercised once so their
         first live classify/clean isn't cold either."""
         try:
+            # Media warm must not queue behind a complete LLM response. Keep all
+            # startup warm calls on this one worker to avoid added native load.
+            engine_warm = getattr(self.engine, "warm", None)
+            if callable(engine_warm):
+                try:
+                    engine_warm()
+                except Exception:  # noqa: BLE001 - engine warm is best-effort
+                    log.debug("engine warm-up failed", exc_info=True)
             for model in self._warm_models:
                 try:
                     model.generate("hi", system=self._system_prompt)
@@ -806,12 +814,6 @@ class VoiceRuntime:
                     self._cleaner.clean("hi", recent=())
                 except Exception:  # noqa: BLE001 - best-effort
                     log.debug("cleaner warm-up failed", exc_info=True)
-            engine_warm = getattr(self.engine, "warm", None)
-            if callable(engine_warm):
-                try:
-                    engine_warm()
-                except Exception:  # noqa: BLE001 - engine warm is best-effort
-                    log.debug("engine warm-up failed", exc_info=True)
             log.info("startup pre-warm complete (%d model(s))", len(self._warm_models))
         finally:
             # Always signal readiness, even if a warm step failed -- "warm-up

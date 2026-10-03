@@ -101,3 +101,21 @@ The bullets below are the verbatim `STATUS.md` body as of `Last verified: 2026-0
 ### Next as of 2026-08-21 (verbatim)
 
 - Run the two guided `./live.sh` profiles through the owner's close/far plan, retain both private bundles, and accept a narrow profile verdict only from fresh paired attestation plus owner review. Add disjoint command/multi-voice strata, native-reader/gap, bare-speaker barge grading, and live latency/natural-conversation validation before any default change. Only after all five Microsoft AEC terms are explicitly accepted, materialize its private official fixture, provision exact LiveKit 1.1.14 alone, and run the bounded component replay. Preserve the exact remote closure and run its self-hosted owner live A/B; it remains unselectable until that succeeds. Kyutai stays quarantined until its bounded resource gate. Keep PriMock overlap aggregate-only and diagnostic-only, and use the completed AMI natural-turn report only to guide new tests. Preserve ADR-0207/0208's exact packet, both model provisions, reports, scratch, package receipts, and every failed attempt unchanged. Treat both retained mobile-ASR reports as descriptive config-faithful desktop CPU evidence only; do not pool, select, qualify, promote, wire the candidate, change defaults, or infer latency/device/live behavior. The next mobile ASR evidence is a new private owner-recorded holdout kept disjoint between tuning and verdict, followed by actual Flutter/native phone CPU/RSS/thermal/microphone/lifecycle/live validation. The current Zipformer stays the English endpoint/control owner. Control normalization retains only ASCII `a-z` plus spaces; defer Romanian until a separate decision pins a multilingual model/export, language/tokenizer/Unicode contract, metrics, compatible public strata, owner recordings, and physical-phone gates. Continue Common Voice term/token acceptance and publisher/mobile/remote work separately (ADR-0092/0099/0100/0109/0114/0121/0122/0129/0134/0136/0144/0147/0148/0149/0150/0151/0153/0154/0155/0156/0157/0158/0159/0160/0161/0162/0163/0164/0165/0166/0203/0205/0206/0207/0208).
+
+
+Valid until: a newer verification run supersedes these receipts — then treat as history.
+
+## Verification record (2026-09-07)
+| Check | Command | Result |
+|---|---|---|
+| Docs | `python3 ~/work/agent-ops/scripts/check_docs.py .` | `files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0` |
+| APM/DTD | `~/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q` | `6 passed` |
+| Staged runner | `~/work/speaker/.venv/bin/python tools/run_tests.py list` | 11 stages, `core` through `full` |
+| Entry points | `-m tools.doctor --help`; `-m core --help`; `-m tools.session_bootstrap` | all exit 0; flags per `AGENTS.md` |
+| Doc parsers | `~/work/speaker/.venv/bin/python -m pytest tests/test_session_bootstrap.py tests/test_golden_contract.py tests/test_diagnose_run.py -q` | `100 passed`; the `Read this when:` + `## Contents` header added to `.agents/backlog.md`, `docs/target_architecture.md` and `docs/public_voice_evaluation_matrix.md` leaves `open_p0` at the same 3 items |
+| Bounded SearXNG ingestion | `pytest tests/test_websearch.py -q`; `+ test_capability_context_isolation test_react_planner`; `test_sensitivity + test_llm_egress_policy` | `136 passed` / `186 passed` / `108 passed` (ADR-0191) |
+| Capability exception sanitization | `pytest tests/test_capability_exception_sanitization.py tests/test_capability_context_isolation.py tests/test_failure_cascades.py -q`; adjacent 7-file set | `30 passed` / `262 passed` (ADR-0192) |
+| Cloud stage / task set / imports | `tools/run_tests.py cloud`; ADR-0192's 6-file task set; `tests/test_imports_smoke.py` | `397` / `89` / `322 passed` |
+| Whitespace | `git diff --check` | no output |
+| Budgets | `wc -l` AGENTS/STATUS/agent-map/agent-testing; CLAUDE.md non-blank | 79 / 120 / 59 / 52; 5 non-blank (STATUS budget 120) |
+| Not re-run | broad non-real suite, `real_model`, `live` | last receipts 2026-08-21, verbatim in `WORKLOG.md` |

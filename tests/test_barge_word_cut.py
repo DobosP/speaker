@@ -3941,3 +3941,29 @@ def test_playback_onset_grace_blocks_early_cut():
     grace = eng.config.barge_in_playback_onset_grace_sec
     assert eng._barge_word_cut_step(r, s, _BLOCK, now + grace + 0.1) is True
     assert rec.barges == 1
+
+
+def test_slow_synthesis_word_cut_uses_actual_reply_output_onset(monkeypatch):
+    from core.engines._aec import PlaybackFIFO
+
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    rec = _Rec()
+    eng = _engine(rec, barge_in_playback_onset_grace_sec=0.4)
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    eng._fifo = PlaybackFIFO(8)
+    eng._fifo.write(np.full(4, 0.25, dtype="float32"), lambda: False)
+    clock[0] = 20.0  # slow synthesis/open consumed the original synthesis grace
+    eng._audio_cb(np.zeros((4, 1), dtype="float32"), 4, None, None)
+
+    recognizer = _FakeRecognizer(["what are you doing"])
+    stream = _FakeStream()
+    assert eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, 20.1,
+    ) is False
+    assert rec.barges == 0
+    assert eng._word_cut_candidate_samples == 0  # onset echo cannot seed a handoff
+    assert eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, 20.5,
+    ) is True
+    assert rec.barges == 1

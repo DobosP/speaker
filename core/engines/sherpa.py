@@ -2388,15 +2388,22 @@ class SherpaOnnxEngine(AudioEngine):
         # into the far-end ring -> the ring write head tracks TRUE acoustic
         # playback, which is what brings the far->near lag inside DTLN tolerance.
         self._fifo: Optional[PlaybackFIFO] = None
+        # Reusable one-slot output of the FIFO's atomic sample-scope read.
+        # Only the single PortAudio callback mutates it; capture observes the
+        # separately published immutable audible-onset tuple, never this slot.
+        self._playback_read_scope: list[Optional[tuple[int, int]]] = [None]
         # Per-utterance flag: the worker sets it True when it dequeues a reply;
         # the audio callback checks-and-clears it on the first block with real
         # audio to stamp TTS_FIRST_AUDIO at the TRUE first-played instant (a
         # flushed/stopped utterance that never plays audio thus never stamps it).
         self._first_audio_pending: bool = False
-        # monotonic stamp of THIS reply's synth-start (silent->speaking); 0 = none.
-        # The playback-onset barge grace is measured from here (covers the synth
-        # lead-in where the live self-interrupts fire, plus the audio onset).
-        self._playback_onset_at: float = 0.0
+        # Preserve the pre-audio word-cut grace from synthesis admission, then
+        # re-anchor it at the first real output block of the SAME reply. Separate
+        # generation-bound tuples keep a delayed callback from lending its old
+        # timestamp to a successor; no blocking lock is added to PortAudio.
+        self._playback_onset_at: float = 0.0  # fixture/legacy synth-start fallback
+        self._playback_synthesis_onset: Optional[tuple[int, float]] = None
+        self._playback_audible_onset: Optional[tuple[int, float]] = None
         # Output-underrun diagnostics (acoustic-artifact hunt): the hard-real-time
         # _audio_cb cannot log, so it just COUNTS blocks where the FIFO ran dry
         # mid-block while speaking -- a gap PortAudio zero-fills, i.e. the audible
@@ -7774,7 +7781,7 @@ class SherpaOnnxEngine(AudioEngine):
             speaking = self._speaking.is_set()
         first_audio_pending = bool(self._first_audio_pending)
         playback_level = float(self._playback_level)
-        playback_onset_at = float(self._playback_onset_at)
+        playback_onset_at = self._playback_onset_for_generation(playback_generation)
         last_playback_at = float(self._last_playback_at)
         authority_matches = bool(
             stamp.source_generation == self._capture_authority_source_generation
@@ -12227,8 +12234,32 @@ class SherpaOnnxEngine(AudioEngine):
             was_speaking = self._speaking.is_set()
             if not was_speaking:
                 self._playback_generation += 1
+                onset_at = time.monotonic()
+                self._playback_synthesis_onset = (
+                    self._playback_generation,
+                    onset_at,
+                )
+                self._playback_onset_at = onset_at
                 self._speaking.set()
             return was_speaking
+
+    def _playback_onset_for_generation(self, generation: int) -> float:
+        """Read only onset facts belonging to one snapshotted playback run.
+
+        The worker publishes synthesis onset under the generation lock; the
+        callback publishes audible onset as one atomic tuple. Audible onset
+        wins for that reply, including all later fragments and dry gaps. A
+        stale callback tuple never overwrites the worker's successor fallback.
+        """
+        audible = getattr(self, "_playback_audible_onset", None)
+        if audible is not None and audible[0] == generation:
+            return audible[1]
+        synthesis = getattr(self, "_playback_synthesis_onset", None)
+        if synthesis is not None:
+            return synthesis[1] if synthesis[0] == generation else 0.0
+        # Inline fixtures historically inject only this scalar, without
+        # admitting a production playback run.
+        return float(getattr(self, "_playback_onset_at", 0.0))
 
     def _audio_cb(self, outdata, frames, time_info, status) -> None:
         """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
@@ -12260,6 +12291,11 @@ class SherpaOnnxEngine(AudioEngine):
         view = outdata[:, 0]
         try:
             fifo = self._fifo
+            # Production FIFO spans bind onset to the actual consumed PCM
+            # under the existing copy lock. Retain a generation snapshot only
+            # for unscoped inline fixtures / simple injected FIFO stand-ins.
+            playback_generation = self._playback_generation
+            playback_was_speaking = self._speaking.is_set()
             if fifo is None:
                 view[:] = 0.0
                 return
@@ -12268,7 +12304,12 @@ class SherpaOnnxEngine(AudioEngine):
             # The reference timeline below tees the FULL callback frame: silence
             # advances the playback clock too, which is required to snapshot the
             # exact far coordinate for a later-processed capture block.
-            n = fifo.read_into(view)
+            playback_scope = self._playback_read_scope
+            if isinstance(fifo, PlaybackFIFO):
+                n = fifo.read_into(view, playback_scope_out=playback_scope)
+            else:
+                playback_scope[0] = None
+                n = fifo.read_into(view)
             # PortAudio reports an output-device/route scheduling miss separately
             # from an application FIFO read that returned short.  Count only on
             # this RT thread; the playback worker reports the per-reply delta.
@@ -12310,6 +12351,19 @@ class SherpaOnnxEngine(AudioEngine):
                 # coherence echo reference, and the AEC far-end ring.
                 self._note_playback_level(played)
                 self._last_playback_at = time.monotonic()
+                scope = playback_scope[0]
+                if scope is not None:
+                    playback_generation, onset_offset = scope
+                else:
+                    onset_offset = 0
+                audible_onset = self._playback_audible_onset
+                if (scope is not None or playback_was_speaking) and (
+                    audible_onset is None or audible_onset[0] != playback_generation
+                ):
+                    onset_at = self._last_playback_at
+                    if onset_offset and self._play_sr > 0:
+                        onset_at += onset_offset / self._play_sr
+                    self._playback_audible_onset = (playback_generation, onset_at)
                 # Stamp TTS_FIRST_AUDIO at the TRUE first-played instant (moved
                 # here from the producer so the metric means "first audible", and
                 # a flushed/stopped utterance that never plays never stamps it).
@@ -12413,6 +12467,7 @@ class SherpaOnnxEngine(AudioEngine):
                         on_done()
                     self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
                     continue
+                playback_generation_for_item = self._playback_generation
                 # Reset the one-barge-in-per-run latch only on the silent->
                 # speaking transition (a genuinely NEW reply), NOT per dequeued
                 # sentence: _speaking is set per sentence but clears only when the
@@ -12449,12 +12504,9 @@ class SherpaOnnxEngine(AudioEngine):
                     # one's first block. Worker-thread only, same thread as write().
                     if self._play_resampler is not None:
                         self._play_resampler.reset()
-                    # Arm the playback-onset grace from the moment we COMMIT to
-                    # speaking (synthesis start), not first-audio: the live
-                    # self-interrupts fire during the synth lead-in (before any
-                    # audio plays), where a first-audio anchor would still be unset.
-                    # A grace measured from here covers synth + the audio onset.
-                    self._playback_onset_at = time.monotonic()
+                    # The generation admission preserves pre-audio word-cut
+                    # grace. The callback re-anchors it at actual reply onset;
+                    # a slow synthesis must not consume the audible echo grace.
                     # Re-arm the per-reply barge state on the silent->speaking
                     # transition (2026-06-10 self-interrupt fix). Clearing the
                     # BargeSustain window (via the cross-thread flag) means the
@@ -12514,6 +12566,7 @@ class SherpaOnnxEngine(AudioEngine):
                             samples,
                             should_abort=abort_write,
                             tag=ticket,
+                            playback_generation=playback_generation_for_item,
                         )
 
                 try:
@@ -12697,6 +12750,7 @@ class SherpaOnnxEngine(AudioEngine):
                                     tail,
                                     should_abort=abort_write,
                                     tag=ticket,
+                                    playback_generation=playback_generation_for_item,
                                 )
                         if ticket is not None and fifo_for_item is not None:
                             terminal_status = (
@@ -15811,7 +15865,7 @@ class SherpaOnnxEngine(AudioEngine):
         # cancelled tail), 0.4s playback-onset grace (reply-onset echo transient).
         grace = self.config.barge_in_playback_onset_grace_sec
         onset = (
-            getattr(self, "_playback_onset_at", 0.0)
+            self._playback_onset_for_generation(getattr(self, "_playback_generation", 0))
             if playback_onset_at is None
             else playback_onset_at
         )
@@ -16192,10 +16246,10 @@ class SherpaOnnxEngine(AudioEngine):
         # chart learning (those run earlier), so the detector is calibrated the
         # instant the window lifts. A real talk-over past the window still fires.
         grace = self.config.barge_in_playback_onset_grace_sec
-        # getattr default: barge fixtures build the engine bypassing __init__, so a
-        # missing stamp reads as 0.0 -> grace inert (the correct partial-build state).
+        # Inline fixtures may lack generation-bound onset facts; the helper
+        # preserves their injected scalar or a missing stamp's inert 0.0.
         onset = (
-            getattr(self, "_playback_onset_at", 0.0)
+            self._playback_onset_for_generation(getattr(self, "_playback_generation", 0))
             if playback_onset_at is None
             else playback_onset_at
         )

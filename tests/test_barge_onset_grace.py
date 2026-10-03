@@ -14,7 +14,10 @@ import time
 
 import numpy as np
 
+from core.engines._aec import PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.media_session import CaptureStamp
+from core.metrics import TTS_FIRST_AUDIO
 
 _BLK = np.ones(1600, dtype="float32")
 
@@ -71,3 +74,206 @@ def test_window_covers_the_synth_leadin():
     eng = _engine(0.40)
     eng._playback_onset_at = time.monotonic() - 0.24   # mid synth lead-in
     assert eng._barge_in_fire_eligible(_BLK, _BLK) is False
+
+
+# Drive the same physical-output callback and reader context used live, with
+# synthetic PCM and a deterministic clock; no microphone/model is involved.
+def _pull_audio(eng, *, real=True):
+    if eng._fifo is None:
+        eng._fifo = PlaybackFIFO(8)
+    if real:
+        eng._fifo.write(
+            np.full(4, 0.25, dtype="float32"), lambda: False,
+            playback_generation=eng._playback_generation,
+        )
+    out = np.zeros((4, 1), dtype="float32")
+    eng._audio_cb(out, 4, None, None)
+    return out
+
+
+def _capture_stamp(at):
+    return CaptureStamp(
+        sample_rate_hz=16000,
+        sample_count=1600,
+        captured_started_at=at - 0.1,
+        captured_at=at,
+        capture_epoch=1,
+        source_generation=0,
+        source_device=None,
+        source_sample_start=0,
+        source_sample_end=1600,
+    )
+
+
+def test_slow_synthesis_keeps_full_audible_onset_grace(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    assert eng._begin_playback_run_if_current(eng._speak_gen) is False
+
+    # Whole-clip synthesis or device opening consumed far more than the grace.
+    clock[0] = 20.0
+    np.testing.assert_array_equal(_pull_audio(eng)[:, 0], np.full(4, 0.25))
+    clock[0] = 20.1
+    assert eng._barge_in_fire_eligible(_BLK, _BLK) is False
+    clock[0] = 20.401
+    assert eng._barge_in_fire_eligible(_BLK, _BLK) is True
+
+
+def test_empty_output_keeps_pre_audio_grace_and_stop(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    assert eng._begin_playback_run_if_current(eng._speak_gen) is False
+    clock[0] = 10.1
+    eng._first_audio_pending = True  # playback worker arms the first fragment
+    _pull_audio(eng, real=False)
+    assert eng._playback_audible_onset is None
+    assert eng._barge_in_fire_eligible(_BLK, _BLK) is False
+    assert eng._barge_watch_active() is False
+
+    # A pre-audio STOP still revokes the generation and releases listening.
+    before = eng._speak_gen
+    eng.stop_speaking()
+    assert eng._speak_gen == before + 1
+    assert eng.is_speaking is False
+
+
+def test_fragment_first_audio_and_dry_gaps_do_not_restart_reply_grace(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    metrics = []
+    eng._cb.on_metric = metrics.append
+    assert eng._begin_playback_run_if_current(eng._speak_gen) is False
+    eng._first_audio_pending = True
+    clock[0] = 20.0
+    _pull_audio(eng)
+
+    clock[0] = 21.0
+    _pull_audio(eng, real=False)
+    assert eng._begin_playback_run_if_current(eng._speak_gen) is True
+    eng._first_audio_pending = True  # ordinary next fragment's metric only
+    _pull_audio(eng)
+    assert metrics == [TTS_FIRST_AUDIO, TTS_FIRST_AUDIO]
+    assert eng._playback_onset_for_generation(eng._playback_generation) == 20.0
+    assert eng._barge_in_fire_eligible(_BLK, _BLK) is True
+
+
+def test_reader_context_freezes_audible_onset_for_its_generation(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    clock[0] = 20.0
+    _pull_audio(eng)
+    context = eng._snapshot_capture_context(_capture_stamp(20.1))
+    assert context.playback_onset_at == 20.0
+
+    eng.stop_speaking()
+    clock[0] = 30.0
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    successor = eng._snapshot_capture_context(_capture_stamp(30.1))
+    assert successor.playback_generation != context.playback_generation
+    assert successor.playback_onset_at == 30.0  # pre-audio fallback, not old audio
+    assert context.playback_onset_at == 20.0
+    assert eng._barge_in_fire_eligible(
+        _BLK, _BLK, now=20.1, playback_onset_at=context.playback_onset_at,
+    ) is False
+
+
+def test_callback_overlapping_stop_and_new_run_cannot_stamp_successor(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    predecessor = eng._playback_generation
+    fifo = PlaybackFIFO(8)
+    eng._fifo = fifo
+    fifo.write(
+        np.full(4, 0.25, dtype="float32"), lambda: False,
+        playback_generation=predecessor,
+    )
+    read = fifo.read_into
+
+    def read_across_replacement(out, **kwargs):
+        count = read(out, **kwargs)
+        eng.stop_speaking()
+        clock[0] = 30.0
+        eng._begin_playback_run_if_current(eng._speak_gen)
+        clock[0] = 31.0  # retired callback resumes after successor admission
+        return count
+
+    monkeypatch.setattr(fifo, "read_into", read_across_replacement)
+    _pull_audio(eng, real=False)
+    assert eng._playback_audible_onset == (predecessor, 31.0)
+    assert eng._playback_onset_for_generation(eng._playback_generation) == 30.0
+    monkeypatch.setattr(fifo, "read_into", read)
+    clock[0] = 32.0
+    _pull_audio(eng)
+    assert eng._playback_onset_for_generation(eng._playback_generation) == 32.0
+    assert eng._barge_in_fire_eligible(_BLK, _BLK, now=32.1) is False
+
+
+def test_callback_replacement_before_fifo_read_binds_successor_pcm(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    fifo = PlaybackFIFO(8)
+    eng._fifo = fifo
+    read = fifo.read_into
+
+    def replace_before_read(out, **kwargs):
+        eng.stop_speaking()
+        clock[0] = 30.0
+        eng._begin_playback_run_if_current(eng._speak_gen)
+        fifo.write(
+            np.full(4, 0.5, dtype="float32"), lambda: False,
+            playback_generation=eng._playback_generation,
+        )
+        clock[0] = 40.0  # successor synthesis grace already elapsed
+        return read(out, **kwargs)
+
+    monkeypatch.setattr(fifo, "read_into", replace_before_read)
+    out = _pull_audio(eng, real=False)
+    np.testing.assert_array_equal(out[:, 0], np.full(4, 0.5))
+    assert eng._playback_onset_for_generation(eng._playback_generation) == 40.0
+    assert eng._barge_in_fire_eligible(_BLK, _BLK, now=40.1) is False
+    assert eng._barge_in_fire_eligible(_BLK, _BLK, now=40.5) is True
+
+
+def test_successor_onset_survives_predecessor_fade_in_same_callback(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    eng = _engine(0.4)
+    eng._play_sr = 16000
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    fifo = PlaybackFIFO(16)
+    eng._fifo = fifo
+    head, successor = object(), object()
+    assert fifo.open_tag(head)
+    fifo.write(
+        np.full(8, 0.25, dtype="float32"), lambda: False,
+        tag=head, playback_generation=eng._playback_generation,
+    )
+    clock[0] = 20.0
+    _pull_audio(eng, real=False)  # establish head playback before interruption
+    assert fifo.interrupt_tags("interrupted", 2) == (head,)
+    eng._speaking.clear()  # the same stop/new-run transition as the engine
+    clock[0] = 30.0
+    eng._begin_playback_run_if_current(eng._speak_gen)
+    assert fifo.open_tag(successor)
+    fifo.write(
+        np.full(4, 0.5, dtype="float32"), lambda: False,
+        tag=successor, playback_generation=eng._playback_generation,
+    )
+    clock[0] = 40.0
+    out = np.zeros((6, 1), dtype="float32")
+    eng._audio_cb(out, 6, None, None)
+    np.testing.assert_array_equal(out[2:, 0], np.full(4, 0.5))
+    # Successor starts after two retained fade samples, not at the old run's
+    # onset or at callback sample zero. Its full audible grace is preserved.
+    assert eng._playback_onset_for_generation(eng._playback_generation) == 40.0 + 2 / 16000
+    assert eng._barge_in_fire_eligible(_BLK, _BLK, now=40.1) is False
+    assert eng._barge_in_fire_eligible(_BLK, _BLK, now=40.5) is True

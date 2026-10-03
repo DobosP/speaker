@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-09-07 (docs plus the gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
+Last verified: 2026-10-04 (focused headless repair gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 
 ## Current state — runtime
@@ -20,6 +20,8 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0209 makes launcher-owned Ollama select the verified MiniCPM Go template, moves the 4090 profile to the streaming RMS path and
   requires enrolled-speaker authority for generic word-cut; the retained enrollment is incompatible, so the next 4090 start fails closed and
   no repaired live A/B has run.
+- ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
+  and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - Bounded PRIVATE vault search, reminders and trusted apps are opt-in; mutations need unchanged direct speech plus confirmation,
   `web.search` admits only `current_turn_only`, and retained context forces monotonic `local_only`. Residuals: cleaner byte channel,
   `last_source` race, blocking-backend cancellation, raw-gate false negatives (ADR-0003/0060/0073/0074/0076/0187/0189).
@@ -98,20 +100,10 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Repeat isolated enrollment on the active 4090 route before the next desktop-GPU live start, then the owner bare-speaker A/B (ADR-0209);
   continue Common Voice acceptance and publisher, mobile and remote work separately.
 
-## Verification record (2026-09-07)
-| Check | Command | Result |
-|---|---|---|
-| Docs | `python3 ~/work/agent-ops/scripts/check_docs.py .` | `files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0` |
-| APM/DTD | `~/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q` | `6 passed` |
-| Staged runner | `~/work/speaker/.venv/bin/python tools/run_tests.py list` | 11 stages, `core` through `full` |
-| Entry points | `-m tools.doctor --help`; `-m core --help`; `-m tools.session_bootstrap` | all exit 0; flags per `AGENTS.md` |
-| Doc parsers | `~/work/speaker/.venv/bin/python -m pytest tests/test_session_bootstrap.py tests/test_golden_contract.py tests/test_diagnose_run.py -q` | `100 passed`; the `Read this when:` + `## Contents` header added to `.agents/backlog.md`, `docs/target_architecture.md` and `docs/public_voice_evaluation_matrix.md` leaves `open_p0` at the same 3 items |
-| Bounded SearXNG ingestion | `pytest tests/test_websearch.py -q`; `+ test_capability_context_isolation test_react_planner`; `test_sensitivity + test_llm_egress_policy` | `136 passed` / `186 passed` / `108 passed` (ADR-0191) |
-| Capability exception sanitization | `pytest tests/test_capability_exception_sanitization.py tests/test_capability_context_isolation.py tests/test_failure_cascades.py -q`; adjacent 7-file set | `30 passed` / `262 passed` (ADR-0192) |
-| Cloud stage / task set / imports | `tools/run_tests.py cloud`; ADR-0192's 6-file task set; `tests/test_imports_smoke.py` | `397` / `89` / `322 passed` |
-| Whitespace | `git diff --check` | no output |
-| Budgets | `wc -l` AGENTS/STATUS/agent-map/agent-testing; CLAUDE.md non-blank | 79 / 120 / 59 / 52; 5 non-blank (STATUS budget 120) |
-| Not re-run | broad non-real suite, `real_model`, `live` | last receipts 2026-08-21, verbatim in `WORKLOG.md` |
+## Verification record
+- Frozen 2026-09-07 gate receipts and earlier full-suite/model/live counts are in `WORKLOG.md`.
+- 2026-10-04 ADR-0210: focused audio/lifecycle gate `479 passed, 1 skipped` (DTLN model unavailable), including APM/DTD; scoped Ruff and
+  whitespace clean. Synthetic PCM only; no repaired physical route, acoustic quality or owner live A/B was validated.
 
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

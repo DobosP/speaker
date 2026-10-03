@@ -494,7 +494,7 @@ class PlaybackFIFO:
             dropped = 0
             touched: dict[object, _PlaybackTagState] = {}
             while self._spans and self._spans[0][0] in targets:
-                tag, span_count = self._spans.popleft()
+                tag, span_count, playback_generation = self._spans.popleft()
                 dropped += span_count
                 state = self._tag_states.get(tag)
                 if state is not None:
@@ -508,13 +508,19 @@ class PlaybackFIFO:
             self._cond.notify_all()
             return dropped
 
-    def _append_span_locked(self, tag: object, count: int) -> None:
+    def _append_span_locked(
+        self, tag: object, count: int, playback_generation: Optional[int]
+    ) -> None:
         if count <= 0:
             return
-        if self._spans and self._spans[-1][0] is tag:
+        if (
+            self._spans
+            and self._spans[-1][0] is tag
+            and self._spans[-1][2] == playback_generation
+        ):
             self._spans[-1][1] += count
         else:
-            self._spans.append([tag, count])
+            self._spans.append([tag, count, playback_generation])
 
     def _emit_event_locked(self, event: PlaybackFIFOEvent) -> None:
         if self._event_queue is not None:
@@ -536,7 +542,14 @@ class PlaybackFIFO:
             )
         )
 
-    def write(self, samples, should_abort, *, tag: object = None) -> int:
+    def write(
+        self,
+        samples,
+        should_abort,
+        *,
+        tag: object = None,
+        playback_generation: Optional[int] = None,
+    ) -> int:
         """Producer (playback thread). Append ``samples``, BLOCKING with
         backpressure while the ring is full so synthesis is paced to real
         playback. NEVER called from the audio callback.
@@ -555,6 +568,10 @@ class PlaybackFIFO:
         pair ``should_abort`` with :meth:`flush` or :meth:`interrupt_tags`;
         ``should_abort`` alone only halts further synthesis, it does not
         retroactively clear the ring.
+
+        ``playback_generation`` is an optional engine-owned reply scope. It
+        travels with sample spans, including a retained interruption fade, so
+        the consumer can identify actual output despite stop/start races.
 
         Returns the exact number of samples admitted. For a tagged producer this
         is the receipt ``total_samples`` domain; an abort may make it smaller
@@ -594,7 +611,7 @@ class PlaybackFIFO:
                     self._buf[: end - self._cap] = x[i + k : i + take]
                 self._w = end % self._cap
                 self._count += take
-                self._append_span_locked(tag, take)
+                self._append_span_locked(tag, take, playback_generation)
                 if state is not None:
                     state.queued += take
                     state.total += take
@@ -604,13 +621,22 @@ class PlaybackFIFO:
                 # the symmetry tidy -- the real wake direction is consumer->producer.
         return i
 
-    def read_into(self, out_view) -> int:
+    def read_into(self, out_view, *, playback_scope_out=None) -> int:
         """Consumer (audio callback ONLY). Fill ``out_view`` (the PortAudio mono
         ``outdata[:, 0]`` slice) in place with the next queued samples, zero-fill
         any underrun tail, and return the count of REAL (non-zero-fill) samples
         emitted so the callback tees only those to the echo refs. Hard real-time:
         a single microsecond copy lock + one non-blocking ``notify_all`` to wake a
-        blocked producer; never blocks, never allocates a new array."""
+        blocked producer; never blocks, never allocates a new array.
+
+        When supplied, ``playback_scope_out`` is a caller-owned one-slot list.
+        Under this SAME copy lock it receives the last consumed reply's
+        ``(generation, first_sample_offset)`` or None for unscoped/empty output.
+        This binds onset to PCM ownership rather than a pre/post-read guess;
+        old fade and successor PCM can share one output callback.
+        """
+        if playback_scope_out is not None:
+            playback_scope_out[0] = None
         n = int(out_view.shape[0])
         if n <= 0:
             return 0
@@ -632,6 +658,11 @@ class PlaybackFIFO:
                     span = self._spans[0]
                     take = min(remaining, span[1])
                     tag = span[0]
+                    playback_generation = span[2]
+                    if playback_scope_out is not None and playback_generation is not None:
+                        prior_scope = playback_scope_out[0]
+                        if prior_scope is None or prior_scope[0] != playback_generation:
+                            playback_scope_out[0] = (playback_generation, m - remaining)
                     state = self._tag_states.get(tag) if tag is not None else None
                     if state is not None:
                         if not state.started:
@@ -676,7 +707,7 @@ class PlaybackFIFO:
         if keep > 0 and restrict_fade_to_head_tag and self._spans:
             head_tag = self._spans[0][0]
             head_count = 0
-            for span_tag, span_count in self._spans:
+            for span_tag, span_count, _playback_generation in self._spans:
                 if span_tag is not head_tag:
                     break
                 head_count += span_count
@@ -698,14 +729,18 @@ class PlaybackFIFO:
         kept_spans = deque()
         touched: dict[object, _PlaybackTagState] = {}
         while self._spans:
-            tag, span_count = self._spans.popleft()
+            tag, span_count, playback_generation = self._spans.popleft()
             kept = min(span_count, remaining)
             dropped = span_count - kept
             if kept > 0:
-                if kept_spans and kept_spans[-1][0] is tag:
+                if (
+                    kept_spans
+                    and kept_spans[-1][0] is tag
+                    and kept_spans[-1][2] == playback_generation
+                ):
                     kept_spans[-1][1] += kept
                 else:
-                    kept_spans.append([tag, kept])
+                    kept_spans.append([tag, kept, playback_generation])
                 remaining -= kept
             if tag is not None and dropped > 0:
                 state = self._tag_states.get(tag)

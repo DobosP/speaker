@@ -108,6 +108,207 @@ Future<void> _closeClean(TtsPlaybackOwner owner) async {
 }
 
 void main() {
+  test('late text during playback fills only one prepared lookahead slot',
+      () async {
+    final first = _readyClip();
+    final second = _readyClip();
+    final third = _readyClip();
+    final factory = _FakeClipFactory([first, second, third]);
+    final calls = <String>[];
+    final released = <String>[];
+    final started = [Completer<void>(), Completer<void>(), Completer<void>()];
+    var starts = 0;
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) async {
+        calls.add(text);
+        return '/$text.wav';
+      },
+      createPlaybackClip: factory.call,
+      releaseAudio: (path) async => released.add(path),
+      onPlaybackStarted: (_) => started[starts++].complete(),
+    );
+    final generation = owner.generation;
+    owner.enqueue(generation, 'first');
+    await started[0].future;
+    // Simulate LLM sentences arriving after audio is already playing.
+    owner.enqueue(generation, 'second');
+    owner.enqueue(generation, 'third');
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, ['first', 'second']);
+    expect(factory.paths, ['/first.wav']);
+    expect(released, isEmpty);
+
+    first.completeTerminal();
+    await started[1].future;
+    expect(released, ['/first.wav']);
+    expect(calls, ['first', 'second', 'third']);
+    second.completeTerminal();
+    await started[2].future;
+    third.completeTerminal();
+    await owner.whenIdle();
+    expect(released, ['/first.wav', '/second.wav', '/third.wav']);
+    await _closeClean(owner);
+  });
+
+  test('cancel fences lookahead and serializes a replacement behind its synth',
+      () async {
+    final first = _readyClip();
+    final replacement = _readyClip();
+    final factory = _FakeClipFactory([first, replacement]);
+    final lookaheadEntered = Completer<void>();
+    final lookaheadResult = Completer<String?>();
+    final calls = <String>[];
+    final released = <String>[];
+    final starts = [Completer<void>(), Completer<void>()];
+    var startCount = 0;
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) {
+        calls.add(text);
+        if (text == 'lookahead') {
+          lookaheadEntered.complete();
+          return lookaheadResult.future;
+        }
+        return Future.value('/$text.wav');
+      },
+      createPlaybackClip: factory.call,
+      releaseAudio: (path) async => released.add(path),
+      onPlaybackStarted: (_) => starts[startCount++].complete(),
+    );
+    final old = owner.generation;
+    owner.enqueue(old, 'first');
+    owner.enqueue(old, 'lookahead');
+    await lookaheadEntered.future;
+    final fresh = owner.supersede();
+    owner.enqueue(fresh, 'replacement');
+    await first.cleanupEntered.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, ['first', 'lookahead']);
+    expect(replacement.created.isCompleted, isFalse);
+    expect(released, ['/first.wav']);
+
+    lookaheadResult.complete('/lookahead.wav');
+    await starts[1].future;
+    expect(calls, ['first', 'lookahead', 'replacement']);
+    expect(released, ['/first.wav', '/lookahead.wav']);
+    expect(factory.paths, ['/first.wav', '/replacement.wav']);
+    replacement.completeTerminal();
+    await owner.whenIdle();
+    expect(released.last, '/replacement.wav');
+    await _closeClean(owner);
+  });
+
+  test('close drains blocked lookahead and its exact late file release',
+      () async {
+    final first = _readyClip();
+    final factory = _FakeClipFactory([first]);
+    final lookaheadEntered = Completer<void>();
+    final lookaheadResult = Completer<String?>();
+    final lateReleaseEntered = Completer<void>();
+    final lateReleaseReturned = Completer<void>();
+    final calls = <String>[];
+    final released = <String>[];
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) {
+        calls.add(text);
+        if (text == 'lookahead') {
+          lookaheadEntered.complete();
+          return lookaheadResult.future;
+        }
+        return Future.value('/$text.wav');
+      },
+      createPlaybackClip: factory.call,
+      releaseAudio: (path) async {
+        if (path == '/lookahead.wav') {
+          lateReleaseEntered.complete();
+          await lateReleaseReturned.future;
+        }
+        released.add(path);
+      },
+    );
+    final generation = owner.generation;
+    owner.enqueue(generation, 'first');
+    owner.enqueue(generation, 'lookahead');
+    owner.enqueue(generation, 'never-start');
+    await lookaheadEntered.future;
+    final closing = owner.close();
+    var closed = false;
+    unawaited(closing.then((_) => closed = true));
+    await first.cleanupEntered.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(closed, isFalse);
+    expect(calls, ['first', 'lookahead']);
+    lookaheadResult.complete('/lookahead.wav');
+    await lateReleaseEntered.future;
+    expect(closed, isFalse);
+    expect(factory.paths, ['/first.wav']);
+    lateReleaseReturned.complete();
+    expect(await closing, isTrue);
+    expect(released, ['/first.wav', '/lookahead.wav']);
+    expect(owner.snapshot.pumpRunning, isFalse);
+  });
+
+  test('uncertain player retains its file but discards a prepared lookahead',
+      () async {
+    final first = _FakeClip()..completeStartSuccess();
+    final factory = _FakeClipFactory([first]);
+    final prepared = Completer<void>();
+    final released = <String>[];
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) async {
+        if (text == 'lookahead') prepared.complete();
+        return '/$text.wav';
+      },
+      createPlaybackClip: factory.call,
+      releaseAudio: (path) async => released.add(path),
+    );
+    final generation = owner.generation;
+    owner.enqueue(generation, 'first');
+    owner.enqueue(generation, 'lookahead');
+    await prepared.future;
+    final interrupted = owner.interrupt();
+    await first.cleanupEntered.future;
+    first.completeCleanupFailure(StateError('native release uncertain'));
+    expect(await interrupted, isFalse);
+    await owner.whenIdle();
+    expect(released, ['/lookahead.wav']);
+    expect(factory.paths, ['/first.wav']);
+    expect(owner.snapshot.poisoned, isTrue);
+    expect(await owner.close(), isFalse);
+  });
+
+  test('file release failure bounds retention by poisoning further synthesis',
+      () async {
+    final first = _readyClip();
+    final factory = _FakeClipFactory([first]);
+    final prepared = Completer<void>();
+    final calls = <String>[];
+    final released = <String>[];
+    final owner = TtsPlaybackOwner(
+      synthesize: (text) async {
+        calls.add(text);
+        if (text == 'lookahead') prepared.complete();
+        return '/$text.wav';
+      },
+      createPlaybackClip: factory.call,
+      releaseAudio: (path) async {
+        released.add(path);
+        if (path == '/first.wav') throw StateError('release failed');
+      },
+    );
+    final generation = owner.generation;
+    owner.enqueue(generation, 'first');
+    owner.enqueue(generation, 'lookahead');
+    owner.enqueue(generation, 'never-start');
+    await prepared.future;
+    first.completeTerminal();
+    await owner.whenIdle();
+    expect(calls, ['first', 'lookahead']);
+    expect(released, ['/first.wav', '/lookahead.wav']);
+    expect(owner.snapshot.poisoned, isTrue);
+    expect(owner.enqueue(owner.generation, 'rejected'), isFalse);
+    expect(await owner.close(), isFalse);
+  });
+
   test('close stays pending until an entered synthesis really returns',
       () async {
     final synthEntered = Completer<void>();
@@ -404,7 +605,7 @@ void main() {
       TtsPlaybackTerminalKind.completed,
     );
     expect(newSecondClip.created.isCompleted, isFalse);
-    expect(owner.snapshot.queued, 1);
+    expect(owner.snapshot.queued, 0);
 
     newFirstClip.completeTerminal();
     await newFirstClip.cleanupEntered.future;
@@ -502,7 +703,7 @@ void main() {
     await _closeClean(owner);
   });
 
-  test('FIFO pump admits at most one synthesis and one exact clip at a time',
+  test('one lookahead overlaps playback with one synthesis and one clip',
       () async {
     final texts = ['one', 'two', 'three'];
     final synthEntered = <String, Completer<void>>{
@@ -565,20 +766,25 @@ void main() {
 
     synthRelease['one']!.complete('/one.wav');
     await playbackSignals[0].future;
-    expect(synthCalls, ['one']);
+    await synthEntered['two']!.future;
+    expect(synthCalls, ['one', 'two']);
+    expect(activeClips, 1);
+    expect(activeSyntheses, 1);
+    synthRelease['two']!.complete('/two.wav');
+    await Future<void>.delayed(Duration.zero);
+    expect(synthEntered['three']!.isCompleted, isFalse);
+    expect(clips[1].created.isCompleted, isFalse);
     clips[0].completeTerminal();
     await clips[0].cleanupEntered.future;
 
-    await synthEntered['two']!.future;
-    expect(synthCalls, ['one', 'two']);
-    synthRelease['two']!.complete('/two.wav');
     await playbackSignals[1].future;
-    clips[1].completeTerminal();
-    await clips[1].cleanupEntered.future;
-
     await synthEntered['three']!.future;
     expect(synthCalls, ['one', 'two', 'three']);
+    expect(activeClips, 1);
+    expect(activeSyntheses, 1);
     synthRelease['three']!.complete('/three.wav');
+    clips[1].completeTerminal();
+    await clips[1].cleanupEntered.future;
     await playbackSignals[2].future;
     clips[2].completeTerminal();
     await clips[2].cleanupEntered.future;
@@ -660,7 +866,7 @@ void main() {
     expect(owner.isCurrent(failedGeneration), isFalse);
     expect(owner.generation.ordinal, failedGeneration.ordinal + 1);
     expect(owner.enqueue(failedGeneration, 'late'), isFalse);
-    expect(synthCalls, ['broken']);
+    expect(synthCalls, ['broken', 'must-drop']);
     expect(unusedClip.created.isCompleted, isFalse);
     expect(
         errors.where((error) => identical(error, terminalError)), hasLength(1));
@@ -672,9 +878,11 @@ void main() {
 
   test('throwing clip construction poisons and blocks release', () async {
     final errors = <Object>[];
+    final released = <String>[];
     var factoryCalls = 0;
     final owner = TtsPlaybackOwner(
       synthesize: (text) async => '/$text.wav',
+      releaseAudio: (path) async => released.add(path),
       createPlaybackClip: (path) {
         factoryCalls++;
         throw StateError('ambiguous native player construction');
@@ -687,6 +895,7 @@ void main() {
     await owner.whenIdle();
 
     expect(factoryCalls, 1);
+    expect(released, isEmpty);
     expect(owner.snapshot.poisoned, isTrue);
     expect(owner.enqueue(owner.generation, 'must-not-retry'), isFalse);
     expect(errors, hasLength(1));

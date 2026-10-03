@@ -40,7 +40,8 @@ Future<void> copyAllAssetFiles() async {
   }
 }
 
-Float32List convertBytesToFloat32(Uint8List bytes, [Endian endian = Endian.little]) {
+Float32List convertBytesToFloat32(Uint8List bytes,
+    [Endian endian = Endian.little]) {
   final values = Float32List(bytes.length ~/ 2);
   // sublistView honors this Uint8List's own offset/length. `record` hands back
   // chunks that are often *views* into a larger reused buffer, so the old
@@ -53,11 +54,13 @@ Float32List convertBytesToFloat32(Uint8List bytes, [Endian endian = Endian.littl
   return values;
 }
 
+int _waveFileSequence = 0;
+
 Future<String> generateWaveFilename([String suffix = '']) async {
   final Directory directory = await getApplicationSupportDirectory();
   final now = DateTime.now();
   String two(int v) => v.toString().padLeft(2, '0');
   final filename =
-      '${now.year}-${two(now.month)}-${two(now.day)}-${two(now.hour)}-${two(now.minute)}-${two(now.second)}$suffix.wav';
+      '${now.year}-${two(now.month)}-${two(now.day)}-${two(now.hour)}-${two(now.minute)}-${two(now.second)}-${now.microsecondsSinceEpoch}-${_waveFileSequence++}$suffix.wav';
   return p.join(directory.path, filename);
 }

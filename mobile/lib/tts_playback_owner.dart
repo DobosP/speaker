@@ -6,8 +6,14 @@
 import 'dart:async';
 import 'dart:collection';
 
+/// A successful result owns a fresh, distinct audio path. The adapter must not
+/// overwrite an earlier clip whose playback or exact cleanup is still pending.
 typedef TtsSynthesize = Future<String?> Function(String text);
 typedef TtsCreatePlaybackClip = TtsPlaybackClip Function(String path);
+
+/// Release one owner-created audio path after safe discard or exact player
+/// cleanup. File-producing adapters supply this; content-free fakes may omit it.
+typedef TtsReleaseAudio = Future<void> Function(String path);
 typedef TtsPlaybackActivityChanged = void Function(
   TtsPlaybackGeneration generation,
   bool speaking,
@@ -163,6 +169,13 @@ final class _QueuedSpeech {
   final String text;
 }
 
+final class _PreparedSpeech {
+  const _PreparedSpeech(this.item, this.path);
+
+  final _QueuedSpeech item;
+  final String? path;
+}
+
 final class _ClipInterrupted {
   const _ClipInterrupted(this.stopFence);
 
@@ -182,6 +195,7 @@ final class _ActiveClip {
   final Completer<_ClipInterrupted> interrupt = Completer<_ClipInterrupted>();
   TtsPlaybackClip? clip;
   bool cleanupReported = false;
+  bool terminalObserved = false;
 }
 
 enum _PlaybackStartDisposition { started, stale, failed }
@@ -192,7 +206,10 @@ final class _PlaybackStartOutcome {
   final _PlaybackStartDisposition disposition;
 }
 
-/// Owns one sequential synth/play pump across every mobile reply generation.
+/// Owns one synthesis lane and one playback lane across reply generations.
+///
+/// Once a clip starts, prepare at most one following clip while it plays. No
+/// second lookahead synthesis is admitted until the prepared clip is consumed.
 ///
 /// Superseding speech invalidates old queue entries synchronously. Native
 /// synthesis already in flight is not cancelled, but its result is rechecked
@@ -202,11 +219,13 @@ final class TtsPlaybackOwner {
   TtsPlaybackOwner({
     required TtsSynthesize synthesize,
     required TtsCreatePlaybackClip createPlaybackClip,
+    TtsReleaseAudio? releaseAudio,
     TtsPlaybackActivityChanged? onActivityChanged,
     TtsPlaybackStarted? onPlaybackStarted,
     TtsPlaybackError? onError,
   })  : _synthesize = synthesize,
         _createPlaybackClip = createPlaybackClip,
+        _releaseAudio = releaseAudio,
         _onActivityChanged = onActivityChanged,
         _onPlaybackStarted = onPlaybackStarted,
         _onError = onError {
@@ -219,6 +238,7 @@ final class TtsPlaybackOwner {
 
   final TtsSynthesize _synthesize;
   final TtsCreatePlaybackClip _createPlaybackClip;
+  final TtsReleaseAudio? _releaseAudio;
   final TtsPlaybackActivityChanged? _onActivityChanged;
   final TtsPlaybackStarted? _onPlaybackStarted;
   final TtsPlaybackError? _onError;
@@ -234,6 +254,8 @@ final class TtsPlaybackOwner {
   bool _closed = false;
   bool _pumpRunning = false;
   Future<void>? _pumpFuture;
+  Future<_PreparedSpeech>? _lookahead;
+  TtsPlaybackGeneration? _playingGeneration;
   Future<bool>? _closeResult;
   Future<void> _playerOperationTail = Future<void>.value();
   _ActiveClip? _activeClip;
@@ -288,6 +310,7 @@ final class TtsPlaybackOwner {
     _logicalWork = true;
     _publishActivity();
     _ensurePump();
+    _prefetchNext();
     return true;
   }
 
@@ -420,58 +443,121 @@ final class TtsPlaybackOwner {
     }));
   }
 
-  Future<void> _pump() async {
-    while (_queue.isNotEmpty && !_poisoned) {
-      final item = _queue.removeFirst();
-      if (!isCurrent(item.generation)) continue;
+  Future<_PreparedSpeech> _prepareSpeech(_QueuedSpeech item) async {
+    String? path;
+    try {
+      path = await _synthesize(item.text);
+    } catch (error, stackTrace) {
+      if (isCurrent(item.generation)) {
+        _reportError(item.generation, error, stackTrace);
+      }
+    }
+    return _PreparedSpeech(item, path);
+  }
 
-      String? path;
-      try {
-        path = await _synthesize(item.text);
-      } catch (error, stackTrace) {
-        if (isCurrent(item.generation)) {
-          _reportError(item.generation, error, stackTrace);
-        }
+  void _prefetchNext() {
+    final playing = _playingGeneration;
+    if (playing == null ||
+        !isCurrent(playing) ||
+        _poisoned ||
+        _lookahead != null ||
+        (_activeClip?.terminalObserved ?? true) ||
+        _queue.isEmpty) {
+      return;
+    }
+    final item = _queue.removeFirst();
+    if (!isCurrent(item.generation)) return;
+    // Publish the sole slot before calling even a reentrant synthesis adapter.
+    final prepared = Completer<_PreparedSpeech>();
+    _lookahead = prepared.future;
+    _prepareSpeech(item).then(prepared.complete);
+  }
+
+  Future<void> _pump() async {
+    // Drain the retained lookahead even after poison/close: it may own a file or
+    // an entered synthesis, neither of which can disappear on revocation.
+    while (_lookahead != null || (_queue.isNotEmpty && !_poisoned)) {
+      final lookahead = _lookahead;
+      late final _PreparedSpeech prepared;
+      if (lookahead != null) {
+        prepared = await lookahead;
+        _lookahead = null;
+      } else {
+        final item = _queue.removeFirst();
+        if (!isCurrent(item.generation)) continue;
+        prepared = await _prepareSpeech(item);
+      }
+      final item = prepared.item;
+      final path = prepared.path;
+      if (path == null) continue;
+      if (!isCurrent(item.generation) || _poisoned) {
+        await _releasePath(item.generation, path);
         continue;
       }
-      if (path == null || !isCurrent(item.generation) || _poisoned) continue;
 
       final stopped = await item.generation._stopFence;
-      if (!stopped || !isCurrent(item.generation) || _poisoned) continue;
+      if (!stopped || !isCurrent(item.generation) || _poisoned) {
+        await _releasePath(item.generation, path);
+        continue;
+      }
 
-      await _playClip(item.generation, path);
+      bool released;
+      try {
+        released = await _playClip(item.generation, path);
+      } finally {
+        _playingGeneration = null;
+      }
+      // Native player uncertainty retains its exact file. Successful cleanup
+      // or a stale pre-admission path may release it without touching playback.
+      if (released) await _releasePath(item.generation, path);
     }
   }
 
-  Future<void> _playClip(
+  Future<void> _releasePath(
     TtsPlaybackGeneration generation,
     String path,
   ) async {
-    if (!isCurrent(generation) || _poisoned) return;
+    try {
+      await _releaseAudio?.call(path);
+    } catch (error, stackTrace) {
+      // Failed file release must not create an unbounded sequence of retained
+      // files. Reuse the conservative owner poison and expose only its receipt.
+      _poisonPlayback();
+      _reportError(generation, error, stackTrace);
+    }
+  }
+
+  Future<bool> _playClip(
+    TtsPlaybackGeneration generation,
+    String path,
+  ) async {
+    if (!isCurrent(generation) || _poisoned) return true;
 
     final active = _ActiveClip(generation);
     _activeClip = active;
     final startOutcome = await _admitPlaybackStart(active, generation, path);
-    if (startOutcome.disposition == _PlaybackStartDisposition.stale) return;
+    if (startOutcome.disposition == _PlaybackStartDisposition.stale) {
+      return true;
+    }
     if (startOutcome.disposition == _PlaybackStartDisposition.failed) {
-      if (isCurrent(generation)) _advanceGeneration();
-      return;
+      if (isCurrent(generation)) {
+        return await _advanceGeneration()._stopFence && !_poisoned;
+      }
+      return await _current._stopFence && !_poisoned;
     }
 
     final clip = active.clip;
-    if (clip == null) {
-      if (isCurrent(generation)) _advanceGeneration();
-      return;
-    }
+    if (clip == null) return !_poisoned;
+    _playingGeneration = generation;
     if (isCurrent(generation)) _notifyPlaybackStarted(generation);
+    _prefetchNext();
 
     final winner = await Future.any<Object>([
       clip.terminal.then<Object>(_ClipTerminal.new),
       active.interrupt.future.then<Object>((value) => value),
     ]);
     if (winner is _ClipInterrupted) {
-      await winner.stopFence;
-      return;
+      return winner.stopFence;
     }
 
     final terminal = (winner as _ClipTerminal).terminal;
@@ -491,10 +577,11 @@ final class TtsPlaybackOwner {
       }
       final result = await _queueNaturalCleanup(active);
       if (!result.succeeded) _poisonPlayback();
-      return;
+      return result.succeeded;
     }
 
-    if (isCurrent(generation)) _advanceGeneration();
+    if (isCurrent(generation)) return _advanceGeneration()._stopFence;
+    return _current._stopFence;
   }
 
   Future<_PlaybackStartOutcome> _admitPlaybackStart(
@@ -548,6 +635,7 @@ final class TtsPlaybackOwner {
       return;
     }
     active.clip = clip;
+    unawaited(clip.terminal.then((_) => active.terminalObserved = true));
     _physicalActive = true;
     _publishActivity();
 

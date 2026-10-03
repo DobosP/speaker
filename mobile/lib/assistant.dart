@@ -8,7 +8,7 @@
 // for on-device profiling.
 import 'dart:async';
 import 'dart:convert' show utf8;
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -862,6 +862,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
           return null;
         }
         return TtsService.instance.synthesize(lease, text, filename);
+      },
+      releaseAudio: (path) async {
+        await File(path).delete();
       },
       createPlaybackClip: (path) {
         if (!(state.target?._speechOwnerIsCurrent(lease, playback) ?? false)) {

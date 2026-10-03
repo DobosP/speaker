@@ -19,10 +19,8 @@ typedef AsrWorkerStartupFactory = Future<AsrWorkerStartup> Function(
   AsrWorkerEventSink onEvent,
   AsrWorkerLaunchFence launchFence,
 );
-typedef AsrTimerFactory = AsrTimerHandle Function(
-  Duration duration,
-  void Function() callback,
-);
+typedef AsrTimerFactory =
+    AsrTimerHandle Function(Duration duration, void Function() callback);
 
 abstract interface class AsrTimerHandle {
   void cancel();
@@ -124,10 +122,18 @@ final class AsrWorkerReset extends AsrWorkerCommand {
 }
 
 final class AsrWorkerAudio extends AsrWorkerCommand {
-  const AsrWorkerAudio(this.ordinal, this.sequence, this.bytes);
+  const AsrWorkerAudio(
+    this.ordinal,
+    this.sequence,
+    this.bytes, [
+    this.chunkEnds,
+  ]);
   final int ordinal;
   final int sequence;
   final Uint8List bytes;
+  // Original capture boundaries, retained only when small chunks coalesce.
+  // Even cumulative byte offsets, strictly increasing, ending at bytes.length.
+  final Uint16List? chunkEnds;
 }
 
 final class AsrWorkerEnd extends AsrWorkerCommand {
@@ -217,7 +223,26 @@ final class _AsrSessionState {
   bool resetAcknowledged = false;
   bool endSent = false;
   int nextAudioSequence = 1;
-  final Set<int> outstandingAudio = <int>{};
+  final Map<int, int> outstandingAudio = <int, int>{};
+  Uint8List? pendingAudio;
+  int pendingAudioBytes = 0;
+  int? pendingAudioSequence;
+  Uint16List? pendingChunkEnds;
+  int pendingChunkCount = 0;
+
+  int get bufferedAudioBytes =>
+      pendingAudioBytes +
+      outstandingAudio.values.fold<int>(0, (total, bytes) => total + bytes);
+
+  void discardAudio() {
+    outstandingAudio.clear();
+    pendingAudio = null;
+    pendingAudioBytes = 0;
+    pendingAudioSequence = null;
+    pendingChunkEnds = null;
+    pendingChunkCount = 0;
+  }
+
   late Future<bool> admissionBarrier;
 }
 
@@ -261,6 +286,10 @@ class AsrService {
   static const workerCloseTimeout = Duration(seconds: 10);
   static const int maxPcmBytesPerChunk = 32768;
   static const int maxOutstandingAudioChunks = 4;
+  // PCM16 mono at 16 kHz: at most 4.096 seconds across sent and pending
+  // audio. Pending capture is additionally limited to one 1.024-second batch.
+  static const int maxBufferedPcmBytes =
+      maxPcmBytesPerChunk * maxOutstandingAudioChunks;
   static const int maxResultUtf8Bytes = 16384;
   static const int maxDecodeStepsPerChunk = 2048;
 
@@ -354,35 +383,72 @@ class AsrService {
     return token;
   }
 
-  /// Copies and enqueues one bounded PCM16 chunk only for the exact admitted
-  /// session. Four unacknowledged chunks is a hard mailbox backpressure cap.
+  /// Accepts bounded PCM16 only for the exact admitted session. Four sent
+  /// messages remain the worker credit cap; small capture chunks coalesce into
+  /// one pending batch until an exact ACK frees a credit. No audio is dropped.
+  /// A false result still requires the caller to fence/end its capture source.
   bool feed(AsrSession session, Uint8List bytes) {
     final state = _ownedState(session);
-    if (state == null ||
-        !identical(_active, state) ||
-        state.disposition != _AsrSessionDisposition.active ||
-        !state.resetAcknowledged ||
-        _closing ||
-        _closed ||
-        _transportUncertain) {
-      return false;
-    }
+    if (state == null || !_canFeed(state)) return false;
     if (bytes.isEmpty ||
         bytes.length.isOdd ||
         bytes.length > maxPcmBytesPerChunk ||
-        state.outstandingAudio.length >= maxOutstandingAudioChunks ||
-        state.nextAudioSequence > AsrSession.maxSafeOrdinal) {
+        state.bufferedAudioBytes + bytes.length > maxBufferedPcmBytes) {
       return false;
     }
 
-    final sequence = state.nextAudioSequence++;
-    final copy = Uint8List.fromList(bytes);
-    state.outstandingAudio.add(sequence);
+    final mustBuffer =
+        state.pendingAudio != null ||
+        state.outstandingAudio.length >= maxOutstandingAudioChunks;
+    if (mustBuffer) {
+      if (state.pendingAudioBytes + bytes.length > maxPcmBytesPerChunk) {
+        return false;
+      }
+      if (state.pendingAudio == null) {
+        if (state.nextAudioSequence > AsrSession.maxSafeOrdinal) return false;
+        state.pendingAudio = Uint8List(maxPcmBytesPerChunk);
+        state.pendingChunkEnds = Uint16List(maxPcmBytesPerChunk ~/ 2);
+        state.pendingAudioSequence = state.nextAudioSequence++;
+      }
+      state.pendingAudio!.setRange(
+        state.pendingAudioBytes,
+        state.pendingAudioBytes + bytes.length,
+        bytes,
+      );
+      state.pendingAudioBytes += bytes.length;
+      state.pendingChunkEnds![state.pendingChunkCount++] =
+          state.pendingAudioBytes;
+      return true;
+    }
+    if (state.nextAudioSequence > AsrSession.maxSafeOrdinal) return false;
+    return _sendAudio(
+      state,
+      state.nextAudioSequence++,
+      Uint8List.fromList(bytes),
+    );
+  }
+
+  bool _canFeed(_AsrSessionState state) =>
+      identical(_active, state) &&
+      state.disposition == _AsrSessionDisposition.active &&
+      state.resetAcknowledged &&
+      !_closing &&
+      !_closed &&
+      !_transportUncertain;
+
+  bool _sendAudio(
+    _AsrSessionState state,
+    int sequence,
+    Uint8List bytes, [
+    Uint16List? chunkEnds,
+  ]) {
+    // Reserve the exact credit before a fake/reentrant transport can ACK it.
+    state.outstandingAudio[sequence] = bytes.length;
     try {
       _startup!.transport.send(
-        AsrWorkerAudio(state.ordinal, sequence, copy),
+        AsrWorkerAudio(state.ordinal, sequence, bytes, chunkEnds),
       );
-      return true;
+      return _canFeed(state);
     } catch (_) {
       _transportUncertain = true;
       _beginEnd(
@@ -392,6 +458,33 @@ class AsrService {
       );
       return false;
     }
+  }
+
+  void _flushPendingAudio(_AsrSessionState state) {
+    if (!_canFeed(state) ||
+        state.pendingAudio == null ||
+        state.outstandingAudio.length >= maxOutstandingAudioChunks) {
+      return;
+    }
+    final bytes = Uint8List.sublistView(
+      state.pendingAudio!,
+      0,
+      state.pendingAudioBytes,
+    );
+    final sequence = state.pendingAudioSequence!;
+    final chunkEnds = Uint16List.sublistView(
+      state.pendingChunkEnds!,
+      0,
+      state.pendingChunkCount,
+    );
+    // Detach the immutable batch before send: later capture cannot overwrite
+    // it, and synchronous ACK/revocation can only see current ownership.
+    state.pendingAudio = null;
+    state.pendingAudioBytes = 0;
+    state.pendingAudioSequence = null;
+    state.pendingChunkEnds = null;
+    state.pendingChunkCount = 0;
+    _sendAudio(state, sequence, bytes, chunkEnds);
   }
 
   /// Synchronously revokes callbacks. True is only local accepted/idempotent
@@ -621,8 +714,10 @@ class AsrService {
       return;
     }
     if (event is AsrWorkerAudioAck) {
-      if (event.ordinal == active.ordinal && event.sequence > 0) {
-        active.outstandingAudio.remove(event.sequence);
+      if (event.ordinal == active.ordinal &&
+          event.sequence > 0 &&
+          active.outstandingAudio.remove(event.sequence) != null) {
+        _flushPendingAudio(active);
       }
       return;
     }
@@ -660,11 +755,7 @@ class AsrService {
 
   void _onAdmissionTimeout(_AsrSessionState state) {
     if (!_hasAuthority(state) || state.resetAcknowledged) return;
-    _beginEnd(
-      state,
-      readyCode: 'asr_admission_timeout',
-      readyTimeout: true,
-    );
+    _beginEnd(state, readyCode: 'asr_admission_timeout', readyTimeout: true);
   }
 
   void _failAdmission(_AsrSessionState state, String code) {
@@ -685,7 +776,7 @@ class AsrService {
     if (identical(_active, state)) _active = null;
     state.onPartial = null;
     state.onEndpoint = null;
-    state.outstandingAudio.clear();
+    state.discardAudio();
     final timer = state.timer;
     state.timer = null;
     if (timer != null) _cancelTimer(timer);
@@ -767,7 +858,7 @@ class AsrService {
     if (identical(_active, state)) _active = null;
     state.onPartial = null;
     state.onEndpoint = null;
-    state.outstandingAudio.clear();
+    state.discardAudio();
     final timer = state.timer;
     state.timer = null;
     if (timer != null) _cancelTimer(timer);
@@ -777,10 +868,7 @@ class AsrService {
     _finishCleanup(state, event.sessionReleased);
   }
 
-  void _failActiveForPoison(
-    String code, {
-    _AsrSessionState? except,
-  }) {
+  void _failActiveForPoison(String code, {_AsrSessionState? except}) {
     final active = _active;
     if (active != null && !identical(active, except)) {
       _beginEnd(active, readyCode: code, forceUncertain: true);
@@ -968,9 +1056,7 @@ final class AsrWorkerCore {
         _uncertainStreams.add(predecessor);
         _resourceUncertain = true;
         gate.poison();
-        _safeEmit(
-          AsrWorkerEndAck(predecessorOrdinal, released: false),
-        );
+        _safeEmit(AsrWorkerEndAck(predecessorOrdinal, released: false));
         _safeEmit(
           AsrWorkerSessionFailure(
             command.ordinal,
@@ -981,9 +1067,7 @@ final class AsrWorkerCore {
         );
         return;
       }
-      if (!_safeEmit(
-        AsrWorkerEndAck(predecessorOrdinal, released: true),
-      )) {
+      if (!_safeEmit(AsrWorkerEndAck(predecessorOrdinal, released: true))) {
         gate.poison();
         return;
       }
@@ -1020,6 +1104,7 @@ final class AsrWorkerCore {
     if (command.bytes.isEmpty ||
         command.bytes.length.isOdd ||
         command.bytes.length > AsrService.maxPcmBytesPerChunk ||
+        !_validChunkEnds(command) ||
         !gate.acceptAudio(command.ordinal, command.sequence)) {
       _failCurrent('asr_worker_audio_invalid');
       return;
@@ -1031,8 +1116,16 @@ final class AsrWorkerCore {
     }
 
     try {
-      stream.acceptPcm16(_toFloat32(command.bytes));
       var steps = 0;
+      var start = 0;
+      final ends = command.chunkEnds;
+      final count = ends?.length ?? 1;
+      for (var i = 0; i < count; i++) {
+        final end = ends == null ? command.bytes.length : ends[i];
+        stream.acceptPcm16(
+          _toFloat32(Uint8List.sublistView(command.bytes, start, end)),
+        );
+        start = end;
       while (_recognizer.isReady(stream)) {
         if (steps++ >= AsrService.maxDecodeStepsPerChunk) {
           throw StateError('asr_decode_step_bound');
@@ -1055,11 +1148,30 @@ final class AsrWorkerCore {
         _lastPartial = text;
         _emit(AsrWorkerPartial(command.ordinal, text));
       }
+        // Emission adapters used in tests can revoke synchronously. No later
+        // boundary may enter an ended/replaced/freed stream.
+        if (gate.currentOrdinal != command.ordinal ||
+            !identical(_stream, stream))
+          return;
+      }
       // Output is deliberately emitted before credit is returned.
       _emit(AsrWorkerAudioAck(command.ordinal, command.sequence));
     } catch (_) {
       _failCurrent('asr_worker_decode_failed');
     }
+  }
+
+  static bool _validChunkEnds(AsrWorkerAudio command) {
+    final ends = command.chunkEnds;
+    if (ends == null) return true;
+    if (ends.isEmpty || ends.length > command.bytes.length ~/ 2) return false;
+    var previous = 0;
+    for (final end in ends) {
+      if (end.isOdd || end <= previous || end > command.bytes.length)
+        return false;
+      previous = end;
+    }
+    return previous == command.bytes.length;
   }
 
   void _end(AsrWorkerEnd command) {
@@ -1081,9 +1193,7 @@ final class AsrWorkerCore {
       _uncertainStreams.add(stream);
       _resourceUncertain = true;
       gate.poison();
-      _safeEmit(
-        AsrWorkerEndAck(command.ordinal, released: false),
-      );
+      _safeEmit(AsrWorkerEndAck(command.ordinal, released: false));
     }
   }
 

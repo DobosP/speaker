@@ -126,9 +126,11 @@ void main() {
       await session.ready;
       expect(becameReady, isTrue);
       expect(harness.timers.timers.single.canceled, isTrue);
-    });
+      },
+    );
 
-    test('feed waits for exact ACK and enforces four exact sequence credits',
+    test(
+      'feed waits for exact ACK and enforces the total PCM payload cap',
         () async {
       final harness = _Harness();
       final session = harness.service.beginSession(
@@ -141,23 +143,178 @@ void main() {
       harness.event(const AsrWorkerResetAck(1));
       await session.ready;
 
+        final fullChunk = Uint8List(AsrService.maxPcmBytesPerChunk);
       for (var i = 0; i < AsrService.maxOutstandingAudioChunks; i++) {
-        expect(harness.service.feed(session, bytes), isTrue);
+          expect(harness.service.feed(session, fullChunk), isTrue);
       }
-      expect(harness.service.feed(session, bytes), isFalse);
+        expect(harness.service.feed(session, fullChunk), isFalse);
       final audio = harness.commandsOf<AsrWorkerAudio>().toList();
       expect(audio.map((item) => item.sequence), <int>[1, 2, 3, 4]);
 
       harness.event(const AsrWorkerAudioAck(999, 1));
       harness.event(const AsrWorkerAudioAck(1, 999));
-      expect(harness.service.feed(session, bytes), isFalse);
+        expect(harness.service.feed(session, fullChunk), isFalse);
       harness.event(const AsrWorkerAudioAck(1, 1));
-      expect(harness.service.feed(session, bytes), isTrue);
+        expect(harness.service.feed(session, fullChunk), isTrue);
       harness.event(const AsrWorkerAudioAck(1, 1));
-      expect(harness.service.feed(session, bytes), isFalse);
+        expect(harness.service.feed(session, fullChunk), isFalse);
+      },
+    );
+
+    test(
+      'short capture burst coalesces losslessly until one exact ACK',
+      () async {
+        final harness = _Harness();
+        final session = harness.service.beginSession(
+          onPartial: (_) {},
+          onEndpoint: (_) {},
+        );
+        await _settle();
+        harness.event(const AsrWorkerResetAck(1));
+        await session.ready;
+        for (var i = 0; i < 4; i++) {
+          expect(harness.service.feed(session, Uint8List(640)), isTrue);
+        }
+        final backing = Uint8List.fromList(<int>[99, 99, 1, 2, 3, 4, 99, 99]);
+        expect(
+          harness.service.feed(session, Uint8List.sublistView(backing, 2, 6)),
+          isTrue,
+        );
+        backing.fillRange(0, backing.length, 0);
+        expect(
+          harness.service.feed(session, Uint8List.fromList(<int>[5, 6])),
+          isTrue,
+        );
+        expect(harness.commandsOf<AsrWorkerAudio>().length, 4);
+        harness.event(const AsrWorkerAudioAck(999, 1));
+        harness.event(const AsrWorkerAudioAck(1, 999));
+        expect(harness.commandsOf<AsrWorkerAudio>().length, 4);
+        harness.event(const AsrWorkerAudioAck(1, 1));
+        final sent = harness.commandsOf<AsrWorkerAudio>().last;
+        expect(sent.sequence, 5);
+        expect(sent.bytes, <int>[1, 2, 3, 4, 5, 6]);
+        expect(sent.chunkEnds, <int>[4, 6]);
+        expect(
+          harness.service.feed(session, Uint8List.fromList(<int>[7, 8])),
+          isTrue,
+        );
+        harness.event(const AsrWorkerAudioAck(1, 1));
+        expect(harness.commandsOf<AsrWorkerAudio>().length, 5);
+        harness.event(const AsrWorkerAudioAck(1, 2));
+        expect(harness.commandsOf<AsrWorkerAudio>().last.sequence, 6);
+        expect(sent.bytes, <int>[1, 2, 3, 4, 5, 6]);
+      },
+    );
+
+    test('pending capture has an independent one-batch bound', () async {
+      final harness = _Harness();
+      final session = harness.service.beginSession(
+        onPartial: (_) {},
+        onEndpoint: (_) {},
+      );
+      await _settle();
+      harness.event(const AsrWorkerResetAck(1));
+      await session.ready;
+      for (var i = 0; i < 4; i++) {
+        expect(harness.service.feed(session, Uint8List(2)), isTrue);
+      }
+      expect(
+        harness.service.feed(
+          session,
+          Uint8List(AsrService.maxPcmBytesPerChunk),
+        ),
+        isTrue,
+      );
+      expect(harness.service.feed(session, Uint8List(2)), isFalse);
+      expect(harness.commandsOf<AsrWorkerAudio>().length, 4);
+      harness.event(const AsrWorkerAudioAck(1, 1));
+      expect(
+        harness.commandsOf<AsrWorkerAudio>().last.bytes.length,
+        AsrService.maxPcmBytesPerChunk,
+      );
     });
 
-    test('feed copies only after validation and never aliases caller PCM',
+    test(
+      'ending a session discards pending capture before stale ACK',
+      () async {
+        final harness = _Harness();
+        final session = harness.service.beginSession(
+          onPartial: (_) {},
+          onEndpoint: (_) {},
+        );
+        await _settle();
+        harness.event(const AsrWorkerResetAck(1));
+        await session.ready;
+        for (var i = 0; i < 5; i++) {
+          expect(harness.service.feed(session, Uint8List(2)), isTrue);
+        }
+        expect(harness.service.endSession(session), isTrue);
+        harness.event(const AsrWorkerAudioAck(1, 1));
+        expect(harness.commandsOf<AsrWorkerAudio>().length, 4);
+        expect(harness.service.feed(session, Uint8List(2)), isFalse);
+        harness.event(const AsrWorkerEndAck(1, released: true));
+        expect(await session.cleanup, isTrue);
+      },
+    );
+
+    test('flush send failure fences the exact session and transport', () async {
+      final harness = _Harness(
+        onSend: (command) {
+          if (command is AsrWorkerAudio && command.sequence == 5) {
+            throw StateError('transport_failed');
+          }
+        },
+      );
+      final session = harness.service.beginSession(
+        onPartial: (_) {},
+        onEndpoint: (_) {},
+      );
+      await _settle();
+      harness.event(const AsrWorkerResetAck(1));
+      await session.ready;
+      for (var i = 0; i < 5; i++) {
+        expect(harness.service.feed(session, Uint8List(2)), isTrue);
+      }
+      harness.event(const AsrWorkerAudioAck(1, 1));
+      expect(await session.cleanup, isFalse);
+      expect(harness.service.feed(session, Uint8List(2)), isFalse);
+      harness.event(const AsrWorkerAudioAck(1, 2));
+      expect(harness.commandsOf<AsrWorkerAudio>().length, 5);
+    });
+
+    test('reentrant ACK during pending send cannot reuse a sequence', () async {
+      late final _Harness harness;
+      harness = _Harness(
+        onSend: (command) {
+          if (command is AsrWorkerAudio && command.sequence >= 5) {
+            harness.event(AsrWorkerAudioAck(command.ordinal, command.sequence));
+          }
+        },
+      );
+      final session = harness.service.beginSession(
+        onPartial: (_) {},
+        onEndpoint: (_) {},
+      );
+      await _settle();
+      harness.event(const AsrWorkerResetAck(1));
+      await session.ready;
+      for (var i = 0; i < 5; i++) {
+        expect(harness.service.feed(session, Uint8List(2)), isTrue);
+      }
+      harness.event(const AsrWorkerAudioAck(1, 1));
+      expect(harness.service.feed(session, Uint8List(2)), isTrue);
+      expect(harness.commandsOf<AsrWorkerAudio>().map((e) => e.sequence), <int>[
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+      ]);
+    });
+
+    test(
+      'feed copies only after validation and never aliases caller PCM',
         () async {
       final harness = _Harness();
       final session = harness.service.beginSession(
@@ -171,7 +328,8 @@ void main() {
       expect(harness.service.feed(session, bytes), isTrue);
       bytes[0] = 99;
       expect(harness.commandsOf<AsrWorkerAudio>().single.bytes[0], 1);
-    });
+      },
+    );
 
     test('empty odd and oversized PCM are rejected without sends', () async {
       final harness = _Harness();
@@ -217,7 +375,8 @@ void main() {
       expect(cleanupSettled, isFalse);
       harness.event(const AsrWorkerEndAck(1, released: true));
       expect(await session.cleanup, isTrue);
-    });
+      },
+    );
 
     test('stale end reset ACK output and audio ACK never touch replacement',
         () async {
@@ -236,13 +395,17 @@ void main() {
       );
       await _settle();
       expect(
-          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal), <int>[1]);
+          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal),
+          <int>[1],
+        );
       expect(harness.service.endSession(first), isTrue);
       harness.event(const AsrWorkerResetAck(1));
       harness.event(const AsrWorkerPartial(1, 'old'));
       harness.event(const AsrWorkerAudioAck(1, 1));
-      expect(harness.service.feed(second, Uint8List.fromList(<int>[0, 0])),
-          isFalse);
+        expect(
+          harness.service.feed(second, Uint8List.fromList(<int>[0, 0])),
+          isFalse,
+        );
       harness.event(const AsrWorkerEndAck(1, released: true));
       expect(await first.cleanup, isTrue);
       await _settle();
@@ -252,7 +415,7 @@ void main() {
       harness.event(const AsrWorkerPartial(1, 'old-again'));
       harness.event(const AsrWorkerPartial(2, 'new'));
       expect(seen, <String>['b:new']);
-      final bytes = Uint8List.fromList(<int>[0, 0]);
+        final bytes = Uint8List(AsrService.maxPcmBytesPerChunk);
       for (var i = 0; i < AsrService.maxOutstandingAudioChunks; i++) {
         expect(harness.service.feed(second, bytes), isTrue);
       }
@@ -260,7 +423,8 @@ void main() {
       expect(harness.service.feed(second, bytes), isFalse);
       harness.event(const AsrWorkerAudioAck(2, 1));
       expect(harness.service.feed(second, bytes), isTrue);
-    });
+      },
+    );
 
     test('cleanup timeout freezes false and late End ACK cannot upgrade it',
         () async {
@@ -278,7 +442,8 @@ void main() {
       harness.event(const AsrWorkerEndAck(1, released: true));
       expect(await session.cleanup, isFalse);
       expect(harness.service.endSession(session), isFalse);
-    });
+      },
+    );
 
     test('synchronous cleanup deadline freezes false and denies successor',
         () async {
@@ -305,8 +470,11 @@ void main() {
       );
       await expectLater(second.ready, throwsA(isA<StateError>()));
       expect(
-          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal), <int>[1]);
-    });
+          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal),
+          <int>[1],
+        );
+      },
+    );
 
     test('failed predecessor cleanup denies successor reset immediately',
         () async {
@@ -322,15 +490,20 @@ void main() {
         onPartial: (_) {},
         onEndpoint: (_) {},
       );
-      final secondFailed =
-          expectLater(second.ready, throwsA(isA<StateError>()));
+        final secondFailed = expectLater(
+          second.ready,
+          throwsA(isA<StateError>()),
+        );
       harness.event(const AsrWorkerEndAck(1, released: false));
       expect(await first.cleanup, isFalse);
       await secondFailed;
       expect(
-          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal), <int>[1]);
+          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal),
+          <int>[1],
+        );
       expect(await second.cleanup, isFalse);
-    });
+      },
+    );
 
     test('foreign token is rejected without touching active session', () async {
       final first = _Harness();
@@ -347,10 +520,14 @@ void main() {
       second.event(const AsrWorkerResetAck(1));
       await local.ready;
       expect(second.service.endSession(foreign), isFalse);
-      expect(second.service.feed(foreign, Uint8List.fromList(<int>[0, 0])),
-          isFalse);
       expect(
-          second.service.feed(local, Uint8List.fromList(<int>[0, 0])), isTrue);
+        second.service.feed(foreign, Uint8List.fromList(<int>[0, 0])),
+        isFalse,
+      );
+      expect(
+        second.service.feed(local, Uint8List.fromList(<int>[0, 0])),
+        isTrue,
+      );
     });
 
     test('admission timer spans held startup and makes late startup inert',
@@ -364,8 +541,10 @@ void main() {
       );
       await _settle();
       expect(harness.starts, 1);
-      final failed =
-          expectLater(session.ready, throwsA(isA<TimeoutException>()));
+        final failed = expectLater(
+          session.ready,
+          throwsA(isA<TimeoutException>()),
+        );
       harness.timers.timers.single.fire();
       await failed;
       startup.complete(harness.startup);
@@ -374,7 +553,8 @@ void main() {
       harness.event(const AsrWorkerPartial(1, 'late'));
       expect(calls, 0);
       expect(harness.service.endSession(session), isTrue);
-    });
+      },
+    );
 
     test('timer factory throw and synchronous callback both fail closed',
         () async {
@@ -396,7 +576,8 @@ void main() {
       await expectLater(second.ready, throwsA(isA<TimeoutException>()));
       expect(synchronous.starts, 0);
       expect(synchronousTimers.timers.single.canceled, isTrue);
-    });
+      },
+    );
 
     test('reset failure releases exact callbacks and a higher ordinal retries',
         () async {
@@ -413,7 +594,8 @@ void main() {
         'bounded',
         sessionReleased: true,
         workerHealthy: true,
-      ));
+          ),
+        );
       await failed;
       expect(await first.cleanup, isTrue);
       final second = harness.service.beginSession(
@@ -427,7 +609,8 @@ void main() {
       harness.event(const AsrWorkerPartial(1, 'old'));
       harness.event(const AsrWorkerPartial(2, 'new'));
       expect(seen, <String>['new']);
-    });
+      },
+    );
 
     test('stale poisoned failure fails a waiting successor immediately',
         () async {
@@ -449,13 +632,17 @@ void main() {
         'poisoned',
         sessionReleased: false,
         workerHealthy: false,
-      ));
+          ),
+        );
       await failed;
       expect(await first.cleanup, isFalse);
       expect(await second.cleanup, isFalse);
       expect(
-          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal), <int>[1]);
-    });
+          harness.commandsOf<AsrWorkerReset>().map((e) => e.ordinal),
+          <int>[1],
+        );
+      },
+    );
 
     test('clean startup factory failure is retryable at a higher ordinal',
         () async {
@@ -498,7 +685,8 @@ void main() {
       expect(commands.whereType<AsrWorkerReset>().single.ordinal, 2);
       sink!(const AsrWorkerResetAck(2));
       await second.ready;
-    });
+      },
+    );
 
     test('typed uncertain startup freezes false and is never retried',
         () async {
@@ -529,7 +717,8 @@ void main() {
       expect(attempts, 1);
       expect(await service.close(), isFalse);
       expect(identical(service.close(), service.close()), isTrue);
-    });
+      },
+    );
 
     test('oversized UTF-8 output fails exact session without delivery',
         () async {
@@ -546,10 +735,13 @@ void main() {
         AsrWorkerPartial(1, 'é' * (AsrService.maxResultUtf8Bytes ~/ 2 + 1)),
       );
       expect(seen, isEmpty);
-      expect(harness.service.feed(session, Uint8List.fromList(<int>[0, 0])),
-          isFalse);
+        expect(
+          harness.service.feed(session, Uint8List.fromList(<int>[0, 0])),
+          isFalse,
+        );
       expect(harness.service.endSession(session), isTrue);
-    });
+      },
+    );
 
     test('throwing and reentrant callbacks are contained and revoke authority',
         () async {
@@ -577,9 +769,12 @@ void main() {
       reentrant.event(const AsrWorkerResetAck(1));
       await second.ready;
       reentrant.event(const AsrWorkerPartial(1, 'x'));
-      expect(reentrant.service.feed(second, Uint8List.fromList(<int>[0, 0])),
-          isFalse);
-    });
+        expect(
+          reentrant.service.feed(second, Uint8List.fromList(<int>[0, 0])),
+          isFalse,
+        );
+      },
+    );
 
     test('send uncertainty is sticky and end returns false', () async {
       var resetSends = 0;
@@ -587,7 +782,8 @@ void main() {
         if (command is AsrWorkerReset && resetSends++ == 0) {
           throw StateError('uncertain_send');
         }
-      });
+        },
+      );
       final first = harness.service.beginSession(
         onPartial: (_) {},
         onEndpoint: (_) {},
@@ -605,10 +801,8 @@ void main() {
     test('safe ordinal exhaustion is synchronous and starts no work', () {
       final harness = _Harness(initialOrdinal: AsrSession.maxSafeOrdinal);
       expect(
-        () => harness.service.beginSession(
-          onPartial: (_) {},
-          onEndpoint: (_) {},
-        ),
+        () =>
+            harness.service.beginSession(onPartial: (_) {}, onEndpoint: (_) {}),
         throwsA(isA<StateError>()),
       );
       expect(harness.starts, 0);
@@ -624,7 +818,8 @@ void main() {
       harness = _Harness(onClose: () async {
         reentrant = harness.service.close();
         return true;
-      });
+          },
+        );
       final session = harness.service.beginSession(
         onPartial: seen.add,
         onEndpoint: (_) {},
@@ -642,7 +837,8 @@ void main() {
       expect(await first, isTrue);
       expect(identical(first, reentrant), isTrue);
       expect(harness.closeCalls, 1);
-    });
+      },
+    );
 
     test('startup is prepublished before synchronous close reentry', () async {
       final timers = _TimerBank();
@@ -672,8 +868,10 @@ void main() {
         onPartial: (_) {},
         onEndpoint: (_) {},
       );
-      final readyFailure =
-          expectLater(session.ready, throwsA(isA<StateError>()));
+      final readyFailure = expectLater(
+        session.ready,
+        throwsA(isA<StateError>()),
+      );
 
       await _settle();
       await readyFailure;
@@ -706,7 +904,8 @@ void main() {
     test('close failure is value-only retained and never retried', () async {
       final harness = _Harness(onClose: () async {
         throw StateError('close_failed');
-      });
+        },
+      );
       final session = harness.service.beginSession(
         onPartial: (_) {},
         onEndpoint: (_) {},
@@ -751,8 +950,10 @@ void main() {
         onPartial: (_) {},
         onEndpoint: (_) {},
       );
-      final readyFailure =
-          expectLater(session.ready, throwsA(isA<StateError>()));
+      final readyFailure = expectLater(
+        session.ready,
+        throwsA(isA<StateError>()),
+      );
       await _settle();
       expect(fence!.isCurrent, isTrue);
 
@@ -798,8 +999,10 @@ void main() {
         onPartial: (_) {},
         onEndpoint: (_) {},
       );
-      final readyFailure =
-          expectLater(session.ready, throwsA(isA<StateError>()));
+        final readyFailure = expectLater(
+          session.ready,
+          throwsA(isA<StateError>()),
+        );
       await _settle();
       expect(fence!.isCurrent, isTrue);
 
@@ -815,7 +1018,8 @@ void main() {
       expect(constructed, 1);
       expect(closeCalls, 1);
       expect(await service.close(), isFalse);
-    });
+      },
+    );
 
     test('close during held startup is bounded and closes late startup once',
         () async {
@@ -827,8 +1031,10 @@ void main() {
       );
       await _settle();
       expect(harness.starts, 1);
-      final readyFailure =
-          expectLater(session.ready, throwsA(isA<StateError>()));
+        final readyFailure = expectLater(
+          session.ready,
+          throwsA(isA<StateError>()),
+        );
       final close = harness.service.close();
       await readyFailure;
       harness.timers.timers.last.fire();
@@ -837,7 +1043,8 @@ void main() {
       await _settle(12);
       expect(harness.closeCalls, 1);
       expect(identical(close, harness.service.close()), isTrue);
-    });
+      },
+    );
 
     test('close during held handshake does not await session readiness',
         () async {
@@ -847,8 +1054,10 @@ void main() {
         onPartial: (_) {},
         onEndpoint: (_) {},
       );
-      final readyFailure =
-          expectLater(session.ready, throwsA(isA<StateError>()));
+        final readyFailure = expectLater(
+          session.ready,
+          throwsA(isA<StateError>()),
+        );
       await _settle();
       expect(await harness.service.close(), isTrue);
       await readyFailure;
@@ -856,7 +1065,8 @@ void main() {
       heldReady.complete();
       await _settle();
       expect(harness.commandsOf<AsrWorkerReset>(), isEmpty);
-    });
+      },
+    );
 
     test('synchronous close deadline callback freezes false', () async {
       final timers = _TimerBank()..fireSynchronously = true;
@@ -911,8 +1121,10 @@ void main() {
           'emit:AsrWorkerResetAck',
         ]),
       );
-      expect(events.whereType<AsrWorkerResetAck>().map((e) => e.ordinal),
-          <int>[1, 2]);
+      expect(events.whereType<AsrWorkerResetAck>().map((e) => e.ordinal), <int>[
+        1,
+        2,
+      ]);
     });
 
     test('predecessor free failure poisons and withholds successor ACK', () {
@@ -928,13 +1140,11 @@ void main() {
       recognizer.streams.first.throwOnFree = true;
       core.handle(const AsrWorkerReset(2));
       expect(core.gate.isPoisoned, isTrue);
-      expect(events.whereType<AsrWorkerResetAck>().map((e) => e.ordinal),
-          <int>[1]);
+      expect(events.whereType<AsrWorkerResetAck>().map((e) => e.ordinal), <int>[
+        1,
+      ]);
       expect(recognizer.streams, hasLength(1));
-      expect(
-        events.whereType<AsrWorkerEndAck>().single.released,
-        isFalse,
-      );
+      expect(events.whereType<AsrWorkerEndAck>().single.released, isFalse);
       final failure = events.whereType<AsrWorkerSessionFailure>().single;
       expect(failure.sessionReleased, isTrue);
       expect(failure.workerHealthy, isFalse);
@@ -993,6 +1203,112 @@ void main() {
           'emit:AsrWorkerAudioAck',
         ]),
       );
+    });
+
+    test(
+      'coalesced audio preserves endpoints between original capture chunks',
+      () {
+        List<String> run({required bool batched}) {
+          final recognizer = _BoundaryRecognizer(<String>[]);
+          final observations = <String>[];
+          final core = AsrWorkerCore(
+            recognizer: recognizer,
+            emit: (event) {
+              if (event is AsrWorkerEndpoint)
+                observations.add('endpoint:${event.text}');
+              if (event is AsrWorkerPartial)
+                observations.add('partial:${event.text}');
+            },
+            terminate: () {},
+          );
+          core.handle(const AsrWorkerReset(1));
+          if (batched) {
+            core.handle(
+              AsrWorkerAudio(
+                1,
+                1,
+                Uint8List(4),
+                Uint16List.fromList(<int>[2, 4]),
+              ),
+            );
+          } else {
+            core.handle(AsrWorkerAudio(1, 1, Uint8List(2)));
+            core.handle(AsrWorkerAudio(1, 2, Uint8List(2)));
+          }
+          return observations;
+        }
+
+        expect(run(batched: true), <String>[
+          'endpoint:first',
+          'partial:second',
+        ]);
+        expect(run(batched: true), run(batched: false));
+      },
+    );
+
+    test('invalid batch boundaries fail before any PCM enters recognizer', () {
+      for (final ends in <List<int>>[
+        <int>[],
+        <int>[2],
+        <int>[3, 4],
+        <int>[2, 2, 4],
+        <int>[6],
+      ]) {
+        final recognizer = _FakeRecognizer(<String>[]);
+        final events = <AsrWorkerEvent>[];
+        final core = AsrWorkerCore(
+          recognizer: recognizer,
+          emit: events.add,
+          terminate: () {},
+        );
+        core.handle(const AsrWorkerReset(1));
+        core.handle(
+          AsrWorkerAudio(1, 1, Uint8List(4), Uint16List.fromList(ends)),
+        );
+        expect(recognizer.streams.single.acceptCalls, 0);
+        expect(events.whereType<AsrWorkerAudioAck>(), isEmpty);
+        expect(core.gate.isPoisoned, isTrue);
+      }
+    });
+
+    test('decode work bound spans the entire coalesced batch', () {
+      final recognizer = _FakeRecognizer(<String>[]);
+      final events = <AsrWorkerEvent>[];
+      final core = AsrWorkerCore(
+        recognizer: recognizer,
+        emit: events.add,
+        terminate: () {},
+      );
+      core.handle(const AsrWorkerReset(1));
+      recognizer.streams.single.onAccept = (_) => recognizer.readySteps = 1200;
+      core.handle(
+        AsrWorkerAudio(1, 1, Uint8List(4), Uint16List.fromList(<int>[2, 4])),
+      );
+      expect(recognizer.decodeCalls, AsrService.maxDecodeStepsPerChunk);
+      expect(recognizer.streams.single.freeCalls, 1);
+      expect(core.gate.isPoisoned, isTrue);
+      expect(events.whereType<AsrWorkerAudioAck>(), isEmpty);
+    });
+
+    test('endpoint callback revocation prevents later batch decode', () {
+      final recognizer = _BoundaryRecognizer(<String>[]);
+      late final AsrWorkerCore core;
+      final events = <AsrWorkerEvent>[];
+      core = AsrWorkerCore(
+        recognizer: recognizer,
+        emit: (event) {
+          events.add(event);
+          if (event is AsrWorkerEndpoint) core.handle(const AsrWorkerEnd(1));
+        },
+        terminate: () {},
+      );
+      core.handle(const AsrWorkerReset(1));
+      core.handle(
+        AsrWorkerAudio(1, 1, Uint8List(4), Uint16List.fromList(<int>[2, 4])),
+      );
+      expect(recognizer.streams.single.acceptCalls, 1);
+      expect(recognizer.streams.single.freeCalls, 1);
+      expect(events.whereType<AsrWorkerAudioAck>(), isEmpty);
     });
 
     test('worker repeats PCM and UTF-8 bounds and does not ACK failures', () {
@@ -1067,10 +1383,7 @@ void main() {
       log.clear();
       core.handle(const AsrWorkerEnd(1));
       core.handle(const AsrWorkerEnd(1));
-      expect(
-        log,
-        <String>['stream-free:1', 'emit:AsrWorkerEndAck'],
-      );
+      expect(log, <String>['stream-free:1', 'emit:AsrWorkerEndAck']);
       expect(events.whereType<AsrWorkerEndAck>().single.released, isTrue);
       expect(recognizer.streams.single.freeCalls, 1);
     });
@@ -1094,7 +1407,8 @@ void main() {
       expect(recognizer.streams.single.freeCalls, 1);
       expect(recognizer.freeCalls, 0);
       expect(events.whereType<AsrWorkerShutdownAck>(), isEmpty);
-    });
+      },
+    );
 
     test('clean stream creation failure advances ordinal and remains reusable',
         () {
@@ -1112,7 +1426,8 @@ void main() {
       expect(core.gate.highestOrdinal, 1);
       core.handle(const AsrWorkerReset(2));
       expect(events.whereType<AsrWorkerResetAck>().single.ordinal, 2);
-    });
+      },
+    );
 
     test('cooperative shutdown frees stream then recognizer then ACKs', () {
       final log = <String>[];
@@ -1132,8 +1447,7 @@ void main() {
           'recognizer-free',
           'emit:AsrWorkerShutdownAck',
           'terminate',
-        ],
-      );
+      ]);
     });
 
     test('uncertain stream release withholds shutdown ACK and recognizer free',
@@ -1154,7 +1468,8 @@ void main() {
       expect(recognizer.freeCalls, 0);
       expect(events.whereType<AsrWorkerShutdownAck>(), isEmpty);
       expect(core.retainedUncertainStreamCount, 1);
-    });
+      },
+    );
 
     test('recognizer free failure withholds shutdown ACK', () {
       final recognizer = _FakeRecognizer(<String>[])..throwOnFree = true;
@@ -1181,11 +1496,13 @@ final class _FakeStream implements AsrWorkerStreamAdapter {
   bool throwOnFree = false;
   int freeCalls = 0;
   int acceptCalls = 0;
+  void Function(Float32List samples)? onAccept;
 
   @override
   void acceptPcm16(Float32List samples) {
     acceptCalls++;
     log.add('accept:$id');
+    onAccept?.call(samples);
   }
 
   @override
@@ -1247,4 +1564,16 @@ final class _FakeRecognizer implements AsrWorkerRecognizerAdapter {
   void reset(AsrWorkerStreamAdapter stream) {
     log.add('recognizer-reset');
   }
+}
+
+final class _BoundaryRecognizer extends _FakeRecognizer {
+  _BoundaryRecognizer(super.log);
+
+  @override
+  bool isEndpoint(AsrWorkerStreamAdapter stream) =>
+      (stream as _FakeStream).acceptCalls == 1;
+
+  @override
+  String resultText(AsrWorkerStreamAdapter stream) =>
+      (stream as _FakeStream).acceptCalls == 1 ? 'first' : 'second';
 }

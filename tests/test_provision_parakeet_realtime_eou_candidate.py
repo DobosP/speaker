@@ -843,7 +843,8 @@ def test_post_validation_publication_fault_rolls_back_canonical_manifest(
     _assert_manifest_unpublished(output)
 
 
-def test_repository_lock_has_exact_published_identity():
+def test_repository_lock_has_exact_published_identity(tmp_path: Path):
+    repository_mode = provision._REPOSITORY_WHEEL_LOCK.lstat().st_mode
     payload = provision._repository_wheel_lock_bytes()
 
     assert len(payload) == provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SIZE_BYTES
@@ -851,13 +852,21 @@ def test_repository_lock_has_exact_published_identity():
         hashlib.sha256(payload).hexdigest()
         == provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
     )
-    assert (
-        load_wheel_lock(
-            provision._REPOSITORY_WHEEL_LOCK,
-            expected_digest=provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256,
-        ).digest
-        == provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
+    # Git checkout permissions do not attest private-runtime staging. Retain
+    # the checksum-verified public bytes in the private input the loader owns.
+    staged = tmp_path / "runtime-wheel-lock.json"
+    staged.write_bytes(payload)
+    staged.chmod(0o600)
+    loaded = load_wheel_lock(
+        staged,
+        expected_digest=provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256,
     )
+    assert loaded.digest == provision.PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
+    assert loaded.path == staged.resolve(strict=True)
+    assert loaded.path != provision._REPOSITORY_WHEEL_LOCK
+    assert stat.S_IMODE(loaded.path.lstat().st_mode) == 0o600
+    assert provision._REPOSITORY_WHEEL_LOCK.lstat().st_mode == repository_mode
+    assert provision._repository_wheel_lock_bytes() == payload
 
 
 def test_real_small_lock_wheelhouse_runtime_chain_is_provisioned(

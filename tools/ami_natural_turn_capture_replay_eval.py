@@ -122,6 +122,8 @@ _WRAPPER_SOURCE_FILES: Final = (
     "core/config.py",
     "core/contract.py",
     "core/engines/__init__.py",
+    "core/engines/_kws_speaker_inference_owner.py",
+    "core/kws_contract.py",
     "core/metrics.py",
     "core/realtime_media_stage.py",
     "core/tts_markup.py",

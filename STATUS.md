@@ -26,6 +26,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   WAVs; uncertain cleanup retains its file. Device first-audio, CPU/thermal and acoustic behavior remain unvalidated.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
   pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
+- ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - Bounded PRIVATE vault search, reminders and trusted apps are opt-in; mutations need unchanged direct speech plus confirmation,
   `web.search` admits only `current_turn_only`, and retained context forces monotonic `local_only`. Residuals: cleaner byte channel,
   `last_source` race, blocking-backend cancellation, raw-gate false negatives (ADR-0003/0060/0073/0074/0076/0187/0189).
@@ -109,6 +110,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - 2026-10-04 ADR-0210: focused audio/lifecycle gate `479 passed, 1 skipped` (DTLN model unavailable), including APM/DTD; scoped Ruff and
   whitespace clean. Synthetic PCM only; no repaired physical route, acoustic quality or owner live A/B was validated.
 - 2026-10-04 ADR-0211/0212: combined full Flutter `252 passed`; independent TTS/ASR `26`/`52 passed`; scoped Dart analysis clean.
+- 2026-10-04 ADR-0215: AMI/Microsoft/Parakeet affected modules `187 passed`; scoped Ruff and whitespace clean.
 
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

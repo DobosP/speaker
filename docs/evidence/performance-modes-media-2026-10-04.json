@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "probe_source_sha256": "8e869c61eb7948c0dff58a74500fb6e2276a4798435da0190284df6665ea1bfb",
+  "measurements": [
+    {
+      "allowed_cpu_count": 2,
+      "asr_threads": 2,
+      "asset_sha256": {
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_encoder": "a423883ce5754507fd941755ab0b5bc426a84ac670cbe21cf060e9e2c66dc660",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "tts_data_dir": "b215932c100cfb3ff7ac3aa3cced3f04acd50440648e35db07774ae3c0d2c99e",
+        "tts_model": "bda15858163726a492d02a9a727bc263551b86ac77f90812c4b30ff41d380e26",
+        "tts_tokens": "931ab2df2400cd65d580a22402024c2347ced8ae9ea300e545144b1aacc48e14",
+        "tts_voices": "e64a5a581d8c2a350d848f51c3121657cd83aa07ed6109172177345874a7244c"
+      },
+      "finite_nonzero_waveforms": true,
+      "mode": "current",
+      "mode_sha256": null,
+      "model_construct_ms": 5385.873612998694,
+      "native_threads_sampled": 5,
+      "outside_cpu_masks": 0,
+      "peak_rss_mib": 816.0390625,
+      "public_phrase_synthesis_ms": [
+        6496.097119998012,
+        5944.403445995704,
+        5793.4668109955965
+      ],
+      "runtime": "1.13.3",
+      "scope": "streaming ASR and TTS resident together; synthetic silence/public phrase; no final recognizer, verifier, LLM, DSP, device, playback or phone",
+      "source_sha256": {
+        "config.json": "c7e003c365dee4bfcba21dadf5d02300a3670f713197232c161bd1704ca63b1d",
+        "core/engines/_sherpa_models.py": "59ff057f71564717bb8cd5ba606589c92956415940a18aaca6f26a06ccd0bfd0",
+        "core/engines/sherpa.py": "d9db7170086b3d5b55c3a5b73104e6564f2b6d091c97152ad5a4857a562f8536",
+        "core/performance.py": "41f733d82044b0d66c2761c1d62661c063c56c2ab739dd4f1f1f2d0541d6d61e"
+      },
+      "status": "complete",
+      "steady_memory": {
+        "pss_mib": 805.6748046875,
+        "rss_mib": 816.67578125
+      },
+      "tts_threads": 2,
+      "unknown_thread_masks": 0,
+      "verify_ms": 0.0032179959816858172
+    },
+    {
+      "allowed_cpu_count": 2,
+      "asr_threads": 2,
+      "asset_sha256": {
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_encoder": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "tts_data_dir": "b215932c100cfb3ff7ac3aa3cced3f04acd50440648e35db07774ae3c0d2c99e",
+        "tts_model": "acd9425049d887a4d04681010c3b2ed143898b824e5bc1f2ef6ddaee4b11ad0e",
+        "tts_tokens": "620e1aecf1a68fea3ba5850d137b0138fa2037c9b372dad13b95a2a215d0849a"
+      },
+      "finite_nonzero_waveforms": true,
+      "mode": "responsive",
+      "mode_sha256": "f99a8b8bd468d89262f50497d22bd03b57e470c0eead934ddb4682fd38a0c610",
+      "model_construct_ms": 4677.391326003999,
+      "native_threads_sampled": 5,
+      "outside_cpu_masks": 0,
+      "peak_rss_mib": 390.22265625,
+      "public_phrase_synthesis_ms": [
+        1031.9133860029979,
+        486.551285997848,
+        426.02019300102256
+      ],
+      "runtime": "1.13.3",
+      "scope": "streaming ASR and TTS resident together; synthetic silence/public phrase; no final recognizer, verifier, LLM, DSP, device, playback or phone",
+      "source_sha256": {
+        "config.json": "c7e003c365dee4bfcba21dadf5d02300a3670f713197232c161bd1704ca63b1d",
+        "core/engines/_sherpa_models.py": "59ff057f71564717bb8cd5ba606589c92956415940a18aaca6f26a06ccd0bfd0",
+        "core/engines/sherpa.py": "d9db7170086b3d5b55c3a5b73104e6564f2b6d091c97152ad5a4857a562f8536",
+        "core/performance.py": "41f733d82044b0d66c2761c1d62661c063c56c2ab739dd4f1f1f2d0541d6d61e"
+      },
+      "status": "complete",
+      "steady_memory": {
+        "pss_mib": 379.9052734375,
+        "rss_mib": 390.96484375
+      },
+      "tts_threads": 2,
+      "unknown_thread_masks": 0,
+      "verify_ms": 505.6719839994912
+    },
+    {
+      "allowed_cpu_count": 2,
+      "asr_threads": 2,
+      "asset_sha256": {
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_encoder": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "tts_data_dir": "b215932c100cfb3ff7ac3aa3cced3f04acd50440648e35db07774ae3c0d2c99e",
+        "tts_model": "0ba1e21eda9c8bcc4a70ada7e0d27fefc9ba775aaa037547248ec71f9a3d9b7d",
+        "tts_tokens": "934a4188addc7665dd3410256bb622169242357fbb99d840d9351209b486dabb",
+        "tts_voices": "d520519c4a3519d44fcfcd943ed0b1e3c5da5cee0eea501d922fac1a93cd24dc"
+      },
+      "finite_nonzero_waveforms": true,
+      "mode": "compact",
+      "mode_sha256": "31bf612ed382cdea0d52a9dfe345029b8f7a7039563373353dacda2f0ca245d1",
+      "model_construct_ms": 3917.910096999549,
+      "native_threads_sampled": 5,
+      "outside_cpu_masks": 0,
+      "peak_rss_mib": 368.0078125,
+      "public_phrase_synthesis_ms": [
+        3220.4148809978506,
+        2336.243192999973,
+        2152.9777289979393
+      ],
+      "runtime": "1.13.3",
+      "scope": "streaming ASR and TTS resident together; synthetic silence/public phrase; no final recognizer, verifier, LLM, DSP, device, playback or phone",
+      "source_sha256": {
+        "config.json": "c7e003c365dee4bfcba21dadf5d02300a3670f713197232c161bd1704ca63b1d",
+        "core/engines/_sherpa_models.py": "59ff057f71564717bb8cd5ba606589c92956415940a18aaca6f26a06ccd0bfd0",
+        "core/engines/sherpa.py": "d9db7170086b3d5b55c3a5b73104e6564f2b6d091c97152ad5a4857a562f8536",
+        "core/performance.py": "41f733d82044b0d66c2761c1d62661c063c56c2ab739dd4f1f1f2d0541d6d61e"
+      },
+      "status": "complete",
+      "steady_memory": {
+        "pss_mib": 355.794921875,
+        "rss_mib": 366.828125
+      },
+      "tts_threads": 2,
+      "unknown_thread_masks": 0,
+      "verify_ms": 335.43656099936925
+    }
+  ]
+}

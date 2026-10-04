@@ -214,6 +214,7 @@ Every non-history document is one hop from this table. Decisions live in
 | [`docs/unified_architecture.md`](docs/unified_architecture.md) | Current architecture overview. |
 | [`docs/local_voice_performance.md`](docs/local_voice_performance.md) | Reproduced voice failures, repair scope, on-device research and remaining physical acceptance gates; rewrite decision in ADR-0214. |
 | [`docs/english_model_comparison.md`](docs/english_model_comparison.md) | Current English model research, local recording benchmarks, resource tradeoffs and candidate trial scope (ADR-0216). |
+| [`docs/performance_modes.md`](docs/performance_modes.md) | Desktop/phone resource selections, bound model tuples, preserved capabilities and qualified footprint/DSP evidence (ADR-0218–0222). |
 | [`docs/target_architecture.md`](docs/target_architecture.md) | North star, §9 structural decisions, §9.7 local/cloud boundary. |
 | [`docs/PROJECT_KICKOFF.md`](docs/PROJECT_KICKOFF.md) | Product intent and open product questions. |
 | [`MEMORY.md`](MEMORY.md) | Postgres-backed smart memory design and operation. |

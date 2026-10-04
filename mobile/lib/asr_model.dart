@@ -28,9 +28,8 @@ Future<sherpa_onnx.OnlineModelConfig> getOnlineModelConfig() async {
   );
 }
 
-// Offline (non-streaming) Whisper base.en, used for the second-pass revision:
-// after the fast streaming model produces a live transcript, the buffered
-// utterance is re-decoded here for a more accurate result.
+// Optional offline Whisper base.en configuration for explicit future/evidence use.
+// The shipped assistant uses streaming Zipformer; this helper has no live caller.
 Future<sherpa_onnx.OfflineModelConfig> getOfflineWhisperConfig() async {
   const modelDir = 'assets/sherpa-onnx-whisper-base.en';
   return sherpa_onnx.OfflineModelConfig(

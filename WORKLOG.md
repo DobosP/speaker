@@ -278,3 +278,42 @@ for last-bit state changes. Implemented 300 x 100-ms synthetic profile: scalar p
 peaks 10,157/40,779 bytes; cold import excluded. Receipt remains in canonical task scratch
 until preserved at integration. No Rust build, private recording, native model, audio
 capture/playback, whole-session CPU/RSS or phone validation was part of this DSP probe.
+
+
+Valid until: the integrated source/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — complete performance-mode integration verification
+
+Merged the four separately documented behavior/resource branches into the isolated mode
+branch, retaining every worklog record. The TTS overlap explicitly preserves both scoped
+Amy-low resolution and tagged thread propagation/shared native configuration. Independent
+policy/CLI/residency and mobile source reviews approved the final integration with no
+blockers. The verifier covers known preflight consistency, not later native-file mutations.
+
+Full CI-style Python gate: **11631 passed, 42 skipped, 9 warnings in 460.43 s**, using the
+shared venv, no pytest cache, the two CI LiveKit exclusions, fresh private synthetic fixtures
+in /var/tmp, then moved to canonical task scratch. Full current-lock Flutter: **275 passed**;
+analysis **No issues found** in 3.3 s; integrated compiled Compact + asset tests **23 passed**.
+Native/device calls were absent from these Dart/fake gates. Initial unsupported Flutter
+`test --offline` invocation was corrected to cached `pub get --offline` then `test --no-pub`.
+Dependency versions were retained, not upgraded. Final changed-Python Ruff comparison:
+19 inherited findings and **0 introduced**; whitespace clean. Source behavior was frozen
+for the full gate; the later Whisper comment correction is documentation only.
+
+The first pair probe is retained as media-pair-probe-v1.json. The final source-bound probe
+retains model/core/config hashes before/after each process, all three completed, SDK1.13.3,
+ASR2/TTS2 with two-CPU caller masks; five process threads sampled/cell, zero unknown/reading
+failures/outside masks. Steady PSS current **805.6748**, responsive **379.9053**, compact
+**355.7949 MiB**; process peaks **816.0391/390.2227/368.0078 MiB**. Three public phrase full
+synthesis timings per model include cold first calls and do not measure audibility. All
+waveforms finite/nonzero. Only streaming ASR+TTS were resident: final/verifier/LLM/DSP and
+physical devices were excluded, so this is not whole-app/phone RSS or a quality promotion.
+The aggregate-only committed receipt SHA256 is **0c661c37ed560d574ce8a947405679536cf2a07b21ef5f8add4af2d0241663d9**; actual receipt and probe
+source remain in ignored logs/runs/voice-performance-modes-20261004. Raw recordings, old
+labels/models/configuration and every original failed/diagnostic log remain unchanged.
+
+Final docs gate: files=37, dead_links=0, stale_terms=0, retired_verbs=0, orphans=0.
+Compact budgets: AGENTS79 / STATUS120 / agent-map59 / agent-testing52. No new whitespace
+errors; no introduced Ruff findings against e337c20. All behavior/source checks passed
+before landing. Publication remains gated by the earlier automatic approval rejection;
+no push or post-push branch/worktree cleanup is claimed without explicit resolution.

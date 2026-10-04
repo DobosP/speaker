@@ -64,12 +64,14 @@ smallest isolated TTS process. These development results do not qualify a new
 accuracy default or every noise/command case.
 
 A later CPU probe held streaming ASR and TTS resident together: steady PSS was
-805.4 MiB for current, 380.1 MiB for responsive and 355.2 MiB for compact. Each
+805.7 MiB for current, 379.9 MiB for responsive and 355.8 MiB for compact. Each
 process requested two threads per engine within a two-CPU caller mask and generated
 three copies of one public phrase after synthetic silence. Final recognizer,
 verifier, LLM, DSP, capture and playback were absent. This is a component pair,
 not whole-assistant/phone RAM, sustained thermal behavior or actual audibility.
-Detailed aggregate receipts remain under ignored logs and are recorded in WORKLOG.
+The [aggregate source/model-bound receipt](evidence/performance-modes-media-2026-10-04.json)
+contains no audio, private text or machine paths. Original diagnostics remain under
+ignored logs; commands and verification are recorded in WORKLOG.
 
 The streaming low-pass implementation uses an existing compiled SOS kernel with
 the original fallback. Synthetic p50 was 101 us versus 871 us (8.6x faster), with

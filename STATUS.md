@@ -108,9 +108,9 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
-- Prior Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
-- Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
-- Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
+- Python CI-style full gate: `11631 passed, 42 skipped, 9 warnings` in 460.43 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+- Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
+- No introduced Ruff findings; whitespace/docs clean and compact budgets hold. Native pair memory is component evidence; live/phone gates stay open.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.
 
 ## Doc map

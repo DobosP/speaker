@@ -85,8 +85,9 @@ not actual audibility. These distributions include the separately reported cold-
 | Kitten Nano 0.8 INT8 (new) | 693 / 961 | 0.311 | 193.3 |
 | Supertonic 3 INT8 (new) | 1950 / 2339 | 0.849 | 296.9 |
 
-All four returned finite, nonzero waveforms without full-scale samples. That is waveform
-sanity, not naturalness or intelligibility certification. For these short phrases, callbacks
+All four returned finite, nonzero waveforms. Kitten had four samples at or above full scale
+out of 5,548,840 samples; the other three had none. This is waveform sanity, not an audibility,
+clipping or naturalness certification. For these short phrases, callbacks
 usually arrived only at full synthesis return, so a callback API alone did not provide useful
 within-phrase streaming. VITS is the strongest latency option; Kitten is the smallest process
 and about 3.4 times faster than Kokoro for first PCM, but slower than VITS. Voice quality and

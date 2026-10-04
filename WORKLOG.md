@@ -198,8 +198,7 @@ Faster-Whisper CPU Small has RTF>1. No default promotion follows these developme
 
 TTS:4 sequential native CPU models, speaker0/speed1,3 repeats of37 phrases (111 calls/model),
 no output DSP or audio device. p50first nonzero callback:Kokoro2325ms, VITS134ms, Kitten693ms,
-Supertonic1950ms. Isolated process peaks470.4/253.1/193.3/296.9MiB. All waveforms finite/nonzero,
-no full-scale samples. These are callback/synthesis metrics, not subjective quality or audibility.
+Supertonic1950ms. Isolated process peaks470.4/253.1/193.3/296.9MiB. All waveforms finite/nonzero; Kitten4/5,548,840samples at/above full scale, others0. These are callback/synthesis metrics, not subjective quality or audibility.
 Supertonic OpenRAIL-M weight license is retained separately from bundled MIT exporter license;
 upstream is archived. The two installed Kokoro aliases have identical relevant asset hashes.
 

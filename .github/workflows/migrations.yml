@@ -6,18 +6,9 @@ name: Migrations
 # .sql migration (e.g. an invalid ADD CONSTRAINT). Applies twice to prove the
 # migrations are idempotent (a re-run must be a no-op).
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'migrations/**'
-      - 'tools/migrate.py'
-      - '.github/workflows/migrations.yml'
-  pull_request:
-    paths:
-      - 'migrations/**'
-      - 'tools/migrate.py'
-      - '.github/workflows/migrations.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

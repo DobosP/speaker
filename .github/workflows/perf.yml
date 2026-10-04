@@ -1,14 +1,13 @@
 name: Perf benchmark
 
 # Real-model latency benchmark on a fixed GitHub Actions CPU. Heavy (downloads
-# MiniCPM5 GGUF + sherpa ONNX, cached between runs), so on PRs it is opt-in via the
-# "perf" label; it also runs on every push to main (post-merge) and on manual
-# dispatch. Every run uploads the report as an artifact and writes the headline
-# table to the job summary; main/dispatch runs also publish the full HTML report
+# MiniCPM5 GGUF + sherpa ONNX, cached between runs). Run on demand from the
+# Actions tab. Every run uploads the report and publishes the full HTML report
 # to GitHub Pages: https://dobosp.github.io/speaker/ . A GitHub CPU is a
 # repeatable baseline, not phone silicon -- read it as calibration against the
 # specsim model (see tools/specsim), not an absolute phone number.
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
   workflow_dispatch:
     inputs:
@@ -20,10 +19,6 @@ on:
         description: max fixtures to run
         default: "12"
         type: string
-  push:
-    branches: [main]
-  pull_request:
-    types: [labeled]
 
 permissions:
   contents: read
@@ -37,12 +32,6 @@ concurrency:
 
 jobs:
   bench:
-    # PRs: only when the "perf" label is applied. Also runs on push (main) and
-    # manual dispatch.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      github.event.label.name == 'perf'
     runs-on: ubuntu-latest
     env:
       PROFILE: ${{ github.event.inputs.profile || 'phone' }}
@@ -104,8 +93,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Pages artifact
-        # Only publish from main / manual runs -- never PR content.
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        # Publish the report only from an explicitly dispatched run.
         uses: actions/upload-pages-artifact@v3
         with:
           path: test-reports/perf
@@ -115,11 +103,7 @@ jobs:
     # consistency, Smart-Turn, DTLN) -- the regressions the model-free logic suite
     # (tests.yml) cannot catch. Independent of the bench/deploy jobs so an ASR
     # regression alerts without blocking the perf-report publish. Same triggers as
-    # bench (push to main, manual dispatch, or the "perf" label on a PR).
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      github.event.label.name == 'perf'
+    # bench (manual dispatch).
     runs-on: ubuntu-latest
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -151,7 +135,6 @@ jobs:
 
   deploy:
     needs: bench
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

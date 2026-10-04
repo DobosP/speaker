@@ -3,21 +3,13 @@ name: LLM sanity (real model on CPU)
 # Runs the real MiniCPM5-1B Q4 GGUF on a GitHub CPU and asserts a few prompts
 # give distinct, non-degenerate answers — the canned/looping output that broke
 # the mobile app. Heavy-ish (downloads the 1B model, cached), so it runs on
-# manual dispatch and when the LLM code changes, not on every push. Exercises the
+# manual dispatch when checking LLM changes. Exercises the
 # Python llama.cpp path; the mobile flutter_gemma glue is guarded by the Dart
 # unit test in the mobile-tests workflow.
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - 'core/llm.py'
-      - 'core/readiness.py'
-      - 'core/capabilities.py'
-      - 'requirements-ondevice.txt'
-      - 'tools/llm_sanity.py'
-      - '.github/workflows/llm-sanity.yml'
 
 permissions:
   contents: read

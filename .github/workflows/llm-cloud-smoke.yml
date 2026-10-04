@@ -2,21 +2,12 @@ name: cloud-llm-smoke
 
 # Probes every cloud provider preset in config.json with a real API call to
 # catch provider drift (deprecated model ids, broken endpoints, rotated
-# base_urls) before users do. A weekly cron is enough -- the failure mode is
-# "all my queries return 4xx," which the next user contact would surface
-# anyway, but this catches it first and writes a markdown summary into the
-# Actions UI.
+# base_urls) before users do. Run on demand when diagnosing provider drift;
+# the workflow writes a markdown summary into the Actions UI.
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 7 * * 1"  # Mondays 07:00 UTC
-  pull_request:
-    paths:
-      - "config.json"
-      - "core/llm.py"
-      - "tools/llm_sanity.py"
-      - ".github/workflows/llm-cloud-smoke.yml"
 
 jobs:
   smoke:

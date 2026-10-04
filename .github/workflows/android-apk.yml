@@ -1,12 +1,7 @@
 name: Build Android APK
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
-  # Only build/publish the APK when app-level code lands on main
-  # (i.e. on merge), not on every development push.
-  push:
-    branches: [ main ]
-    paths:
-      - 'mobile/**'
   workflow_dispatch:
 
 permissions:

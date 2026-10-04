@@ -36,7 +36,7 @@ Four unchanged offline owner rows come from the initial six-complete-cell report
 streaming/Moonshine rows come from a separate four-cell report on the same 37 clips. Their
 source reports are independently hash-bound in the aggregate summary. The initial unpadded
 Zipformer rows are retained diagnostics and excluded from this comparison. The corrected
-Python-example flush appends 10, 560 float32 zero samples before input_finished for both
+Python-example flush appends 10,560 float32 zero samples before input_finished for both
 Zipformer precisions. Other model inputs have no caller padding. Original WAVs stay unchanged;
 RTF uses original audio seconds. No 37/6 score is pooled.
 
@@ -104,8 +104,8 @@ completion text and includes prefill+generation, rather than claiming raw decode
 
 | Model | p50 / p95 first visible text ms | p50 completion ms | Peak process MiB | Retokenized completion tokens/s |
 |---|---:|---:|---:|---:|
-| minicpm 5-1 b-q 8 | 377 / 540 | 1328 | 1285.1 | 11.47 |
-| minicpm 5-2 b-q 4 km | 895 / 1230 | 2717 | 2601.5 | 6.60 |
+| minicpm5-1b-q8 | 377 / 540 | 1328 | 1285.1 | 11.47 |
+| minicpm5-2b-q4km | 895 / 1230 | 2717 | 2601.5 | 6.60 |
 
 The original canaries asked open questions while scoring a narrower output format; those
 counts are not used as intelligence rankings. A separate explicit-format public-only run
@@ -125,8 +125,8 @@ minimum silence 0.3 s and maximum speech 20 s; reset per clip and flush without 
 
 | Model | p50 / p95 API callback ms | Callback RTF | Process peak MiB | Detected segments across repeats |
 |---|---:|---:|---:|---:|
-| silero-v 4-installed | 0.173 / 0.270 | 0.0073 | 75.6 | 123 |
-| silero-v 6.2-wheel | 0.144 / 0.237 | 0.0059 | 79.9 | 114 |
+| silero-v4-installed | 0.173 / 0.270 | 0.0073 | 75.6 | 123 |
+| silero-v6.2-wheel | 0.144 / 0.237 | 0.0059 | 79.9 | 114 |
 
 These are API callback/segmentation descriptors, not VAD precision, onset or endpoint scores.
 V 6 may fill its 576-sample internal window on the first callback without inference; flush does
@@ -138,14 +138,14 @@ KWS, natural-turn and live barge-in qualification from this corpus.
 
 | Family | New/current source evidence | Action and limits |
 |---|---|---|
-| Zipformer | [English export](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26), revision `672fbf1b30579d6585301139bb363f42a0ad4a24`; INT8 tuple 74, 207, 237 bytes, Apache-2.0. | Installed and measured. It is a precision variant, not new training. Old Kroko mirror licensing/export withdrawal is unresolved, so excluded. |
-| Moonshine | [SDK 0.1.5](https://pypi.org/project/moonshine-voice/0.1.5/), 2026-08-24; [August export revision](https://huggingface.co/moonshine-ai/moonshine-voice-assets/commit/0bf2f2e5aff22e6fbba4300b00a4e00bbc4f8aae); Tiny 45, 233, 659 and Small 142, 300, 974 bytes, MIT. | Isolated runtime installed; explicit single-thread variant measured. Stock oversubscription rejected. |
-| Parakeet | [Unified English](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) and [TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), CC-BY-4.0. [Exact existing v3 export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/commit/2bda32ec70b097a55adaa07d9a7173915b43cc78) is 670, 478, 772 bytes. | Existing weights compared separately; v3 is not newly downloaded. Realtime EOU 120M prior gate remains rejected. |
+| Zipformer | [English export](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26), revision `672fbf1b30579d6585301139bb363f42a0ad4a24`; INT8 tuple 74,207,237 bytes, Apache-2.0. | Installed and measured. It is a precision variant, not new training. Old Kroko mirror licensing/export withdrawal is unresolved, so excluded. |
+| Moonshine | [SDK 0.1.5](https://pypi.org/project/moonshine-voice/0.1.5/), 2026-08-24; [August export revision](https://huggingface.co/moonshine-ai/moonshine-voice-assets/commit/0bf2f2e5aff22e6fbba4300b00a4e00bbc4f8aae); Tiny 45,233,659 and Small 142,300,974 bytes, MIT. | Isolated runtime installed; explicit single-thread variant measured. Stock oversubscription rejected. |
+| Parakeet | [Unified English](https://huggingface.co/nvidia/parakeet-unified-en-0.6b), NVIDIA Open Model License; [TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), CC-BY-4.0. [Exact existing v3 export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/commit/2bda32ec70b097a55adaa07d9a7173915b43cc78) is 670,478,772 bytes. | Existing weights compared separately; v3 is not newly downloaded. Realtime EOU 120M prior gate remains rejected. |
 | Whisper/Qwen | [Distil-Large-v3.5 CT2](https://huggingface.co/distil-whisper/distil-large-v3.5-ct2), MIT, roughly 1.52 GB; [Qwen3-ASR 0.6B native export](https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/pretrained.html), about 0.94 GB plus tokenizer, Apache-2.0 upstream. | Larger desktop references. Not installed in this low-resource batch; Small CPU already exceeds realtime on these clips. |
-| Kitten | [Nano 0.8 INT8](https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8), Apache-2.0; [Sherpa archive](https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models), 2026-05-12, 45, 652, 547 extracted bytes. | Installed and measured; explicit runtime backend in ADR-0217. Smallest measured TTS process. |
+| Kitten | [Nano 0.8 INT8](https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8), Apache-2.0; [Sherpa archive](https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models), 2026-05-12, 45,652,547 extracted bytes. | Installed and measured; explicit runtime backend in ADR-0217. Smallest measured TTS process. |
 | Supertonic/Pocket | [Supertonic 3](https://github.com/supertone-oss-archive/supertonic), archived 2026-09-09, OpenRAIL-M weights/MIT code. [Pocket original weights](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/blob/d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3/README.md) say CC-BY-4.0; newest release adds contact gating. | Supertonic installed/measured as restricted open weights, not an unrestricted open-source recommendation. Pocket skipped; no contacts or gated consent accepted. |
-| MiniCPM/Gemma | [MiniCPM5-2B Q4_K_M](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/blob/2079a22f3beaa4e306449978533478fe0522f4b3/MiniCPM5-2B-Q4_K_M.gguf), 2026-09-07, 1, 561, 318, 368 bytes, Apache-2.0. [Gemma 4 E2B](https://developers.google.com/edge/litert-lm/models/gemma-4) has official LiteRT support, approximately 2.59 GB bundle. | MiniCPM installed/measured; 1B retained. Gemma 4 requires a separate phone/runtime integration and thermal test. |
-| Silero | [Release history](https://github.com/snakers4/silero-vad/releases), [6.2.3 wheel](https://pypi.org/project/silero-vad/6.2.3/), MIT; canonical ONNX 2, 327, 524 bytes. | Installed and executed as descriptive candidate; no accuracy/default promotion. |
+| MiniCPM/Gemma | [MiniCPM5-2B Q4_K_M](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/blob/2079a22f3beaa4e306449978533478fe0522f4b3/MiniCPM5-2B-Q4_K_M.gguf), 2026-09-07, 1,561,318,368 bytes, Apache-2.0. [Gemma 4 E2B](https://developers.google.com/edge/litert-lm/models/gemma-4) has official LiteRT support, approximately 2.59 GB bundle. | MiniCPM installed/measured; 1B retained. Gemma 4 requires a separate phone/runtime integration and thermal test. |
+| Silero | [Release history](https://github.com/snakers4/silero-vad/releases), [6.2.3 wheel](https://pypi.org/project/silero-vad/6.2.3/), MIT; canonical ONNX 2,327,524 bytes. | Installed and executed as descriptive candidate; no accuracy/default promotion. |
 | Denoising | [GTCRN](https://github.com/Xiaobin-Rong/gtcrn) current checkpoint family unchanged; [UL-UNAS](https://github.com/Xiaobin-Rong/ul-unas/tree/main/ulunas_onnx) successor 2026-02 with streaming ONNX, MIT. [DPDFNet](https://huggingface.co/Ceva-IP/DPDFNet) Apache-2.0 but higher compute. | New cache/STFT adapters and raw/clean paired input are needed. No double-denoising or quality claim from unlabeled processed captures. |
 | Speaker/KWS/turn | [3D-Speaker](https://github.com/modelscope/3D-Speaker) current CAM++7.2M; ERes2NetV2 is 17.8M. [Smart Turn 3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) current, BSD-2-Clause. [KWS export](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html) already 2025-12-20. | No verified smaller new speaker checkpoint; per-weight rights remain separate from toolkit license. KWS weight-license clarification unresolved. No new authority/default selected. |
 

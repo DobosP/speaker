@@ -1,13 +1,12 @@
 name: Tests
 
-# Self-check CI: runs the logic test suite on every push to main and every PR,
-# so regressions are caught before merge. Uses no audio/model deps (those tests
+# Run the logic test suite manually to check regressions before merge.
+# Uses no audio/model deps (those tests
 # are skipped here, matching the local fast path).
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

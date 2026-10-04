@@ -3,6 +3,12 @@ Single source of current truth: this file > newest accepted ADR in docs/adr/ > e
 Last verified: 2026-10-04 (focused headless repair gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 
+- **GitHub Actions (Last verified: 2026-10-04):** owner-requested on-demand policy,
+  [ADR-0223](docs/adr/0223-manual-github-actions.md). Workflows use `workflow_dispatch`; automatic
+  push/PR/label/schedule runs are removed. Existing jobs, inputs, and safety gates
+  remain. Workflow YAML, manual inputs, job dependencies, and permission preservation
+  were checked; this configuration edit does not refresh application test results.
+
 ## Current state — runtime
 - `python -m core --session` is the one public core entry: `VoiceSession` owns one injected `VoiceRuntime`, `build_runtime` is the sole
   tool/authority plane, and repeat-previous and continuation/resume lineage are fenced (ADR-0123/0154). Audio is device-only by default;

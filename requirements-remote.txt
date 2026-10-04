@@ -5,7 +5,7 @@
 # --chat-python local adapter requires the base Python runtime, not Python HTTP.
 # See docs/go_serving_boundary.md and STATUS.md for the dormant facade gates.
 
-livekit==1.1.14            # exact RTC pair reviewed with LiveKit Agents 1.6.8
-livekit-agents==1.6.8      # reviewed optional publisher-session composition
-livekit-api==1.2.0         # retained Python worker token helper
-livekit-protocol==1.1.21   # release-matched shared protocol closure
+livekit==1.1.20            # exact RTC pair reviewed with LiveKit Agents 1.6.8
+livekit-agents==1.8.4      # reviewed optional publisher-session composition
+livekit-api==1.2.1         # retained Python worker token helper
+livekit-protocol==1.1.27   # release-matched shared protocol closure

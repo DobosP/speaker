@@ -11,8 +11,10 @@ import argparse
 import importlib
 import os
 import sys
+from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from core.performance import PERFORMANCE_MODE_NAMES, apply_performance_mode
 from core.config import (
     FINAL_STT_PROFILE_NAMES,
     SpeakerIdentityPolicyError,
@@ -83,6 +85,8 @@ def run_all(
     models_needed: Optional[Iterable[str]] = None,
     device=None,
     final_stt_profile: str | None = None,
+    performance: str | None = None,
+    config_root: Path | None = None,
     no_speaker_enrollment: bool = False,
     llm_mode: str = "configured",
     platform: str = sys.platform,
@@ -93,6 +97,10 @@ def run_all(
     """Resolve/apply one profile, then run every check over that merged view."""
     merged, _ = resolve_check_config(config, device)
     prefix = [check_python(), check_platform()]
+    merged, performance_metadata = apply_performance_mode(merged, performance, root=config_root)
+    if performance_metadata is not None:
+        prefix.append(Check("performance mode", True,
+                            f"{performance_metadata.name}; sha256={performance_metadata.sha256}"))
     if final_stt_profile:
         merged, metadata = apply_final_stt_profile(merged, final_stt_profile)
         prefix.append(Check(
@@ -162,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
         allow_abbrev=False,
     )
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
+                        help="check the same session model/resource mode as core and live.sh")
     parser.add_argument(
         "--device",
         default=None,
@@ -229,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
                 config,
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
+                performance=args.performance,
+                config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
                 llm_mode="echo",
                 capture_only=args.capture_only,
@@ -250,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     device=args.device,
                     final_stt_profile=args.final_stt_profile,
+                    performance=args.performance,
+                    config_root=Path(args.config).resolve().parent,
                     no_speaker_enrollment=args.no_speaker_enrollment,
                     llm_mode="echo",
                 )
@@ -258,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
                 config,
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
+                performance=args.performance,
+                config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
             )
     except SpeakerIdentityPolicyError as exc:
@@ -269,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
             "--no-speaker-enrollment",
         )]
     except ValueError as exc:
-        label = "final STT profile" if args.final_stt_profile else "device profile"
+        label = ("performance mode" if args.performance not in (None, "current")
+                 else "final STT profile" if args.final_stt_profile else "device profile")
         checks = [Check(
             label,
             False,

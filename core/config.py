@@ -50,7 +50,7 @@ __all__ = [
 # kwarg and would TypeError). ``final_stt_profiles`` is a complete, validated
 # profile collection: merging only model or verifier leaves would destroy its
 # atomic evidence identity. Preserve wholesale behavior for both bags.
-_OPAQUE_KEYS = frozenset({"options", "final_stt_profiles"})
+_OPAQUE_KEYS = frozenset({"options", "final_stt_profiles", "performance_profiles"})
 
 
 FINAL_STT_PROFILE_NAMES = ("sense-voice", "parakeet-faster-whisper")

@@ -1962,3 +1962,14 @@ def test_live_shell_is_a_thin_helpable_entrypoint(tmp_path):
     assert result.returncode == 0
     assert "reversible Linux open-speaker route" in result.stdout
     assert "live_launcher" not in result.stderr
+
+
+def test_performance_mode_forwarded_to_both_doctor_and_voice(tmp_path):
+    ops = _FakeOps(nodes=True, ollama_healthy=False)
+    assert _run_session(["--llm", "echo", "--performance", "current"], ops=ops, root=tmp_path) == 0
+    doctor = next(command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor"))
+    voice = _voice_command(ops)
+    for command in (doctor, voice):
+        index = command.index("--performance")
+        assert command[index:index + 2] == ("--performance", "current")
+        assert command.count("--performance") == 1

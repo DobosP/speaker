@@ -27,6 +27,7 @@ from .config import (
     load_config,
     resolve_device,
 )
+from .performance import PERFORMANCE_MODE_NAMES, PerformanceModeError, apply_performance_mode
 from .engine import AudioEngine
 from .llm import LLMClient, OllamaLLM
 from .llm_factory import (
@@ -1186,6 +1187,10 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="exact trusted-LAN audio publisher; never grants action authority",
     )
+    parser.add_argument(
+        "--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
+        help="session model/resource mode; current preserves existing settings",
+    )
     parser.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
     parser.add_argument("--model", default=None, help="main Ollama model (research/vision)")
     parser.add_argument(
@@ -1533,6 +1538,26 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"[device] {exc}", file=sys.stderr)
         return 2
+    try:
+        config, performance_metadata = apply_performance_mode(config, args.performance)
+    except PerformanceModeError as exc:
+        try:
+            monitor.stop()
+        except Exception:  # noqa: BLE001 - preserve the mode error
+            pass
+        try:
+            runlog.finalize(None)
+        except Exception:  # noqa: BLE001 - preserve the mode error
+            pass
+        print(f"[performance] {exc}", file=sys.stderr)
+        return 2
+    if performance_metadata is not None:
+        runlog.summary.note(
+            performance_mode=performance_metadata.name,
+            performance_mode_sha256=performance_metadata.sha256,
+            performance_mode_schema_version=performance_metadata.schema_version,
+        )
+        print(f"[performance] {performance_metadata.name}; models/resources changed; capability policy preserved", file=sys.stderr)
     final_stt_metadata = None
     if args.final_stt_profile:
         try:

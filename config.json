@@ -457,6 +457,74 @@
     "token_server_port": 8080
   },
   "_final_stt_profiles_comment": "Inert, session-scoped final-STT A/B profiles. Nothing changes unless --final-stt-profile selects one. Each schema-v1 entry is complete and replaces every asr_final_* field atomically after the device profile; config.local.json may replace this whole opaque map but cannot partially merge it. Profile metadata in private run summaries exposes only the safe profile name and canonical profile SHA-256, never profile paths.",
+  "performance_mode": "current",
+  "performance_profiles": {
+    "responsive": {
+      "schema_version": 1,
+      "sherpa": {
+        "asr_encoder": "pretrained_models/sherpa/benchmarks/english-2026-10-04/zipformer-int8/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "asr_decoder": "pretrained_models/sherpa/asr/decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "asr_joiner": "pretrained_models/sherpa/asr/joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "asr_tokens": "pretrained_models/sherpa/asr/tokens.txt",
+        "asr_num_threads": 2,
+        "tts_num_threads": 2,
+        "tts_speaker_id": 0,
+        "tts_lexicon": "",
+        "tts_backend": "",
+        "tts_model": "pretrained_models/sherpa/tts/en_US-libritts_r-medium.onnx",
+        "tts_tokens": "pretrained_models/sherpa/tts/tokens.txt",
+        "tts_data_dir": "pretrained_models/sherpa/tts/espeak-ng-data",
+        "tts_voices": ""
+      },
+      "llm": {
+        "main_keep_alive": "60s",
+        "fast_keep_alive": -1
+      },
+      "warm_start_policy": "fast",
+      "asset_sha256": {
+        "asr_encoder": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "tts_model": "acd9425049d887a4d04681010c3b2ed143898b824e5bc1f2ef6ddaee4b11ad0e",
+        "tts_tokens": "620e1aecf1a68fea3ba5850d137b0138fa2037c9b372dad13b95a2a215d0849a",
+        "tts_data_dir": "b215932c100cfb3ff7ac3aa3cced3f04acd50440648e35db07774ae3c0d2c99e"
+      }
+    },
+    "compact": {
+      "schema_version": 1,
+      "sherpa": {
+        "asr_encoder": "pretrained_models/sherpa/benchmarks/english-2026-10-04/zipformer-int8/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "asr_decoder": "pretrained_models/sherpa/asr/decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "asr_joiner": "pretrained_models/sherpa/asr/joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "asr_tokens": "pretrained_models/sherpa/asr/tokens.txt",
+        "asr_num_threads": 2,
+        "tts_num_threads": 2,
+        "tts_speaker_id": 0,
+        "tts_lexicon": "",
+        "tts_backend": "kitten",
+        "tts_model": "pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten_nano_v0_8_int8/model.int8.onnx",
+        "tts_tokens": "pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten_nano_v0_8_int8/tokens.txt",
+        "tts_data_dir": "pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten_nano_v0_8_int8/espeak-ng-data",
+        "tts_voices": "pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten_nano_v0_8_int8/voices.bin"
+      },
+      "llm": {
+        "main_keep_alive": "60s",
+        "fast_keep_alive": -1
+      },
+      "warm_start_policy": "fast",
+      "asset_sha256": {
+        "asr_encoder": "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        "asr_decoder": "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        "asr_joiner": "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        "asr_tokens": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        "tts_model": "0ba1e21eda9c8bcc4a70ada7e0d27fefc9ba775aaa037547248ec71f9a3d9b7d",
+        "tts_tokens": "934a4188addc7665dd3410256bb622169242357fbb99d840d9351209b486dabb",
+        "tts_data_dir": "b215932c100cfb3ff7ac3aa3cced3f04acd50440648e35db07774ae3c0d2c99e",
+        "tts_voices": "d520519c4a3519d44fcfcd943ed0b1e3c5da5cee0eea501d922fac1a93cd24dc"
+      }
+    }
+  },
   "final_stt_profiles": {
     "sense-voice": {
       "schema_version": 1,

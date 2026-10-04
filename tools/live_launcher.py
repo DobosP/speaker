@@ -1061,6 +1061,8 @@ class _SelectedLiveConfig:
     final_stt_profile: str | None = None
     final_stt_profile_sha256: str | None = None
     final_stt_profile_schema_version: int | None = None
+    performance_mode: str | None = None
+    performance_mode_sha256: str | None = None
     effective_device: str | None = None
     effective_input_gain: float | None = None
     capture_config_sha256: str | None = None
@@ -1074,12 +1076,13 @@ def _selected_live_config(
     no_speaker_enrollment: bool = False,
     *,
     guided_capture: bool = False,
+    performance: str | None = None,
     input_gain: float | None = None,
 ) -> _SelectedLiveConfig:
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
     if not config_path.exists():
-        if final_stt_profile:
+        if final_stt_profile or performance not in (None, "current"):
             raise LauncherError(
                 "--final-stt-profile needs the repository config.json profile map"
             )
@@ -1099,6 +1102,8 @@ def _selected_live_config(
         requested = requested_device or config.get("device", "auto")
         device, _rationale = resolve_device(config, requested)
         config = apply_device_profile(config, device, strict=True)
+        from core.performance import apply_performance_mode
+        config, performance_metadata = apply_performance_mode(config, performance, root=root)
         capture_config_sha256 = None
         effective_input_gain = None
         final_stt_metadata = None
@@ -1176,6 +1181,8 @@ def _selected_live_config(
             if final_stt_metadata is not None
             else None
         ),
+        performance_mode=(performance_metadata.name if performance_metadata is not None else None),
+        performance_mode_sha256=(performance_metadata.sha256 if performance_metadata is not None else None),
         effective_device=str(device),
         effective_input_gain=effective_input_gain,
         capture_config_sha256=capture_config_sha256,
@@ -1383,6 +1390,7 @@ _VALUE_OPTIONS = (
     ("--asr-final", "asr_final"),
     ("--final-stt-profile", "final_stt_profile"),
     ("--device", "device"),
+    ("--performance", "performance"),
     ("--mode", "mode"),
     ("--input-gain", "input_gain"),
 )
@@ -1431,6 +1439,9 @@ def _live_parser() -> argparse.ArgumentParser:
             "readiness and the recorded runtime"
         ),
     )
+    from core.performance import PERFORMANCE_MODE_NAMES
+    parser.add_argument("--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
+                        help="session model/resource mode; current preserves existing settings")
     parser.add_argument("--device", default=None)
     parser.add_argument("--mode", choices=[mode.value for mode in Mode], default=None)
     parser.add_argument("--input-gain", dest="input_gain", type=float, default=None)
@@ -1599,6 +1610,7 @@ def run_live_session(
             args.final_stt_profile,
             args.no_speaker_enrollment,
             guided_capture=bool(args.guided_stt_capture),
+            performance=args.performance,
             input_gain=args.input_gain,
         )
         if args.guided_stt_capture:
@@ -1663,6 +1675,8 @@ def run_live_session(
         doctor = [sys.executable, "-m", "tools.doctor"]
         if args.device:
             doctor.extend(["--device", args.device])
+        if args.performance is not None:
+            doctor.extend(["--performance", args.performance])
         if args.final_stt_profile:
             doctor.extend(["--final-stt-profile", args.final_stt_profile])
         if args.no_speaker_enrollment:

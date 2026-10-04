@@ -4,7 +4,7 @@ Last verified: 2026-10-05 (Go serving and synthetic pipe gates, Linux ROG). Runt
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
-  Python audio/inference/actions remain; Go-only image has no Python/models. Tokens default-deny; bind-all shares handler auth admission (ADR-0224).
+  Python audio/inference/actions remain; Go-only image has no Python/models. Tokens default-deny; pre-body refusals close promptly and HTTP/IPC reject unpaired Unicode escapes (ADR-0224).
 - `python -m core --session` is the one public core entry: `VoiceSession` owns one injected `VoiceRuntime`, `build_runtime` is the sole
   tool/authority plane, and repeat-previous and continuation/resume lineage are fenced (ADR-0123/0154). Audio is device-only by default;
   trusted-LAN is unselectable until owner live A/B and legacy remote is rollback only (ADR-0096/0097/0164); web qualification: `docs/go_serving_boundary.md`.

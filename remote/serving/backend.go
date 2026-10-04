@@ -64,7 +64,7 @@ func (p *ProcessBackend) Generate(parent context.Context, message string) (strin
 		return "", errors.New("backend process failed")
 	}
 	raw := output.Bytes()
-	if parent.Err() != nil || output.overflow || !utf8.Valid(raw) {
+	if parent.Err() != nil || output.overflow || !validJSONUnicode(raw) {
 		return "", errors.New("backend output rejected")
 	}
 	// Require exactly one object member and one complete response document.

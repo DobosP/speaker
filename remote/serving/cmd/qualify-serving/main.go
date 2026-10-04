@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -104,6 +105,9 @@ func require(condition bool) error {
 	return nil
 }
 func verify(f *fixture, binary, repo string, pipe bool) error {
+	if err := verifyStalledUnauthorized(f); err != nil {
+		return err
+	}
 	for _, tc := range []struct {
 		method, path, body string
 		auth               bool
@@ -111,7 +115,10 @@ func verify(f *fixture, binary, repo string, pipe bool) error {
 	}{
 		{"GET", "/healthz", "", false, 200}, {"GET", "/token", "", false, 401}, {"POST", "/chat", `{"message":"synthetic"}`, false, 401},
 		{"GET", "/config.json", "", true, 404}, {"GET", "/../config.json", "", true, 404}, {"GET", "/token/", "", true, 404}, {"GET", "/docs/", "", true, 404},
-		{"POST", "/chat", `{"message":42}`, true, 400}, {"POST", "/chat", strings.Repeat("x", 16*1024+1), true, 413},
+		{"POST", "/chat", `{"message":42}`, true, 400},
+		{"POST", "/chat", `{"message":"\ud800"}`, true, 400},
+		{"POST", "/chat", `{"message":"\udc00"}`, true, 400},
+		{"POST", "/chat", `{"message":"safe","ignored":{"bad":"\ud800"}}`, true, 400}, {"POST", "/chat", strings.Repeat("x", 16*1024+1), true, 413},
 	} {
 		status, _, _, err := f.request(tc.method, tc.path, []byte(tc.body), tc.auth)
 		if err != nil {
@@ -132,6 +139,22 @@ func verify(f *fixture, binary, repo string, pipe bool) error {
 	} else {
 		if err = require(status == 503); err != nil {
 			return err
+		}
+	}
+	if pipe {
+		for _, tc := range []struct{ raw, want string }{
+			{`{"message":"\ud83d\ude42"}`, "You said: 🙂"},
+			{`{"message":"�"}`, "You said: �"},
+			{`{"message":"\\ud800"}`, `You said: \ud800`},
+		} {
+			status, _, body, err := f.request("POST", "/chat", []byte(tc.raw), true)
+			if err != nil {
+				return err
+			}
+			var reply map[string]string
+			if json.Unmarshal(body, &reply) != nil || status != 200 || reply["reply"] != tc.want {
+				return errors.New("Unicode text preservation failed")
+			}
 		}
 	}
 	for _, name := range []string{"index.html", "app.js", "livekit-client.umd.min.js"} {
@@ -324,4 +347,28 @@ func main() {
 		os.Exit(1)
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// Exercise the built listener, not just the handler: net/http must not drain a
+// body withheld after unauthorized headers before sending the final response.
+func verifyStalledUnauthorized(f *fixture) error {
+	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(f.base, "http://"), time.Second)
+	if err != nil {
+		return errors.New("stalled-body qualification connect failed")
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(400 * time.Millisecond))
+	if _, err = io.WriteString(conn, "POST /chat HTTP/1.1\r\nHost: local.test\r\nContent-Length: 1000\r\n\r\n"); err != nil {
+		return errors.New("stalled-body qualification write failed")
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return errors.New("unauthorized response waited for absent body")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != 401 || !response.Close || !bytes.Contains(body, []byte("missing or invalid bearer token")) {
+		return errors.New("stalled-body refusal contract failed")
+	}
+	return nil
 }

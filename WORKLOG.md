@@ -5,6 +5,41 @@ Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.
 
 
 
+
+## 2026-10-05 — root-review HTTP refusal and Unicode repairs
+
+Valid until: newer serving verification supersedes this corrected branch — then treat as history.
+
+Root's independent review of93f14f3 reproduced two P2 defects after the prior
+internal clean review: unauthorized responses could wait for net/http's unread
+request-body drain, and Go JSON decoding silently repaired lone UTF-16 surrogate
+escapes to U+FFFD. The original root proof overlay is unchanged and all three
+negative proofs now pass. This receipt supersedes the earlier clean-review
+conclusion; those historical records remain unchanged.
+
+- Pre-body auth/method/rate/declared-size refusals and routes ignoring bodies
+  announce Connection:close and expire reads before writing, without calling
+  Body.Close (which could itself drain). Admitted chat still uses its bounded
+  body reader. Seven actual TCP tests/21 wire scenarios send content-length or
+  chunked headers and withhold all body bytes; full response/wire close/EOF must
+  arrive within400ms with zero underlying Body.Read and zero backend calls.
+  The original93f14f3 failure reproduced0.406s; corrected race slice passed1.052s.
+- One bounded shared raw-JSON scalar validator runs before HTTP and IPC decoding.
+  It checks every string, including nested/ignored fields and keys, rejecting
+  unpaired/invalid surrogate escapes and invalid raw UTF-8. JSON structure stays
+  with encoding/json. Valid pairs, literal replacement/nonBMP characters and
+  escaped backslashes/quotes preserve exact text. Eight tests include compiled
+  fake-private-pipe negative/positive protocol cases and HTTP no-backend refusals.
+- Uncached corrected Go suite passed; race serving25.761s/CLI1.018s, vet clean.
+  Root's unmodified overlay negative proofs passed0.509s. Native qualifier now
+  checks the compiled listener's header-only refusal and scalar-negative cases;
+  explicit fake Python pipe also checks valid pair/U+FFFD/backslash preservation.
+- Python/core/audio/requirements are unchanged; no redundant full Python rerun.
+  The prior11701-pass hermetic gate remains its receipt, with the exact installed
+  SDK/model/voice/LAN/descendant/Ollama-termination gaps unchanged. No real data,
+  provider/model/audio, remote/LAN listener, publication or authority change.
+  Corrected exact-head binaries/images and final tests are in ignored TASK_RESULT.
+
 ## 2026-10-05 — share facade auth configuration admission
 
 Valid until: later serving/auth verification supersedes this revision — then treat as history.

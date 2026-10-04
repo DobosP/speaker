@@ -169,6 +169,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) bool {
 		if s.cfg.AllowNoAuth {
 			return true
 		}
+		closeUnreadBody(w, r)
 		detail(w, 401, "remote auth not configured (set SPEAKER_REMOTE_TOKEN)")
 		return false
 	}
@@ -184,6 +185,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) bool {
 			}
 		}
 	}
+	closeUnreadBody(w, r)
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	detail(w, 401, "missing or invalid bearer token")
 	return false
@@ -202,6 +204,11 @@ func detail(w http.ResponseWriter, status int, message string) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only admitted POST /chat consumes a body. Never let net/http drain a
+	// stalled body before flushing another route or pre-body refusal.
+	if r.URL.Path != "/chat" || r.Method != "POST" {
+		closeUnreadBody(w, r)
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss:; media-src 'self' blob: mediastream:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -261,7 +268,7 @@ func messageBody(raw []byte) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
 	}
-	if !utf8.Valid(raw) {
+	if !validJSONUnicode(raw) {
 		return "", errors.New("invalid JSON body")
 	}
 	d := json.NewDecoder(strings.NewReader(string(raw)))
@@ -314,11 +321,18 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		peer = "unknown"
 	}
 	if !s.limiter.allow(peer, s.cfg.Now()) {
+		closeUnreadBody(w, r)
 		detail(w, 429, "rate limit exceeded")
+		return
+	}
+	if r.ContentLength > MaxChatBytes {
+		closeUnreadBody(w, r)
+		detail(w, 413, "request body too large")
 		return
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxChatBytes))
 	if err != nil {
+		closeUnreadBody(w, r)
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			detail(w, 413, "request body too large")
@@ -487,3 +501,14 @@ func trimPythonSpace(s string) string { return strings.TrimFunc(s, pythonSpace) 
 // HasRemoteToken shares the handler's exact whitespace policy with CLI bind
 // admission, so an unset token cannot become a no-auth bind-all configuration.
 func HasRemoteToken(token string) bool { return trimPythonSpace(token) != "" }
+
+// closeUnreadBody refuses HTTP/1 reuse before writing a response that will not
+// consume the request body. Body.Close itself may drain and block, so expire
+// inbound reads instead; the response write deadline remains independent.
+func closeUnreadBody(w http.ResponseWriter, r *http.Request) {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return
+	}
+	w.Header().Set("Connection", "close")
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+}

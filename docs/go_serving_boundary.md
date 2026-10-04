@@ -57,6 +57,12 @@ endpoint/proxy/redirect limits, provider/native diagnostics and exit exceptions.
 Intentional tightened behavior is ADR-0224's disabled-by-default voice tokens,
 loopback-only rollback, optional-only text backend, authenticated bind-all,
 strict non-string/duplicate JSON refusals, bounded replies and source retention.
+HTTP and IPC validate Unicode scalar escapes before Go decoding: unpaired UTF-16
+surrogates are refused; valid pairs, literal U+FFFD and escaped backslashes retain
+their text. Pre-body refusals close the HTTP/1 connection and expire inbound reads
+before writing, avoiding net/http's keepalive drain of a withheld request body.
+Actual TCP regressions require the full refusal within 400 ms with zero body
+reads; declared oversized bodies are refused before any body read.
 Empty/null/missing/non-object chat input retains the empty reply contract.
 Static files are limited to the shipped three filenames; arbitrary root files,
 directory listings and symlink substitutions are refused. The FastAPI

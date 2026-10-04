@@ -59,3 +59,14 @@ func TestLoopbackProbeNoRedirectOrProxy(t *testing.T) {
 		t.Fatal("probe followed redirect")
 	}
 }
+
+func TestBindAllCannotTreatPythonWhitespaceAsConfiguredBearer(t *testing.T) {
+	t.Setenv("SPEAKER_REMOTE_BIND_ALL", "1")
+	t.Setenv("SPEAKER_REMOTE_ALLOW_NOAUTH", "1")
+	for _, token := range []string{"", "\x1c", "\x1f\r\n", "\u2003"} {
+		t.Setenv("SPEAKER_REMOTE_TOKEN", token)
+		if err := run(options{port: 8080}); err == nil || err.Error() != "bind-all requires SPEAKER_REMOTE_TOKEN" {
+			t.Fatal("no-auth bind-all admission policy mismatch", err)
+		}
+	}
+}

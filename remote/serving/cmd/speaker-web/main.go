@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -127,13 +126,13 @@ func run(o options) error {
 	host := "127.0.0.1"
 	if os.Getenv("SPEAKER_REMOTE_BIND_ALL") == "1" {
 		// Explicit bind-all cannot accidentally combine with unauthenticated dev mode.
-		if strings.TrimSpace(cfg.RemoteToken) == "" {
+		if !serving.HasRemoteToken(cfg.RemoteToken) {
 			return errors.New("bind-all requires SPEAKER_REMOTE_TOKEN")
 		}
 		host = "0.0.0.0"
 		log.Print("WARNING: explicit rollback facade bind-all requested")
 	}
-	if strings.TrimSpace(cfg.RemoteToken) == "" {
+	if !serving.HasRemoteToken(cfg.RemoteToken) {
 		if cfg.AllowNoAuth {
 			log.Print("WARNING: dev no-auth enabled for loopback facade")
 		} else {

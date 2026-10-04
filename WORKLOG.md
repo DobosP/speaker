@@ -4,6 +4,18 @@ Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.
 
 
 
+
+## 2026-10-05 — share facade auth configuration admission
+
+Valid until: later serving/auth verification supersedes this revision — then treat as history.
+
+Final parity audit found that retaining Python whitespace stripping in the
+handler also requires the CLI bind-all guard to use that same predicate.
+`HasRemoteToken` now shares that configuration test; empty, information-separator
+and Unicode-space tokens all refuse bind-all even with the dev no-auth flag.
+The new CLI regression table and normal Go suite pass. This closes the posture
+mismatch before publication; no remote listener or credentials were used.
+
 ## 2026-10-05 — final web parity and hermetic gate
 
 Valid until: later serving verification supersedes this revision — then treat as history.

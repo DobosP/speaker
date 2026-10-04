@@ -483,3 +483,7 @@ func (l *limiter) allow(key string, now time.Time) bool {
 // separators, as well as Unicode whitespace, at the migrated string boundary.
 func pythonSpace(r rune) bool         { return unicode.IsSpace(r) || r >= 0x1c && r <= 0x1f }
 func trimPythonSpace(s string) string { return strings.TrimFunc(s, pythonSpace) }
+
+// HasRemoteToken shares the handler's exact whitespace policy with CLI bind
+// admission, so an unset token cannot become a no-auth bind-all configuration.
+func HasRemoteToken(token string) bool { return trimPythonSpace(token) != "" }

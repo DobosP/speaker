@@ -2,6 +2,16 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — coordinator dormant serving qualification
+
+- Independent review reproduced and re-reviewed HTTP unread-body rejection and Unicode
+  scalar repairs at clean3c71061. Original proofs and focused TCP/Unicode race tests passed
+ 13.765s; host binary/clean revision and both runtime/development image IDs, labels and UID
+  matched corrected receipts. No remaining concrete blocker in this bounded web scope.
+- The dormant Go facade is qualified for integration; no voice, model, provider, LAN or
+  action activation occurred. Audio/core Python/native ownership and live SDK/A-B/Ollama
+  computation/descendant-cleanup limits remain as documented in the serving receipt.
+
 
 
 

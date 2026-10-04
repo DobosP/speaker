@@ -19,7 +19,9 @@ from .minicpm_identity import (
     is_minicpm_model_name,
     verify_minicpm_q8_identity,
 )
-from .engines._sherpa_models import validate_bpe_vocab_file
+from .engines._sherpa_models import (
+    read_onnx_custom_metadata, validate_bpe_vocab_file, validate_kitten_tts_config,
+)
 from .engines.speaker_gate import resolve_speaker_identity_activation
 
 RUNTIME_IMPORTS = ("numpy", "scipy", "sounddevice", "sherpa_onnx")
@@ -192,7 +194,17 @@ def check_sherpa_models(
     # native loader hard-aborts on a missing voices file; configured data/lexicon
     # paths are also passed straight to that loader and therefore load-bearing.
     if include_tts:
-        if sherpa.get("tts_voices", ""):
+        tts_backend = sherpa.get("tts_backend", "")
+        if type(tts_backend) is not str or tts_backend.strip().lower() not in {"", "kitten"}:
+            problems.append("tts_backend unsupported (use empty legacy selection or kitten)")
+        elif tts_backend.strip().lower() == "kitten":
+            require("tts_voices", label="Kitten tts_voices")
+            require("tts_data_dir", label="Kitten tts_data_dir")
+            try:
+                validate_kitten_tts_config(sherpa)
+            except RuntimeError as error:
+                problems.append(str(error))
+        elif sherpa.get("tts_voices", ""):
             require("tts_voices", label="Kokoro tts_voices")
             require_if_configured("tts_data_dir")
             require_if_configured("tts_lexicon", comma_separated=True)
@@ -200,6 +212,10 @@ def check_sherpa_models(
             # VITS also consumes a configured espeak data directory.  A stale Kokoro
             # lexicon is deliberately ignored when Kokoro is not selected.
             require_if_configured("tts_data_dir")
+        if type(tts_backend) is str and not tts_backend.strip():
+            metadata = read_onnx_custom_metadata(str(sherpa.get("tts_model", "")))
+            if metadata is not None and metadata.get("model_type", "").strip().lower() == "kitten-tts":
+                problems.append("Kitten TTS requires explicit tts_backend='kitten'")
 
     # The second-pass recognizer owns the text sent to the LLM whenever a backend
     # is selected.  Missing artifacts currently make the runtime silently fall

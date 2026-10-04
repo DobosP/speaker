@@ -143,7 +143,7 @@ KWS, natural-turn and live barge-in qualification from this corpus.
 | Moonshine | [SDK 0.1.5](https://pypi.org/project/moonshine-voice/0.1.5/), 2026-08-24; [August export revision](https://huggingface.co/moonshine-ai/moonshine-voice-assets/commit/0bf2f2e5aff22e6fbba4300b00a4e00bbc4f8aae); Tiny 45,233,659 and Small 142,300,974 bytes, MIT. | Isolated runtime installed; explicit single-thread variant measured. Stock oversubscription rejected. |
 | Parakeet | [Unified English](https://huggingface.co/nvidia/parakeet-unified-en-0.6b), NVIDIA Open Model License; [TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), CC-BY-4.0. [Exact existing v3 export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/commit/2bda32ec70b097a55adaa07d9a7173915b43cc78) is 670,478,772 bytes. | Existing weights compared separately; v3 is not newly downloaded. Realtime EOU 120M prior gate remains rejected. |
 | Whisper/Qwen | [Distil-Large-v3.5 CT2](https://huggingface.co/distil-whisper/distil-large-v3.5-ct2), MIT, roughly 1.52 GB; [Qwen3-ASR 0.6B native export](https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/pretrained.html), about 0.94 GB plus tokenizer, Apache-2.0 upstream. | Larger desktop references. Not installed in this low-resource batch; Small CPU already exceeds realtime on these clips. |
-| Kitten | [Nano 0.8 INT8](https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8), Apache-2.0; [Sherpa archive](https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models), 2026-05-12, 45,652,547 extracted bytes. | Installed and measured; explicit runtime backend in ADR-0217. Smallest measured TTS process. |
+| Kitten | [Nano 0.8 INT8](https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8), Apache-2.0; [Sherpa archive](https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models), 2026-05-12, 45,652,547 extracted bytes. | Installed and measured; explicit runtime backend in [ADR-0217](adr/0217-explicit-kitten-tts-backend.md). Smallest measured TTS process. |
 | Supertonic/Pocket | [Supertonic 3](https://github.com/supertone-oss-archive/supertonic), archived 2026-09-09, OpenRAIL-M weights/MIT code. [Pocket original weights](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/blob/d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3/README.md) say CC-BY-4.0; newest release adds contact gating. | Supertonic installed/measured as restricted open weights, not an unrestricted open-source recommendation. Pocket skipped; no contacts or gated consent accepted. |
 | MiniCPM/Gemma | [MiniCPM5-2B Q4_K_M](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/blob/2079a22f3beaa4e306449978533478fe0522f4b3/MiniCPM5-2B-Q4_K_M.gguf), 2026-09-07, 1,561,318,368 bytes, Apache-2.0. [Gemma 4 E2B](https://developers.google.com/edge/litert-lm/models/gemma-4) has official LiteRT support, approximately 2.59 GB bundle. | MiniCPM installed/measured; 1B retained. Gemma 4 requires a separate phone/runtime integration and thermal test. |
 | Silero | [Release history](https://github.com/snakers4/silero-vad/releases), [6.2.3 wheel](https://pypi.org/project/silero-vad/6.2.3/), MIT; canonical ONNX 2,327,524 bytes. | Installed and executed as descriptive candidate; no accuracy/default promotion. |
@@ -161,6 +161,30 @@ tools.english_llm_benchmark and tools.english_vad_benchmark. Their help names th
 manifest/model/config/scratch/output arguments. Models stay in the ignored
 pretrained_models/sherpa/benchmarks/english-2026-10-04 cache; the shared production venv was not
 changed. Moonshine owns a separate runtime. Candidate install availability is not live adoption.
+
+The installed Kitten overlay is
+`pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten-runtime-overlay.json`.
+It selects the new backend explicitly, locks speaker 0, uses two TTS threads and CPU.
+Its shared `provider` also applies to ASR. It does not overwrite `config.local.json`.
+The production factory has actually generated the public phrase sample at
+`logs/runs/english-model-benchmarks-20261004/kitten-public-sample.wav` (24 kHz,
+6.566 seconds); no playback was performed. A construction-only check from the repo root is:
+
+```python
+import json
+from pathlib import Path
+from core.engines.sherpa import SherpaConfig
+from core.engines._sherpa_models import build_tts
+
+overlay = Path("pretrained_models/sherpa/benchmarks/english-2026-10-04/kitten-runtime-overlay.json")
+settings = json.loads(overlay.read_text())["sherpa"]
+tts = build_tts(SherpaConfig.from_dict(settings))
+assert tts is not None
+```
+
+Run that check with the existing `.venv/bin/python`. Production configuration layering
+and physical sessions remain governed by [ADR-0217](adr/0217-explicit-kitten-tts-backend.md)
+and the existing `./live.sh` doctor/owner route gates.
 
 The low-resource trial priority is INT8 streaming plus a fast final recognizer and VITS; Kitten
 is a smaller-memory voice option with an explicit backend. Keep current 1B for the CPU fast

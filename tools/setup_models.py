@@ -41,7 +41,9 @@ import tarfile
 import tempfile
 from typing import Callable, Iterable, Literal
 
-from core.engines._sherpa_models import read_onnx_custom_metadata
+from core.engines._sherpa_models import (
+    read_onnx_custom_metadata, validate_kitten_tts_config,
+)
 from core.kws_contract import KWS_STOP_PHRASES
 
 DEST = os.path.join("pretrained_models", "sherpa")
@@ -102,6 +104,7 @@ _SHERPA_PATH_FAMILY_BY_KEY = {
     key: family for family, keys in SHERPA_PATH_FAMILIES.items() for key in keys
 }
 _SHERPA_FAMILY_SELECTOR_KEYS = {
+    "tts": ("tts_backend",),
     "final_asr": ("asr_final_backend",),
     "final_verifier": ("asr_final_verifier_backend",),
 }
@@ -1736,6 +1739,17 @@ def _existing_sherpa_family_is_valid(
     if family == "streaming_asr":
         return _configured_paths_exist(sherpa, ASR_FILE_KEYS, exists=exists)
     if family == "tts":
+        backend = sherpa.get("tts_backend", "")
+        if type(backend) is not str or backend.strip().lower() not in {"", "kitten"}:
+            return False
+        if backend.strip().lower() == "kitten":
+            if not _configured_paths_exist(sherpa, ("tts_model", "tts_tokens", "tts_voices", "tts_data_dir"), exists=exists):
+                return False
+            try:
+                validate_kitten_tts_config(sherpa)
+            except RuntimeError:
+                return False
+            return True
         required = ["tts_model", "tts_tokens"]
         kokoro = bool(str(sherpa.get("tts_voices", "") or ""))
         if kokoro:
@@ -1754,6 +1768,8 @@ def _existing_sherpa_family_is_valid(
         if metadata is None:
             return True
         model_type = metadata.get("model_type", "").strip().lower()
+        if model_type == "kitten-tts":
+            return False
         if model_type:
             model_is_kokoro = model_type == "kokoro"
         elif "style_dim" in metadata:
@@ -1839,6 +1855,10 @@ def _incoming_family_required_keys(
     if family == "streaming_asr":
         return ASR_FILE_KEYS
     if family == "tts":
+        if target_mode not in {"", "kitten"}:
+            return ()
+        if target_mode == "kitten":
+            return ("tts_model", "tts_tokens", "tts_voices", "tts_data_dir")
         required = ["tts_model", "tts_tokens"]
         if incoming.get("tts_voices"):
             required.append("tts_voices")
@@ -1886,9 +1906,14 @@ def _validate_incoming_sherpa_family(
         if not parts or any(not exists(path) for path in parts):
             raise ValueError(f"resolved {family} family path {key} is missing on disk")
     if family == "tts":
+        if target_mode == "kitten":
+            validate_kitten_tts_config(incoming)
+            return
         metadata = read_onnx_custom_metadata(incoming["tts_model"])
         if metadata is not None:
             model_type = metadata.get("model_type", "").strip().lower()
+            if model_type == "kitten-tts":
+                raise ValueError("resolved Kitten TTS requires an explicit kitten family mode")
             if model_type:
                 model_is_kokoro = model_type == "kokoro"
             elif "style_dim" in metadata:
@@ -1994,6 +2019,14 @@ def wire_sherpa_paths(
             incoming_by_family.setdefault(family, {})[key] = path
 
     for family, incoming in incoming_by_family.items():
+        if family == "tts":
+            backend = current.get("tts_backend", "")
+            if type(backend) is not str or backend.strip().lower() not in {"", "kitten"}:
+                raise ValueError("existing tts_backend is unsupported; config preserved")
+            if backend.strip().lower() == "kitten" and family not in requested:
+                if not _existing_sherpa_family_is_valid(current, family, exists=exists):
+                    raise ValueError("existing explicit Kitten TTS is invalid; repair it before unrelated setup")
+                continue
         if family not in requested and _existing_sherpa_family_is_valid(
             current, family, exists=exists
         ):
@@ -2010,7 +2043,9 @@ def wire_sherpa_paths(
         for key in _SHERPA_FAMILY_SELECTOR_KEYS.get(family, ()):
             staged.pop(key, None)
         staged.update(incoming)
-        if family == "final_asr":
+        if family == "tts" and target_mode == "kitten":
+            staged["tts_backend"] = "kitten"
+        elif family == "final_asr":
             staged["asr_final_backend"] = target_mode
         elif family == "final_verifier":
             staged["asr_final_verifier_backend"] = target_mode
@@ -2028,6 +2063,8 @@ def wire_sherpa_paths(
             raise ValueError(f"resolved sherpa path {key} is missing on disk")
         staged[key] = path
 
+    if "tts" in incoming_by_family and str(staged.get("tts_backend", "")).strip().lower() == "kitten":
+        validate_kitten_tts_config(staged)
     config["sherpa"] = staged
     return config
 

@@ -6,7 +6,7 @@ import math
 import os
 import re
 import stat
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
     from .sherpa import SherpaConfig
@@ -530,7 +530,7 @@ def build_keyword_spotter(c: "SherpaConfig"):
     )
 
 
-def read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
+def read_onnx_custom_metadata(path: str, *, strict: bool = False) -> dict[str, str] | None:
     """Read an ONNX file's ``metadata_props`` (custom key/value metadata) in
     O(metadata) time, or ``None`` if the file can't be parsed as a ModelProto.
 
@@ -559,15 +559,27 @@ def read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
         import io
 
         key = value = ""
+        seen: set[int] = set()
         fh = io.BytesIO(data)
         while True:
+            tag_start = fh.tell()
             tag = _varint(fh)
             if tag is None:
+                if strict and fh.tell() != tag_start:
+                    raise ValueError("truncated ONNX metadata tag")
                 break
+            if strict and (tag not in {10, 18} or tag in seen):
+                raise ValueError("ambiguous ONNX metadata entry")
+            seen.add(tag)
             length = _varint(fh)
             if length is None:
+                if strict:
+                    raise ValueError("truncated ONNX metadata entry")
                 break
-            field = fh.read(length).decode("utf-8", errors="replace")
+            raw = fh.read(length)
+            if strict and len(raw) != length:
+                raise ValueError("truncated ONNX metadata field")
+            field = raw.decode("utf-8", errors="strict" if strict else "replace")
             if tag >> 3 == 1:
                 key = field
             elif tag >> 3 == 2:
@@ -575,33 +587,54 @@ def read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
         return key, value
 
     meta: dict[str, str] = {}
+    metadata_bytes = 0
+    field_count = 0
     try:
         with open(path, "rb") as fh:
+            import os
+            file_size = os.fstat(fh.fileno()).st_size
             while True:
+                tag_start = fh.tell()
                 tag = _varint(fh)
                 if tag is None:
+                    if strict and fh.tell() != tag_start:
+                        return None
                     break  # clean EOF
+                field_count += 1
                 field, wire = tag >> 3, tag & 0x07
+                if strict and (field == 0 or field_count > 4096):
+                    return None
                 if wire == 0:  # varint scalar
                     if _varint(fh) is None:
                         return None
                 elif wire == 1:  # fixed64
                     fh.seek(8, 1)
+                    if strict and fh.tell() > file_size:
+                        return None
                 elif wire == 5:  # fixed32
                     fh.seek(4, 1)
+                    if strict and fh.tell() > file_size:
+                        return None
                 elif wire == 2:  # length-delimited
                     length = _varint(fh)
                     if length is None:
                         return None
+                    if strict and length > file_size - fh.tell():
+                        return None
                     if field == 14:  # metadata_props -- the only bytes we read
+                        metadata_bytes += length
+                        if strict and metadata_bytes > 65536:
+                            return None
                         key, value = _entry(fh.read(length))
+                        if strict and key in meta:
+                            return None
                         if key:
                             meta[key] = value
                     else:  # graph / opset / producer... -- skip without reading
                         fh.seek(length, 1)
                 else:  # unknown wire type -> not a protobuf we understand
                     return None
-    except OSError:
+    except (OSError, ValueError, OverflowError, UnicodeError):
         return None
     return meta
 
@@ -641,6 +674,8 @@ def _tts_family_preflight(c: "SherpaConfig", kokoro: bool) -> None:
         )
         return
     model_type = meta.get("model_type", "").strip().lower()
+    if model_type == "kitten-tts":
+        raise RuntimeError("Kitten TTS requires explicit tts_backend='kitten'; legacy voices selection cannot choose this model")
     if model_type:
         model_is_kokoro = model_type == "kokoro"
     elif "style_dim" in meta:  # older Kokoro exports without model_type
@@ -667,9 +702,129 @@ def _tts_family_preflight(c: "SherpaConfig", kokoro: bool) -> None:
         )
 
 
+
+def _kitten_tts_preflight(c: "SherpaConfig") -> None:
+    """Validate known Kitten loader abort conditions without loading ONNX graphs.
+
+    The strict reader bounds metadata and rejects duplicate/truncated entries.
+    Asset/header checks are not validation of every ONNX graph/native behavior.
+    """
+    import math
+    import os
+    import stat
+
+    def regular_nonempty(path: str) -> int:
+        try:
+            info = os.stat(path)
+        except (OSError, TypeError, ValueError):
+            raise RuntimeError("Kitten TTS required asset is missing or unreadable") from None
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or not os.access(path, os.R_OK):
+            raise RuntimeError("Kitten TTS requires readable nonempty regular model, voices and tokens files")
+        return info.st_size
+
+    regular_nonempty(c.tts_model)
+    voices_size = regular_nonempty(c.tts_voices)
+    regular_nonempty(c.tts_tokens)
+    if not c.tts_data_dir or not os.path.isdir(c.tts_data_dir):
+        raise RuntimeError("Kitten TTS requires tts_data_dir for espeak-ng-data")
+    for name in ("phontab", "phondata", "phonindex", "en_dict", "lang/gmw/en"):
+        regular_nonempty(os.path.join(c.tts_data_dir, name))
+    meta = read_onnx_custom_metadata(c.tts_model, strict=True)
+    if meta is None or meta.get("model_type") != "kitten-tts":
+        raise RuntimeError("Kitten TTS requires conclusive model_type='kitten-tts' ONNX metadata")
+
+    def positive(name: str, maximum: int) -> int:
+        value = meta.get(name, "")
+        if not value or not value.isascii() or not value.isdecimal():
+            raise RuntimeError("Kitten TTS required numeric metadata is invalid")
+        try:
+            number = int(value)
+        except ValueError:
+            raise RuntimeError("Kitten TTS required numeric metadata is invalid") from None
+        if not 0 < number <= maximum:
+            raise RuntimeError("Kitten TTS required numeric metadata is out of range")
+        return number
+
+    positive("sample_rate", 192000)
+    if "version" in meta and positive("version", 8) not in {1, 2, 8}:
+        raise RuntimeError("Kitten TTS export version is unsupported")
+    if "max_token_len" in meta:
+        positive("max_token_len", 4096)
+    for name in ("start_id", "end_id", "pad_id", "add_pad_after_end"):
+        if name in meta:
+            value = meta[name]
+            if not value.isascii() or not value.isdecimal() or len(value) > 10 or int(value) > 0x7fffffff:
+                raise RuntimeError("Kitten TTS token metadata is invalid")
+    if meta.get("add_pad_after_end", "0") not in {"0", "1"}:
+        raise RuntimeError("Kitten TTS padding metadata is invalid")
+    speakers = positive("n_speakers", 1024)
+    if meta.get("has_espeak") != "1" or meta.get("voice", "en-us") != "en-us":
+        raise RuntimeError("Kitten TTS requires the supported English espeak metadata")
+    dimensions = meta.get("style_dim", "").split(",")
+    if len(dimensions) != 2 or any(not value.isascii() or not value.isdecimal() for value in dimensions):
+        raise RuntimeError("Kitten TTS requires two positive style dimensions")
+    try:
+        rows, width = (int(value) for value in dimensions)
+    except ValueError:
+        raise RuntimeError("Kitten TTS style dimensions are invalid") from None
+    expected_bytes = rows * width * speakers * 4
+    if not 0 < rows <= 4096 or not 0 < width <= 4096 or not 0 < expected_bytes <= 512 * 1024**2:
+        raise RuntimeError("Kitten TTS style dimensions are out of range")
+    if voices_size != expected_bytes:
+        raise RuntimeError("Kitten TTS voices.bin size does not match model metadata")
+    priors = meta.get("speaker_speed_priors", "")
+    if priors:
+        try:
+            speeds = [float(value) for value in priors.split(",")]
+        except ValueError:
+            raise RuntimeError("Kitten TTS speaker speed priors are invalid") from None
+        if len(speeds) != speakers or any(not math.isfinite(speed) or speed <= 0 for speed in speeds):
+            raise RuntimeError("Kitten TTS speaker speed priors do not match model metadata")
+    if type(c.tts_speaker_id) is not int or not 0 <= c.tts_speaker_id < speakers:
+        raise RuntimeError("Kitten TTS tts_speaker_id is out of range for this model")
+
+
+def validate_kitten_tts_config(sherpa: Mapping[str, object]) -> None:
+    """Share the non-native Kitten asset/metadata gate with setup and doctor."""
+    from types import SimpleNamespace
+    selected = SimpleNamespace(**{key: sherpa.get(key, "") for key in (
+        "tts_model", "tts_voices", "tts_tokens", "tts_data_dir"
+    )}, tts_speaker_id=sherpa.get("tts_speaker_id", 0))
+    _kitten_tts_preflight(selected)
+
+
+def _build_kitten_tts(c: "SherpaConfig"):
+    _kitten_tts_preflight(c)
+    try:
+        import sherpa_onnx
+    except ImportError:
+        raise RuntimeError("Kitten TTS native API is unavailable") from None
+    if any(not callable(getattr(sherpa_onnx, name, None)) for name in (
+        "OfflineTtsKittenModelConfig", "OfflineTtsConfig", "OfflineTts"
+    )) or not hasattr(getattr(sherpa_onnx, "OfflineTtsModelConfig", None), "kitten"):
+        raise RuntimeError("Kitten TTS native API is unavailable")
+    try:
+        tts_config = sherpa_onnx.OfflineTtsConfig()
+        kitten = tts_config.model.kitten
+        kitten.model = c.tts_model
+        kitten.voices = c.tts_voices
+        kitten.tokens = c.tts_tokens
+        kitten.data_dir = c.tts_data_dir
+        tts_config.model.num_threads = c.resolved_tts_threads
+        tts_config.model.provider = c.provider
+    except Exception:
+        raise RuntimeError("Kitten TTS native configuration API is incompatible") from None
+    try:
+        return sherpa_onnx.OfflineTts(tts_config)
+    except Exception:
+        raise RuntimeError("Kitten TTS native construction failed") from None
+
 def build_tts(c: "SherpaConfig", *, deterministic_vits: bool = False):
-    """Offline TTS (VITS/Piper by default, Kokoro when ``tts_voices`` is set), or
-    ``None`` if no model configured.
+    """Offline TTS with an explicit Kitten option and legacy VITS/Kokoro selection.
+
+    Empty ``tts_backend`` preserves the legacy paths below. Explicit ``kitten``
+    uses strict metadata/asset preflight and raises on uncertainty; it cannot
+    silently select Kokoro/VITS or return a muted fallback.
 
     The Kokoro family (StyleTTS2-based, many built-in voices, more natural than the
     libritts VITS) is a sibling of ``vits`` on ``OfflineTtsConfig.model``: it needs a
@@ -698,6 +853,11 @@ def build_tts(c: "SherpaConfig", *, deterministic_vits: bool = False):
     native loader would ``exit(-1)`` the whole interpreter on that config, so a
     readable Python error naming the fix is strictly better than either dying
     silently or muting speech on a config the owner believes is Kokoro."""
+    backend = getattr(c, "tts_backend", "")
+    if type(backend) is not str or backend.strip().lower() not in {"", "kitten"}:
+        raise RuntimeError("Unsupported tts_backend; use empty legacy selection or explicit 'kitten'")
+    if backend.strip().lower() == "kitten":
+        return _build_kitten_tts(c)
     if not c.tts_model:
         return None
     import os

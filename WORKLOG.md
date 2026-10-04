@@ -231,3 +231,34 @@ Moonshine stock diagnostic:117threads/32CPUunion versus caller2;115masks outside
 18.87CPU seconds, then closure hitlimit; explicitORT1 call517ms/.513CPU seconds,2threads,
 2CPUs and cleanclose. These are resource diagnostics, not formal corpus rankings. Prior
 0.1.0 rejects unchanged; installed/new export identities and licenses are in ADR-0216/report.
+
+
+Valid until: the model/runtime/profile or fresh disjoint physical evidence changes — then treat as history.
+
+## 2026-10-04 — explicit Kitten runtime integration and combined gate (ADR-0217)
+
+Kitten Nano 0.8 INT8 now has an explicit `tts_backend="kitten"` production factory
+path, with bounded metadata/asset/voice-table preflight and setup/readiness preservation.
+Legacy VITS/Kokoro selection remains the empty-selector behavior. The ignored model-cache
+overlay binds speaker 0 locked, speed 1, two TTS threads and shared CPU provider; active
+config.local.json and the production venv were not altered.
+
+Actual core `build_tts(SherpaConfig(...))` construction succeeded in Sherpa 1.13.3 and
+synthesized a public phrase without a microphone/playback device. Retained local sample:
+logs/runs/english-model-benchmarks-20261004/kitten-public-sample.wav, mono 24 kHz,
+6.566 seconds, finite PCM. No subjective quality, audibility or phone result is claimed.
+Known loader conditions are guarded; arbitrary graph/native failures are not certified.
+
+Focused runtime/setup/readiness gates: **262 passed, 2 optional-model skips**. Combined
+CI-style full gate on the integrated benchmark/Kitten sources: **11543 passed, 42 skipped,
+9 warnings in 559.12 seconds**, using the shared production venv, `-p no:cacheprovider`,
+`--ignore=tests/test_livekit_audio.py --ignore=tests/test_livekit_engine.py`, private fixtures
+under a fresh non-repository /var/tmp root, then moved to canonical task scratch. Warnings
+were SWIG type metadata and existing Pillow getdata deprecations. No tests or privacy
+contracts were weakened. Raw audio, original labels, model locks and prior failed receipts
+are retained unchanged; all committed benchmark artifacts are aggregate only.
+
+Final documentation gate: `files=36 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0`;
+compact budgets AGENTS79 / STATUS120 / agent-map59 / agent-testing52. Whitespace clean.
+Changed runtime/setup/test files have **0 introduced Ruff findings** against HEAD (24
+pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.

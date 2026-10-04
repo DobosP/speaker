@@ -3508,3 +3508,92 @@ def test_doctor_capture_cli_rejects_incomplete_selectors(arguments) -> None:
         doctor.main(arguments)
 
     assert raised.value.code == 2
+
+
+def _kitten_setup_paths(tmp_path):
+    from tests.test_tts_backend import _kitten_files
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    config = _kitten_files(tmp_path)
+    return {key: getattr(config, key) for key in (
+        "tts_backend", "tts_model", "tts_voices", "tts_tokens", "tts_data_dir", "tts_speaker_id"
+    )}
+
+
+def test_doctor_admits_explicit_kitten_without_requiring_stale_kokoro_lexicon(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path)
+    sherpa = {**_complete_sherpa_paths(), **kitten, "tts_lexicon": "/inactive/not-a-kittten-input"}
+    result = check_sherpa_models({"sherpa": sherpa}, exists=lambda _path: True)
+    assert result.ok
+
+
+def test_doctor_kitten_header_and_asset_validation_matches_runtime(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path)
+    Path(kitten["tts_voices"]).write_bytes(b"wrong voices")
+    result = check_sherpa_models({"sherpa": {**_complete_sherpa_paths(), **kitten}}, exists=lambda _path: True)
+    assert not result.ok
+    assert "voices.bin size" in result.detail
+
+
+def test_doctor_refuses_unknown_active_backend_but_capture_only_is_inert():
+    sherpa = {**_complete_sherpa_paths(), "tts_backend": "unavailable"}
+    assert not check_sherpa_models({"sherpa": sherpa}, exists=lambda _path: True).ok
+    assert check_sherpa_models({"sherpa": sherpa}, exists=lambda _path: True, include_tts=False).ok
+
+
+def test_doctor_refuses_kitten_weights_without_explicit_backend(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path)
+    kitten.pop("tts_backend")
+    result = check_sherpa_models({"sherpa": {**_complete_sherpa_paths(), **kitten}}, exists=lambda _path: True)
+    assert not result.ok
+    assert "explicit tts_backend" in result.detail
+
+
+def test_ordinary_model_setup_preserves_complete_explicit_kitten(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path / "kitten")
+    incoming = _family_files(tmp_path, "default-piper", ("tts_model", "tts_tokens"))
+    config = {"sherpa": dict(kitten)}
+    before = json.loads(json.dumps(config))
+    setup_models.wire_sherpa_paths(config, incoming)
+    assert config == before
+
+
+def test_ordinary_model_setup_does_not_downgrade_incomplete_explicit_kitten(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path / "kitten")
+    Path(kitten["tts_voices"]).unlink()
+    incoming = _family_files(tmp_path, "default-piper", ("tts_model", "tts_tokens"))
+    config = {"sherpa": dict(kitten)}
+    before = json.loads(json.dumps(config))
+    with pytest.raises(ValueError, match="explicit Kitten TTS is invalid"):
+        setup_models.wire_sherpa_paths(config, incoming)
+    assert config == before
+
+
+def test_explicit_tts_replacement_clears_kitten_selector(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path / "kitten")
+    incoming = _family_files(tmp_path, "default-piper", ("tts_model", "tts_tokens"))
+    config = {"sherpa": dict(kitten)}
+    setup_models.wire_sherpa_paths(config, incoming, requested_families={"tts"})
+    assert "tts_backend" not in config["sherpa"]
+    assert "tts_voices" not in config["sherpa"]
+    assert config["sherpa"]["tts_model"] == incoming["tts_model"]
+
+
+def test_wire_installs_kitten_only_with_explicit_family_mode(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path)
+    incoming = {key: kitten[key] for key in ("tts_model", "tts_tokens", "tts_voices", "tts_data_dir")}
+    config = {}
+    with pytest.raises(ValueError, match="explicit kitten family mode"):
+        setup_models.wire_sherpa_paths(config, incoming, requested_families={"tts"})
+    assert config == {}
+    setup_models.wire_sherpa_paths(config, incoming, requested_families={"tts"}, family_modes={"tts": "kitten"})
+    assert config["sherpa"]["tts_backend"] == "kitten"
+
+
+def test_wire_rejects_new_kitten_with_inherited_out_of_range_speaker_without_mutation(tmp_path):
+    kitten = _kitten_setup_paths(tmp_path)
+    incoming = {key: kitten[key] for key in ("tts_model", "tts_tokens", "tts_voices", "tts_data_dir")}
+    config = {"sherpa": {"tts_speaker_id": 16}}
+    before = json.loads(json.dumps(config))
+    with pytest.raises(RuntimeError, match="tts_speaker_id"):
+        setup_models.wire_sherpa_paths(config, incoming, requested_families={"tts"}, family_modes={"tts": "kitten"})
+    assert config == before

@@ -27,17 +27,21 @@ def _fake_sherpa_onnx(captured):
 
     class _Cfg:
         def __init__(self):
+            captured["config_calls"] = captured.get("config_calls", 0) + 1
             self.model = types.SimpleNamespace(
                 vits=types.SimpleNamespace(
                     model="", tokens="", data_dir="",
                     noise_scale=0.667, noise_scale_w=0.8,
                 ),
                 kokoro=types.SimpleNamespace(model="", voices="", tokens="", data_dir="", lexicon=""),
+                kitten=types.SimpleNamespace(model="", voices="", tokens="", data_dir=""),
                 num_threads=0,
                 provider="",
             )
 
     m.OfflineTtsConfig = _Cfg
+    m.OfflineTtsKittenModelConfig = type("_KittenAPI", (), {})
+    m.OfflineTtsModelConfig = type("_ModelAPI", (), {"kitten": None})
 
     def _offline_tts(cfg):
         captured["cfg"] = cfg
@@ -290,3 +294,213 @@ def test_build_tts_returns_none_on_build_error(monkeypatch):
     m.OfflineTts = _boom
     monkeypatch.setitem(sys.modules, "sherpa_onnx", m)
     assert build_tts(SherpaConfig(tts_model="/m/v.onnx", tts_tokens="/m/t.txt")) is None
+
+
+def _kitten_files(tmp_path, *, metadata=None):
+    meta = {"model_type": "kitten-tts", "sample_rate": "24000", "n_speakers": "2",
+            "has_espeak": "1", "voice": "en-us", "style_dim": "2,4", "version": "8",
+            "speaker_speed_priors": "0.8,0.8"}
+    if metadata is not None:
+        meta = metadata
+    model = _stub_onnx(tmp_path / "model.int8.onnx", meta)
+    voices = tmp_path / "voices.bin"
+    voices.write_bytes(b"\x00" * 64)
+    tokens = tmp_path / "tokens.txt"
+    tokens.write_text("a 0\nb 1\n")
+    data = tmp_path / "espeak-ng-data"
+    (data / "lang/gmw").mkdir(parents=True)
+    for name in ("phontab", "phondata", "phonindex", "en_dict", "lang/gmw/en"):
+        (data / name).write_bytes(b"synthetic bootstrap")
+    return SherpaConfig(tts_backend="kitten", tts_model=model, tts_voices=str(voices),
+                        tts_tokens=str(tokens), tts_data_dir=str(data), tts_num_threads=2)
+
+
+def test_explicit_kitten_wins_over_voices_and_preserves_thread_voice_policy(monkeypatch, tmp_path):
+    config = _kitten_files(tmp_path)
+    config.tts_speaker_id = 1
+    config.tts_lock_speaker_id = True
+    config.tts_speaker_voices = {"other": 0}
+    output, native = _build(monkeypatch, config)
+    assert output is not None
+    assert native.model.kitten.model == config.tts_model
+    assert native.model.kitten.voices == config.tts_voices
+    assert native.model.kitten.tokens == config.tts_tokens
+    assert native.model.kitten.data_dir == config.tts_data_dir
+    assert native.model.num_threads == 2
+    assert native.model.provider == "cpu"
+    assert native.model.kokoro.model == native.model.vits.model == ""
+    assert config.tts_speaker_id == 1
+    assert config.tts_lock_speaker_id is True
+    from core.tts_markup import resolve_tts_params
+    sid, _ = resolve_tts_params({"voice": "other"}, default_sid=config.tts_speaker_id,
+                               default_speed=1.0, voice_map=config.tts_speaker_voices,
+                               num_speakers=2, lock_speaker_id=config.tts_lock_speaker_id)
+    assert sid == 1
+
+
+def test_kitten_key_round_trips_config_without_changing_default():
+    assert SherpaConfig().tts_backend == ""
+    assert SherpaConfig.from_dict({"tts_backend": "kitten"}).tts_backend == "kitten"
+
+
+@pytest.mark.parametrize("backend", ["unknown", "auto", "vits", "kokoro", None, 1])
+def test_unknown_explicit_tts_backend_refuses_before_native_config(monkeypatch, backend):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Unsupported tts_backend"):
+        build_tts(SherpaConfig(tts_backend=backend))
+    assert captured == {}
+
+
+@pytest.mark.parametrize("field", ["tts_model", "tts_voices", "tts_tokens", "tts_data_dir"])
+@pytest.mark.parametrize("failure", ["empty", "missing", "wrong_type"])
+def test_kitten_required_assets_fail_before_cpp(monkeypatch, tmp_path, field, failure):
+    config = _kitten_files(tmp_path)
+    if failure == "empty":
+        setattr(config, field, "")
+    elif failure == "missing":
+        setattr(config, field, str(tmp_path / "absent"))
+    elif field == "tts_data_dir":
+        setattr(config, field, config.tts_tokens)
+    else:
+        setattr(config, field, config.tts_data_dir)
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Kitten TTS"):
+        build_tts(config)
+    assert captured == {}
+
+
+@pytest.mark.parametrize("field", ["tts_model", "tts_voices", "tts_tokens"])
+def test_empty_kitten_asset_files_fail_before_cpp(monkeypatch, tmp_path, field):
+    config = _kitten_files(tmp_path)
+    Path(getattr(config, field)).write_bytes(b"")
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Kitten TTS"):
+        build_tts(config)
+    assert captured == {}
+
+
+def test_kitten_empty_phonemizer_directory_is_not_an_admission(monkeypatch, tmp_path):
+    config = _kitten_files(tmp_path)
+    Path(config.tts_data_dir, "phondata").unlink()
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Kitten TTS"):
+        build_tts(config)
+    assert captured == {}
+
+
+@pytest.mark.parametrize("metadata", [None, {}, {"model_type": "vits"}, {"model_type": "kokoro"}, {"model_type": "kitten"}])
+def test_kitten_metadata_must_be_conclusive_before_cpp(monkeypatch, tmp_path, metadata):
+    config = _kitten_files(tmp_path)
+    if metadata is None:
+        Path(config.tts_model).write_bytes(b"\x0b\x00invalid protobuf")
+    else:
+        _stub_onnx(Path(config.tts_model), metadata)
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Kitten TTS"):
+        build_tts(config)
+    assert captured == {}
+
+
+@pytest.mark.parametrize("key,value", [
+    ("style_dim", "2,4,8"), ("style_dim", "0,4"), ("n_speakers", "0"),
+    ("sample_rate", "nan"), ("has_espeak", "0"), ("voice", "unavailable"),
+    ("speaker_speed_priors", "0.8"), ("speaker_speed_priors", "nan,0.8"),
+    ("version", "9"), ("max_token_len", "zero"), ("end_id", "broken"),
+    ("add_pad_after_end", "2"),
+])
+def test_kitten_loader_metadata_errors_are_refused_before_cpp(monkeypatch, tmp_path, key, value):
+    config = _kitten_files(tmp_path)
+    metadata = read_onnx_custom_metadata(config.tts_model)
+    metadata[key] = value
+    _stub_onnx(Path(config.tts_model), metadata)
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="Kitten TTS"):
+        build_tts(config)
+    assert captured == {}
+
+
+def test_kitten_wrong_voices_shape_is_refused_before_cpp(monkeypatch, tmp_path):
+    config = _kitten_files(tmp_path)
+    Path(config.tts_voices).write_bytes(b"wrong-family voices")
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="voices.bin size"):
+        build_tts(config)
+    assert captured == {}
+
+
+@pytest.mark.parametrize("sid", [-1, 2, True])
+def test_kitten_default_sid_cannot_abort_later_synthesis(monkeypatch, tmp_path, sid):
+    config = _kitten_files(tmp_path)
+    config.tts_speaker_id = sid
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="tts_speaker_id"):
+        build_tts(config)
+    assert captured == {}
+
+
+@pytest.mark.parametrize("api", ["OfflineTtsKittenModelConfig", "OfflineTtsModelConfig", "OfflineTts"])
+def test_kitten_missing_native_api_cannot_fallback(monkeypatch, tmp_path, api):
+    config = _kitten_files(tmp_path)
+    captured = {}
+    module = _fake_sherpa_onnx(captured)
+    delattr(module, api)
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
+    with pytest.raises(RuntimeError, match="native API is unavailable"):
+        build_tts(config)
+    assert captured == {}
+
+
+def test_kitten_native_build_error_refuses_without_muted_fallback(monkeypatch, tmp_path):
+    config = _kitten_files(tmp_path)
+    module = _fake_sherpa_onnx({})
+    def failure(_config):
+        raise ValueError("private native diagnostic")
+    module.OfflineTts = failure
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
+    with pytest.raises(RuntimeError, match="^Kitten TTS native construction failed$"):
+        build_tts(config)
+
+
+@pytest.mark.parametrize("voices_present", [False, True])
+def test_kitten_model_cannot_enter_legacy_vits_or_kokoro_path(monkeypatch, tmp_path, voices_present):
+    config = _kitten_files(tmp_path)
+    config.tts_backend = ""
+    if not voices_present:
+        config.tts_voices = ""
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="explicit tts_backend"):
+        build_tts(config)
+    assert captured == {}
+
+
+def test_strict_kitten_metadata_rejects_duplicate_family_tags(monkeypatch, tmp_path):
+    config = _kitten_files(tmp_path)
+    blob = Path(config.tts_model).read_bytes()
+    key, value = b"model_type", b"kitten-tts"
+    entry = b"\x0a" + _varint(len(key)) + key + b"\x12" + _varint(len(value)) + value
+    Path(config.tts_model).write_bytes(blob + b"\x72" + _varint(len(entry)) + entry)
+    assert read_onnx_custom_metadata(config.tts_model)["model_type"] == "kitten-tts"
+    assert read_onnx_custom_metadata(config.tts_model, strict=True) is None
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    with pytest.raises(RuntimeError, match="conclusive"):
+        build_tts(config)
+    assert captured == {}
+
+
+def test_strict_kitten_metadata_refuses_truncation_and_oversized_metadata(tmp_path):
+    path = tmp_path / "truncated.onnx"
+    path.write_bytes(b"\x72\x7fshort")
+    assert read_onnx_custom_metadata(str(path), strict=True) is None
+    path = tmp_path / "oversized.onnx"
+    _stub_onnx(path, {"model_type": "kitten-tts", "extra": "x" * 65536})
+    assert read_onnx_custom_metadata(str(path), strict=True) is None

@@ -1,8 +1,7 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-04 (focused headless repair gates below, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
+Last verified: 2026-10-04 (full headless gate and local native model trials, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
-
 ## Current state — runtime
 - `python -m core --session` is the one public core entry: `VoiceSession` owns one injected `VoiceRuntime`, `build_runtime` is the sole
   tool/authority plane, and repeat-previous and continuation/resume lineage are fenced (ADR-0123/0154). Audio is device-only by default;
@@ -31,6 +30,8 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
 - ADR-0216 installs and benchmarks explicit English candidates on 37 scripted-reference and 6 hash-pinned microphone clips, kept separate;
   native defaults stay unchanged. Results/source/license evidence are in `docs/english_model_comparison.md`; no live/phone promotion follows.
+- ADR-0217 adds explicit, preflighted Kitten TTS with setup/readiness preservation; real factory generation succeeded. The optional CPU
+  overlay is installed; active config is unchanged and no playback/phone validation ran.
 - Bounded PRIVATE vault search, reminders and trusted apps are opt-in; mutations need unchanged direct speech plus confirmation,
   `web.search` admits only `current_turn_only`, and retained context forces monotonic `local_only`. Residuals: cleaner byte channel,
   `last_source` race, blocking-backend cancellation, raw-gate false negatives (ADR-0003/0060/0073/0074/0076/0187/0189).
@@ -94,7 +95,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 
 ## Open gates
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
-- Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); the ADR README ledger is not yet created.
+- Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 
 ## Next
 - Run the two guided `./live.sh` profiles through the owner close/far plan, retain both bundles and accept a narrow verdict only from fresh
@@ -105,10 +106,9 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
-- Before the next 4090 live start, repeat active-route enrollment and owner bare-speaker A/B (ADR-0209); continue the separate corpus/mobile gates.
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
-- Python CI-style full gate: `11268 passed, 42 skipped, 9 warnings` in 429.71 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+- Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
 - Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.

@@ -1362,7 +1362,10 @@ class SherpaConfig:
     kws_keywords_file: str = ""
     kws_threshold: float = 0.25
     kws_score: float = 1.0
-    # Offline TTS (e.g. vits / kokoro export). Required for speech output.
+    # Empty preserves legacy VITS/Kokoro selection. Kitten requires explicit
+    # opt-in and validated Kitten model/assets before native construction.
+    tts_backend: str = ""
+    # Offline TTS export. Required for speech output.
     tts_model: str = ""
     tts_tokens: str = ""
     tts_data_dir: str = ""

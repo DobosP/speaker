@@ -61,7 +61,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   roles (ADR-0174), and async endpoint finalization crosses a bounded route-neutral media stage (ADR-0107). Echo-probe acceptance binds to
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
-- The default Sherpa path runs its whole DSP/VAD/ASR/confirm/word-cut/endpoint machine on one dedicated decode owner and capture replay is
+- The default Sherpa decode owner retains its DSP/VAD/ASR/confirm/word-cut/endpoint machine; ADR-0222 uses native SOS lowpass with scalar fallback. Replay is
   not device or live evidence (ADR-0110/0111); acoustic identity is immutable through partial, final, barge, command and abort
   (ADR-0084/0086). VAD owns live ASR segments, capture recovery rebinds rate and preserves evidence (ADR-0043/0046/0048), and only a finite
   enrolled final match mints owner trust (ADR-0027/0041/0051).
@@ -108,7 +108,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
-- Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+- Prior Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
 - Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.

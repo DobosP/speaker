@@ -262,3 +262,18 @@ Final documentation gate: `files=36 dead_links=0 stale_terms=0 retired_verbs=0 o
 compact budgets AGENTS79 / STATUS120 / agent-map59 / agent-testing52. Whitespace clean.
 Changed runtime/setup/test files have **0 introduced Ruff findings** against HEAD (24
 pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.
+
+
+Valid until: the DSP/library/platform or physical-route evidence changes — then treat as history.
+
+## 2026-10-04 — existing native streaming low-pass kernel (ADR-0222)
+
+Targeted DSP/APM gate: 139 passed in 4.17 s; scoped lint/whitespace clean. The accepted
+single-section SciPy SOS path preserves tested float32 output and float64 state exactly
+across four rate/cutoff/Q matrices, single/irregular chunks, 300-chunk streams, reset,
+failed optional kernels, nonfinite inputs and bypass. The lfilter prototype was rejected
+for last-bit state changes. Implemented 300 x 100-ms synthetic profile: scalar p50/p95
+871.2595/1002.68345 us, native SOS 101.0415/131.5884 us (8.62x p50). Tracemalloc transient
+peaks 10,157/40,779 bytes; cold import excluded. Receipt remains in canonical task scratch
+until preserved at integration. No Rust build, private recording, native model, audio
+capture/playback, whole-session CPU/RSS or phone validation was part of this DSP probe.

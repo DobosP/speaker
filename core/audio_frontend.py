@@ -215,6 +215,8 @@ class StreamingLowpass:
     This is a simple RBJ/Butterworth biquad. It is intentionally separate from
     :func:`lowpass_soft`: the FFT path remains the zero-phase whole-clip filter,
     while this one carries only the two IIR delay samples needed between chunks.
+    SciPy's compiled float64 DF2 kernel is used when available; the original
+    scalar recurrence remains the dependency-free/error fallback.
     Create one instance per utterance so sentence boundaries reset filter history
     and one sentence's tail cannot color the next sentence's onset.
     """
@@ -287,6 +289,31 @@ class StreamingLowpass:
         x = np.asarray(samples, dtype="float32").reshape(-1)
         if x.size == 0:
             return x
+        try:
+            if _has_scipy():
+                from scipy.signal import sosfilt
+
+                # One SOS section uses the original scalar recurrence's
+                # operation order; lfilter's differently ordered accumulator
+                # can change the carried float64 state at the last bit.
+                y64, zf = sosfilt(
+                    np.array([[self._b0, self._b1, self._b2,
+                               1.0, self._a1, self._a2]], dtype="float64"),
+                    x.astype("float64"),
+                    zi=np.array([[self._z1, self._z2]], dtype="float64"),
+                )
+                # Match the scalar recurrence's double arithmetic and single
+                # float32 cast. Publish state only after all conversions succeed,
+                # so an incompatible/failed optional kernel leaves fallback's
+                # predecessor state intact. Nonfinite inputs keep legacy behavior.
+                y = np.asarray(y64, dtype="float32")
+                if y.shape != x.shape or np.asarray(zf).shape != (1, 2):
+                    raise ValueError("incompatible optional lowpass result")
+                z1, z2 = float(zf[0, 0]), float(zf[0, 1])
+                self._z1, self._z2 = z1, z2
+                return y
+        except Exception:  # noqa: BLE001 - optional probe/kernel preserves the scalar fallback
+            pass
         y = np.empty_like(x)
         z1 = self._z1
         z2 = self._z2

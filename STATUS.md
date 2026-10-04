@@ -24,7 +24,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0211 overlaps one mobile TTS lookahead with the current clip on a single synthesis lane. Exact playback cleanup releases returned
   WAVs; uncertain cleanup retains its file. ADR-0220 stages/bundles active assets only; device latency, thermals and acoustics remain unvalidated.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
-  pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
+  pending audio/metadata are bounded and revoked on session end. ADR-0221 adds startup thread budgets; phone RTF/WER/thermals remain unmeasured.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 warm media first and optionally only the fast local tier; main/vision remain callable with per-role Ollama residency. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.

@@ -267,12 +267,10 @@ pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repai
 
 Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
 
-## 2026-10-04 — Stage and bundle only the active mobile speech assets (ADR-0220)
+## 2026-10-04 — Freeze mobile thread requests before service construction (ADR-0221)
 
-Mobile footprint: 262 Flutter tests passed with cached Sherpa 1.13.3/Gemma 0.16.5;
-10 final asset tests and full analysis clean. Expanded fake download/bundle gate: 13 passed
-in 0.92 s; shell syntax, scoped lint/format and whitespace clean. No native/model downloads
-or device runs. Default bundling selects the four locked ASR filenames; optional Whisper
-selects its three locked filenames. Available rights/readme files survive. Cached unused
-precisions and public examples are retained on disk. Locked active ASR 74,207,237 bytes;
-omitted Whisper 160,626,066 bytes, not an APK-size or phone-RSS result.
+Mobile startup budgets: 79 native-free ownership/config tests passed. Explicit
+compiled compact gate passed 13 tests; full current-lock Flutter suite and analysis were
+green (combined gate recorded at integration). Pure config tests compare all non-thread
+native fields unchanged and cover exact ASR payload reconstruction, TTS direct/worker
+parity and invalid mode refusal before startup. No phone/plugin/native/resource run.

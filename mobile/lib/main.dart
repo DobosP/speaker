@@ -5,8 +5,11 @@ import './asr.dart';
 import './agent_session.dart';
 import './assistant.dart';
 import './tts.dart';
+import './performance_budget.dart';
 
-void main() {
+void main() => startWithValidatedPerformance(mobilePerformanceMode, _startApp);
+
+void _startApp() {
   WidgetsFlutterBinding.ensureInitialized();
   // We download the model from a public release, so no token is needed; the
   // default empty value is fine. maxDownloadRetries guards flaky first-run pulls.

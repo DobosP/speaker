@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
 import './utils.dart';
+import './performance_budget.dart';
 
 const piperModelDirectory = 'vits-piper-en_US-amy-low';
 
@@ -44,24 +45,35 @@ Future<TtsModelPaths> resolveTtsModelPaths({
   );
 }
 
+// Pure config shared by the direct and worker-native constructors.
+sherpa_onnx.OfflineTtsConfig buildPiperTtsConfig({
+  required String model,
+  required String tokens,
+  required String dataDir,
+  required int numThreads,
+}) => sherpa_onnx.OfflineTtsConfig(
+  model: sherpa_onnx.OfflineTtsModelConfig(
+    vits: sherpa_onnx.OfflineTtsVitsModelConfig(
+      model: model,
+      tokens: tokens,
+      dataDir: dataDir,
+    ),
+    numThreads: numThreads,
+    provider: 'cpu',
+  ),
+  maxNumSenetences: 1,
+);
+
 Future<sherpa_onnx.OfflineTts> createOfflineTts() async {
+  final budget = getStartupPerformanceBudget();
   final paths = await resolveTtsModelPaths();
   sherpa_onnx.initBindings();
-  final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-    model: paths.model,
-    tokens: paths.tokens,
-    dataDir: paths.dataDir,
+  return sherpa_onnx.OfflineTts(
+    buildPiperTtsConfig(
+      model: paths.model,
+      tokens: paths.tokens,
+      dataDir: paths.dataDir,
+      numThreads: budget.ttsThreads,
+    ),
   );
-
-  final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
-    vits: vits,
-    numThreads: 2,
-    provider: 'cpu',
-  );
-
-  final config = sherpa_onnx.OfflineTtsConfig(
-    model: modelConfig,
-    maxNumSenetences: 1,
-  );
-  return sherpa_onnx.OfflineTts(config);
 }

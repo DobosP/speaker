@@ -98,8 +98,8 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 
 ## Next
-- Run the two guided `./live.sh` profiles through the owner close/far plan, retain both bundles and accept a narrow verdict only from fresh
-  paired attestation plus owner review (ADR-0157/0158).
+- Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
+  awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
 - Add disjoint command/multi-voice strata, native-reader/gap, bare-speaker barge grading and live latency validation before defaults change.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
@@ -111,7 +111,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Python CI-style full gate: `11631 passed, 42 skipped, 9 warnings` in 460.43 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - No introduced Ruff findings; whitespace/docs clean and compact budgets hold. Native pair memory is component evidence; live/phone gates stay open.
-- Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.
+- Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
 
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

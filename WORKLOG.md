@@ -386,3 +386,31 @@ compiled compact gate passed 13 tests; full current-lock Flutter suite and analy
 green (combined gate recorded at integration). Pure config tests compare all non-thread
 native fields unchanged and cover exact ASR payload reconstruction, TTS direct/worker
 parity and invalid mode refusal before startup. No phone/plugin/native/resource run.
+
+
+Valid until: the capture route/enrollment or a completed owner live run changes — then treat as history.
+
+## 2026-10-04 — actual-host monitored live startup and continuation
+
+The owner requested an immediate monitored test. Outside the execution sandbox the host
+GPU and PipeWire were accessible: RTX4090 Laptop, 16,376 MiB total/7,749 MiB used GPU
+memory at preflight; available RAM 26,454 MiB. The configured inference remained local_only
+with cloud disabled. Responsive + required SenseVoice final was selected for the attempted
+comparison; saved configuration and enrollment were not changed.
+
+The sole physical `./live.sh` entry created temporary Ollama and the reversible OS echo
+route. Full doctor reached READY. Once the actual microphone domain became known, startup
+failed closed at the existing compatible-speaker-enrollment word-cut guard (ADR-0209).
+There were zero capture heartbeats and zero assessed turns; the final diagnostic was
+incomplete with unclean_shutdown. No STT quality, reply latency, actual audibility, barge-in,
+fully offline whole-session or phone result follows from this attempted startup.
+The launcher restored original audio defaults and stopped its temporary server; no test
+was left running. Private console/WAV/diagnostic artifacts remain in ignored logs/live.
+
+A concrete session-only desktop --no-speaker-enrollment fallback was statically validated
+without starting it. Owner-verified actions would be unavailable. That choice was offered,
+not authorized or run; the owner instead requested publication to origin/main and later
+continuation. Next: refresh compatible enrollment on the active OS echo route, or obtain
+explicit selection of the temporary non-enrolled voice trial, then run the same benign
+questions/STOP/talk-over cases in Responsive and Compact with aggregate monitoring. Keep
+all original private recordings and validate final evidence coverage before any verdict.

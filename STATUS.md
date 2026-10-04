@@ -3,6 +3,7 @@ Single source of current truth: this file > newest accepted ADR in docs/adr/ > e
 Last verified: 2026-10-04 (full headless gate and local native model trials, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Current state — runtime
+- GitHub Actions run on demand via workflow_dispatch; automatic triggers removed, with jobs/inputs/permissions preserved (ADR-0223).
 - `python -m core --session` is the one public core entry: `VoiceSession` owns one injected `VoiceRuntime`, `build_runtime` is the sole
   tool/authority plane, and repeat-previous and continuation/resume lineage are fenced (ADR-0123/0154). Audio is device-only by default;
   trusted-LAN is unselectable until owner live A/B and legacy remote is rollback only (ADR-0096/0097/0164).
@@ -21,10 +22,9 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   no repaired live A/B has run.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
-- ADR-0211 overlaps one mobile TTS lookahead with the current clip on a single synthesis lane. Exact playback cleanup releases returned
-  WAVs; uncertain cleanup retains its file. ADR-0220 stages/bundles active assets only; device latency, thermals and acoustics remain unvalidated.
-- ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
-  pending audio/metadata are bounded and revoked on session end. ADR-0221 adds startup thread budgets; phone RTF/WER/thermals remain unmeasured.
+- ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
+  Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
+  Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 warm media first and optionally only the fast local tier; main/vision remain callable with per-role Ollama residency. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.

@@ -1,24 +1,13 @@
 name: Mobile tests
 
 # Runs the Dart half of the shared command/sentence contracts (and the other
-# Flutter unit tests). Triggered by mobile, shared-golden, or shared Python
-# contract-author changes. Pure Dart unit tests -- no emulator, no device, no
+# Flutter unit tests). Run manually when checking mobile or shared contracts.
+# Pure Dart unit tests -- no emulator, no device, no
 # model downloads.
 
+# Run from Actions > Run workflow only when requested or needed for a specific change.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'mobile/**'
-      - 'core/contract.py'
-      - 'tests/golden/**'
-      - '.github/workflows/mobile-tests.yml'
-  pull_request:
-    paths:
-      - 'mobile/**'
-      - 'core/contract.py'
-      - 'tests/golden/**'
-      - '.github/workflows/mobile-tests.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

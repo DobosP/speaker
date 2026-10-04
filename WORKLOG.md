@@ -414,3 +414,14 @@ continuation. Next: refresh compatible enrollment on the active OS echo route, o
 explicit selection of the temporary non-enrolled voice trial, then run the same benign
 questions/STOP/talk-over cases in Responsive and Compact with aggregate monitoring. Keep
 all original private recordings and validate final evidence coverage before any verdict.
+
+
+Valid until: a newer source/trigger policy changes this integration — then treat as history.
+
+## 2026-10-04 — integrate newer origin manual-workflow policy
+
+Origin advanced to 4422261 while the performance work was local. Integrated its explicit
+owner-requested workflow_dispatch-only GitHub Actions policy and ADR-0223. Runtime code,
+job bodies/test commands, safety gates and permissions are preserved. STATUS combines
+both sessions' facts within its 120-line budget. The existing green local application
+results remain valid; no automatic workflow dispatch was added or invoked.

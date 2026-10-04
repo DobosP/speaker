@@ -262,3 +262,14 @@ Final documentation gate: `files=36 dead_links=0 stale_terms=0 retired_verbs=0 o
 compact budgets AGENTS79 / STATUS120 / agent-map59 / agent-testing52. Whitespace clean.
 Changed runtime/setup/test files have **0 introduced Ruff findings** against HEAD (24
 pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Freeze mobile thread requests before service construction (ADR-0221)
+
+Mobile startup budgets: 79 native-free ownership/config tests passed. Explicit
+compiled compact gate passed 13 tests; full current-lock Flutter suite and analysis were
+green (combined gate recorded at integration). Pure config tests compare all non-thread
+native fields unchanged and cover exact ASR payload reconstruction, TTS direct/worker
+parity and invalid mode refusal before startup. No phone/plugin/native/resource run.

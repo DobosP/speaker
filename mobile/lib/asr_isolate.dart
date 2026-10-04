@@ -10,6 +10,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import './asr_model.dart';
 
@@ -1295,6 +1296,8 @@ final class _AsrInit {
     required this.tokens,
     required this.modelType,
     required this.silence,
+    required this.numThreads,
+    required this.provider,
   });
 
   final String encoder;
@@ -1303,7 +1306,48 @@ final class _AsrInit {
   final String tokens;
   final String modelType;
   final double silence;
+  final int numThreads;
+  final String provider;
+
+  factory _AsrInit.fromModel(
+    sherpa_onnx.OnlineModelConfig model,
+    double silence,
+  ) => _AsrInit(
+    encoder: model.transducer.encoder,
+    decoder: model.transducer.decoder,
+    joiner: model.transducer.joiner,
+    tokens: model.tokens,
+    modelType: model.modelType,
+    silence: silence,
+    numThreads: model.numThreads,
+    provider: model.provider,
+  );
+
+  sherpa_onnx.OnlineRecognizerConfig nativeConfig() =>
+      sherpa_onnx.OnlineRecognizerConfig(
+        model: sherpa_onnx.OnlineModelConfig(
+          transducer: sherpa_onnx.OnlineTransducerModelConfig(
+            encoder: encoder,
+            decoder: decoder,
+            joiner: joiner,
+          ),
+          tokens: tokens,
+          modelType: modelType,
+          numThreads: numThreads,
+          provider: provider,
+        ),
+        ruleFsts: '',
+        enableEndpoint: true,
+        rule2MinTrailingSilence: silence,
+      );
 }
+
+// Exercises the same tagged payload construction/reconstruction without FFI.
+@visibleForTesting
+sherpa_onnx.OnlineRecognizerConfig rebuildAsrWorkerConfigForTesting(
+  sherpa_onnx.OnlineModelConfig model, {
+  double silence = AsrService.endpointSilenceSec,
+}) => _AsrInit.fromModel(model, silence).nativeConfig();
 
 final class _AsrWorkerHello {
   const _AsrWorkerHello(this.port);
@@ -1381,14 +1425,7 @@ Future<AsrWorkerStartup> _startProductionWorker(
   if (!launchFence.isCurrent) {
     throw StateError('asr_worker_launch_revoked_before_spawn');
   }
-  final init = _AsrInit(
-    encoder: model.transducer.encoder,
-    decoder: model.transducer.decoder,
-    joiner: model.transducer.joiner,
-    tokens: model.tokens,
-    modelType: model.modelType,
-    silence: AsrService.endpointSilenceSec,
-  );
+  final init = _AsrInit.fromModel(model, AsrService.endpointSilenceSec);
 
   final messages = ReceivePort();
   final errors = ReceivePort();
@@ -1594,23 +1631,7 @@ void _asrWorkerMain(SendPort toMain) {
       sherpa_onnx.OnlineRecognizer? recognizer;
       try {
         sherpa_onnx.initBindings();
-        final model = sherpa_onnx.OnlineModelConfig(
-          transducer: sherpa_onnx.OnlineTransducerModelConfig(
-            encoder: config.encoder,
-            decoder: config.decoder,
-            joiner: config.joiner,
-          ),
-          tokens: config.tokens,
-          modelType: config.modelType,
-        );
-        recognizer = sherpa_onnx.OnlineRecognizer(
-          sherpa_onnx.OnlineRecognizerConfig(
-            model: model,
-            ruleFsts: '',
-            enableEndpoint: true,
-            rule2MinTrailingSilence: config.silence,
-          ),
-        );
+        recognizer = sherpa_onnx.OnlineRecognizer(config.nativeConfig());
         core = AsrWorkerCore(
           recognizer: _SherpaRecognizerAdapter(recognizer),
           emit: toMain.send,

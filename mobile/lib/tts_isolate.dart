@@ -14,14 +14,17 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import './tts_isolate_lifecycle.dart';
 import './tts_process_owner.dart';
 import './utils.dart';
+import './performance_budget.dart';
+import './tts_model.dart';
 
 class TtsService {
   TtsService._()
-      : _lifecycle = TtsIsolateLifecycle(driver: _DartTtsWorkerDriver());
+    : _lifecycle = TtsIsolateLifecycle(driver: _DartTtsWorkerDriver());
   static final TtsService instance = TtsService._();
 
   final TtsIsolateLifecycle _lifecycle;
@@ -57,6 +60,7 @@ class TtsService {
   }
 
   Future<_TtsInit> _resolveInit() async {
+    final budget = getStartupPerformanceBudget();
     await copyAllAssetFiles();
     final dir = (await getApplicationSupportDirectory()).path;
     const modelDir = 'vits-piper-en_US-amy-low';
@@ -64,6 +68,7 @@ class TtsService {
       model: p.join(dir, modelDir, 'en_US-amy-low.onnx'),
       tokens: p.join(dir, modelDir, 'tokens.txt'),
       dataDir: p.join(dir, modelDir, 'espeak-ng-data'),
+      numThreads: budget.ttsThreads,
     );
   }
 
@@ -120,8 +125,34 @@ class _TtsInit {
   final String model;
   final String tokens;
   final String dataDir;
-  _TtsInit({required this.model, required this.tokens, required this.dataDir});
+  final int numThreads;
+  _TtsInit({
+    required this.model,
+    required this.tokens,
+    required this.dataDir,
+    required this.numThreads,
+  });
+
+  sherpa_onnx.OfflineTtsConfig nativeConfig() => buildPiperTtsConfig(
+    model: model,
+    tokens: tokens,
+    dataDir: dataDir,
+    numThreads: numThreads,
+  );
 }
+
+@visibleForTesting
+sherpa_onnx.OfflineTtsConfig rebuildTtsWorkerConfigForTesting({
+  required String model,
+  required String tokens,
+  required String dataDir,
+  required int numThreads,
+}) => _TtsInit(
+  model: model,
+  tokens: tokens,
+  dataDir: dataDir,
+  numThreads: numThreads,
+).nativeConfig();
 
 final class _TtsWorkerBootstrap {
   const _TtsWorkerBootstrap(this.epoch, this.toMain);
@@ -236,19 +267,7 @@ void _ttsWorkerMain(_TtsWorkerBootstrap bootstrap) {
       final init = msg.payload;
       if (init is! _TtsInit) return;
       sherpa_onnx.initBindings();
-      final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-        model: init.model,
-        tokens: init.tokens,
-        dataDir: init.dataDir,
-      );
-      final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
-        vits: vits,
-        numThreads: 2,
-        provider: 'cpu',
-      );
-      tts = sherpa_onnx.OfflineTts(
-        sherpa_onnx.OfflineTtsConfig(model: modelConfig, maxNumSenetences: 1),
-      );
+      tts = sherpa_onnx.OfflineTts(init.nativeConfig());
       toMain.send(TtsWorkerReady(epoch));
     } else if (msg is TtsWorkerRequest && msg.epoch == epoch) {
       try {

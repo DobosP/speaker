@@ -6,8 +6,29 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
 import './utils.dart';
+import './performance_budget.dart';
+
+// Pure config shared by the direct and worker-native constructors.
+sherpa_onnx.OfflineTtsConfig buildPiperTtsConfig({
+  required String model,
+  required String tokens,
+  required String dataDir,
+  required int numThreads,
+}) => sherpa_onnx.OfflineTtsConfig(
+  model: sherpa_onnx.OfflineTtsModelConfig(
+    vits: sherpa_onnx.OfflineTtsVitsModelConfig(
+      model: model,
+      tokens: tokens,
+      dataDir: dataDir,
+    ),
+    numThreads: numThreads,
+    provider: 'cpu',
+  ),
+  maxNumSenetences: 1,
+);
 
 Future<sherpa_onnx.OfflineTts> createOfflineTts() async {
+  final budget = getStartupPerformanceBudget();
   // sherpa-onnx needs files on disk; copy everything bundled in the APK.
   await copyAllAssetFiles();
   sherpa_onnx.initBindings();
@@ -15,18 +36,12 @@ Future<sherpa_onnx.OfflineTts> createOfflineTts() async {
   const modelDir = 'vits-piper-en_US-amy-low';
   final dir = (await getApplicationSupportDirectory()).path;
 
-  final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-    model: p.join(dir, modelDir, 'en_US-amy-low.onnx'),
-    tokens: p.join(dir, modelDir, 'tokens.txt'),
-    dataDir: p.join(dir, modelDir, 'espeak-ng-data'),
+  return sherpa_onnx.OfflineTts(
+    buildPiperTtsConfig(
+      model: p.join(dir, modelDir, 'en_US-amy-low.onnx'),
+      tokens: p.join(dir, modelDir, 'tokens.txt'),
+      dataDir: p.join(dir, modelDir, 'espeak-ng-data'),
+      numThreads: budget.ttsThreads,
+    ),
   );
-
-  final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
-    vits: vits,
-    numThreads: 2,
-    provider: 'cpu',
-  );
-
-  final config = sherpa_onnx.OfflineTtsConfig(model: modelConfig, maxNumSenetences: 1);
-  return sherpa_onnx.OfflineTts(config);
 }

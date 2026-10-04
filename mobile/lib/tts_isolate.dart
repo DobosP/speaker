@@ -11,17 +11,15 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
 import './tts_isolate_lifecycle.dart';
+import './tts_model.dart';
 import './tts_process_owner.dart';
-import './utils.dart';
 
 class TtsService {
   TtsService._()
-      : _lifecycle = TtsIsolateLifecycle(driver: _DartTtsWorkerDriver());
+    : _lifecycle = TtsIsolateLifecycle(driver: _DartTtsWorkerDriver());
   static final TtsService instance = TtsService._();
 
   final TtsIsolateLifecycle _lifecycle;
@@ -57,13 +55,11 @@ class TtsService {
   }
 
   Future<_TtsInit> _resolveInit() async {
-    await copyAllAssetFiles();
-    final dir = (await getApplicationSupportDirectory()).path;
-    const modelDir = 'vits-piper-en_US-amy-low';
+    final paths = await resolveTtsModelPaths();
     return _TtsInit(
-      model: p.join(dir, modelDir, 'en_US-amy-low.onnx'),
-      tokens: p.join(dir, modelDir, 'tokens.txt'),
-      dataDir: p.join(dir, modelDir, 'espeak-ng-data'),
+      model: paths.model,
+      tokens: paths.tokens,
+      dataDir: paths.dataDir,
     );
   }
 

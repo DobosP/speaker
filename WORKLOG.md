@@ -262,3 +262,16 @@ Final documentation gate: `files=36 dead_links=0 stale_terms=0 retired_verbs=0 o
 compact budgets AGENTS79 / STATUS120 / agent-map59 / agent-testing52. Whitespace clean.
 Changed runtime/setup/test files have **0 introduced Ruff findings** against HEAD (24
 pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Stage and bundle only the active mobile speech assets (ADR-0220)
+
+Mobile footprint: 262 Flutter tests passed with cached Sherpa 1.13.3/Gemma 0.16.5;
+10 final asset tests and full analysis clean. Expanded fake download/bundle gate: 13 passed
+in 0.92 s; shell syntax, scoped lint/format and whitespace clean. No native/model downloads
+or device runs. Default bundling selects the four locked ASR filenames; optional Whisper
+selects its three locked filenames. Available rights/readme files survive. Cached unused
+precisions and public examples are retained on disk. Locked active ASR 74,207,237 bytes;
+omitted Whisper 160,626,066 bytes, not an APK-size or phone-RSS result.

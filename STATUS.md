@@ -22,7 +22,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211 overlaps one mobile TTS lookahead with the current clip on a single synthesis lane. Exact playback cleanup releases returned
-  WAVs; uncertain cleanup retains its file. Device first-audio, CPU/thermal and acoustic behavior remain unvalidated.
+  WAVs; uncertain cleanup retains its file. ADR-0220 stages/bundles active assets only; device latency, thermals and acoustics remain unvalidated.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
   pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
@@ -108,7 +108,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
-- Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+- Prior Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
 - Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.

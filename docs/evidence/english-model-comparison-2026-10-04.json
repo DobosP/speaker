@@ -1,0 +1,2817 @@
+{
+  "kind": "english-model-comparison-2026-10-04",
+  "legacy_asr": {
+    "cells": [
+      {
+        "accuracy": {
+          "cer": 0.1724137931034483,
+          "character_errors": 15,
+          "clips": 6,
+          "empty": 0,
+          "exact": 3,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.2,
+          "word_errors": 5
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.1724137931034483,
+            "character_errors": 15,
+            "clips": 6,
+            "empty": 0,
+            "exact": 3,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.2,
+            "word_errors": 5
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.2958388978295637,
+        "decode_seconds": 11.448965346004115,
+        "error_count": 0,
+        "first_call_ms": 683.5063580001588,
+        "model_id": "zipformer-en",
+        "model_input": {
+          "input_finished": true,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "sherpa_streaming_file_flush",
+          "tail_padding_samples_per_clip": 10560,
+          "total_model_input_seconds": 50.58
+        },
+        "model_load_ms": 2730.0316429973464,
+        "model_tuple": {
+          "bytes": 265251117,
+          "files": 4,
+          "sha256": "11227ef6cfb8eb1e6eeb0abdb3d2bebab40af85cab4bf13a89604f3446242f5d"
+        },
+        "peak_rss_bytes": 399196160,
+        "process_threads": {
+          "after_model_load": 5,
+          "before_model_load": 2,
+          "maximum_sampled": 5
+        },
+        "process_wall_rtf": 0.39742313253228373,
+        "process_wall_seconds": 15.38027522899938,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 5,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 95,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "warm_p50_ms": 625.9755049977684,
+        "warm_p95_ms": 928.198984998744,
+        "worker_cpu_seconds": 27.051391923,
+        "worker_wall_rtf": 0.37984428038751883,
+        "worker_wall_seconds": 14.69997365099698
+      },
+      {
+        "accuracy": {
+          "cer": 0.1839080459770115,
+          "character_errors": 16,
+          "clips": 6,
+          "empty": 0,
+          "exact": 3,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.24,
+          "word_errors": 6
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.1839080459770115,
+            "character_errors": 16,
+            "clips": 6,
+            "empty": 0,
+            "exact": 3,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.24,
+            "word_errors": 6
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.18082566522051294,
+        "decode_seconds": 6.997953244033852,
+        "error_count": 0,
+        "first_call_ms": 503.5861099968315,
+        "model_id": "zipformer-en-int8",
+        "model_input": {
+          "input_finished": true,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "sherpa_streaming_file_flush",
+          "tail_padding_samples_per_clip": 10560,
+          "total_model_input_seconds": 50.58
+        },
+        "model_load_ms": 2275.4223800002364,
+        "model_tuple": {
+          "bytes": 74207237,
+          "files": 4,
+          "sha256": "03e09659aba808a4862c4ba2c7ac39aa9313a97e98d2ebe3a1cf5266ddc2b3b6"
+        },
+        "peak_rss_bytes": 185204736,
+        "process_threads": {
+          "after_model_load": 5,
+          "before_model_load": 2,
+          "maximum_sampled": 5
+        },
+        "process_wall_rtf": 0.25181894989667525,
+        "process_wall_seconds": 9.745393361001334,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 5,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 95,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "warm_p50_ms": 379.40961200365564,
+        "warm_p95_ms": 618.6770089989295,
+        "worker_cpu_seconds": 16.823021283,
+        "worker_wall_rtf": 0.242025116149824,
+        "worker_wall_seconds": 9.36637199499819
+      },
+      {
+        "accuracy": {
+          "cer": 0.0,
+          "character_errors": 0,
+          "clips": 6,
+          "empty": 0,
+          "exact": 6,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.0,
+          "word_errors": 0
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.0,
+            "character_errors": 0,
+            "clips": 6,
+            "empty": 0,
+            "exact": 6,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.0,
+            "word_errors": 0
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.040339538190939196,
+        "decode_seconds": 1.561140127989347,
+        "error_count": 0,
+        "first_call_ms": 106.91035100171575,
+        "model_id": "sensevoice-en",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 1154.4184849990415,
+        "model_tuple": {
+          "bytes": 239549735,
+          "files": 2,
+          "sha256": "51713b28f6528efe851885071f3f8c67e140701b3dfa62c2aa73e2ed2a5547b9"
+        },
+        "peak_rss_bytes": 443101184,
+        "process_threads": {
+          "after_model_load": 3,
+          "before_model_load": 2,
+          "maximum_sampled": 3
+        },
+        "process_wall_rtf": 0.09226764940571891,
+        "process_wall_seconds": 3.570758032001322,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 3,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 57,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "warm_p50_ms": 87.49967900075717,
+        "warm_p95_ms": 104.36708399356576,
+        "worker_cpu_seconds": 4.947382671,
+        "worker_wall_rtf": 0.07541003204143343,
+        "worker_wall_seconds": 2.918368240003474
+      },
+      {
+        "accuracy": {
+          "cer": 0.0,
+          "character_errors": 0,
+          "clips": 6,
+          "empty": 0,
+          "exact": 6,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.0,
+          "word_errors": 0
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.0,
+            "character_errors": 0,
+            "clips": 6,
+            "empty": 0,
+            "exact": 6,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.0,
+            "word_errors": 0
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.2317558395607804,
+        "decode_seconds": 8.968950991002202,
+        "error_count": 0,
+        "first_call_ms": 563.1938529986655,
+        "model_id": "parakeet-unified-en",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 2512.8292640001746,
+        "model_tuple": {
+          "bytes": 663043117,
+          "files": 4,
+          "sha256": "df2a1632f3895ef3ac7ef461493d1489c5ed618e6c49fab400384f1ff55f6e48"
+        },
+        "peak_rss_bytes": 1081569280,
+        "process_threads": {
+          "after_model_load": 5,
+          "before_model_load": 2,
+          "maximum_sampled": 5
+        },
+        "process_wall_rtf": 0.3583808211110068,
+        "process_wall_seconds": 13.869337776995962,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 5,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 95,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "warm_p50_ms": 493.3735480008181,
+        "warm_p95_ms": 640.910451002128,
+        "worker_cpu_seconds": 22.686721667,
+        "worker_wall_rtf": 0.3227086267183632,
+        "worker_wall_seconds": 12.488823854000657
+      },
+      {
+        "accuracy": {
+          "cer": 0.0,
+          "character_errors": 0,
+          "clips": 6,
+          "empty": 0,
+          "exact": 6,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.0,
+          "word_errors": 0
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.0,
+            "character_errors": 0,
+            "clips": 6,
+            "empty": 0,
+            "exact": 6,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.0,
+            "word_errors": 0
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.23386877074899198,
+        "decode_seconds": 9.05072142798599,
+        "error_count": 0,
+        "first_call_ms": 920.0300360025722,
+        "model_id": "parakeet-tdt-v3",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 2736.208381000324,
+        "model_tuple": {
+          "bytes": 670478772,
+          "files": 4,
+          "sha256": "bc3ee3d9473364b6b9cc853322db09aa58c1dbc05b16a9fd9bca53f2c83cd117"
+        },
+        "peak_rss_bytes": 1045561344,
+        "process_threads": {
+          "after_model_load": 5,
+          "before_model_load": 2,
+          "maximum_sampled": 5
+        },
+        "process_wall_rtf": 0.3676652980877961,
+        "process_wall_seconds": 14.22864703599771,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 5,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 95,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "warm_p50_ms": 459.9910219985759,
+        "warm_p95_ms": 744.4643709968659,
+        "worker_cpu_seconds": 22.031532056,
+        "worker_wall_rtf": 0.33112002232549526,
+        "worker_wall_seconds": 12.814344863996666
+      },
+      {
+        "accuracy": {
+          "cer": 0.0,
+          "character_errors": 0,
+          "clips": 6,
+          "empty": 0,
+          "exact": 6,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.0,
+          "word_errors": 0
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.0,
+            "character_errors": 0,
+            "clips": 6,
+            "empty": 0,
+            "exact": 6,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.0,
+            "word_errors": 0
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 1.3666486243149358,
+        "decode_seconds": 52.88930176098802,
+        "error_count": 0,
+        "first_call_ms": 3154.5287870030734,
+        "model_id": "faster-whisper-small",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 1445.605038999929,
+        "model_tuple": {
+          "bytes": 486216667,
+          "files": 14,
+          "sha256": "33d5c9c1f2fdeea6395a4d9845fc0a40fe06626d9a09b4928c07f9ca3d09ac4f"
+        },
+        "peak_rss_bytes": 783925248,
+        "process_threads": {
+          "after_model_load": 4,
+          "before_model_load": 2,
+          "maximum_sampled": 4
+        },
+        "process_wall_rtf": 1.4460606563049554,
+        "process_wall_seconds": 55.96254739900178,
+        "repeat_disagreements": 0,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 6,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 112,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 2,
+          "moonshine_single_thread_env": "0",
+          "native_thread_budget_supported": true,
+          "ort_single_thread": false,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "ctranslate2": "4.8.1",
+          "faster-whisper": "1.2.1",
+          "numpy": "2.4.6",
+          "python": "3.12.3"
+        },
+        "warm_p50_ms": 2876.3161129973014,
+        "warm_p95_ms": 3346.423718998267,
+        "worker_cpu_seconds": 87.80587069,
+        "worker_wall_rtf": 1.415247093436682,
+        "worker_wall_seconds": 54.7700625159996
+      },
+      {
+        "accuracy": {
+          "cer": 0.3563218390804598,
+          "character_errors": 31,
+          "clips": 6,
+          "empty": 0,
+          "exact": 1,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.4,
+          "word_errors": 10
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.3563218390804598,
+            "character_errors": 31,
+            "clips": 6,
+            "empty": 0,
+            "exact": 1,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.4,
+            "word_errors": 10
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d",
+          "moonshine_adapter_sha256": "91942fbe225407bd71b284ee28893ba4c808ef897f3ee01fa85fb682cbbb13cf"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.14034096351368966,
+        "decode_seconds": 5.43119528797979,
+        "error_count": 0,
+        "first_call_ms": 335.1833369961241,
+        "model_id": "moonshine-tiny-streaming-v015",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 291.28478599886876,
+        "model_tuple": {
+          "bytes": 45233659,
+          "files": 8,
+          "sha256": "dc583c00905b8be1016555cb50591ec20220f6eca5a08556d0e198b76300f7ef"
+        },
+        "peak_rss_bytes": 239296512,
+        "process_threads": {
+          "after_model_load": 2,
+          "before_model_load": 2,
+          "maximum_sampled": 2
+        },
+        "process_wall_rtf": 0.15986003630501439,
+        "process_wall_seconds": 6.186583405004058,
+        "repeat_disagreements": 8,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "27e855edf4b67ae863f2ae5362ab543137b39739aa69a2a0cbde58bebb445054",
+          "wheel_bytes": 19897307,
+          "wheel_sha256": "1ed9e0ccf94be4845d69e7fa862dcf4c8b5801a758796966494c694f48184496"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 2,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 38,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 1,
+          "moonshine_single_thread_env": "1",
+          "native_thread_budget_supported": false,
+          "ort_single_thread": true,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "moonshine-voice": "0.1.5",
+          "python": "3.12.3"
+        },
+        "warm_p50_ms": 285.9796949996962,
+        "warm_p95_ms": 499.07581099978415,
+        "worker_cpu_seconds": 5.409290724,
+        "worker_wall_rtf": 0.1504727932815536,
+        "worker_wall_seconds": 5.823297099996125
+      },
+      {
+        "accuracy": {
+          "cer": 0.27586206896551724,
+          "character_errors": 24,
+          "clips": 6,
+          "empty": 0,
+          "exact": 1,
+          "reference_characters": 87,
+          "reference_words": 25,
+          "wer": 0.28,
+          "word_errors": 7
+        },
+        "by_role": {
+          "round_trip": {
+            "cer": 0.27586206896551724,
+            "character_errors": 24,
+            "clips": 6,
+            "empty": 0,
+            "exact": 1,
+            "reference_characters": 87,
+            "reference_words": 25,
+            "wer": 0.28,
+            "word_errors": 7
+          }
+        },
+        "calls": 18,
+        "clips": 6,
+        "code_binding": {
+          "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d",
+          "moonshine_adapter_sha256": "91942fbe225407bd71b284ee28893ba4c808ef897f3ee01fa85fb682cbbb13cf"
+        },
+        "complete_corpus_coverage": true,
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "decode_rtf": 0.2599424756588101,
+        "decode_seconds": 10.059773807995953,
+        "error_count": 0,
+        "first_call_ms": 553.1641670022509,
+        "model_id": "moonshine-small-streaming-v015",
+        "model_input": {
+          "input_finished": false,
+          "original_audio_seconds": 12.9,
+          "sample_rate": 16000,
+          "source_audio_seconds_across_calls": 38.7,
+          "tail_padding_policy": "none",
+          "tail_padding_samples_per_clip": 0,
+          "total_model_input_seconds": 38.7
+        },
+        "model_load_ms": 350.6580129978829,
+        "model_tuple": {
+          "bytes": 142300974,
+          "files": 8,
+          "sha256": "b1c374b79b0929d7c7e10859eab72b1cb5a5118312cd50515d2ab76a42c800ec"
+        },
+        "peak_rss_bytes": 490041344,
+        "process_threads": {
+          "after_model_load": 2,
+          "before_model_load": 2,
+          "maximum_sampled": 2
+        },
+        "process_wall_rtf": 0.28768157777773545,
+        "process_wall_seconds": 11.133277059998363,
+        "repeat_disagreements": 8,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "27e855edf4b67ae863f2ae5362ab543137b39739aa69a2a0cbde58bebb445054",
+          "wheel_bytes": 19897307,
+          "wheel_sha256": "1ed9e0ccf94be4845d69e7fa862dcf4c8b5801a758796966494c694f48184496"
+        },
+        "status": "complete",
+        "thread_affinity": {
+          "caller_mask_logical_cpus": 2,
+          "cgroup_isolation": false,
+          "continuous_observation": false,
+          "maximum_observed_logical_cpus": 2,
+          "maximum_outside_caller_mask_observations": 0,
+          "maximum_threads_observed": 2,
+          "outside_caller_mask_observations": 0,
+          "read_failures": 0,
+          "sample_attempts": 19,
+          "sampled_compliant": true,
+          "sampling_failures": 0,
+          "scope": "after_model_load_and_each_decode_samples",
+          "successful_samples": 19,
+          "threads_observed": 38,
+          "unknown_thread_observations": 0,
+          "violating_samples": 0
+        },
+        "thread_policy": {
+          "configured_native_threads": 1,
+          "moonshine_single_thread_env": "1",
+          "native_thread_budget_supported": false,
+          "ort_single_thread": true,
+          "requested_affinity_threads": 2
+        },
+        "versions": {
+          "moonshine-voice": "0.1.5",
+          "python": "3.12.3"
+        },
+        "warm_p50_ms": 563.1784659999539,
+        "warm_p95_ms": 693.3799260004889,
+        "worker_cpu_seconds": 10.584834322,
+        "worker_wall_rtf": 0.2736565321963265,
+        "worker_wall_seconds": 10.590507795997837
+      }
+    ],
+    "config_sha256": "e4c94732e9ded9f4d726c615ba85a0f8c60751a5f1a14b788f0947e03570b342",
+    "corpus": {
+      "audio_seconds": 12.9,
+      "clips": 6,
+      "kind": "recorded-legacy",
+      "manifest_sha256": "513d2cc3cea0b6c059826a0d4ae6b463cd136fe360f0dcf8c3ab03e29a20886d",
+      "sha256": "26e80c3f760434ea92f2981400c4840c9c60083f79f75cb5d7454f88dd806f9e"
+    },
+    "execution": {
+      "accuracy_repeat": "first",
+      "all_thread_affinity_scope": "after_model_load_and_each_decode_samples_not_continuous_or_cgroup",
+      "decode_rtf_scope": "decode_wall_over_repeated_source_audio",
+      "process_threads_scope": "before_and_after_model_load_only_not_continuous_peak",
+      "process_wall_includes": "startup_load_decode_scoring_verification",
+      "repeats": 3,
+      "rss_scope": "isolated_process_high_water",
+      "streaming_input_finished_scope": "per_model_input_receipt",
+      "tail_padding_scope": "per_model_input_receipt",
+      "threads": 2,
+      "timeout_seconds_per_model": 900.0,
+      "warm_latency_scope": "all_calls_except_first"
+    },
+    "ok": true,
+    "schema_version": 1,
+    "scope": {
+      "after_pcm_only": true,
+      "cpu_only": true,
+      "default_promotion": false,
+      "endpoint_authority": false,
+      "english_only": true,
+      "held_out": false,
+      "human_recording_attested": false,
+      "live_latency": false,
+      "network_sandbox_attested": false,
+      "no_agent_control": true,
+      "no_audio_device": true,
+      "no_tts": true,
+      "phone_performance": false,
+      "reference_provenance": "provided_legacy_labels"
+    }
+  },
+  "llm_public_strict_format_canaries": {
+    "benchmark_code_sha256": "08ef1c1504fafe525c51b5898c8a08a71de7d779d62fdc23a5865ee467da28e2",
+    "cells": [
+      {
+        "canaries": {
+          "arithmetic": {
+            "attempts": 3,
+            "passed": 0
+          },
+          "geography": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "instruction": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "spelling": {
+            "attempts": 3,
+            "passed": 3
+          }
+        },
+        "canary_scoring": "strict-format-proxy",
+        "cold_completion_ms": 1972.066939000797,
+        "cold_first_visible_chunk_ms": 1426.872962001653,
+        "context_tokens": 1024,
+        "cpu_affinity_enforced": true,
+        "cpu_seconds": 13.760067407,
+        "decoding_mode": "greedy; min_p inactive",
+        "empty_outputs": 0,
+        "generations": 12,
+        "gpu_layers": 0,
+        "load_ms": 620.9786159961368,
+        "max_reply_tokens": 64,
+        "min_p": 0.0,
+        "model_bytes": 1153529216,
+        "model_id": "minicpm5-1b-q8",
+        "model_sha256": "0dc7638539067268774c275a14a6ec9c7e01f7eeb2cff606c8590361fa527e4c",
+        "owner_reference_prompts": 0,
+        "process_peak_rss_bytes": 1309843456,
+        "reasoning_marker_outputs": 0,
+        "retokenized_completion_tokens_per_second": 3.918789591493333,
+        "runtime_version": "0.3.33",
+        "status": "ok",
+        "template_sha256": "7451a05cf1e28a79d97d7c0bc951028c0b1915119bf9046acd06a0e3d931f47c",
+        "thinking_requested": false,
+        "threads": 2,
+        "truncated_outputs": 0,
+        "warm_completion_ms": {
+          "p50": 551.8338659967412,
+          "p95": 639.0686359954998
+        },
+        "warm_filesystem_model_load": true,
+        "warm_first_visible_chunk_ms": {
+          "p50": 450.6137639982626,
+          "p95": 493.11198299983516
+        }
+      },
+      {
+        "canaries": {
+          "arithmetic": {
+            "attempts": 3,
+            "passed": 0
+          },
+          "geography": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "instruction": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "spelling": {
+            "attempts": 3,
+            "passed": 3
+          }
+        },
+        "canary_scoring": "strict-format-proxy",
+        "cold_completion_ms": 4394.2444120039,
+        "cold_first_visible_chunk_ms": 3464.362221006013,
+        "context_tokens": 1024,
+        "cpu_affinity_enforced": true,
+        "cpu_seconds": 29.540699229999998,
+        "decoding_mode": "greedy; min_p inactive",
+        "empty_outputs": 0,
+        "generations": 12,
+        "gpu_layers": 0,
+        "load_ms": 1856.8565079986001,
+        "max_reply_tokens": 64,
+        "min_p": 0.0,
+        "model_bytes": 1561318368,
+        "model_id": "minicpm5-2b-q4km",
+        "model_sha256": "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd",
+        "owner_reference_prompts": 0,
+        "process_peak_rss_bytes": 2691018752,
+        "reasoning_marker_outputs": 0,
+        "retokenized_completion_tokens_per_second": 1.4252783862714788,
+        "runtime_version": "0.3.33",
+        "status": "ok",
+        "template_sha256": "cc945752db555d60949b16989df4ccfeb52a313d6b4b5c5229dd786e2e9fcf1c",
+        "thinking_requested": false,
+        "threads": 2,
+        "truncated_outputs": 0,
+        "warm_completion_ms": {
+          "p50": 1176.7871539996122,
+          "p95": 1456.1751680012094
+        },
+        "warm_filesystem_model_load": true,
+        "warm_first_visible_chunk_ms": {
+          "p50": 1080.7580620021326,
+          "p95": 1218.2882049964974
+        }
+      }
+    ],
+    "evidence_scope": {
+      "asr_errors_included": false,
+      "audio_executed": false,
+      "network_inference": false,
+      "phone_validation": false,
+      "quality_promotion": false,
+      "tools_executed": false
+    },
+    "kind": "english-local-llm-public-canary-v1",
+    "manifest_sha256": "e1827b43c5801be5d71d396c91d777e9687f9b2e368510ef9232046e33a26423",
+    "repeats": 3,
+    "schema_version": 1,
+    "selected_owner_reference_count": 0,
+    "source_reference_count": 37
+  },
+  "llm_reference_latency": {
+    "cells": [
+      {
+        "canaries": {
+          "arithmetic": {
+            "attempts": 3,
+            "passed": 0
+          },
+          "geography": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "instruction": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "spelling": {
+            "attempts": 3,
+            "passed": 0
+          }
+        },
+        "canary_scoring": "strict-format-proxy",
+        "cold_completion_ms": 2030.046150997805,
+        "cold_first_visible_chunk_ms": 1477.6009259949205,
+        "context_tokens": 1024,
+        "cpu_affinity_enforced": true,
+        "cpu_seconds": 120.432044073,
+        "decoding_mode": "greedy; min_p inactive",
+        "empty_outputs": 0,
+        "generations": 36,
+        "gpu_layers": 0,
+        "load_ms": 827.9080889988109,
+        "max_reply_tokens": 64,
+        "min_p": 0.0,
+        "model_bytes": 1153529216,
+        "model_id": "minicpm5-1b-q8",
+        "model_sha256": "0dc7638539067268774c275a14a6ec9c7e01f7eeb2cff606c8590361fa527e4c",
+        "owner_reference_prompts": 8,
+        "process_peak_rss_bytes": 1347575808,
+        "reasoning_marker_outputs": 0,
+        "retokenized_completion_tokens_per_second": 11.469895793063065,
+        "runtime_version": "0.3.33",
+        "status": "ok",
+        "template_sha256": "7451a05cf1e28a79d97d7c0bc951028c0b1915119bf9046acd06a0e3d931f47c",
+        "thinking_requested": false,
+        "threads": 2,
+        "truncated_outputs": 3,
+        "warm_completion_ms": {
+          "p50": 1327.9272559957462,
+          "p95": 4773.034757003188
+        },
+        "warm_filesystem_model_load": true,
+        "warm_first_visible_chunk_ms": {
+          "p50": 376.7455159977544,
+          "p95": 539.6912509968388
+        }
+      },
+      {
+        "canaries": {
+          "arithmetic": {
+            "attempts": 3,
+            "passed": 0
+          },
+          "geography": {
+            "attempts": 3,
+            "passed": 0
+          },
+          "instruction": {
+            "attempts": 3,
+            "passed": 3
+          },
+          "spelling": {
+            "attempts": 3,
+            "passed": 0
+          }
+        },
+        "canary_scoring": "strict-format-proxy",
+        "cold_completion_ms": 4431.732037999609,
+        "cold_first_visible_chunk_ms": 3356.701193995832,
+        "context_tokens": 1024,
+        "cpu_affinity_enforced": true,
+        "cpu_seconds": 219.67707665,
+        "decoding_mode": "greedy; min_p inactive",
+        "empty_outputs": 0,
+        "generations": 36,
+        "gpu_layers": 0,
+        "load_ms": 2047.5007860004553,
+        "max_reply_tokens": 64,
+        "min_p": 0.0,
+        "model_bytes": 1561318368,
+        "model_id": "minicpm5-2b-q4km",
+        "model_sha256": "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd",
+        "owner_reference_prompts": 8,
+        "process_peak_rss_bytes": 2727862272,
+        "reasoning_marker_outputs": 0,
+        "retokenized_completion_tokens_per_second": 6.596381441016802,
+        "runtime_version": "0.3.33",
+        "status": "ok",
+        "template_sha256": "cc945752db555d60949b16989df4ccfeb52a313d6b4b5c5229dd786e2e9fcf1c",
+        "thinking_requested": false,
+        "threads": 2,
+        "truncated_outputs": 0,
+        "warm_completion_ms": {
+          "p50": 2716.7322210007114,
+          "p95": 5831.969710998237
+        },
+        "warm_filesystem_model_load": true,
+        "warm_first_visible_chunk_ms": {
+          "p50": 894.8460100000375,
+          "p95": 1229.9106719947304
+        }
+      }
+    ],
+    "evidence_scope": {
+      "asr_errors_included": false,
+      "audio_executed": false,
+      "network_inference": false,
+      "phone_validation": false,
+      "quality_promotion": false,
+      "tools_executed": false
+    },
+    "kind": "english-local-llm-reference-canary-v1",
+    "manifest_sha256": "e1827b43c5801be5d71d396c91d777e9687f9b2e368510ef9232046e33a26423",
+    "repeats": 3,
+    "schema_version": 1,
+    "selected_owner_reference_count": 8,
+    "source_reference_count": 37
+  },
+  "method_corrections": [
+    "Initial unpadded Zipformer results are diagnostic only; corrected cells append10560zero samples beforeinput_finished.",
+    "Initial owner thread scope label described post-call samples but only before/after-load samples were gathered.",
+    "Initial LLM open-question strict-format counts are not intelligence scores; separate explicitlyformatted canaries are reported.",
+    "Stock Moonshine violates budget via ORT thread affinity and remains rejected; explicit env1 variant is separately bound."
+  ],
+  "owner_asr": {
+    "cells": [
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.0914419695193435,
+            "character_errors": 78,
+            "clips": 37,
+            "empty": 0,
+            "exact": 24,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.14150943396226415,
+            "word_errors": 30
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.02666666666666667,
+              "character_errors": 2,
+              "clips": 4,
+              "empty": 0,
+              "exact": 3,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.05263157894736842,
+              "word_errors": 1
+            },
+            "command": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 5,
+              "empty": 0,
+              "exact": 5,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "round_trip": {
+              "cer": 0.10954616588419405,
+              "character_errors": 70,
+              "clips": 25,
+              "empty": 0,
+              "exact": 15,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.15625,
+              "word_errors": 25
+            },
+            "speak": {
+              "cer": 0.05454545454545454,
+              "character_errors": 6,
+              "clips": 3,
+              "empty": 0,
+              "exact": 1,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.14814814814814814,
+              "word_errors": 4
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "eebf3085abd1b7a03b9e8fa976a675f073a1a38a4ad2394f76419b20b7cbf648"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.039405107431675385,
+          "decode_seconds": 11.951569084027142,
+          "error_count": 0,
+          "first_call_ms": 51.918008997745346,
+          "model_id": "sensevoice-en",
+          "model_load_ms": 980.2434969969909,
+          "model_tuple": {
+            "bytes": 239549735,
+            "files": 2,
+            "sha256": "51713b28f6528efe851885071f3f8c67e140701b3dfa62c2aa73e2ed2a5547b9"
+          },
+          "peak_rss_bytes": 459665408,
+          "process_threads": {
+            "after_model_load": 3,
+            "before_model_load": 2,
+            "maximum_sampled": 3
+          },
+          "process_wall_rtf": 0.04602050333003513,
+          "process_wall_seconds": 13.958018659999652,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "numpy": "2.4.6",
+            "python": "3.12.3",
+            "sherpa-onnx": "1.13.3"
+          },
+          "warm_p50_ms": 107.43897900101729,
+          "warm_p95_ms": 145.66819299943745,
+          "worker_cpu_seconds": 25.764566541,
+          "worker_wall_rtf": 0.04351708051434833,
+          "worker_wall_seconds": 13.198730520001845
+        },
+        "source_report": "asr-owner-stock.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.07033997655334115,
+            "character_errors": 60,
+            "clips": 37,
+            "empty": 0,
+            "exact": 30,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.08018867924528301,
+            "word_errors": 17
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 4,
+              "empty": 0,
+              "exact": 4,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "command": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 5,
+              "empty": 0,
+              "exact": 5,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "round_trip": {
+              "cer": 0.0892018779342723,
+              "character_errors": 57,
+              "clips": 25,
+              "empty": 0,
+              "exact": 19,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.0875,
+              "word_errors": 14
+            },
+            "speak": {
+              "cer": 0.02727272727272727,
+              "character_errors": 3,
+              "clips": 3,
+              "empty": 0,
+              "exact": 2,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.1111111111111111,
+              "word_errors": 3
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "eebf3085abd1b7a03b9e8fa976a675f073a1a38a4ad2394f76419b20b7cbf648"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.18475007016492503,
+          "decode_seconds": 56.03469628102175,
+          "error_count": 0,
+          "first_call_ms": 354.7466119998717,
+          "model_id": "parakeet-unified-en",
+          "model_load_ms": 2739.6394810057245,
+          "model_tuple": {
+            "bytes": 663043117,
+            "files": 4,
+            "sha256": "df2a1632f3895ef3ac7ef461493d1489c5ed618e6c49fab400384f1ff55f6e48"
+          },
+          "peak_rss_bytes": 1225531392,
+          "process_threads": {
+            "after_model_load": 5,
+            "before_model_load": 2,
+            "maximum_sampled": 5
+          },
+          "process_wall_rtf": 0.20178519184636665,
+          "process_wall_seconds": 61.201448687002994,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "numpy": "2.4.6",
+            "python": "3.12.3",
+            "sherpa-onnx": "1.13.3"
+          },
+          "warm_p50_ms": 484.0687670002808,
+          "warm_p95_ms": 800.3446179936873,
+          "worker_cpu_seconds": 116.121691075,
+          "worker_wall_rtf": 0.1972752614836895,
+          "worker_wall_seconds": 59.83358680800302
+        },
+        "source_report": "asr-owner-stock.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.03399765533411489,
+            "character_errors": 29,
+            "clips": 37,
+            "empty": 0,
+            "exact": 29,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.07547169811320754,
+            "word_errors": 16
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 4,
+              "empty": 0,
+              "exact": 4,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "command": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 5,
+              "empty": 0,
+              "exact": 5,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "round_trip": {
+              "cer": 0.026604068857589983,
+              "character_errors": 17,
+              "clips": 25,
+              "empty": 0,
+              "exact": 19,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.0625,
+              "word_errors": 10
+            },
+            "speak": {
+              "cer": 0.10909090909090909,
+              "character_errors": 12,
+              "clips": 3,
+              "empty": 0,
+              "exact": 1,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.2222222222222222,
+              "word_errors": 6
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "eebf3085abd1b7a03b9e8fa976a675f073a1a38a4ad2394f76419b20b7cbf648"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.20178808856889185,
+          "decode_seconds": 61.20232726294489,
+          "error_count": 0,
+          "first_call_ms": 398.20310999493813,
+          "model_id": "parakeet-tdt-v3",
+          "model_load_ms": 2585.5315680018975,
+          "model_tuple": {
+            "bytes": 670478772,
+            "files": 4,
+            "sha256": "bc3ee3d9473364b6b9cc853322db09aa58c1dbc05b16a9fd9bca53f2c83cd117"
+          },
+          "peak_rss_bytes": 1204563968,
+          "process_threads": {
+            "after_model_load": 5,
+            "before_model_load": 2,
+            "maximum_sampled": 5
+          },
+          "process_wall_rtf": 0.21888230400262595,
+          "process_wall_seconds": 66.38700280399644,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "numpy": "2.4.6",
+            "python": "3.12.3",
+            "sherpa-onnx": "1.13.3"
+          },
+          "warm_p50_ms": 534.0973999991547,
+          "warm_p95_ms": 847.9160560018499,
+          "worker_cpu_seconds": 123.76425710400001,
+          "worker_wall_rtf": 0.21391449411803606,
+          "worker_wall_seconds": 64.88026606600033
+        },
+        "source_report": "asr-owner-stock.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.0984759671746776,
+            "character_errors": 84,
+            "clips": 37,
+            "empty": 0,
+            "exact": 25,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.10849056603773585,
+            "word_errors": 23
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 4,
+              "empty": 0,
+              "exact": 4,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "command": {
+              "cer": 0.0,
+              "character_errors": 0,
+              "clips": 5,
+              "empty": 0,
+              "exact": 5,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.0,
+              "word_errors": 0
+            },
+            "round_trip": {
+              "cer": 0.12206572769953052,
+              "character_errors": 78,
+              "clips": 25,
+              "empty": 0,
+              "exact": 15,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.11875,
+              "word_errors": 19
+            },
+            "speak": {
+              "cer": 0.05454545454545454,
+              "character_errors": 6,
+              "clips": 3,
+              "empty": 0,
+              "exact": 1,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.14814814814814814,
+              "word_errors": 4
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "eebf3085abd1b7a03b9e8fa976a675f073a1a38a4ad2394f76419b20b7cbf648"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 1.286585323458631,
+          "decode_seconds": 390.2213286050028,
+          "error_count": 0,
+          "first_call_ms": 4536.840835004114,
+          "model_id": "faster-whisper-small",
+          "model_load_ms": 1334.4702709946432,
+          "model_tuple": {
+            "bytes": 486216667,
+            "files": 14,
+            "sha256": "33d5c9c1f2fdeea6395a4d9845fc0a40fe06626d9a09b4928c07f9ca3d09ac4f"
+          },
+          "peak_rss_bytes": 784777216,
+          "process_threads": {
+            "after_model_load": 4,
+            "before_model_load": 2,
+            "maximum_sampled": 4
+          },
+          "process_wall_rtf": 1.2970773639268238,
+          "process_wall_seconds": 393.4035644790056,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "ctranslate2": "4.8.1",
+            "faster-whisper": "1.2.1",
+            "numpy": "2.4.6",
+            "python": "3.12.3"
+          },
+          "warm_p50_ms": 3473.765734001063,
+          "warm_p95_ms": 4307.440147997113,
+          "worker_cpu_seconds": 540.386849255,
+          "worker_wall_rtf": 1.2933935151665006,
+          "worker_wall_seconds": 392.28625314999954
+        },
+        "source_report": "asr-owner-stock.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.10199296600234467,
+            "character_errors": 87,
+            "clips": 37,
+            "empty": 0,
+            "exact": 17,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.19811320754716982,
+            "word_errors": 42
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.08,
+              "character_errors": 6,
+              "clips": 4,
+              "empty": 0,
+              "exact": 2,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.10526315789473684,
+              "word_errors": 2
+            },
+            "command": {
+              "cer": 0.27586206896551724,
+              "character_errors": 8,
+              "clips": 5,
+              "empty": 0,
+              "exact": 3,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.5,
+              "word_errors": 3
+            },
+            "round_trip": {
+              "cer": 0.09546165884194054,
+              "character_errors": 61,
+              "clips": 25,
+              "empty": 0,
+              "exact": 11,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.1875,
+              "word_errors": 30
+            },
+            "speak": {
+              "cer": 0.10909090909090909,
+              "character_errors": 12,
+              "clips": 3,
+              "empty": 0,
+              "exact": 1,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.25925925925925924,
+              "word_errors": 7
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.32599102285856196,
+          "decode_seconds": 98.87307723300182,
+          "error_count": 0,
+          "first_call_ms": 482.1574090019567,
+          "model_id": "zipformer-en",
+          "model_input": {
+            "input_finished": true,
+            "original_audio_seconds": 101.1,
+            "sample_rate": 16000,
+            "source_audio_seconds_across_calls": 303.29999999999995,
+            "tail_padding_policy": "sherpa_streaming_file_flush",
+            "tail_padding_samples_per_clip": 10560,
+            "total_model_input_seconds": 376.56
+          },
+          "model_load_ms": 2976.3901229962357,
+          "model_tuple": {
+            "bytes": 265251117,
+            "files": 4,
+            "sha256": "11227ef6cfb8eb1e6eeb0abdb3d2bebab40af85cab4bf13a89604f3446242f5d"
+          },
+          "peak_rss_bytes": 404815872,
+          "process_threads": {
+            "after_model_load": 5,
+            "before_model_load": 2,
+            "maximum_sampled": 5
+          },
+          "process_wall_rtf": 0.34093341283547834,
+          "process_wall_seconds": 103.40510411300056,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_affinity": {
+            "caller_mask_logical_cpus": 2,
+            "cgroup_isolation": false,
+            "continuous_observation": false,
+            "maximum_observed_logical_cpus": 2,
+            "maximum_outside_caller_mask_observations": 0,
+            "maximum_threads_observed": 5,
+            "outside_caller_mask_observations": 0,
+            "read_failures": 0,
+            "sample_attempts": 112,
+            "sampled_compliant": true,
+            "sampling_failures": 0,
+            "scope": "after_model_load_and_each_decode_samples",
+            "successful_samples": 112,
+            "threads_observed": 560,
+            "unknown_thread_observations": 0,
+            "violating_samples": 0
+          },
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "ort_single_thread": false,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "numpy": "2.4.6",
+            "python": "3.12.3",
+            "sherpa-onnx": "1.13.3"
+          },
+          "warm_p50_ms": 883.1591340058367,
+          "warm_p95_ms": 1459.5439870026894,
+          "worker_cpu_seconds": 196.285345504,
+          "worker_wall_rtf": 0.3384290379426258,
+          "worker_wall_seconds": 102.64552720799838
+        },
+        "source_report": "owner-corrected.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.10316529894490035,
+            "character_errors": 88,
+            "clips": 37,
+            "empty": 0,
+            "exact": 17,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.19811320754716982,
+            "word_errors": 42
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.04,
+              "character_errors": 3,
+              "clips": 4,
+              "empty": 0,
+              "exact": 3,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.05263157894736842,
+              "word_errors": 1
+            },
+            "command": {
+              "cer": 0.27586206896551724,
+              "character_errors": 8,
+              "clips": 5,
+              "empty": 0,
+              "exact": 3,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.5,
+              "word_errors": 3
+            },
+            "round_trip": {
+              "cer": 0.09859154929577464,
+              "character_errors": 63,
+              "clips": 25,
+              "empty": 0,
+              "exact": 11,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.1875,
+              "word_errors": 30
+            },
+            "speak": {
+              "cer": 0.12727272727272726,
+              "character_errors": 14,
+              "clips": 3,
+              "empty": 0,
+              "exact": 0,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.2962962962962963,
+              "word_errors": 8
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.19257627018154827,
+          "decode_seconds": 58.40838274606358,
+          "error_count": 0,
+          "first_call_ms": 290.1925839978503,
+          "model_id": "zipformer-en-int8",
+          "model_input": {
+            "input_finished": true,
+            "original_audio_seconds": 101.1,
+            "sample_rate": 16000,
+            "source_audio_seconds_across_calls": 303.29999999999995,
+            "tail_padding_policy": "sherpa_streaming_file_flush",
+            "tail_padding_samples_per_clip": 10560,
+            "total_model_input_seconds": 376.56
+          },
+          "model_load_ms": 2956.194571997912,
+          "model_tuple": {
+            "bytes": 74207237,
+            "files": 4,
+            "sha256": "03e09659aba808a4862c4ba2c7ac39aa9313a97e98d2ebe3a1cf5266ddc2b3b6"
+          },
+          "peak_rss_bytes": 186556416,
+          "process_threads": {
+            "after_model_load": 5,
+            "before_model_load": 2,
+            "maximum_sampled": 5
+          },
+          "process_wall_rtf": 0.2049718979591123,
+          "process_wall_seconds": 62.16797665099875,
+          "repeat_disagreements": 0,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+          },
+          "status": "complete",
+          "thread_affinity": {
+            "caller_mask_logical_cpus": 2,
+            "cgroup_isolation": false,
+            "continuous_observation": false,
+            "maximum_observed_logical_cpus": 2,
+            "maximum_outside_caller_mask_observations": 0,
+            "maximum_threads_observed": 5,
+            "outside_caller_mask_observations": 0,
+            "read_failures": 0,
+            "sample_attempts": 112,
+            "sampled_compliant": true,
+            "sampling_failures": 0,
+            "scope": "after_model_load_and_each_decode_samples",
+            "successful_samples": 112,
+            "threads_observed": 560,
+            "unknown_thread_observations": 0,
+            "violating_samples": 0
+          },
+          "thread_policy": {
+            "configured_native_threads": 2,
+            "moonshine_single_thread_env": "0",
+            "native_thread_budget_supported": true,
+            "ort_single_thread": false,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "numpy": "2.4.6",
+            "python": "3.12.3",
+            "sherpa-onnx": "1.13.3"
+          },
+          "warm_p50_ms": 519.5696410009987,
+          "warm_p95_ms": 855.8663340008934,
+          "worker_cpu_seconds": 120.36534507399999,
+          "worker_wall_rtf": 0.203388631457311,
+          "worker_wall_seconds": 61.68777192100242
+        },
+        "source_report": "owner-corrected.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.1817116060961313,
+            "character_errors": 155,
+            "clips": 37,
+            "empty": 0,
+            "exact": 15,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.25,
+            "word_errors": 53
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.18666666666666668,
+              "character_errors": 14,
+              "clips": 4,
+              "empty": 0,
+              "exact": 2,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.21052631578947367,
+              "word_errors": 4
+            },
+            "command": {
+              "cer": 0.4482758620689655,
+              "character_errors": 13,
+              "clips": 5,
+              "empty": 0,
+              "exact": 2,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.8333333333333334,
+              "word_errors": 5
+            },
+            "round_trip": {
+              "cer": 0.1564945226917058,
+              "character_errors": 100,
+              "clips": 25,
+              "empty": 0,
+              "exact": 11,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.20625,
+              "word_errors": 33
+            },
+            "speak": {
+              "cer": 0.2545454545454545,
+              "character_errors": 28,
+              "clips": 3,
+              "empty": 0,
+              "exact": 0,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.4074074074074074,
+              "word_errors": 11
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d",
+            "moonshine_adapter_sha256": "91942fbe225407bd71b284ee28893ba4c808ef897f3ee01fa85fb682cbbb13cf"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.11598751797892412,
+          "decode_seconds": 35.17901420300768,
+          "error_count": 0,
+          "first_call_ms": 247.53252899972722,
+          "model_id": "moonshine-tiny-streaming-v015",
+          "model_input": {
+            "input_finished": false,
+            "original_audio_seconds": 101.1,
+            "sample_rate": 16000,
+            "source_audio_seconds_across_calls": 303.29999999999995,
+            "tail_padding_policy": "none",
+            "tail_padding_samples_per_clip": 0,
+            "total_model_input_seconds": 303.29999999999995
+          },
+          "model_load_ms": 214.77802700246684,
+          "model_tuple": {
+            "bytes": 45233659,
+            "files": 8,
+            "sha256": "dc583c00905b8be1016555cb50591ec20220f6eca5a08556d0e198b76300f7ef"
+          },
+          "peak_rss_bytes": 253079552,
+          "process_threads": {
+            "after_model_load": 2,
+            "before_model_load": 2,
+            "maximum_sampled": 2
+          },
+          "process_wall_rtf": 0.11900120809429632,
+          "process_wall_seconds": 36.09306641500007,
+          "repeat_disagreements": 6,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "27e855edf4b67ae863f2ae5362ab543137b39739aa69a2a0cbde58bebb445054",
+            "wheel_bytes": 19897307,
+            "wheel_sha256": "1ed9e0ccf94be4845d69e7fa862dcf4c8b5801a758796966494c694f48184496"
+          },
+          "status": "complete",
+          "thread_affinity": {
+            "caller_mask_logical_cpus": 2,
+            "cgroup_isolation": false,
+            "continuous_observation": false,
+            "maximum_observed_logical_cpus": 2,
+            "maximum_outside_caller_mask_observations": 0,
+            "maximum_threads_observed": 2,
+            "outside_caller_mask_observations": 0,
+            "read_failures": 0,
+            "sample_attempts": 112,
+            "sampled_compliant": true,
+            "sampling_failures": 0,
+            "scope": "after_model_load_and_each_decode_samples",
+            "successful_samples": 112,
+            "threads_observed": 224,
+            "unknown_thread_observations": 0,
+            "violating_samples": 0
+          },
+          "thread_policy": {
+            "configured_native_threads": 1,
+            "moonshine_single_thread_env": "1",
+            "native_thread_budget_supported": false,
+            "ort_single_thread": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "moonshine-voice": "0.1.5",
+            "python": "3.12.3"
+          },
+          "warm_p50_ms": 298.2309380022343,
+          "warm_p95_ms": 508.30369100003736,
+          "worker_cpu_seconds": 35.215351246,
+          "worker_wall_rtf": 0.11722151705901415,
+          "worker_wall_seconds": 35.55328612399899
+        },
+        "source_report": "owner-corrected.json"
+      },
+      {
+        "result": {
+          "accuracy": {
+            "cer": 0.13599062133645956,
+            "character_errors": 116,
+            "clips": 37,
+            "empty": 1,
+            "exact": 16,
+            "reference_characters": 853,
+            "reference_words": 212,
+            "wer": 0.1650943396226415,
+            "word_errors": 35
+          },
+          "by_role": {
+            "barge": {
+              "cer": 0.10666666666666667,
+              "character_errors": 8,
+              "clips": 4,
+              "empty": 0,
+              "exact": 2,
+              "reference_characters": 75,
+              "reference_words": 19,
+              "wer": 0.10526315789473684,
+              "word_errors": 2
+            },
+            "command": {
+              "cer": 0.3103448275862069,
+              "character_errors": 9,
+              "clips": 5,
+              "empty": 1,
+              "exact": 3,
+              "reference_characters": 29,
+              "reference_words": 6,
+              "wer": 0.3333333333333333,
+              "word_errors": 2
+            },
+            "round_trip": {
+              "cer": 0.1189358372456964,
+              "character_errors": 76,
+              "clips": 25,
+              "empty": 0,
+              "exact": 11,
+              "reference_characters": 639,
+              "reference_words": 160,
+              "wer": 0.14375,
+              "word_errors": 23
+            },
+            "speak": {
+              "cer": 0.20909090909090908,
+              "character_errors": 23,
+              "clips": 3,
+              "empty": 0,
+              "exact": 0,
+              "reference_characters": 110,
+              "reference_words": 27,
+              "wer": 0.2962962962962963,
+              "word_errors": 8
+            }
+          },
+          "calls": 111,
+          "clips": 37,
+          "code_binding": {
+            "benchmark_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d",
+            "moonshine_adapter_sha256": "91942fbe225407bd71b284ee28893ba4c808ef897f3ee01fa85fb682cbbb13cf"
+          },
+          "complete_corpus_coverage": true,
+          "cpu_affinity": {
+            "applied": true,
+            "logical_cpus": 2
+          },
+          "decode_rtf": 0.21350621306971793,
+          "decode_seconds": 64.75643442404544,
+          "error_count": 0,
+          "first_call_ms": 458.5029610025231,
+          "model_id": "moonshine-small-streaming-v015",
+          "model_input": {
+            "input_finished": false,
+            "original_audio_seconds": 101.1,
+            "sample_rate": 16000,
+            "source_audio_seconds_across_calls": 303.29999999999995,
+            "tail_padding_policy": "none",
+            "tail_padding_samples_per_clip": 0,
+            "total_model_input_seconds": 303.29999999999995
+          },
+          "model_load_ms": 358.9158190006856,
+          "model_tuple": {
+            "bytes": 142300974,
+            "files": 8,
+            "sha256": "b1c374b79b0929d7c7e10859eab72b1cb5a5118312cd50515d2ab76a42c800ec"
+          },
+          "peak_rss_bytes": 521510912,
+          "process_threads": {
+            "after_model_load": 2,
+            "before_model_load": 2,
+            "maximum_sampled": 2
+          },
+          "process_wall_rtf": 0.2175275902967283,
+          "process_wall_seconds": 65.97611813699768,
+          "repeat_disagreements": 6,
+          "runtime_binding": {
+            "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+            "venv_marker_sha256": "27e855edf4b67ae863f2ae5362ab543137b39739aa69a2a0cbde58bebb445054",
+            "wheel_bytes": 19897307,
+            "wheel_sha256": "1ed9e0ccf94be4845d69e7fa862dcf4c8b5801a758796966494c694f48184496"
+          },
+          "status": "complete",
+          "thread_affinity": {
+            "caller_mask_logical_cpus": 2,
+            "cgroup_isolation": false,
+            "continuous_observation": false,
+            "maximum_observed_logical_cpus": 2,
+            "maximum_outside_caller_mask_observations": 0,
+            "maximum_threads_observed": 2,
+            "outside_caller_mask_observations": 0,
+            "read_failures": 0,
+            "sample_attempts": 112,
+            "sampled_compliant": true,
+            "sampling_failures": 0,
+            "scope": "after_model_load_and_each_decode_samples",
+            "successful_samples": 112,
+            "threads_observed": 224,
+            "unknown_thread_observations": 0,
+            "violating_samples": 0
+          },
+          "thread_policy": {
+            "configured_native_threads": 1,
+            "moonshine_single_thread_env": "1",
+            "native_thread_budget_supported": false,
+            "ort_single_thread": true,
+            "requested_affinity_threads": 2
+          },
+          "versions": {
+            "moonshine-voice": "0.1.5",
+            "python": "3.12.3"
+          },
+          "warm_p50_ms": 618.1390619967715,
+          "warm_p95_ms": 907.5631759988028,
+          "worker_cpu_seconds": 65.210019362,
+          "worker_wall_rtf": 0.2154913954401611,
+          "worker_wall_seconds": 65.35854023700085
+        },
+        "source_report": "owner-corrected.json"
+      }
+    ],
+    "corpus": {
+      "audio_seconds": 101.1,
+      "clips": 37,
+      "kind": "owner-scripted",
+      "manifest_sha256": "e1827b43c5801be5d71d396c91d777e9687f9b2e368510ef9232046e33a26423",
+      "sha256": "4bd3e63cfb044f4c97a0ef76b9712d3a04b4137c87bd866db2f5cd8f335cabe7"
+    },
+    "source_combination": "separate measured cells on same corpus; retained offline rows plus corrected streaming/Moonshine rows"
+  },
+  "report_hashes": {
+    "asr-owner-stock.json": {
+      "bytes": 14626,
+      "sha256": "5b25b2fd9770801288a679e0017419aed607e0ca665fc5cb27949f82333fc5ec"
+    },
+    "kitten_nano_v0_8_int8.json": {
+      "bytes": 2308,
+      "sha256": "06e8724ae9d6b3ae22484994bf1cfdb12adcc7e62e2e102979e1b647ceed5e1a"
+    },
+    "kokoro_v1_1.json": {
+      "bytes": 2277,
+      "sha256": "2250fda6bbe381d51db84c1a8722089c38f0823b64bc2203a3439ac9bf9708c1"
+    },
+    "legacy-six.json": {
+      "bytes": 20981,
+      "sha256": "520094751b741459e6587b8e813d82d0876e4dd14e4ecaeb58bdc10275ecc448"
+    },
+    "llm-public-format-canaries.json": {
+      "bytes": 3079,
+      "sha256": "e7df3c9835c6032013e3938eb0b01193b3b8616fb6ae7da201d8dac6c761c403"
+    },
+    "llm-reference-canary.json": {
+      "bytes": 2985,
+      "sha256": "bea29ae18559499aa9d4a489588976609a91d1cf83567a19e2ea6671ea057a9c"
+    },
+    "owner-corrected.json": {
+      "bytes": 13700,
+      "sha256": "d81e22448c6c909add35755e69772d28dac6816718c8c60fae02663ec88187ce"
+    },
+    "supertonic3_int8.json": {
+      "bytes": 2317,
+      "sha256": "c23247e102c1159f1856006d40283ed887be7c9df0a1720bd5aad6a178289282"
+    },
+    "vad-owner-compatible.json": {
+      "bytes": 4618,
+      "sha256": "6e844ed215f24324cd51bceaa088aef259df5b5e9b2bffe7106b18b1fd2eabb5"
+    },
+    "vits_libritts_r_medium.json": {
+      "bytes": 2337,
+      "sha256": "399fb5e345f45f273e6e9853368586f57e0cfaa81743f932802ad552a5c0e489"
+    }
+  },
+  "schema_version": 1,
+  "scope": {
+    "development_only": true,
+    "live_validation": false,
+    "new_default_selected": false,
+    "phone_validation": false,
+    "pooled_corpus_accuracy": false,
+    "raw_text_or_audio_present": false,
+    "subjective_tts_quality": false
+  },
+  "tts": {
+    "kitten_nano_v0_8_int8": {
+      "purpose": "offline_english_tts_development_only",
+      "result": {
+        "execution": {
+          "address_space_limit_bytes": 12884901888,
+          "core_limit_bytes": 0,
+          "cpu_affinity_applied": true,
+          "cpu_hard_limit_seconds": 601,
+          "cpu_limit_seconds": 600,
+          "logical_cpus": 2,
+          "network_python_hooks": true,
+          "os_network_isolated": false,
+          "sanitized_environment": true
+        },
+        "metrics": {
+          "all_zero_waveforms": 0,
+          "audibility_authority": false,
+          "audio_seconds": {
+            "count": 111,
+            "max": 3.53375,
+            "min": 0.4,
+            "p50": 2.144791666666667,
+            "p95": 3.0993333333333335
+          },
+          "callback_chunks": {
+            "count": 111,
+            "max": 1,
+            "min": 1,
+            "p50": 1,
+            "p95": 1
+          },
+          "cold_first_generation": {
+            "first_callback_seconds": 0.5384411710037966,
+            "first_nonzero_pcm_seconds": 0.5384411710037966,
+            "full_synthesis_seconds": 0.538567919000343
+          },
+          "control_authority": false,
+          "first_callback_seconds": {
+            "count": 111,
+            "max": 1.1217976350017125,
+            "min": 0.11379832999955397,
+            "p50": 0.6933893949972116,
+            "p95": 0.9613001670004451
+          },
+          "first_nonzero_pcm_callback_seconds": {
+            "count": 111,
+            "max": 1.1217976350017125,
+            "min": 0.11379832999955397,
+            "p50": 0.6933893949972116,
+            "p95": 0.9613001670004451
+          },
+          "full_synthesis_seconds": {
+            "count": 111,
+            "max": 1.1219233149968204,
+            "min": 0.11389411099662539,
+            "p50": 0.6934973339957651,
+            "p95": 0.9614133250070154
+          },
+          "generation_count": 111,
+          "generations_with_callback_before_return": 0,
+          "generations_without_callback": 0,
+          "invalid_callback_chunks": 0,
+          "invalid_waveforms": 0,
+          "live_authority": false,
+          "phone_authority": false,
+          "quality_authority": false,
+          "repeats": 3,
+          "rtf": {
+            "count": 111,
+            "max": 0.5445558340453216,
+            "min": 0.26238800888812097,
+            "p50": 0.3108868208192064,
+            "p95": 0.34988227555451984
+          },
+          "samples_at_or_above_full_scale": 4,
+          "samples_total": 5548840
+        },
+        "model_artifact_bytes": 45652547,
+        "model_artifacts_sha256": "44a27b7e293589b23f9df828bf5fadedb519bfcae558083cd270876d8c8509cd",
+        "model_id": "kitten_nano_v0_8_int8",
+        "model_kind": "kitten",
+        "model_load_seconds": 1.1334700549996342,
+        "peak_process_rss_kib": 197988,
+        "runtime": {
+          "configured_inference_threads": 2,
+          "generation_steps": 8,
+          "postprocessing": "none",
+          "provider": "cpu",
+          "sherpa_onnx": "1.13.3",
+          "speaker_id": 0,
+          "speed": 1.0
+        },
+        "status": "ok"
+      },
+      "schema": 1,
+      "source": {
+        "disjoint_holdout": false,
+        "manifest_binding": "sha256_canonical_sorted_compact_json_ascii",
+        "manifest_sha256": "dd47181211a2b4a7ebe12c404d4275728650792f4d18f796ba868d558f4e2a83",
+        "provenance": "owner_recording_unattested_development",
+        "reference_count": 37,
+        "source_audio_consumed": false
+      }
+    },
+    "kokoro_v1_1": {
+      "purpose": "offline_english_tts_development_only",
+      "result": {
+        "execution": {
+          "address_space_limit_bytes": 12884901888,
+          "core_limit_bytes": 0,
+          "cpu_affinity_applied": true,
+          "cpu_hard_limit_seconds": 601,
+          "cpu_limit_seconds": 600,
+          "logical_cpus": 2,
+          "network_python_hooks": true,
+          "os_network_isolated": false,
+          "sanitized_environment": true
+        },
+        "metrics": {
+          "all_zero_waveforms": 0,
+          "audibility_authority": false,
+          "audio_seconds": {
+            "count": 111,
+            "max": 3.005708333333333,
+            "min": 0.432,
+            "p50": 1.73275,
+            "p95": 2.60525
+          },
+          "callback_chunks": {
+            "count": 111,
+            "max": 1,
+            "min": 1,
+            "p50": 1,
+            "p95": 1
+          },
+          "cold_first_generation": {
+            "first_callback_seconds": 1.683757824001077,
+            "first_nonzero_pcm_seconds": 1.683757824001077,
+            "full_synthesis_seconds": 1.6838817129973904
+          },
+          "control_authority": false,
+          "first_callback_seconds": {
+            "count": 111,
+            "max": 3.8741370710049523,
+            "min": 0.7953143820050173,
+            "p50": 2.325315539004805,
+            "p95": 3.3765803499991307
+          },
+          "first_nonzero_pcm_callback_seconds": {
+            "count": 111,
+            "max": 3.8741370710049523,
+            "min": 0.7953143820050173,
+            "p50": 2.325315539004805,
+            "p95": 3.3765803499991307
+          },
+          "full_synthesis_seconds": {
+            "count": 111,
+            "max": 3.8742529939991073,
+            "min": 0.795419057001709,
+            "p50": 2.3254294080034015,
+            "p95": 3.37670087099832
+          },
+          "generation_count": 111,
+          "generations_with_callback_before_return": 0,
+          "generations_without_callback": 0,
+          "invalid_callback_chunks": 0,
+          "invalid_waveforms": 0,
+          "live_authority": false,
+          "phone_authority": false,
+          "quality_authority": false,
+          "repeats": 3,
+          "rtf": {
+            "count": 111,
+            "max": 2.364538300435942,
+            "min": 1.126263229921451,
+            "p50": 1.4005128616203306,
+            "p95": 2.0464269233917807
+          },
+          "samples_at_or_above_full_scale": 0,
+          "samples_total": 4487826
+        },
+        "model_artifact_bytes": 215321602,
+        "model_artifacts_sha256": "e42bc1751618b5a2f1bac0c35c34a8a8b7d9029c789a683c6c53496098dae061",
+        "model_id": "kokoro_v1_1",
+        "model_kind": "kokoro",
+        "model_load_seconds": 1.9485839440021664,
+        "peak_process_rss_kib": 481640,
+        "runtime": {
+          "configured_inference_threads": 2,
+          "generation_steps": 8,
+          "postprocessing": "none",
+          "provider": "cpu",
+          "sherpa_onnx": "1.13.3",
+          "speaker_id": 0,
+          "speed": 1.0
+        },
+        "status": "ok"
+      },
+      "schema": 1,
+      "source": {
+        "disjoint_holdout": false,
+        "manifest_binding": "sha256_canonical_sorted_compact_json_ascii",
+        "manifest_sha256": "dd47181211a2b4a7ebe12c404d4275728650792f4d18f796ba868d558f4e2a83",
+        "provenance": "owner_recording_unattested_development",
+        "reference_count": 37,
+        "source_audio_consumed": false
+      }
+    },
+    "supertonic3_int8": {
+      "purpose": "offline_english_tts_development_only",
+      "result": {
+        "execution": {
+          "address_space_limit_bytes": 12884901888,
+          "core_limit_bytes": 0,
+          "cpu_affinity_applied": true,
+          "cpu_hard_limit_seconds": 601,
+          "cpu_limit_seconds": 600,
+          "logical_cpus": 2,
+          "network_python_hooks": true,
+          "os_network_isolated": false,
+          "sanitized_environment": true
+        },
+        "metrics": {
+          "all_zero_waveforms": 0,
+          "audibility_authority": false,
+          "audio_seconds": {
+            "count": 111,
+            "max": 4.218367346938775,
+            "min": 1.3548299319727892,
+            "p50": 2.2718367346938777,
+            "p95": 3.357641723356009
+          },
+          "callback_chunks": {
+            "count": 111,
+            "max": 1,
+            "min": 1,
+            "p50": 1,
+            "p95": 1
+          },
+          "cold_first_generation": {
+            "first_callback_seconds": 1.5548340199966333,
+            "first_nonzero_pcm_seconds": 1.5548340199966333,
+            "full_synthesis_seconds": 1.5549844400011352
+          },
+          "control_authority": false,
+          "first_callback_seconds": {
+            "count": 111,
+            "max": 2.63875884799927,
+            "min": 1.537714064004831,
+            "p50": 1.949815423002292,
+            "p95": 2.339104735001456
+          },
+          "first_nonzero_pcm_callback_seconds": {
+            "count": 111,
+            "max": 2.63875884799927,
+            "min": 1.537714064004831,
+            "p50": 1.949815423002292,
+            "p95": 2.339104735001456
+          },
+          "full_synthesis_seconds": {
+            "count": 111,
+            "max": 2.6389389649993973,
+            "min": 1.5378320919990074,
+            "p50": 1.9499487960056285,
+            "p95": 2.3392592329983017
+          },
+          "generation_count": 111,
+          "generations_with_callback_before_return": 1,
+          "generations_without_callback": 0,
+          "invalid_callback_chunks": 0,
+          "invalid_waveforms": 0,
+          "live_authority": false,
+          "phone_authority": false,
+          "quality_authority": false,
+          "repeats": 3,
+          "rtf": {
+            "count": 111,
+            "max": 1.407700957770929,
+            "min": 0.5893866751097537,
+            "p50": 0.8491484495957771,
+            "p95": 1.233485388586507
+          },
+          "samples_at_or_above_full_scale": 0,
+          "samples_total": 11483061
+        },
+        "model_artifact_bytes": 145316356,
+        "model_artifacts_sha256": "9247161d53f6ddd986821b26ef1a6d3ca782503c65ce7a4373f92e6fa5608af7",
+        "model_id": "supertonic3_int8",
+        "model_kind": "supertonic",
+        "model_load_seconds": 1.090887215003022,
+        "peak_process_rss_kib": 304012,
+        "runtime": {
+          "configured_inference_threads": 2,
+          "generation_steps": 8,
+          "postprocessing": "none",
+          "provider": "cpu",
+          "sherpa_onnx": "1.13.3",
+          "speaker_id": 0,
+          "speed": 1.0
+        },
+        "status": "ok"
+      },
+      "schema": 1,
+      "source": {
+        "disjoint_holdout": false,
+        "manifest_binding": "sha256_canonical_sorted_compact_json_ascii",
+        "manifest_sha256": "dd47181211a2b4a7ebe12c404d4275728650792f4d18f796ba868d558f4e2a83",
+        "provenance": "owner_recording_unattested_development",
+        "reference_count": 37,
+        "source_audio_consumed": false
+      }
+    },
+    "vits_libritts_r_medium": {
+      "purpose": "offline_english_tts_development_only",
+      "result": {
+        "execution": {
+          "address_space_limit_bytes": 12884901888,
+          "core_limit_bytes": 0,
+          "cpu_affinity_applied": true,
+          "cpu_hard_limit_seconds": 601,
+          "cpu_limit_seconds": 600,
+          "logical_cpus": 2,
+          "network_python_hooks": true,
+          "os_network_isolated": false,
+          "sanitized_environment": true
+        },
+        "metrics": {
+          "all_zero_waveforms": 0,
+          "audibility_authority": false,
+          "audio_seconds": {
+            "count": 111,
+            "max": 2.8328344671201813,
+            "min": 0.46439909297052157,
+            "p50": 1.497687074829932,
+            "p95": 2.380045351473923
+          },
+          "callback_chunks": {
+            "count": 111,
+            "max": 1,
+            "min": 1,
+            "p50": 1,
+            "p95": 1
+          },
+          "cold_first_generation": {
+            "first_callback_seconds": 0.180535052997584,
+            "first_nonzero_pcm_seconds": 0.180535052997584,
+            "full_synthesis_seconds": 0.18065908500284422
+          },
+          "control_authority": false,
+          "first_callback_seconds": {
+            "count": 111,
+            "max": 0.2987225140022929,
+            "min": 0.04537065699696541,
+            "p50": 0.13389672600169433,
+            "p95": 0.2150305550021585
+          },
+          "first_nonzero_pcm_callback_seconds": {
+            "count": 111,
+            "max": 0.2987225140022929,
+            "min": 0.04537065699696541,
+            "p50": 0.13389672600169433,
+            "p95": 0.2150305550021585
+          },
+          "full_synthesis_seconds": {
+            "count": 111,
+            "max": 0.29883283900562674,
+            "min": 0.0454711549973581,
+            "p50": 0.13399940100498497,
+            "p95": 0.21514912499696948
+          },
+          "generation_count": 111,
+          "generations_with_callback_before_return": 0,
+          "generations_without_callback": 0,
+          "invalid_callback_chunks": 0,
+          "invalid_waveforms": 0,
+          "live_authority": false,
+          "phone_authority": false,
+          "quality_authority": false,
+          "repeats": 3,
+          "rtf": {
+            "count": 111,
+            "max": 0.2550930343437958,
+            "min": 0.08218120428608289,
+            "p50": 0.08721334195186124,
+            "p95": 0.1052908205991939
+          },
+          "samples_at_or_above_full_scale": 0,
+          "samples_total": 3650816
+        },
+        "model_artifact_bytes": 96609881,
+        "model_artifacts_sha256": "5caf0257ea05d1360383030c69c43e0dabf0c8cf5bc69856bef9d483229819a2",
+        "model_id": "vits_libritts_r_medium",
+        "model_kind": "vits",
+        "model_load_seconds": 1.9538755100002163,
+        "peak_process_rss_kib": 259188,
+        "runtime": {
+          "configured_inference_threads": 2,
+          "generation_steps": 8,
+          "postprocessing": "none",
+          "provider": "cpu",
+          "sherpa_onnx": "1.13.3",
+          "speaker_id": 0,
+          "speed": 1.0
+        },
+        "status": "ok"
+      },
+      "schema": 1,
+      "source": {
+        "disjoint_holdout": false,
+        "manifest_binding": "sha256_canonical_sorted_compact_json_ascii",
+        "manifest_sha256": "dd47181211a2b4a7ebe12c404d4275728650792f4d18f796ba868d558f4e2a83",
+        "provenance": "owner_recording_unattested_development",
+        "reference_count": 37,
+        "source_audio_consumed": false
+      }
+    }
+  },
+  "vad_descriptive": {
+    "benchmark": "silero-vad-cost-and-segments",
+    "cells": [
+      {
+        "active_frame_fraction": 0.7117202268431002,
+        "active_frames": 6777,
+        "clip_calls": 111,
+        "clips": 37,
+        "code_binding": {
+          "benchmark_sha256": "e6e6b789656c39a2341c80d570ad56017b4405055aae4d05754643297b774aaf",
+          "corpus_helper_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "config": {
+          "buffer_size_in_seconds": 31.0,
+          "max_speech_duration": 20.0,
+          "min_silence_duration": 0.3,
+          "min_speech_duration": 0.25,
+          "neg_threshold": -1.0,
+          "sample_rate": 16000,
+          "threshold": 0.5,
+          "window_size": 512
+        },
+        "corpus_sha256": "4bd3e63cfb044f4c97a0ef76b9712d3a04b4137c87bd866db2f5cd8f335cabe7",
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "error_count": 0,
+        "first_frame_ms": 14.223486999981105,
+        "flush_seconds": 0.06040654206299223,
+        "frame_cpu_rtf": 0.011939938875700634,
+        "frame_cpu_seconds": 3.621383461000002,
+        "frame_p50_ms": 0.1726140035316348,
+        "frame_p95_ms": 0.2695869989111088,
+        "frame_rtf": 0.007331619040823563,
+        "frame_seconds": 2.223680055081786,
+        "frames": 9522,
+        "model_binding": {
+          "bytes": 1807522,
+          "sha256": "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28"
+        },
+        "model_id": "silero-v4-installed",
+        "model_load_ms": 116.37574400083395,
+        "native_exit_threshold_attested": false,
+        "neg_threshold_binding": "native-sdk-default-unsettable",
+        "padding_samples": 22464,
+        "peak_rss_bytes": 79224832,
+        "repeats": 3,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "segment_samples": 3853728,
+        "segment_seconds": 240.858,
+        "segments": 123,
+        "source_audio_seconds": 101.1,
+        "source_audio_seconds_across_calls": 303.29999999999995,
+        "status": "complete",
+        "threads": 2,
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "worker_cpu_seconds": 4.149737621,
+        "worker_wall_seconds": 2.599884488998214
+      },
+      {
+        "active_frame_fraction": 0.70825456836799,
+        "active_frames": 6744,
+        "clip_calls": 111,
+        "clips": 37,
+        "code_binding": {
+          "benchmark_sha256": "e6e6b789656c39a2341c80d570ad56017b4405055aae4d05754643297b774aaf",
+          "corpus_helper_sha256": "2ecc38c1c220a5da396cf78c978e2f3d5315d65934d8a981c0dbd112e9bc6b5d"
+        },
+        "complete_corpus_coverage": true,
+        "config": {
+          "buffer_size_in_seconds": 31.0,
+          "max_speech_duration": 20.0,
+          "min_silence_duration": 0.3,
+          "min_speech_duration": 0.25,
+          "neg_threshold": -1.0,
+          "sample_rate": 16000,
+          "threshold": 0.5,
+          "window_size": 512
+        },
+        "corpus_sha256": "4bd3e63cfb044f4c97a0ef76b9712d3a04b4137c87bd866db2f5cd8f335cabe7",
+        "cpu_affinity": {
+          "applied": true,
+          "logical_cpus": 2
+        },
+        "error_count": 0,
+        "first_frame_ms": 0.06514100095955655,
+        "flush_seconds": 0.06943931199930375,
+        "frame_cpu_rtf": 0.009910571315529181,
+        "frame_cpu_seconds": 3.00587628,
+        "frame_p50_ms": 0.14375500177266076,
+        "frame_p95_ms": 0.23693699768045917,
+        "frame_rtf": 0.0059314322382111664,
+        "frame_seconds": 1.7990033978494466,
+        "frames": 9522,
+        "model_binding": {
+          "bytes": 2327524,
+          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+        },
+        "model_id": "silero-v6.2-wheel",
+        "model_load_ms": 232.8299340006197,
+        "native_exit_threshold_attested": false,
+        "neg_threshold_binding": "native-sdk-default-unsettable",
+        "padding_samples": 22464,
+        "peak_rss_bytes": 83767296,
+        "repeats": 3,
+        "runtime_binding": {
+          "executable_sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7",
+          "venv_marker_sha256": "b6eed642dd12718aac867a51939fce7023aa637ca1cd53c92ab422eec951ae4c"
+        },
+        "segment_samples": 3853248,
+        "segment_seconds": 240.828,
+        "segments": 114,
+        "source_audio_seconds": 101.1,
+        "source_audio_seconds_across_calls": 303.29999999999995,
+        "status": "complete",
+        "threads": 2,
+        "versions": {
+          "numpy": "2.4.6",
+          "python": "3.12.3",
+          "sherpa-onnx": "1.13.3"
+        },
+        "worker_cpu_seconds": 3.5736409559999998,
+        "worker_wall_seconds": 2.243684671004303
+      }
+    ],
+    "config": {
+      "buffer_size_in_seconds": 31.0,
+      "max_speech_duration": 20.0,
+      "min_silence_duration": 0.3,
+      "min_speech_duration": 0.25,
+      "neg_threshold": -1.0,
+      "sample_rate": 16000,
+      "threshold": 0.5,
+      "window_size": 512
+    },
+    "config_sha256": "af959e5472a358f6d04713d108cb26a03f0b26382e45572c55c62fc48d733a56",
+    "corpus_sha256": "4bd3e63cfb044f4c97a0ef76b9712d3a04b4137c87bd866db2f5cd8f335cabe7",
+    "fraction_kind": "hysteretic-detected-state-per-padded-frame",
+    "frame_metric_kind": "public-api-callback-not-model-kernel",
+    "frame_policy": "512-new-samples-final-zero-pad-only",
+    "native_exit_threshold_attested": false,
+    "native_inference_coverage_attested": false,
+    "neg_threshold_binding": "native-sdk-default-unsettable",
+    "network_policy": "local-model-constructor-python-connect-hooks-offline-env",
+    "network_sandbox_attested": false,
+    "no_accuracy_labels": true,
+    "schema_version": 1,
+    "segment_policy": "clamped-to-original-clip",
+    "state_policy": "reset-each-clip-flush-without-extra-audio"
+  }
+}

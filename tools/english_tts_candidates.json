@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "verified_date": "2026-10-04",
+  "runtime": "sherpa-onnx 1.13.3; CPU only; benchmark candidates, no runtime default",
+  "candidates": {
+    "kitten_nano_v0_8_int8": {
+      "version": "KittenTTS Nano 0.8 INT8",
+      "parameters": 15000000,
+      "archive": "kitten-nano-en-v0_8-int8.tar.bz2",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_8-int8.tar.bz2",
+      "archive_sha256": "6fa5be852612ce761094ba74ee6123b4fc4acfefa79bf64dc63acae4a83af2fd",
+      "max_archive_bytes": 41943040,
+      "published": "2026-05-12",
+      "weights_license": "Apache-2.0",
+      "license_source": "https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/blob/84781d74e29ee25217551556398b42f80593a813/README.md",
+      "upstream_revision": "84781d74e29ee25217551556398b42f80593a813",
+      "checksum_source": "https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models",
+      "artifact_inventory_sha256": "44a27b7e293589b23f9df828bf5fadedb519bfcae558083cd270876d8c8509cd",
+      "artifact_bytes": 45652547,
+      "artifact_count": 360
+    },
+    "supertonic3_int8": {
+      "version": "Supertonic 3; Sherpa INT8 export 2026-05-11",
+      "parameters": 99000000,
+      "archive": "sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
+      "archive_sha256": "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427",
+      "max_archive_bytes": 167772160,
+      "published": "2026-05-13",
+      "weights_license": "OpenRAIL-M",
+      "license_source": "https://huggingface.co/supertone-oss-archive/supertonic-3/blob/aafc6e32416a594460b32413efc49d7fe4ce6d46/LICENSE",
+      "upstream_revision": "aafc6e32416a594460b32413efc49d7fe4ce6d46",
+      "upstream_support": "archived 2026-09-09; no continued upstream support",
+      "checksum_source": "https://github.com/k2-fsa/sherpa-onnx/releases/expanded_assets/tts-models",
+      "weights_license_sha256": "0d944a9110fed9a9602d60e0423a272903e7bd21ab060490774efc77c2275e9f",
+      "weights_license_bytes": 15007,
+      "archive_license_note": "Bundled LICENSE is MIT for exporter/sample code; OpenRAIL-M weights license is separately retained from the immutable upstream license_source.",
+      "artifact_inventory_sha256": "9247161d53f6ddd986821b26ef1a6d3ca782503c65ce7a4373f92e6fa5608af7",
+      "artifact_bytes": 145316356,
+      "artifact_count": 9
+    }
+  },
+  "excluded": {
+    "pocket_tts_v3_3_0": "Newest English weights are CC-BY-4.0; cloning repository requires contact gate. Original weights also say CC-BY-4.0, not MIT. Skip until exact artifact and voice-license evidence are verified.",
+    "kokoro_alias": "Installed tts_kokoro and kokoro-int8-multi-lang-v1_1 were byte-identical for model, voices and tokens on 2026-10-04. Count one baseline; do not claim a new Kokoro model from a duplicate directory.",
+    "piper_amy_low": "Phone baseline is not assumed installed on this desktop. Installed desktop VITS is libritts_r-medium, not Amy-low."
+  },
+  "baseline_kokoro_identity": {
+    "model.int8.onnx": {
+      "bytes": 114299010,
+      "sha256": "bda15858163726a492d02a9a727bc263551b86ac77f90812c4b30ff41d380e26"
+    },
+    "voices.bin": {
+      "bytes": 53790720,
+      "sha256": "e64a5a581d8c2a350d848f51c3121657cd83aa07ed6109172177345874a7244c"
+    },
+    "tokens.txt": {
+      "bytes": 1111,
+      "sha256": "931ab2df2400cd65d580a22402024c2347ced8ae9ea300e545144b1aacc48e14"
+    }
+  },
+  "baseline_vits_identity": {
+    "en_US-libritts_r-medium.onnx": {
+      "bytes": 78581047,
+      "sha256": "acd9425049d887a4d04681010c3b2ed143898b824e5bc1f2ef6ddaee4b11ad0e"
+    },
+    "tokens.txt": {
+      "bytes": 954,
+      "sha256": "620e1aecf1a68fea3ba5850d137b0138fa2037c9b372dad13b95a2a215d0849a"
+    }
+  }
+}

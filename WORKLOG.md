@@ -165,3 +165,70 @@ AGENTS79 / STATUS120 / agent-map59 / agent-testing52. `tools.doctor --defer-olla
 failures and unavailable pactl echo-route inspection. No route changed and no repaired live
 A/B, offline physical-device acceptance, WER/CER, end-to-end acoustic latency, CPU/RSS/PSS,
 battery or thermal result is claimed.
+
+Valid until: a new model/runtime/profile or disjoint physical-device run supersedes these receipts — then treat as history.
+
+## English model research and retained-recording trials — 2026-10-04
+
+Scope: English only, explicitly selected by the owner. Preserve all source recordings/labels,
+original model/runtime locks, historical rejections, active config and production venv. New
+model assets and native Moonshine runtime live under ignored pretrained_models/sherpa/benchmarks/
+english-2026-10-04. Detailed aggregate reports, diagnostics, source snapshots and the public
+Kitten sample are retained under ignored logs/runs/english-model-benchmarks-20261004.
+
+Inputs:37 scripted owner references/101.1 seconds; five-item subset is duplicate and excluded.
+Separately6 older hash-pinned microphone clips/12.9 seconds; no37/6 WER pooling. The owner
+manifest cannot distinguish real capture from simulation;31 session turn JSONs have no usable
+reference text. No transcript was invented as truth or copied into committed evidence.
+
+ASR:8 model choices,3 repeats, CPU, requested two native threads/two-CPU caller mask; final
+Moonshine cells explicitly use MOONSHINE_ORT_SINGLE_THREAD=1 and sample native-thread masks.
+Initial6 ordinary cells completed111 calls each; stock Moonshine cells failed. Archived
+asr-owner-stock.json and source eebf3085... are diagnostic; streaming rows lacked the official
+flush and are excluded from the final table. Corrected owner four-cell run (FP32/INT8 streaming
+and two Moonshine sizes) and fresh legacy eight-cell run completed all37 and6 cases,3 repeats.
+Corrected Zipformer appends10560float32 zeros before input_finished; original PCM/files unchanged.
+The summary binds source-report hashes and does not pretend the derived owner table is atomic.
+
+CPU owner WER:FP32/INT8 Zipformer19.81%/19.81%, SenseVoice14.15%, Parakeet Unified8.02%,
+Parakeet TDTv3 7.55%, Faster-Whisper Small10.85%, Moonshine Tiny/Small25.00%/16.51%.
+Mic6 WER:20%/24%,0%,0%,0%,0%,40%/28%, respectively. INT8 saves roughly54% process RSS on
+owner vsFP32 but adds one word error on Mic6. Current SenseVoice is the fastest final model;
+Faster-Whisper CPU Small has RTF>1. No default promotion follows these development scores.
+
+TTS:4 sequential native CPU models, speaker0/speed1,3 repeats of37 phrases (111 calls/model),
+no output DSP or audio device. p50first nonzero callback:Kokoro2325ms, VITS134ms, Kitten693ms,
+Supertonic1950ms. Isolated process peaks470.4/253.1/193.3/296.9MiB. All waveforms finite/nonzero,
+no full-scale samples. These are callback/synthesis metrics, not subjective quality or audibility.
+Supertonic OpenRAIL-M weight license is retained separately from bundled MIT exporter license;
+upstream is archived. The two installed Kokoro aliases have identical relevant asset hashes.
+
+LLM:two GGUFs on llama-cpp-python0.3.33, CPU/GPU layers0, context1024, maxreply64, greedy,
+thinking requestedfalse through each template; BOS handling follows formatter.added_special.
+Eight private reference prompts plus four public canaries,3 repeats (36 generations/model).
+MiniCPM1BQ8 p50visible text377ms/completion1328ms/peak1285.1MiB; newer2BQ4 p50visible895ms/
+completion2717ms/peak2601.5MiB. Canonical model files resolved explicitly after a rejected
+symlinked storage path. Original canary formatting mismatched open question wording; counts
+are not intelligence rankings. Separate explicitly formatted public-only run:12 generations
+permodel, both9/12strict cases; no tool/memory/factual-dialogue promotion. Source snapshot retained.
+
+VAD:installedv4-era vs canonical6.2weights packaged in6.2.3. Both real constructors and111clip
+calls pass. The Python1.13.3 neg_threshold setter is unavailable; original load-failure receipt
+retained and compatible retry binds native-default-unsettable. FrameAPI p50.173/.144ms,
+process peaks75.6/79.9MiB, segments123/114 acrossrepeats. No onset/frame/endpoint/speaker labels,
+so no VAD quality verdict. Native576context/residual tail coverage limitations are explicit.
+
+Benchmark contracts:208native-free tests passed; shared archive extraction51cases additionally
+passed in the TTS gate. Scoped Ruff/format/diff and docs checks were clean at report preparation.
+No physical capture/playback, live echo, GPU speed, phone thermals/battery, new enrollment,
+repaired bare-speaker A/B or fully offline physical-device acceptance ran.
+
+CLI entry points:python -m tools.english_asr_benchmark; english_tts_benchmark;
+english_llm_benchmark; english_vad_benchmark. Use each --help for exact manifest/config/model/
+scratch/output parameters. Runtime thread fairness, private scalar validation, native output
+suppression, abnormal-exit group cleanup and immutable input bindings are covered by tests.
+Moonshine stock diagnostic:117threads/32CPUunion versus caller2;115masks outsidebudget,
+180CPU-second termination after14completed clips. Fresh selected-ordinal stock call1193ms/
+18.87CPU seconds, then closure hitlimit; explicitORT1 call517ms/.513CPU seconds,2threads,
+2CPUs and cleanclose. These are resource diagnostics, not formal corpus rankings. Prior
+0.1.0 rejects unchanged; installed/new export identities and licenses are in ADR-0216/report.

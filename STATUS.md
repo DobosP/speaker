@@ -29,6 +29,8 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213 warms media before LLM on the same startup worker; ADR-0214 records the measured-native-media rewrite criterion and fully
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
+- ADR-0216 installs and benchmarks explicit English candidates on 37 scripted-reference and 6 hash-pinned microphone clips, kept separate;
+  native defaults stay unchanged. Results/source/license evidence are in `docs/english_model_comparison.md`; no live/phone promotion follows.
 - Bounded PRIVATE vault search, reminders and trusted apps are opt-in; mutations need unchanged direct speech plus confirmation,
   `web.search` admits only `current_turn_only`, and retained context forces monotonic `local_only`. Residuals: cleaner byte channel,
   `last_source` race, blocking-backend cancellation, raw-gate false negatives (ADR-0003/0060/0073/0074/0076/0187/0189).
@@ -92,8 +94,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 
 ## Open gates
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
-- Trusted-LAN promotion waits on the self-hosted owner live A/B (ADR-0164); Microsoft AEC waits on all five terms (ADR-0163).
-- `docs/adr/README.md` ledger not yet created (agent-ops doc governance §2).
+- Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); the ADR README ledger is not yet created.
 
 ## Next
 - Run the two guided `./live.sh` profiles through the owner close/far plan, retain both bundles and accept a narrow verdict only from fresh
@@ -104,13 +105,12 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
-- Repeat isolated enrollment on the active 4090 route before the next desktop-GPU live start, then the owner bare-speaker A/B (ADR-0209);
-  continue Common Voice acceptance and publisher, mobile and remote work separately.
+- Before the next 4090 live start, repeat active-route enrollment and owner bare-speaker A/B (ADR-0209); continue the separate corpus/mobile gates.
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
 - Python CI-style full gate: `11268 passed, 42 skipped, 9 warnings` in 429.71 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
-- Combined mobile: `252 passed`; full Flutter analysis clean (Flutter 3.44.2 / Dart 3.12.2); independent ASR/TTS owner gates `52`/`26 passed`.
-- Scoped Ruff, whitespace and docs gate clean (`files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0`); all compact doc budgets hold.
+- Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
+- Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.
 
 ## Doc map

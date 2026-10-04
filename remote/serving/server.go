@@ -57,7 +57,7 @@ type Server struct {
 }
 
 func New(cfg Config) (*Server, error) {
-	cfg.RemoteToken = strings.TrimSpace(cfg.RemoteToken)
+	cfg.RemoteToken = trimPythonSpace(cfg.RemoteToken)
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -82,7 +82,9 @@ func (s *Server) Close() error {
 func SanitizeRoomName(name string) string {
 	var b strings.Builder
 	bad := false
-	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+	// Python lower expands capital dotted I before the ASCII room filter.
+	lowered := strings.ToLower(strings.ReplaceAll(trimPythonSpace(name), "İ", "i\u0307"))
+	for _, r := range lowered {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
 			if bad {
 				b.WriteByte('-')
@@ -102,8 +104,8 @@ func SanitizeRoomName(name string) string {
 func SanitizeIdentity(name string) string {
 	var b strings.Builder
 	space := false
-	for _, r := range strings.TrimSpace(name) {
-		if unicode.IsSpace(r) {
+	for _, r := range trimPythonSpace(name) {
+		if pythonSpace(r) {
 			space = true
 			continue
 		}
@@ -172,10 +174,11 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) bool {
 	}
 	headers := r.Header.Values("Authorization")
 	if len(headers) == 1 {
-		parts := strings.Fields(headers[0])
-		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		header := trimPythonSpace(headers[0])
+		split := strings.IndexFunc(header, pythonSpace)
+		if split > 0 && strings.EqualFold(header[:split], "bearer") {
 			// Hash equalizes lengths before constant-time comparison.
-			got, want := sha256.Sum256([]byte(parts[1])), sha256.Sum256([]byte(s.cfg.RemoteToken))
+			got, want := sha256.Sum256([]byte(trimPythonSpace(header[split:]))), sha256.Sum256([]byte(s.cfg.RemoteToken))
 			if subtle.ConstantTimeCompare(got[:], want[:]) == 1 {
 				return true
 			}
@@ -299,7 +302,7 @@ func messageBody(raw []byte) (string, error) {
 	if !ok {
 		return "", errors.New("message must be string")
 	}
-	return strings.TrimSpace(text), nil
+	return trimPythonSpace(text), nil
 }
 
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
@@ -352,14 +355,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	done := make(chan result, 1)
 	go func() {
 		var out result
+		completed := false
 		defer func() {
-			if recover() != nil {
+			_ = recover()
+			if !completed {
 				out = result{err: errors.New("backend failed")}
 			}
 			<-s.active // A timed-out uncooperative source retains BUSY until it returns.
 			done <- out
 		}()
 		out.reply, out.err = s.cfg.ChatBackend.Generate(ctx, text)
+		completed = true
 	}()
 	select {
 	case <-ctx.Done():
@@ -380,7 +386,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		var body bytes.Buffer
 		enc := json.NewEncoder(&body)
 		enc.SetEscapeHTML(false)
-		if enc.Encode(map[string]string{"reply": strings.TrimSpace(out.reply)}) != nil || body.Len() > MaxReplyBytes {
+		if enc.Encode(map[string]string{"reply": trimPythonSpace(out.reply)}) != nil || body.Len() > MaxReplyBytes {
 			detail(w, 500, "chat backend error")
 			return
 		}
@@ -472,3 +478,8 @@ func (l *limiter) allow(key string, now time.Time) bool {
 	l.hits[key] = next
 	return true
 }
+
+// Preserve Python str.strip/re \s compatibility for the four ASCII information
+// separators, as well as Unicode whitespace, at the migrated string boundary.
+func pythonSpace(r rune) bool         { return unicode.IsSpace(r) || r >= 0x1c && r <= 0x1f }
+func trimPythonSpace(s string) string { return strings.TrimFunc(s, pythonSpace) }

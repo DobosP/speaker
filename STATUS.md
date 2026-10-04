@@ -107,10 +107,10 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
-## Verification record (2026-10-05; prior full/mobile receipts below; commands/history in WORKLOG.md)
-- Python CI-style full gate: `11631 passed, 42 skipped, 9 warnings` in 460.43 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+## Verification record (2026-10-05; commands/history in WORKLOG.md)
+- Python CI-style full gate: `11701 passed, 40 skipped, 9 warnings` in 417.14 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
-- Go HTTP/race/vet and synthetic private pipe pass; Python adapter `73 passed`. Native resource figures are scoped warm HTTP evidence; no Python baseline/cost claim.
+- Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
 
 ## Doc map

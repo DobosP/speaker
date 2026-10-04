@@ -31,6 +31,7 @@ type fixture struct {
 	cmd    *exec.Cmd
 	client *http.Client
 	base   string
+	closed bool
 }
 
 func launch(binary, repo, python string) (*fixture, error) {
@@ -64,6 +65,10 @@ func launch(binary, repo, python string) (*fixture, error) {
 	return nil, errors.New("qualification readiness failed")
 }
 func (f *fixture) close() {
+	if f.closed {
+		return
+	}
+	f.closed = true
 	f.client.CloseIdleConnections()
 	_ = f.cmd.Process.Signal(os.Interrupt)
 	done := make(chan struct{})
@@ -252,7 +257,7 @@ func measure(f *fixture) (map[string]any, error) {
 	ticks := cpu(f.cmd.Process.Pid) - startCPU
 	_, peak := rss(f.cmd.Process.Pid)
 	sort.Float64s(elapsed)
-	result := map[string]any{"requests": n, "concurrency": 1, "mix": "80% healthz / 20% shipped index, warm sequential keepalive", "response_body_bytes": bodyBytes, "p50_ms": elapsed[n*50/100], "p95_ms": elapsed[n*95/100], "p99_ms": elapsed[n*99/100], "throughput_rps": float64(n) / wall, "idle_rss_kib": idle, "peak_rss_kib": peak, "server_cpu_ticks": ticks, "processes": 1, "python_http_baseline": "not measured; retired FastAPI/Uvicorn absent from host"}
+	result := map[string]any{"requests": n, "concurrency": 1, "mix": "80% healthz / 20% shipped index, warm sequential keepalive", "response_body_bytes": bodyBytes, "p50_ms": elapsed[n*50/100], "p95_ms": elapsed[n*95/100], "p99_ms": elapsed[n*99/100], "throughput_rps": float64(n) / wall, "idle_rss_kib": idle, "peak_rss_kib": peak, "server_cpu_ticks": ticks, "server_processes": 1, "scope": "server only; native driver/probe excluded", "python_http_baseline": "not measured; no legacy HTTP assembly supplied to this native qualifier"}
 	tickRaw, err := exec.Command("getconf", "CLK_TCK").Output()
 	if err == nil {
 		hz, _ := strconv.ParseFloat(strings.TrimSpace(string(tickRaw)), 64)
@@ -276,7 +281,8 @@ func run(binary, repo, python string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]any{"ordinary_go_http": "passed", "jwt_signature_ttl_grants": "passed", "static_bytes_confinement": "passed", "resources": metrics, "audio_model_provider_invocations": 0, "listeners": "synthetic loopback only", "synthetic_python_pipe": "not requested"}
+	f.close() // Settle the ordinary fixture before admitting the separate pipe assembly.
+	result := map[string]any{"ordinary_go_http": "passed", "jwt_signature_ttl_grants": "passed", "static_bytes_confinement": "passed", "resources": metrics, "audio_model_provider_invocations": 0, "fixture_go_processes_max": 1, "native_driver_processes": 1, "short_lived_probe_processes_max": 1, "explicit_python_children_per_turn_max": 0, "listeners": "synthetic loopback only", "synthetic_python_pipe": "not requested"}
 	if python != "" {
 		pipe, err := launch(binary, repo, python)
 		if err != nil {
@@ -287,6 +293,7 @@ func run(binary, repo, python string) (map[string]any, error) {
 			return nil, err
 		}
 		result["synthetic_python_pipe"] = "passed (one explicit Python child per turn; model costs unmeasured)"
+		result["explicit_python_children_per_turn_max"] = 1
 	}
 	return result, nil
 }

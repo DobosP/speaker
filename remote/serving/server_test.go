@@ -758,3 +758,25 @@ func TestChatSerializedReplyBoundIncludesControlEscaping(t *testing.T) {
 		}
 	}
 }
+
+func TestPythonUnicodeWhitespaceAndDottedLowerCompatibility(t *testing.T) {
+	if SanitizeIdentity("\x1cAlice\x1dSmith\x1f") != "Alice-Smith" {
+		t.Fatal("Python whitespace identity contract changed")
+	}
+	if SanitizeRoomName("\x1cİA\x1f") != "i-a" {
+		t.Fatal("Python dotted-I lowercase contract changed")
+	}
+	if text, err := messageBody([]byte(`{"message":"\u001c\u001f"}`)); err != nil || text != "" {
+		t.Fatal("Python empty text contract changed")
+	}
+	s := newContractServer(t, Config{RemoteToken: " token with spaces "})
+	if w := serveContract(s, "POST", "/chat", `{}`, "Bearer token with spaces"); w.Code != 200 {
+		t.Fatal("exact bearer comparison contract changed")
+	}
+}
+
+func TestBackendNilPanicFailsClosedUnderLegacyRuntimeSetting(t *testing.T) {
+	t.Setenv("GODEBUG", "panicnil=1")
+	s := newContractServer(t, Config{AllowNoAuth: true, ChatBackend: BackendFunc(func(context.Context, string) (string, error) { panic(nil) })})
+	assertDetail(t, serveContract(s, "POST", "/chat", `{"message":"synthetic"}`, ""), 500, "chat backend error")
+}

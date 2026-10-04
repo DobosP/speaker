@@ -3,6 +3,31 @@
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
 
+
+## 2026-10-05 — final web parity and hermetic gate
+
+Valid until: later serving verification supersedes this revision — then treat as history.
+
+- At committed source `345e859a7214df61da2a12871d02d67f8a432f4a`, the same CI-style full command with
+  `--basetemp=/var/tmp/speaker-go-full-synthetic-345e859` outside Git ancestry passed:
+  `11701 passed, 40 skipped, 9 warnings in 417.14s`. No private guard or Git marker was weakened.
+  No subsequent Python/requirements/core/audio sources changed; final changes preserve Go string parity and qualify its tooling.
+- Final parity review independently replayed original Python synthetic cases. Go now preserves Python information-separator whitespace,
+  dotted-I lower expansion before room ASCII filtering, and exact multiword bearer bytes. Panic completion is fail-closed even for nil
+  panic under the legacy runtime setting. Native qualifier settles its ordinary fixture before admitting its separate pipe fixture;
+  its report identifies server-only resource scope plus driver/probe/optional inference process counts. No unresolved review findings.
+- After string fixes: uncached Go test passes, race serving14.592s/CLI1.013s and vet clean. Final revision Go/native/image results and
+  exact command/head/binary identities are in ignored `TASK_RESULT.md`; these later checks include the added nil-panic regression.
+- Exact-head345e859 local image qualification (not registry publication): runtime image ID
+  `sha256:8c1cfe4374e4c2f56c10aaa80787b88fd80ff95153f7f6fcbad1fe752562c05e`, 7993155bytes;
+  dev `sha256:c20a1327b99112ec245b2c199c78e8310becd4263bb7ff3518e221c2930a5c04`, 844928962bytes.
+  Both OCI revision labels matched that full source SHA. Runtime exported19 entries, no Python/shell/core/models, uid10001:10001;
+  own native health passed under network-none/read-only/cap-drop/no-new-privileges. Dev rebuilt read-only mounted inputs into bounded
+  executable tmpfs and passed native health. Temporary containers removed; zero default Compose services, only token-server under rollback-web.
+  Final revision rebuild preserves these same isolation checks with its own exact label/results in the local task result.
+- Explicit installed SDK gate refused collection. This host has livekit1.1.10; livekit-api/livekit-agents/livekit-protocol are absent.
+  The ADR-0164 pins remain unchanged; this web migration neither installs them nor claims installed/live closure qualification.
+
 ## 2026-10-05 — dormant Go web serving boundary (ADR-0224)
 
 Valid until: a later serving/qualification decision supersedes these receipts — then treat as history.

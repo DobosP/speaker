@@ -265,12 +265,16 @@ pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repai
 
 
 
-Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+Valid until: the DSP/library/platform or physical-route evidence changes — then treat as history.
 
-## 2026-10-04 — Freeze mobile thread requests before service construction (ADR-0221)
+## 2026-10-04 — existing native streaming low-pass kernel (ADR-0222)
 
-Mobile startup budgets: 79 native-free ownership/config tests passed. Explicit
-compiled compact gate passed 13 tests; full current-lock Flutter suite and analysis were
-green (combined gate recorded at integration). Pure config tests compare all non-thread
-native fields unchanged and cover exact ASR payload reconstruction, TTS direct/worker
-parity and invalid mode refusal before startup. No phone/plugin/native/resource run.
+Targeted DSP/APM gate: 139 passed in 4.17 s; scoped lint/whitespace clean. The accepted
+single-section SciPy SOS path preserves tested float32 output and float64 state exactly
+across four rate/cutoff/Q matrices, single/irregular chunks, 300-chunk streams, reset,
+failed optional kernels, nonfinite inputs and bypass. The lfilter prototype was rejected
+for last-bit state changes. Implemented 300 x 100-ms synthetic profile: scalar p50/p95
+871.2595/1002.68345 us, native SOS 101.0415/131.5884 us (8.62x p50). Tracemalloc transient
+peaks 10,157/40,779 bytes; cold import excluded. Receipt remains in canonical task scratch
+until preserved at integration. No Rust build, private recording, native model, audio
+capture/playback, whole-session CPU/RSS or phone validation was part of this DSP probe.

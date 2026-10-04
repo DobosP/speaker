@@ -317,3 +317,72 @@ Compact budgets: AGENTS79 / STATUS120 / agent-map59 / agent-testing52. No new wh
 errors; no introduced Ruff findings against e337c20. All behavior/source checks passed
 before landing. Publication remains gated by the earlier automatic approval rejection;
 no push or post-push branch/worktree cleanup is claimed without explicit resolution.
+
+
+Valid until: the next source/evidence revision supersedes these restored receipts — then treat as history.
+
+## 2026-10-04 — restore focused branch verification records
+
+The worklog conflict resolver retained the final DSP/integration records but dropped four
+new append sections. Their original commits retained exact copies; restored verbatim below.
+No code, decision, runtime configuration, recording, native evidence or successful gate changed.
+
+
+Valid until: the profile/model/runtime or fresh physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — explicit resource modes and component probes (ADR-0218)
+
+Current is a no-op; responsive/compact bind the actual English INT8 streaming tuple
+and VITS/Kitten TTS assets, respectively, without altering final/verifier, provider,
+DSP, endpoints, tool/privacy/identity, expressive-voice or context/output policy.
+24 final policy tests passed; earlier wider launcher/readiness/device gate passed 329.
+Both optimized presets use the separate ADR-0219 residency implementation at integration.
+Caller-relative paths resolve against the same root in core, doctor and live launcher.
+Mode snapshots and descriptor/path/tree identities prevent known preflight mutation
+bypasses; native opening after verification still has a later-filesystem-change limit.
+
+Actual sequential native CPU pair probe under logs/runs/voice-performance-modes-20261004:
+streaming ASR plus TTS resident, synthetic silence plus three public-phrase generations,
+two threads per engine/two-CPU caller mask; no final recognizer/verifier/LLM/DSP/device.
+Steady PSS current805.3701/responsive380.1309/compact355.1533 MiB; process peaks
+816.1289/390.8242/367.9492 MiB. All generated waveforms finite/nonzero; detailed receipts
+bind source/model bytes and sampled thread masks. Public-phrase synthesis timings include
+cold first calls and are diagnostic, not live TTFA/RTF or a corpus speed ranking. No audio
+capture/playback, repaired echo/barge acceptance, phone thermal/battery or promotion.
+Combined integration Python/Flutter gates are recorded below after they actually complete.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Keep heavy local models available without compulsory startup residency (ADR-0219)
+
+Residency gate: 218 native-free affected tests passed in 4.74 s, including multimodal,
+egress, role retention and APM regressions; scoped lint/whitespace clean. Synthetic loaders
+reported all=2 generation calls versus fast=1 (148.14/36.14 ms, fake 72/8 MiB buffers).
+These numbers model skipped startup work and are not native model savings. The sole/shared
+answering model is still warmed and cold main research/images remain callable. The existing
+GGUF lifecycle/context is unchanged; Ollama retention takes effect on subsequent model requests.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Stage and bundle only the active mobile speech assets (ADR-0220)
+
+Mobile footprint: 262 Flutter tests passed with cached Sherpa 1.13.3/Gemma 0.16.5;
+10 final asset tests and full analysis clean. Expanded fake download/bundle gate: 13 passed
+in 0.92 s; shell syntax, scoped lint/format and whitespace clean. No native/model downloads
+or device runs. Default bundling selects the four locked ASR filenames; optional Whisper
+selects its three locked filenames. Available rights/readme files survive. Cached unused
+precisions and public examples are retained on disk. Locked active ASR 74,207,237 bytes;
+omitted Whisper 160,626,066 bytes, not an APK-size or phone-RSS result.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Freeze mobile thread requests before service construction (ADR-0221)
+
+Mobile startup budgets: 79 native-free ownership/config tests passed. Explicit
+compiled compact gate passed 13 tests; full current-lock Flutter suite and analysis were
+green (combined gate recorded at integration). Pure config tests compare all non-thread
+native fields unchanged and cover exact ASR payload reconstruction, TTS direct/worker
+parity and invalid mode refusal before startup. No phone/plugin/native/resource run.

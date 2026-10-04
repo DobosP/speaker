@@ -222,6 +222,7 @@ class VoiceRuntime:
         live_routing: bool = False,
         load_snapshot: Optional[Callable[[], Optional[float]]] = None,
         warm_on_start: bool = False,
+        warm_start_policy: str = "all",
         persona: Optional[PersonaConfig] = None,
         task_timeouts: Optional[Mapping[str, float]] = None,
         confirmation_ttl_sec: float = 180.0,
@@ -230,6 +231,9 @@ class VoiceRuntime:
         diagnostic_observer: Optional[Callable[[object], object]] = None,
         diagnostic_invalidator: Optional[Callable[[str], object]] = None,
     ):
+        if type(warm_start_policy) is not str or warm_start_policy not in {"all", "fast"}:
+            raise ValueError("warm_start_policy must be 'all' or 'fast'")
+        self._warm_start_policy = warm_start_policy
         self.engine = engine
         # Optional private, transcript-free evidence sink.  It is deliberately
         # not an AgentEvent subscriber: playback receipts arrive on a priority
@@ -615,8 +619,8 @@ class VoiceRuntime:
         # "hi" can never fire a billed cloud completion before the user has
         # invoked anything -- cloud egress still happens only on a real turn.
         self._warm_on_start = warm_on_start
-        # Readiness signal: set once the background warm-up has paid the model +
-        # engine cold-start costs (or immediately when warm-up is off). A
+        # Readiness signals that the configured media/model warm plan finished
+        # (or immediately when warm-up is off). Fast policy leaves main cold. A
         # programmatic handle a caller/test can block on until "ready to fire".
         self.warm_ready = Event()
         warm_models: list[LLMClient] = []
@@ -638,7 +642,15 @@ class VoiceRuntime:
                     if all(local is not m for m in warm_models):
                         warm_models.append(local)
 
-        for model in (fast_llm, llm):
+        # Fast-only startup changes residency, not routing or capability
+        # availability. With no distinct fast tier the sole answering tier is
+        # still warmed. Cloud wrappers contribute only their local leg above.
+        warm_candidates = (
+            (fast_llm if fast_llm is not None else llm,)
+            if warm_start_policy == "fast"
+            else (fast_llm, llm)
+        )
+        for model in warm_candidates:
             _add_warm(model)
         self._warm_models = warm_models
 
@@ -772,6 +784,18 @@ class VoiceRuntime:
             # Nothing to warm -> ready immediately, so a waiter never blocks.
             self.warm_ready.set()
 
+    def _warm_helper_is_selected(self, helper: object) -> bool:
+        """Keep a fast startup from indirectly warming a different LLM.
+
+        Shipped addressing/cleanup wrappers expose their bound client. Pure
+        scripted helpers retain their warm behavior; only a declared LLM owner
+        outside the selected local plan is skipped. On-demand calls stay intact.
+        """
+        if self._warm_start_policy == "all":
+            return True
+        owner = getattr(helper, "_llm", None)
+        return owner is None or any(owner is model for model in self._warm_models)
+
     def _warm(self) -> None:
         """Pre-load the engine, answering models, and gate/cleaner so
         turn 1 isn't cold; then raise ``warm_ready``.
@@ -804,12 +828,12 @@ class VoiceRuntime:
                     log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
             # Warm the pre-brain gate + cleaner (they use the fast tier with a
             # different system prefix, so they have their own cold cost).
-            if self._addressing is not None:
+            if self._addressing is not None and self._warm_helper_is_selected(self._addressing):
                 try:
                     self._addressing.classify("hi", recent=())
                 except Exception:  # noqa: BLE001 - best-effort
                     log.debug("addressing warm-up failed", exc_info=True)
-            if self._cleaner is not None:
+            if self._cleaner is not None and self._warm_helper_is_selected(self._cleaner):
                 try:
                     self._cleaner.clean("hi", recent=())
                 except Exception:  # noqa: BLE001 - best-effort

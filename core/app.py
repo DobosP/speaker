@@ -1109,6 +1109,7 @@ def build_runtime(
         # cold-load on the user's first utterance (lat-2). On by default; set
         # config.warm_on_start=false to skip (e.g. to measure cold start).
         warm_on_start=bool(config.get("warm_on_start", True)),
+        warm_start_policy=config.get("warm_start_policy", "all"),
         persona=persona,
         # Per-mode wall-clock task deadlines (never-stuck backstop). Optional --
         # the supervisor bakes in sensible defaults; config overrides per mode.

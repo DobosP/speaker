@@ -264,25 +264,14 @@ Changed runtime/setup/test files have **0 introduced Ruff findings** against HEA
 pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.
 
 
-Valid until: the profile/model/runtime or fresh physical-device evidence changes — then treat as history.
 
-## 2026-10-04 — explicit resource modes and component probes (ADR-0218)
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
 
-Current is a no-op; responsive/compact bind the actual English INT8 streaming tuple
-and VITS/Kitten TTS assets, respectively, without altering final/verifier, provider,
-DSP, endpoints, tool/privacy/identity, expressive-voice or context/output policy.
-24 final policy tests passed; earlier wider launcher/readiness/device gate passed 329.
-Both optimized presets use the separate ADR-0219 residency implementation at integration.
-Caller-relative paths resolve against the same root in core, doctor and live launcher.
-Mode snapshots and descriptor/path/tree identities prevent known preflight mutation
-bypasses; native opening after verification still has a later-filesystem-change limit.
+## 2026-10-04 — Keep heavy local models available without compulsory startup residency (ADR-0219)
 
-Actual sequential native CPU pair probe under logs/runs/voice-performance-modes-20261004:
-streaming ASR plus TTS resident, synthetic silence plus three public-phrase generations,
-two threads per engine/two-CPU caller mask; no final recognizer/verifier/LLM/DSP/device.
-Steady PSS current805.3701/responsive380.1309/compact355.1533 MiB; process peaks
-816.1289/390.8242/367.9492 MiB. All generated waveforms finite/nonzero; detailed receipts
-bind source/model bytes and sampled thread masks. Public-phrase synthesis timings include
-cold first calls and are diagnostic, not live TTFA/RTF or a corpus speed ranking. No audio
-capture/playback, repaired echo/barge acceptance, phone thermal/battery or promotion.
-Combined integration Python/Flutter gates are recorded below after they actually complete.
+Residency gate: 218 native-free affected tests passed in 4.74 s, including multimodal,
+egress, role retention and APM regressions; scoped lint/whitespace clean. Synthetic loaders
+reported all=2 generation calls versus fast=1 (148.14/36.14 ms, fake 72/8 MiB buffers).
+These numbers model skipped startup work and are not native model savings. The sole/shared
+answering model is still warmed and cold main research/images remain callable. The existing
+GGUF lifecycle/context is unchanged; Ollama retention takes effect on subsequent model requests.

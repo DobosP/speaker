@@ -26,7 +26,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
   pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
-- ADR-0213 warms media before LLM on the same startup worker; ADR-0214 records the measured-native-media rewrite criterion and fully
+- ADR-0213/0219 warm media first and optionally only the fast local tier; main/vision remain callable with per-role Ollama residency. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
 - ADR-0216/0217 bind English candidate evidence (37 scripted/6 pinned mic clips, separate) and explicit preflighted Kitten; native defaults
   stay unchanged. `docs/english_model_comparison.md` owns measurements/licenses; factory generation passed, with no live/phone promotion.

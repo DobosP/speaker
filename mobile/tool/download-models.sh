@@ -3,12 +3,29 @@
 # Runs at build time (CI or local) so large model binaries are never committed.
 set -euo pipefail
 
+WITH_WHISPER=false
+case "${1:-}" in
+  "") ;;
+  --with-whisper) WITH_WHISPER=true; shift ;;
+  --help|-h)
+    echo "Usage: $0 [--with-whisper]"
+    echo "Default: streaming Zipformer + Piper. Optional Whisper is not used by the live assistant."
+    echo "To bundle Whisper too, also run generate-asset-list.py --with-whisper."
+    exit 0 ;;
+  *) echo "Unknown option: $1" >&2; exit 2 ;;
+esac
+if [ "$#" -ne 0 ]; then
+  echo "Usage: $0 [--with-whisper]" >&2
+  exit 2
+fi
+
 cd "$(dirname "$0")/.."
 mkdir -p assets
 cd assets
 
 ASR=sherpa-onnx-streaming-zipformer-en-2023-06-26
-# Second-pass (offline) recogniser used to revise the fast streaming transcript.
+# Optional offline recognizer retained for explicit future/evidence use.
+# The shipped assistant has no second-pass call.
 WHISPER=sherpa-onnx-whisper-base.en
 TTS=vits-piper-en_US-amy-low
 BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download
@@ -26,15 +43,16 @@ fetch() {
 }
 
 fetch "$ASR" "$BASE/asr-models/$ASR.tar.bz2"
-fetch "$WHISPER" "$BASE/asr-models/$WHISPER.tar.bz2"
+if [ "$WITH_WHISPER" = true ]; then
+  fetch "$WHISPER" "$BASE/asr-models/$WHISPER.tar.bz2"
+fi
 fetch "$TTS" "$BASE/tts-models/$TTS.tar.bz2"
 
-# The Whisper archive ships fp32 + int8 weights and sample wavs; we only load
-# the int8 model, so drop the rest to keep the bundled APK small.
-if [ -d "$WHISPER" ]; then
-  rm -f "$WHISPER/base.en-encoder.onnx" "$WHISPER/base.en-decoder.onnx"
-  rm -rf "$WHISPER/test_wavs"
-fi
+# Bundle filtering happens in generate-asset-list.py. Preserve cached optional
+# weights and examples on disk even when they are excluded from the APK.
 
 echo "==> models ready:"
-du -sh "$ASR" "$WHISPER" "$TTS"
+du -sh "$ASR" "$TTS"
+if [ "$WITH_WHISPER" = true ]; then
+  du -sh "$WHISPER"
+fi

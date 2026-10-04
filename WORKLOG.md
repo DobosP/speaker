@@ -267,11 +267,12 @@ pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repai
 
 Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
 
-## 2026-10-04 — Keep heavy local models available without compulsory startup residency (ADR-0219)
+## 2026-10-04 — Stage and bundle only the active mobile speech assets (ADR-0220)
 
-Residency gate: 218 native-free affected tests passed in 4.74 s, including multimodal,
-egress, role retention and APM regressions; scoped lint/whitespace clean. Synthetic loaders
-reported all=2 generation calls versus fast=1 (148.14/36.14 ms, fake 72/8 MiB buffers).
-These numbers model skipped startup work and are not native model savings. The sole/shared
-answering model is still warmed and cold main research/images remain callable. The existing
-GGUF lifecycle/context is unchanged; Ollama retention takes effect on subsequent model requests.
+Mobile footprint: 262 Flutter tests passed with cached Sherpa 1.13.3/Gemma 0.16.5;
+10 final asset tests and full analysis clean. Expanded fake download/bundle gate: 13 passed
+in 0.92 s; shell syntax, scoped lint/format and whitespace clean. No native/model downloads
+or device runs. Default bundling selects the four locked ASR filenames; optional Whisper
+selects its three locked filenames. Available rights/readme files survive. Cached unused
+precisions and public examples are retained on disk. Locked active ASR 74,207,237 bytes;
+omitted Whisper 160,626,066 bytes, not an APK-size or phone-RSS result.

@@ -22,7 +22,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211 overlaps one mobile TTS lookahead with the current clip on a single synthesis lane. Exact playback cleanup releases returned
-  WAVs; uncertain cleanup retains its file. Device first-audio, CPU/thermal and acoustic behavior remain unvalidated.
+  WAVs; uncertain cleanup retains its file. ADR-0220 stages/bundles active assets only; device latency, thermals and acoustics remain unvalidated.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
   pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.

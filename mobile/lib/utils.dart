@@ -16,32 +16,60 @@ Future<String> copyAssetFile(String src, [String? dst]) async {
 
   final data = await rootBundle.load(src);
   if (!exists || File(target).lengthSync() != data.lengthInBytes) {
-    final bytes =
-        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    final bytes = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
     await (await File(target).create(recursive: true)).writeAsBytes(bytes);
   }
   return target;
 }
 
-Future<List<String>> _getAllAssetFiles() async {
-  final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-  return manifest.listAssets();
-}
+typedef AssetFileCopier =
+    Future<String> Function(String source, String destination);
 
-String _stripLeadingDirectory(String src, {int n = 1}) {
-  return p.joinAll(p.split(src).sublist(n));
-}
-
-// Copy every bundled asset to disk, preserving its directory layout minus the
-// leading "assets/" segment. Used by the TTS model loader.
-Future<void> copyAllAssetFiles() async {
-  for (final src in await _getAllAssetFiles()) {
-    await copyAssetFile(src, _stripLeadingDirectory(src));
+// Stage one model subtree, preserving nested paths such as espeak-ng-data.
+// The manifest may also contain unrelated models, fonts and sample audio.
+Future<void> copyAssetFilesInDirectory(
+  String assetDirectory, {
+  AssetManifest? manifest,
+  AssetFileCopier? copyFile,
+}) async {
+  final parts = assetDirectory.split('/');
+  if (parts.length < 2 ||
+      parts.first != 'assets' ||
+      parts.any((part) => part.isEmpty || part == '.' || part == '..') ||
+      assetDirectory.contains('\\')) {
+    throw ArgumentError.value(assetDirectory, 'assetDirectory');
+  }
+  final selectedManifest =
+      manifest ?? await AssetManifest.loadFromAssetBundle(rootBundle);
+  final prefix = '$assetDirectory/';
+  final selected = selectedManifest
+      .listAssets()
+      .where((source) => source.startsWith(prefix))
+      .toList(growable: false);
+  if (selected.isEmpty) throw StateError('model_assets_unavailable');
+  // Validate all destinations before the first write.
+  for (final source in selected) {
+    if (source.contains('\\') ||
+        source
+            .split('/')
+            .any((part) => part.isEmpty || part == '.' || part == '..')) {
+      throw StateError('model_asset_path_invalid');
+    }
+  }
+  final copier =
+      copyFile ?? (source, destination) => copyAssetFile(source, destination);
+  for (final source in selected) {
+    await copier(source, p.joinAll(source.split('/').skip(1)));
   }
 }
 
-Float32List convertBytesToFloat32(Uint8List bytes,
-    [Endian endian = Endian.little]) {
+Float32List convertBytesToFloat32(
+  Uint8List bytes, [
+  Endian endian = Endian.little,
+]) {
   final values = Float32List(bytes.length ~/ 2);
   // sublistView honors this Uint8List's own offset/length. `record` hands back
   // chunks that are often *views* into a larger reused buffer, so the old

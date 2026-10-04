@@ -1,38 +1,24 @@
-# Fast dev loop overlay. Use with:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Go-only development overlay, dormant under rollback-web.
+# Build/restart to compile current Go source; no Python HTTP reloader is used.
+# Example after reading docs/go_serving_boundary.md:
+# docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#   --profile rollback-web build token-server
 #
-# Bind-mounts the source over /app so code edits take effect WITHOUT rebuilding,
-# relaxes the read-only root filesystem so editing is frictionless, and runs the
-# token server with --reload so the web/text path hot-reloads on save. Hardening
-# (non-root, dropped caps, no-new-privileges) stays on.
-#
-# This is the ONLY place --dev (well-known devkey/secret) is enabled. The base
-# compose requires real LIVEKIT_API_KEY/SECRET and fails fast without them; this
-# overlay opts back into the throwaway dev credentials for a local-only loop.
+# All mounted inputs are read-only. Go's binary/module/build caches use /tmp
+# tmpfs; the built binary uses one explicit executable /run/speaker tmpfs.
+# Base hardening stays on. Auth has no well-known credential fallback.
+# The retained rollback-audio services receive no development overrides.
 services:
-  # --dev makes the SFU accept the well-known devkey/secret. LOCAL ONLY: never
-  # use this overlay for anything exposed beyond your machine.
-  livekit:
-    command: ["--dev", "--bind", "127.0.0.1"]
-
-  worker:
-    read_only: false
-    volumes:
-      - ./:/app
-
   token-server:
-    read_only: false
+    build:
+      target: dev
+    image: speaker-web-dev:latest
+    tmpfs:
+      - /run/speaker:rw,exec,nosuid,nodev,size=32m,mode=1777
     volumes:
-      - ./:/app
-    # Local-only dev loop: bind the token server to loopback, consistent with
-    # the 127.0.0.1 default in main() and the dev livekit service above. Expose
-    # it deliberately (and set SPEAKER_REMOTE_BIND_ALL / a token) only if you
-    # actually need off-box access.
+      - ./remote/serving:/src:ro
+      - ./web:/app/web:ro
+      - ./config.json:/app/config.json:ro
+    entrypoint: ["sh", "-ec"]
     command:
-      - uvicorn
-      - remote.token_server:app
-      - --host
-      - 127.0.0.1
-      - --port
-      - "8080"
-      - --reload
+      - go build -mod=readonly -trimpath -o /run/speaker/speaker-web ./cmd/speaker-web && exec /run/speaker/speaker-web --config /app/config.json --web-dir /app/web --port 8080

@@ -273,13 +273,12 @@ def test_exact_installed_manual_roomio_start_and_close_are_headless() -> None:
     asyncio.run(scenario())
 
 
-def test_exact_installed_token_ttl_and_in_process_health_are_headless(
+def test_exact_installed_rollback_token_ttl_is_headless(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import httpx
     import jwt
 
-    from remote.token_server import create_access_token, create_app
+    from remote.token_server import create_access_token
 
     monkeypatch.setenv("LIVEKIT_API_KEY", "headless-test-key")
     monkeypatch.setenv(
@@ -303,17 +302,5 @@ def test_exact_installed_token_ttl_and_in_process_health_are_headless(
     assert claims["video"]["canSubscribe"] is True
     assert claims["video"]["canPublishData"] is True
 
-    monkeypatch.delenv("SPEAKER_REMOTE_ALLOW_NOAUTH", raising=False)
-    monkeypatch.delenv("SPEAKER_REMOTE_TOKEN", raising=False)
-
-    async def get_health() -> httpx.Response:
-        transport = httpx.ASGITransport(app=create_app({}))
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://headless.invalid",
-        ) as client:
-            return await client.get("/healthz")
-
-    response = asyncio.run(get_health())
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    # Unauthenticated HTTP health is now covered by Go TestHealthIsPublicAndDoesNotConstructBackend;
+    # this SDK closure test retains only the Python rollback worker JWT owner.

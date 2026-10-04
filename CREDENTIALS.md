@@ -16,7 +16,7 @@ reference; `AGENTS.md` only points here.**
 | `GIT_HUB_ACCESS_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks. **Explicit authorization only** (see below) |
 | `HUGGINGFACE_TOKEN` | session environment (Hugging Face read token) | `tools/bench/__main__.py`, `tools/setup_models.py` | Authenticated/rate-limit-safe model downloads in dev/bench |
 | `HF_TOKEN` | **GitHub Actions secret** | `perf.yml`, `publish-model.yml` | Model downloads inside CI, including gated mobile Gemma publishing |
-| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | session/host environment | `remote/token_server.py`, `core/app.py` | Minting LiveKit JWTs for the remote host + thin-client path |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | session/host environment | `remote/serving/`, retained `remote/token_server.py`, `core/app.py` | Minting LiveKit JWTs for the remote host + thin-client path |
 | `DATABASE_URL` | developer `.env` (see `SETUP.md`) | `utils/memory.py` | Postgres-backed smart memory |
 
 ---
@@ -155,13 +155,15 @@ limits. The variables are split by *where the code runs*:
 ## `LIVEKIT_*` — remote host + thin-client path (optional)
 
 Only needed for the `remote/` path (`pip install -r requirements-remote.txt`).
-Read from the environment in `remote/token_server.py` (`LIVEKIT_API_KEY` /
-`LIVEKIT_API_SECRET`, used to mint room JWTs) and `core/app.py` (`LIVEKIT_TOKEN`
-for `--engine livekit`). `LIVEKIT_URL` points the browser/worker at the server.
+Read from the environment by the optional Go facade in `remote/serving/` and
+the retained Python worker mint helper (`LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`),
+and by `core/app.py` (`LIVEKIT_TOKEN` for legacy rollback). `LIVEKIT_URL` points
+the browser/worker at the server.
 Not required for any on-device path.
 
-> Security note: `remote/token_server.py` mints a token for **any** identity/room
-> as written — put real authentication in front of `/token` before exposing it.
+Facade auth and disabled-by-default voice token admission are specified in
+[ADR-0224](docs/adr/0224-move-dormant-web-serving-boundary-to-go.md). The Python
+helper owns no HTTP listener and grants no owner/action authority.
 
 ---
 

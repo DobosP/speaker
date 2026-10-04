@@ -2,6 +2,45 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+
+## 2026-10-05 — dormant Go web serving boundary (ADR-0224)
+
+Valid until: a later serving/qualification decision supersedes these receipts — then treat as history.
+
+- Scope: actual Go HTTP/auth/HS256/token/text transport/static listener, CLI/probe/native qualifier, Go-only runtime/dev images,
+  dormant independent Compose profiles, manual CI and exact original-case mapping. Python HTTP/FastAPI/Uvicorn removed; Python/native
+  audio/inference/action core and retained SDK mint helper remain. No push/merge/deploy, LAN listener, model/provider/audio session or minor data.
+- Source base `5800a94`; Go 1.27.1. Official downloaded task compiler SHA256 `63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445`
+  matched go.dev; later gates used the existing read-only `/mnt/data/decision-lab-runtime/kev-native/toolchain/go/bin/go`, also 1.27.1.
+  `GOTOOLCHAIN=local GOENV=off`, task scratch GOCACHE/GOTMPDIR; ordinary module has no external Go dependencies.
+- Final source-tree Go `test -count=1 ./...` passed; `test -count=1 -race ./...`: serving 14.579s, CLI 1.022s; `vet ./...` clean.
+  41 top-level cases plus table scenarios include original known answers, JWT signatures, wire/IPC caps, stale-source BUSY, process
+  cancellation/wait, no credential/proxy inheritance and static identity/confinement. The original eight Python cases are fully mapped in
+  `docs/go_serving_boundary.md`; two SDK tests remain and two llama thread-pair contracts moved to the new Python worker tests.
+- Python targeted SDK/adapter/session/device/entrypoint gate: `166 passed, 1 skipped in 1.28s`; adapter alone `73 passed in 0.44s`.
+  Exact installed SDK opt-in gate was attempted and refused collection (`livekit-agents` distribution missing); no package install or
+  claimed installed-SDK/live qualification. Scoped Ruff unavailable; six changed Python sources parse cleanly. Docs: files=37,
+  dead_links=0 stale_terms=0 retired_verbs=0 orphans=0; whitespace clean; STATUS120/map59 line budgets hold.
+- Initial CI-style Python full gate under task scratch: `103 failed, 11595 passed, 40 skipped, 9 warnings in 358.42s`.
+  Failures are synthetic private-artifact guards under the host's `/home/dobo/work/.git` marker, the known ADR-0215 environment boundary.
+  No guard/marker was changed. Framework-generated synthetic fixtures are rerun outside Git ancestry; source/reports stay in task worktree/scratch.
+- Native actual HTTP qualifier passed ordinary HTTP/auth/JWT/static/error/probe contracts with Python absent from its required path;
+  explicit `--chat-python /home/dobo/work/speaker/.venv/bin/python` also passed the synthetic echo-pipe assembly. No Python HTTP proxy.
+  One Go HTTP process; explicit text adds one bounded Python child per nonempty admitted turn, with no wait queue. Native-server return/child
+  wait is not separate Ollama computation termination or arbitrary native-descendant proof; real model costs remain unmeasured.
+- Warm sequential 800-request native-only mix (80% health/20% shipped index, keepalive, concurrency1, 399360 response-body bytes):
+  idle RSS9252KiB, peak12540KiB, CPU8 ticks at100Hz =0.100ms/request; p50/p95/p99 0.113/0.196/0.297ms, 7725.27 requests/s.
+  Another run with separately requested pipe qualification measured ordinary HTTP 9344/12216KiB RSS, 0.0875ms CPU/request,
+  0.107/0.190/0.295ms and 8433.59 requests/s. These are local small warm-loopback measurements, not production/latency/headroom claims.
+  Python HTTP baseline unmeasured because FastAPI/Uvicorn are absent; no language savings, cost, container tier or model-performance claim.
+- Evolving-tree Docker runtime and development builds passed. Runtime exported19 entries, uid10001:10001, no Python/shell/core/models;
+  native health under `--network none`, read-only rootFS/dropped caps/no-new-privileges passed. Read-only Go dev compiled in tmpfs and
+  reached private health. Both temporary containers removed; final-head image qualification is recorded in the ignored task result.
+  Compose selected zero default services and only token-server under rollback-web; YAML/six shell-run steps pass. GitHub workflow unrun.
+- Independent contract and privacy/lifecycle review found serialized-output overflow, exact ASCII/Unicode IPC cap regressions, null reply
+  admission, provider exit diagnostic leakage and static replacement identity risk. All were repaired and independently reproduced as fixed,
+  with regression cases. No unresolved code-review findings. Audio/trusted-LAN/owner A/B/phone/model qualification remains outside this gate.
+
 ## 2026-09-05 — docs refresh: STATUS.md receipts moved here verbatim
 
 Valid until: superseded by newer ADR receipts — then treat as history.

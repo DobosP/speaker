@@ -1,22 +1,11 @@
-# Remote access (web / phone-style live voice / mobile) dependencies -- OPTIONAL.
-#
-# Kept separate from requirements.txt so the local voice assistant installs and
-# runs without these. Install on the host that will serve remote clients:
-#
-#     pip install -r requirements-remote.txt
-#
-# Then run a LiveKit server (dev: `livekit-server --dev`, or LiveKit Cloud) and
-# set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET in the env / .env.
-# Launch the worker with `python -m remote.worker` and serve the web client with
-# `uvicorn remote.token_server:app`. See the remote/ + core/engines/livekit.py
-# module docstrings for details.
-#
-# (STT/LLM/TTS still run locally via the base requirements; LiveKit is only the
-# WebRTC transport, so fully-local is preserved.)
+# Retained Python LiveKit audio rollback dependencies -- OPTIONAL (ADR-0164).
+# The Go HTTP/auth/JWT/static server in remote/serving needs only Go's stdlib;
+# neither it nor its ordinary container requires this file, FastAPI or Uvicorn.
+# Python inference/control remains in core/ + always_on_agent/. An explicit
+# --chat-python local adapter requires the base Python runtime, not Python HTTP.
+# See docs/go_serving_boundary.md and STATUS.md for the dormant facade gates.
 
 livekit==1.1.14            # exact RTC pair reviewed with LiveKit Agents 1.6.8
 livekit-agents==1.6.8      # reviewed optional publisher-session composition
-livekit-api==1.2.0         # reviewed AccessToken / VideoGrants API
+livekit-api==1.2.0         # retained Python worker token helper
 livekit-protocol==1.1.21   # release-matched shared protocol closure
-fastapi>=0.110             # token server + /chat + static web hosting
-uvicorn>=0.29              # ASGI server for the token/web server

@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# Optional rollback web facade. The final image contains no Python, assistant
+# core, model runtime, model volume, or provider credentials. /chat is unavailable
+# unless a separately qualified local text adapter is explicitly configured.
+# Audio remains in docker/Dockerfile and behind its independent rollback gates.
+
+FROM golang:1.27.1-bookworm AS build
+WORKDIR /src
+ENV GOTOOLCHAIN=local
+COPY remote/serving/ ./
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" \
+    -o /speaker-web ./cmd/speaker-web
+
+# A restart builds current Go source; static web/config mounts are read-only.
+# The dev target remains Go-only and does not install a Python text worker.
+FROM golang:1.27.1-bookworm AS dev
+WORKDIR /src
+ENV GOTOOLCHAIN=local \
+    CGO_ENABLED=0 \
+    GOCACHE=/tmp/go-build \
+    GOMODCACHE=/tmp/go-mod
+USER 10001:10001
+ENTRYPOINT ["sh", "-ec"]
+CMD ["go build -mod=readonly -trimpath -o /run/speaker/speaker-web ./cmd/speaker-web && exec /run/speaker/speaker-web --config /app/config.json --web-dir /app/web --port 8080"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/run/speaker/speaker-web", "--probe-url", "http://127.0.0.1:8080/healthz"]
+
+FROM scratch AS runtime
+WORKDIR /app
+COPY --from=build /speaker-web /speaker-web
+COPY web/ /app/web/
+COPY config.json /app/config.json
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["/speaker-web"]
+CMD ["--config", "/app/config.json", "--web-dir", "/app/web", "--port", "8080"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/speaker-web", "--probe-url", "http://127.0.0.1:8080/healthz"]

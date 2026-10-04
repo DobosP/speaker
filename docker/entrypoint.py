@@ -10,7 +10,7 @@ writable. We therefore read the baked-in /app/config.json, merge in:
   * OLLAMA_HOST -> llm.host, so the LLM points at your host-local Ollama,
 
 and write the result to a writable tmpfs dir, which becomes the working
-directory (core.app and token_server both load ./config.json from the cwd).
+directory (core.app loads ./config.json from the cwd; the Go facade has its own image).
 If the model-paths file is absent the worker simply runs without ASR/TTS, which
 is what you want for `--llm echo` smoke tests.
 """
@@ -121,7 +121,7 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("[entrypoint] no command to run", file=sys.stderr)
         return 1
-    os.chdir(run_dir)  # core.app / token_server read ./config.json from here
+    os.chdir(run_dir)  # retained core.app reads ./config.json from here
     os.execvp(sys.argv[1], sys.argv[1:])
 
 

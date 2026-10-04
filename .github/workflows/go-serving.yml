@@ -1,0 +1,80 @@
+name: Go serving boundary
+
+# Explicitly requested qualification only, matching ADR-0223. No secrets,
+# models, providers, audio devices, LiveKit server, LAN or deployment are used.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  serving:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: remote/serving/go.mod
+          cache: false
+
+      - name: Test, race and vet the actual Go HTTP boundary
+        working-directory: remote/serving
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/speaker-web" ./cmd/speaker-web
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/qualify-serving" ./cmd/qualify-serving
+
+      - name: Synthetic Go HTTP/auth/JWT/static/resource qualification without Python
+        run: '"$RUNNER_TEMP/qualify-serving" --binary "$RUNNER_TEMP/speaker-web" --repo "$GITHUB_WORKSPACE"'
+
+      - name: Build the Python-free ordinary web image
+        run: docker build --target runtime --file docker/Dockerfile.web --tag speaker-web:qualify .
+
+      - name: Qualify scratch image contents and private health probe
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Config.User}}' speaker-web:qualify)" = 10001:10001
+          image_container=$(docker create --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true speaker-web:qualify)
+          trap 'docker rm --force "$image_container" >/dev/null 2>&1 || true' EXIT
+          docker export "$image_container" | tar -tf - >"$RUNNER_TEMP/speaker-web-image-files.txt"
+          if grep -E '(^|/)(python[^/]*|core|always_on_agent|models)(/|$)' "$RUNNER_TEMP/speaker-web-image-files.txt"; then
+            echo 'Unexpected Python/core/model content in ordinary Go web image' >&2
+            exit 1
+          fi
+          # Network none retains only the container's own synthetic loopback.
+          docker start "$image_container" >/dev/null
+          for attempt in $(seq 1 50); do
+            if docker exec "$image_container" /speaker-web --probe-url http://127.0.0.1:8080/healthz; then
+              break
+            fi
+            sleep 0.1
+          done
+          docker exec "$image_container" /speaker-web --probe-url http://127.0.0.1:8080/healthz
+
+      - name: Qualify dormant Compose and Go-only development build
+        run: |
+          set -euo pipefail
+          test -z "$(docker compose --env-file /dev/null config --services)"
+          test "$(docker compose --env-file /dev/null --profile rollback-web config --services)" = token-server
+          docker compose --env-file /dev/null -f docker-compose.yml -f docker-compose.dev.yml --profile rollback-web config --quiet
+          docker build --target dev --file docker/Dockerfile.web --tag speaker-web-dev:qualify .
+
+      - name: Qualify readonly Go development launch with private loopback
+        run: |
+          set -euo pipefail
+          dev_container=$(docker create --network none --read-only --tmpfs /tmp --tmpfs /run/speaker:rw,exec,nosuid,nodev,size=32m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true --mount "type=bind,src=$GITHUB_WORKSPACE/remote/serving,dst=/src,readonly" --mount "type=bind,src=$GITHUB_WORKSPACE/web,dst=/app/web,readonly" --mount "type=bind,src=$GITHUB_WORKSPACE/config.json,dst=/app/config.json,readonly" speaker-web-dev:qualify)
+          trap 'docker rm --force "$dev_container" >/dev/null 2>&1 || true' EXIT
+          docker start "$dev_container" >/dev/null
+          for attempt in $(seq 1 120); do
+            if docker exec "$dev_container" /run/speaker/speaker-web --probe-url http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          docker exec "$dev_container" /run/speaker/speaker-web --probe-url http://127.0.0.1:8080/healthz

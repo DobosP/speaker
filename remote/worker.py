@@ -15,7 +15,7 @@ Setup:
     python -m remote.worker --llm echo # offline smoke (no Ollama)
 
 Then serve the web client + token endpoint for callers:
-    uvicorn remote.token_server:app --host 0.0.0.0 --port 8080
+    # Explicit rollback only; see docs/go_serving_boundary.md for the Go facade.
 
 This live path needs a running LiveKit server and a connected client, so it
 cannot be verified headless; treat it as a working starting point to tune with

@@ -40,8 +40,9 @@ Linux/Windows/macOS and (later) Android/iOS.
 - **`utils/memory*`** — Postgres-backed smart memory (see [`MEMORY.md`](MEMORY.md)).
 - **`mobile/`** — on-device **Android app** (Flutter): `sherpa_onnx` +
   `flutter_gemma`, fully local. See [`mobile/README.md`](mobile/README.md).
-- **`remote/`** + **`web/`** — optional **host + thin-client** path: run the brain
-  on one machine; browsers/phones connect over LiveKit/WebRTC.
+- **`remote/`** + **`web/`** — optional rollback facade; Go serving qualification and the
+  retained Python/audio boundary: [`ADR-0224`](docs/adr/0224-move-dormant-web-serving-boundary-to-go.md),
+  [`qualification guide`](docs/go_serving_boundary.md).
 
 ## Quick start
 

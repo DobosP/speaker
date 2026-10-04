@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
-# Light remote-host image: the LiveKit worker (sherpa-onnx STT/TTS + the
-# always_on_agent brain) and the FastAPI token/web server. The LLM runs in your
-# host-local Ollama -- it is NOT in this image. Single stage + lean deps (no
-# torch) so it builds fast and the deps layer caches across code edits.
+# Retained Python core/LiveKit audio rollback image (sherpa-onnx STT/TTS + the
+# always_on_agent brain), also usable for an explicitly selected local text
+# adapter. HTTP/auth/JWT/static serving belongs to docker/Dockerfile.web.
+# The LLM runs in host-local Ollama; no model weights are baked into this image.
+# Single stage + lean deps (no torch) preserve the existing worker packaging.
 
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
@@ -33,7 +34,7 @@ COPY config.json ./
 COPY docker/entrypoint.py docker/download_models.py /usr/local/bin/
 
 # Fail the build early if the lean dependency set can't import the entrypoints.
-RUN python -c "import core.app, remote.worker, remote.token_server, tools.setup_minicpm"
+RUN python -c "import core.app, remote.worker, remote.text_backend, tools.setup_minicpm"
 
 # Run unprivileged. Code stays root-owned (read-only to the app), and the
 # entrypoint writes its merged config to a tmpfs, so this image runs cleanly

@@ -1,12 +1,13 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-04 (full headless gate and local native model trials, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
+Last verified: 2026-10-05 (Go serving and synthetic pipe gates, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
 dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Current state — runtime
-- GitHub Actions run on demand via workflow_dispatch; automatic triggers removed, with jobs/inputs/permissions preserved (ADR-0223).
+- GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
+  Python audio/inference/actions remain. Go-only image has no Python/models; voice tokens default-deny, rollback is loopback only (ADR-0224).
 - `python -m core --session` is the one public core entry: `VoiceSession` owns one injected `VoiceRuntime`, `build_runtime` is the sole
   tool/authority plane, and repeat-previous and continuation/resume lineage are fenced (ADR-0123/0154). Audio is device-only by default;
-  trusted-LAN is unselectable until owner live A/B and legacy remote is rollback only (ADR-0096/0097/0164).
+  trusted-LAN is unselectable until owner live A/B and legacy remote is rollback only (ADR-0096/0097/0164); web qualification: `docs/go_serving_boundary.md`.
 - `./live.sh` is the single Linux physical entry (host lock, reversible echo route, conditional Ollama, doctor gate, private evidence); the
   `sense-voice`/`parakeet-faster-whisper` final-STT profiles fail closed instead of degrading, `--no-speaker-enrollment` is a session-only
   identity downgrade, and the production whole-turn replay failed closed at row 9 (ADR-0075/0077/0144/0146/0152).
@@ -96,7 +97,6 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Open gates
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
-
 ## Next
 - Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
   awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
@@ -107,10 +107,10 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
-## Verification record (2026-10-04; commands/history in WORKLOG.md)
+## Verification record (2026-10-05; prior full/mobile receipts below; commands/history in WORKLOG.md)
 - Python CI-style full gate: `11631 passed, 42 skipped, 9 warnings` in 460.43 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
-- No introduced Ruff findings; whitespace/docs clean and compact budgets hold. Native pair memory is component evidence; live/phone gates stay open.
+- Go HTTP/race/vet and synthetic private pipe pass; Python adapter `73 passed`. Native resource figures are scoped warm HTTP evidence; no Python baseline/cost claim.
 - Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
 
 ## Doc map

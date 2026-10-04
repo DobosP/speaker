@@ -1,16 +1,14 @@
-"""Remote access layer: web app, phone-style live voice, and mobile.
+"""Dormant optional host facade and retained Python audio rollback.
 
-Modules here let clients reach the assistant over LiveKit (WebRTC) and a small
-FastAPI server, reusing the new ``core`` runtime rather than rewriting it. All
-heavy/optional dependencies (livekit, fastapi) are imported lazily inside
-functions so importing this package never breaks the base install or the test
-suite.
+``serving/`` is the real Go HTTP/auth/JWT/static boundary. Its ordinary image is
+Python-free. ``text_backend.py`` is an explicitly selected, one-turn private
+stdin/stdout JSON adapter to the retained Python assistant text core; it does
+not host HTTP. Without an adapter, the Go server returns unavailable for chat.
 
-Components:
-  token_server.py - FastAPI: mints LiveKit JWTs, serves the web client, /chat.
-  worker.py       - runs a ``VoiceRuntime`` whose engine is the LiveKitEngine,
-                    i.e. the same brain as the local app but with a room for I/O.
+``worker.py`` retains the LiveKit audio rollback and Python ``VoiceRuntime``.
+``token_server.py`` retains import-safe compatibility helpers for that worker;
+it is no longer the web listener. No package import activates audio or a server.
 
-The room audio bridge itself is :class:`core.engines.livekit.LiveKitEngine`.
-See each module's docstring for setup and how to run.
+Current status and promotion gates live in ``STATUS.md`` and ADR-0096/0097/0164;
+see ``docs/go_serving_boundary.md`` for migration scope and qualification.
 """

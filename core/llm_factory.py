@@ -10,6 +10,7 @@ directly. The construction logic is unchanged from when it lived in
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Optional
 
@@ -44,6 +45,18 @@ __all__ = [
     "_build_cloud_client",
     "_preset_host",
 ]
+
+
+def _role_keep_alive(config: dict, role: str):
+    key = role + "_keep_alive"
+    if key not in config:
+        return config.get("keep_alive")
+    value = config[key]
+    if value is None or (type(value) is str and bool(value.strip())):
+        return value
+    if type(value) in {int, float} and math.isfinite(value):
+        return value
+    raise ValueError("llm role keep_alive must be a duration string, finite seconds, or null")
 
 
 def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | None]:
@@ -118,7 +131,8 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
         return _tag_local_main(_wrap_cloud(main, llm_cfg), main), fast
 
     host = llm_cfg.get("host")
-    keep_alive = llm_cfg.get("keep_alive")
+    main_keep_alive = _role_keep_alive(llm_cfg, "main")
+    fast_keep_alive = _role_keep_alive(llm_cfg, "fast")
     # Reasoning-model "thinking" is OFF by default on the voice path: a model
     # like gemma4 streams a silent chain-of-thought before any spoken content
     # (measured ~9 s of dead air before the first word of a story on gemma4:12b),
@@ -128,11 +142,16 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     think = llm_cfg.get("think", False)
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
+    if fast_model == main_model and any(key in llm_cfg for key in ("main_keep_alive", "fast_keep_alive")):
+        # Ollama residency belongs to the daemon model, not either Python role.
+        # A main request must not expire the same weights the fast role pins.
+        # Keep legacy client identities and use the fast policy for both roles.
+        main_keep_alive = fast_keep_alive
     main = OllamaLLM(
         model=main_model,
         host=host,
         options=options,
-        keep_alive=keep_alive,
+        keep_alive=main_keep_alive,
         think=think,
         timeout=ollama_timeout,
         client_headers=client_headers,
@@ -142,7 +161,7 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
             model=fast_model,
             host=host,
             options=options,
-            keep_alive=keep_alive,
+            keep_alive=fast_keep_alive,
             think=think,
             timeout=ollama_timeout,
             client_headers=client_headers,

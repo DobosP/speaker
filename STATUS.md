@@ -26,7 +26,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 - ADR-0212 keeps four mobile ASR worker credits plus one PCM batch through short stalls, with original capture boundaries and exact ACKs;
   pending audio/metadata are bounded and revoked on session end. Sustained RTF, WER and phone thermals remain unmeasured.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
-- ADR-0213 warms media before LLM on the same startup worker; ADR-0214 records the measured-native-media rewrite criterion and fully
+- ADR-0213/0219 warm media first and optionally only the fast local tier; main/vision remain callable with per-role Ollama residency. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
 - ADR-0216 installs and benchmarks explicit English candidates on 37 scripted-reference and 6 hash-pinned microphone clips, kept separate;
   native defaults stay unchanged. Results/source/license evidence are in `docs/english_model_comparison.md`; no live/phone promotion follows.
@@ -108,7 +108,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 
 ## Verification record (2026-10-04; commands/history in WORKLOG.md)
-- Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
+- Prior Python CI-style full gate: `11543 passed, 42 skipped, 9 warnings` in 559.12 s; excludes the CI's two LiveKit files, with hermetic private fixtures.
 - Prior mobile: `252 passed` and full analysis clean; current benchmark contract gates `208 passed` (commands/limits in WORKLOG.md).
 - Scoped Ruff, whitespace and docs gate clean; all compact doc budgets hold. Native candidate runs are after-PCM/development evidence only.
 - Deferred doctor: `BASE NOT READY` in this execution environment (CUDA verifier, audio device queries, echo route); no physical/live run occurred.

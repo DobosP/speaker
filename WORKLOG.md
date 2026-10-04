@@ -262,3 +262,15 @@ Final documentation gate: `files=36 dead_links=0 stale_terms=0 retired_verbs=0 o
 compact budgets AGENTS79 / STATUS120 / agent-map59 / agent-testing52. Whitespace clean.
 Changed runtime/setup/test files have **0 introduced Ruff findings** against HEAD (24
 pre-existing E402/F401/E731 findings remain); no unrelated formatting/lint repair was made.
+
+
+Valid until: the model/runtime/profile or physical-device evidence changes — then treat as history.
+
+## 2026-10-04 — Keep heavy local models available without compulsory startup residency (ADR-0219)
+
+Residency gate: 218 native-free affected tests passed in 4.74 s, including multimodal,
+egress, role retention and APM regressions; scoped lint/whitespace clean. Synthetic loaders
+reported all=2 generation calls versus fast=1 (148.14/36.14 ms, fake 72/8 MiB buffers).
+These numbers model skipped startup work and are not native model savings. The sole/shared
+answering model is still warmed and cold main research/images remain callable. The existing
+GGUF lifecycle/context is unchanged; Ollama retention takes effect on subsequent model requests.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -22,6 +23,13 @@ from tools.setup_minicpm import (
 
 
 _REPO = Path(__file__).resolve().parents[1]
+_LEGACY_SUFFIXLESS_TEMPLATE = """{{- if .Messages -}}
+{{- range .Messages -}}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end -}}
+<|im_start|>assistant
+{{ end -}}"""
 
 
 def _show_pair(
@@ -213,6 +221,28 @@ def test_effective_identity_digest_binds_selected_capabilities():
     )
 
 
+@pytest.mark.parametrize("explicit_modelfile", (False, True))
+def test_identity_rejects_legacy_suffixless_template_with_same_model_and_parameters(
+    explicit_modelfile,
+):
+    show = _show_pair(template=_LEGACY_SUFFIXLESS_TEMPLATE)
+    if explicit_modelfile:
+        # The effective alias override must win over a healthy-looking show.template.
+        show = _show_pair(
+            alias_modelfile=(
+                f"FROM /models/sha256-{MINICPM_Q8_CONTRACT.blob_sha256}\n"
+                f'TEMPLATE """{_LEGACY_SUFFIXLESS_TEMPLATE}"""\n'
+            )
+        )
+    identity = verify_minicpm_q8_identity(show=show)
+
+    assert identity.ok is False
+    assert identity.template_match is False
+    assert identity.pinned_blob_match and identity.parameters_match
+    assert identity.capabilities_match
+    assert "canonical ChatML template" in identity.error
+
+
 def test_command_failure_skips_post_create_show():
     def fail_create(command, *, check):
         assert check is True
@@ -319,6 +349,94 @@ def test_committed_modelfile_matches_the_production_contract():
     text = DEFAULT_MODELFILE.read_text(encoding="utf-8")
     assert f"FROM {SOURCE_MODEL}" in text
     assert MINICPM_Q8_CONTRACT.template in text
+
+
+def test_modelfile_contract_rejects_legacy_suffixless_template(tmp_path):
+    changed = tmp_path / "Modelfile"
+    changed.write_text(
+        DEFAULT_MODELFILE.read_text(encoding="utf-8").replace(
+            MINICPM_Q8_CONTRACT.template, _LEGACY_SUFFIXLESS_TEMPLATE
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="TEMPLATE does not match"):
+        validate_minicpm_modelfile(changed)
+
+
+def test_go_template_renders_public_messages_and_history_with_no_think_prefill(tmp_path):
+    go = shutil.which("go")
+    if go is None:
+        pytest.skip("Go text/template renderer is unavailable")
+    renderer = tmp_path / "render.go"
+    renderer.write_text(
+        """package main
+import (
+    "bytes"
+    "encoding/json"
+    "os"
+    "text/template"
+)
+type Message struct { Role string; Content string }
+type Input struct { Template string; Cases [][]Message }
+func main() {
+    var input Input
+    if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil { panic(err) }
+    t, err := template.New("chat").Parse(input.Template)
+    if err != nil { panic(err) }
+    results := []string{}
+    for _, messages := range input.Cases {
+        var rendered bytes.Buffer
+        if err := t.Execute(&rendered, struct{ Messages []Message }{messages}); err != nil {
+            panic(err)
+        }
+        results = append(results, rendered.String())
+    }
+    if err := json.NewEncoder(os.Stdout).Encode(results); err != nil { panic(err) }
+}
+""",
+        encoding="utf-8",
+    )
+    messages = [
+        [{"Role": "user", "Content": "What is two plus two?"}],
+        [
+            {"Role": "system", "Content": "Answer briefly."},
+            {"Role": "user", "Content": "Earlier public question."},
+            {"Role": "assistant", "Content": "Earlier public answer."},
+            {"Role": "user", "Content": 'Latest utterance: "Bună!"'},
+        ],
+        [],
+    ]
+    rendered = subprocess.run(
+        [go, "run", str(renderer)],
+        input=json.dumps({"Template": MINICPM_Q8_CONTRACT.template, "Cases": messages}),
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+        env={
+            "GOCACHE": str(tmp_path / "go-cache"),
+            "GOTMPDIR": str(tmp_path),
+            "TMPDIR": str(tmp_path),
+            "GOTOOLCHAIN": "local",
+            "GO111MODULE": "off",
+            "GOPROXY": "off",
+            "GOSUMDB": "off",
+            "CGO_ENABLED": "0",
+            "GOMAXPROCS": "2",
+        },
+    )
+
+    assert json.loads(rendered.stdout) == [
+        "<|im_start|>user\nWhat is two plus two?<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "<|im_start|>system\nAnswer briefly.<|im_end|>\n"
+        "<|im_start|>user\nEarlier public question.<|im_end|>\n"
+        "<|im_start|>assistant\nEarlier public answer.<|im_end|>\n"
+        '<|im_start|>user\nLatest utterance: "Bună!"<|im_end|>\n'
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "",
+    ]
 
 
 def test_modelfile_contract_rejects_additional_behavior_parameters(tmp_path):

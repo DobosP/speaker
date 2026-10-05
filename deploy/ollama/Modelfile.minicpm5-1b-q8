@@ -9,6 +9,10 @@ TEMPLATE """{{- if .Messages -}}
 {{ .Content }}<|im_end|>
 {{ end -}}
 <|im_start|>assistant
+<think>
+
+</think>
+
 {{ end -}}"""
 
 PARAMETER stop "<|im_end|>"

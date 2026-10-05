@@ -2,6 +2,47 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — owner Linux live trial, isolated enrollment and MiniCPM no-thinking repair
+
+Valid until: later owner live/model/route evidence supersedes this continuation — then treat as history.
+
+- Owner explicitly lifted Linux microphone/doctor deferral. Source 268bf60 ran 4090 Responsive via `./live.sh`:
+  full READY (including final ASR and CUDA FP16 verifier) then exit 1 after capture/calibration rejected the older
+  frontend enrollment. Original route defaults restored; temporary Ollama stopped. This was not a no-capture result.
+- Owner selected identity-off trial. 4090 correctly refused the conflicting identity-required policy before host
+  setup (exit 2). Supported Desktop Responsive identity-off ran, then spoke internal instructions. Root stopped it
+  with Ctrl-C (exit 130); private diagnostic bundle completed and route/daemon cleanup succeeded. This supplies no
+  physical STOP verdict or whole-agent performance qualification. No raw audio/transcript/native bundle is committed.
+- Owner then authorized fresh enrollment. Guarded `tools.prepare_enrollment` completed with an independent backup,
+  empty reserved v5 candidate and regular mode-600 task config. The recording wrapper held the existing host lock
+  and exact EchoRouteLease, used the printed core enrollment path with explicit 4090/Responsive selection and
+  three 12-second clips, and restored the route. Exit 0; current signal-AGC/GTCRN frontend candidate created.
+  Historical enrollment and primary pointer unchanged; candidate and all private evidence retained in the test lane.
+- Synthetic public-text probe on installed pinned Q8 compared baseline chat/raw rendering to OpenBMB's closed
+  no-thinking prefill. Baseline arithmetic emitted reasoning; prefill emitted a short correct answer without markup.
+  The public voice-persona baseline exhausted 256 output tokens with reasoning; prefill finished with a 35-character
+  incorrect answer, 4.2. Question addressing became exact ACT; ambient statement remained incorrectly ACT.
+- ADR-0225 adds only the explicit closed-thinking prefill to the canonical/deployed template. Worker code d2cda31
+  passed focused `test_setup_minicpm.py test_setup_doctor.py`: **234 passed, 2 warnings in 7.02 s**, plus inherited exit
+  warning. Actual stdlib Go rendering ran with the retained Go 1.27.1 toolchain; no Go-test skip. Independent code
+  review GO; diff clean. Ruff was unavailable; no install was performed. No capture/model path ran in that review.
+- Root adjacent command at that code, with SPEAKER_TEST_LOG=0, SPEAKER_NO_LOCAL_CONFIG=1, SPEAKER_LIVE=0,
+  PYTHONDONTWRITEBYTECODE=1, task-local TMPDIR/basetemp and the four one-thread BLAS environment settings:
+  `ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider
+  tests/test_addressing.py tests/test_ollama_async_cancel.py tests/test_multi_provider_llm.py
+  tests/test_local_model_residency.py tests/test_llm_sanity.py -q`: **124 passed in 2.65 s**.
+- Rebuilt the same alias through `tools.setup_minicpm --no-pull`, after checking the cached official blob, on a
+  temporary loopback Go-template daemon. Exact identity passed; actual `OllamaLLM.generate` and `.stream` both
+  produced brief markup-free but incorrect voice-persona arithmetic (4.2) and exact question labels. The initial
+  arithmetic substring assertion was too loose; root inspected the public outputs and rejected that false pass.
+  Ambient-statement probes also failed expected INGEST. Daemon stopped; corrected template alias retained.
+  No model download, new model selection, performance default change, private-audio replay or enrollment promotion.
+- Stricter public persona comparison retained all failures: MiniCPM answered worded/digit arithmetic correctly but
+  the addressed variant as 4.2 (2/3); Gemma3 answered the digit variant correctly but both worded forms as six (1/3).
+  The ambient statement was ACT on MiniCPM and INGEST on Gemma3. Single seed-0, temperature-0 trials with 4096
+  context/256 output tokens are diagnostic only, not a general quality/ranking or whole-session speed verdict.
+  All outputs were manually inspected; the comparison-owned daemon was stopped. Both tiers need actual owner testing.
+
 ## 2026-10-05 — Linux bounded headless voice preparation
 
 Valid until: the host environment, assets, route or owner deferral changes — then treat as history.

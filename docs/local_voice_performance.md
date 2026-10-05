@@ -269,8 +269,8 @@ The normal Ollama endpoint was not running at inspection. Session-scoped service
 belong to the authorized launcher; these observations do not establish a new product defect.
 No full/deferred doctor, microphone, physical playback, inference, download, enrollment transaction or default change ran.
 
-The following checklist is **blocked by Paul's microphone/doctor deferral**. It is a future owner procedure,
-not authorization to execute these commands now. Enrollment preparation and promotion also require explicit
+At this headless checkpoint the following checklist was **blocked by Paul's microphone/doctor deferral**.
+The later Linux authorization and isolated candidate below supersede that deferral on this host only. Enrollment preparation and promotion require explicit
 permission to read/mutate the named private enrollment/config files, despite being device-free.
 
 1. Obtain the owner's explicit change to the deferral and permission for private enrollment preparation,
@@ -289,7 +289,7 @@ permission to read/mutate the named private enrollment/config files, despite bei
    independent and unchanged; unsafe owners, aliases, links, races, locks or durability failures block progress.
    Private absolute paths are deliberately unresolved here because those files remain unopened.
 4. Run only the successful preparer's exact printed command from that worktree, on the verified route:
-   `python -m core --session local --enroll --require-prepared-enrollment --enroll-seconds 12 --enroll-passes 3`.
+   `python -m core --session local --device desktop_gpu_4090 --performance responsive --enroll --require-prepared-enrollment --enroll-seconds 12 --enroll-passes 3`.
    Stop on frontend/model incompatibility. Do not weaken enrolled-speaker authority or choose an identity-off trial.
 5. After candidate compatibility, run separate bare-speaker sessions from the candidate worktree:
 
@@ -313,3 +313,31 @@ LocalVQE remains a research candidate with no shipped adapter/comparison tool. A
 comparison needs a separate reviewed implementation/input-authority task; no download or acoustic/default claim
 follows from this preparation. Phone ASR, offline whole-session behavior, memory, thermal and physical gates
 likewise require separately authorized device work; Linux console/assets/metadata cannot qualify them.
+
+### Owner live continuation and MiniCPM correction (2026-10-05)
+
+Valid until: new host/model/route evidence or the owner's next choice — then treat as history.
+
+Paul authorized Linux microphone/doctor checks, first chose a session-only identity-off trial, then explicitly
+authorized isolated enrollment preparation and recording. The 4090 Responsive start passed full READY, including
+selected final decode and CUDA FP16 verification, but refused the older enrollment after microphone calibration.
+4090 identity-off correctly refused before host setup. The supported Desktop Responsive identity-off session ran;
+it uses whole-clip leveling and a smaller context budget, so it is not equivalent to the 4090 streaming RMS path.
+It then spoke internal instructions and was stopped. New private evidence was retained; route defaults were
+restored and every launcher-owned daemon was stopped. No physical STOP or quality acceptance follows.
+
+The existing guarded preparation transaction created an independent protected backup, isolated the task config,
+and recorded a fresh v5 candidate from three clips on the current signal-AGC/GTCRN echo-cancel capture front end.
+The historical reference and primary pointer are unchanged. Candidate compatibility, Current/Responsive/Compact
+live acceptance and explicit promotion remain separate gates. Private paths, embeddings, voice and native receipts
+remain machine-local; reuse that candidate worktree for validation and preserve it through any later promotion.
+
+[ADR-0225](adr/0225-prefill-minicpm-ollama-no-thinking.md) corrects the desktop alias's missing no-thinking prefill.
+The same official Q8 weights, alias, stop set, parameters, completion-only contract and Gemma main tier remain.
+After reviewed source is available on the host, `python -m tools.setup_minicpm --no-pull` can rebuild the alias
+from its already verified local source cache; use the launcher-owned Go-template daemon. No model download is
+needed for this correction. Missing cached weights must stop this continuation rather than trigger installation.
+The correction passed exact identity and the no-reasoning-markup property in public generate/stream probes.
+Concise-prompt arithmetic was correct, but the shipped voice-persona prompt yielded the wrong answer, 4.2, in both
+API paths. An ambient statement still classified incorrectly. These answer/addressing quality limits remain open;
+the initial arithmetic substring assertion was too loose and is not a pass. Identity does not qualify open-room behavior.

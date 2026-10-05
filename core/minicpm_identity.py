@@ -31,6 +31,10 @@ _CHATML_TEMPLATE = """{{- if .Messages -}}
 {{ .Content }}<|im_end|>
 {{ end -}}
 <|im_start|>assistant
+<think>
+
+</think>
+
 {{ end -}}"""
 
 

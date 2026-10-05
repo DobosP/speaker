@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (Linux serving/headless voice preparation; Windows console echo/package checks only).
+Last verified: 2026-10-05 (owner Linux live/enrollment and MiniCPM no-thinking correction; Windows console/package history).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -18,9 +18,10 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   (ADR-0020). Mobile: ADR-0201–0204 own generation, reply subscription, ASR/listening and the app-root `AgentSession`; the mobile-hybrid
   Zipformer is the sole endpoint/control authority (ADR-0207) and ADR-0208 admits only offline desktop-CPU evidence (ADR-0186/0205/0206).
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
-- ADR-0209 makes launcher-owned Ollama select the verified MiniCPM Go template, moves the 4090 profile to the streaming RMS path and
-  requires enrolled-speaker authority for generic word-cut; the retained enrollment is incompatible, so the next 4090 start fails closed and
-  no repaired live A/B has run.
+- ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
+  remains incompatible; a fresh isolated candidate was recorded on 2026-10-05, awaiting live validation and explicit owner promotion.
+- ADR-0225 prefills the desktop MiniCPM alias with the supported closed-thinking block: synthetic generate/stream output is brief and markup-free.
+  Voice-persona arithmetic and ambient-statement addressing fail quality probes; template identity is not an answer-quality verdict.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
@@ -95,10 +96,9 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
-  awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
-- Linux headless preparation complete; microphone/doctor remain owner-deferred. `docs/local_voice_performance.md` has the physical checklist:
-  echo route, compatible isolated enrollment, disjoint command/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open.
+- Validate the isolated enrollment on 4090 Responsive, then Current/Compact before explicit promotion (ADR-0209/0056/0066).
+  Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
+- Owner lifted Linux microphone/doctor and isolated-enrollment deferrals on 2026-10-05; `docs/local_voice_performance.md` has current steps.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
@@ -108,11 +108,11 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Python CI-style full gate: `11701 passed, 40 skipped, 9 warnings` in 417.14 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
-- Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
+- Owner live: 4090 Responsive reached READY then refused incompatible enrollment; Desktop Responsive identity-off ran but spoke instructions.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Linux CPython 3.12.3: 666 focused synthetic tests pass; console echo and mode asset hashes pass; launcher-template Ollama metadata passes.
-  `pip check` passes but python-dotenv is absent; echo module is unloaded. No native inference, CUDA warm, private enrollment read, doctor or capture.
+- Linux: 666 prior headless tests; MiniCPM correction 234 focused + 124 adjacent pass; cached alias identity and no-markup probes pass.
+  Full CUDA FP16 doctor passed; isolated enrollment captured without promotion; live gates remain open. python-dotenv is absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and
   `docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and

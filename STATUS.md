@@ -100,7 +100,7 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Next
 - Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
   awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
-- Add disjoint command/multi-voice strata, native-reader/gap, bare-speaker barge grading and live latency validation before defaults change.
+- Research/Windows resume TODO: `docs/local_voice_performance.md` restart section; add disjoint command/multi-voice, native-reader/gap, bare-speaker and live latency evidence before defaults change.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).

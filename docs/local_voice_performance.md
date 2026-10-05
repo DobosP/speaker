@@ -161,3 +161,58 @@ framework fixtures outside Git markers. Full Flutter analysis reported **No issu
 The exact commands and prior failed-run/baseline comparisons are in [WORKLOG](../WORKLOG.md).
 These results verify the repaired control/media logic; none measures microphone recognition,
 physical echo, phone thermal behavior or actual audible latency.
+
+
+## Restart and research follow-up (2026-10-05)
+
+Completed read-only upstream research found reusable released components, but no inspected
+project established all of general conversation, reliable tools, accurate English recognition,
+small phone footprint and sustained open-speaker operation. No researched model or runtime
+was installed or promoted. These are follow-up candidates under ADR-0214, not new defaults.
+
+| Reference | Reusable area | Evidence boundary / next comparison |
+|---|---|---|
+| [Soniqo Android](https://github.com/soniqo/speech-android), [shared C++ core](https://github.com/soniqo/speech-core), [Apple SDK](https://github.com/soniqo/speech-swift) | Thin platform shells, shared native inference, model lifecycle and device benchmark harnesses. Android 0.0.22 released 2026-09-15. | Maintainer reports Galaxy S23 Ultra command-end to first synthesized sample 908 ms / whole-app 1,116 MB PSS in the [July device report](https://github.com/microsoft/onnxruntime/discussions/29780). Narrow command demo, not general-chat or physical-audibility proof; does not override this repo's Parakeet quality gates. |
+| [LocalVQE](https://github.com/localai-org/LocalVQE) | C API, streaming echo-only model, exact playback reference. | Published 203K model: about 3 MB weights, 1.29 ms median / 1.89 ms p99 per 16 ms hop on one Ryzen 9 7900 thread; separate 49K line about 21x realtime on one Pi 5 core. Compare near-end speech/ASR preservation, double-talk and self-triggering on our route before adoption; inference timing is not acoustic validation. |
+| [Skadoosh 0.12.1](https://docs.rs/skadoosh/0.12.1/skadoosh/), [Pipecat playback](https://github.com/pipecat-ai/pipecat/blob/v1.12.0/src/pipecat/transports/base_output.py), [LiveKit generation](https://github.com/livekit/agents/blob/livekit-agents%401.8.4/livekit-agents/livekit/agents/voice/generation.py) | Bounded audio queues, turn cancellation, stale-clip rejection, playback flush and heard-history accounting. | Inspect exact implementations and preserve finite deadlines. Callback-flush timings do not establish speech-to-silence latency. LiveKit adaptive interruption uses Cloud inference and cannot be the fully local policy. |
+| [Domia worker pool](https://github.com/domia-ai/domia-core/blob/main/src/modules/inference-pool/controller/index.ts) / [voice admission](https://github.com/domia-ai/domia-core/blob/main/src/modules/voice-admission/controller/index.ts) | Bounded workers, warm/lazy loading, idle reap, queue depth and timeout. | Early local-agent reference; compare against implemented ADR-0219 residency before adding machinery. No independently reproduced whole-agent performance result here. |
+| [DAWN](https://github.com/The-OASIS-Project/dawn) / [Home Assistant Voice PE](https://www.home-assistant.io/voice-pe/) | Embedded native boundaries and shipped acoustic hardware. | Satellite designs can send audio to a host. Device-only defaults and explicit trusted-LAN grant remain governed by ADR-0097; their host/satellite measurements are not phone-contained results. |
+| [Context Spanning](https://github.com/mindlogic-ai/Context-Spanning), [PersonaPlex](https://github.com/NVIDIA/personaplex), [MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) | Separate conversational timing from asynchronous reasoning/tool execution. | GPU research/desktop experiment references only: [Context Spanning](https://arxiv.org/html/2609.33443v1) evaluated on two RTX Pro 6000 GPUs and reported 47% tool-scenario pass rate; MiniCPM-o native full-duplex deployment requires 12 GB NVIDIA VRAM or M4 Max / 24 GB RAM. No phone promotion. |
+
+Prioritized pending work:
+
+1. Refresh enrollment on the active desktop echo-cancel capture route before Responsive/Compact
+   physical A/B (ADR-0209). The last actual-host startup reached READY, then stopped at the
+   enrollment/capture-domain guard; no assessed live turns followed. A temporary non-enrolled
+   trial still needs the owner's explicit choice and preserves identity-sensitive restrictions.
+2. Profile exact capture/render-reference timing and evaluate a bounded LocalVQE echo-only
+   candidate with disjoint near-end, own-TTS, STOP and multi-voice cases. Preserve calibrated
+   delay, existing authority and raw-audio privacy gates; do not stack unmeasured denoisers.
+3. Measure whole-turn playback and cancellation before selecting a small native media module.
+   Borrow Soniqo/Skadoosh lifecycle patterns only where profiles justify changes. Rust/C++ is a
+   component option under ADR-0214, not a whole-control-plane rewrite.
+4. Qualify English ASR/TTS on the actual phone, then run 30-minute offline mixed sessions with
+   whole-process memory, thermal drift, useful first audio and interruption-to-silence timing.
+   Retain all holdout/command-quality gates. Repository weights, voice assets, engine and
+   phonemizer licences require separate review before redistribution.
+
+Windows resume steps:
+
+- Use the human-run fleet `ops start` on Windows, then inspect speaker `main`, `origin/main`
+  and `git status --porcelain`; do not assume the Linux chat or its native session ID migrated.
+  Read STATUS, this follow-up and [performance modes](performance_modes.md) before coding.
+- The completed performance publication is 5800a94; Linux main at this review also contains
+  concurrent dormant Go-serving documentation through 2367292. Verify the latest remote head
+  rather than resetting to either historical commit. This follow-up has no unfinished source.
+- Prepare a Windows-native environment with `.\install.ps1 -SkipModels` from PowerShell if
+  needed. This deps-only path deliberately exits 2 / INCOMPLETE before doctor; it is not READY.
+  Do not reuse Linux `.venv` or absolute model/config paths. Existing model assets and
+  private recordings are machine-local and are not retrieved by git; inventory destination
+  assets and obtain them only through the existing model setup/licence gates.
+- Start with `.\.venv\Scripts\python.exe -m core --session console --llm echo`, then run
+  `.\.venv\Scripts\python.exe -m tools.doctor`. Base readiness with deferred Ollama is not a
+  full live verdict. Windows capture must follow ADR-0081/0082 voice-communications checks;
+  Linux `live.sh`/PulseAudio receipts cannot qualify a different device or capture domain.
+- Before a later physical test, prepare the local LLM/audio route and compatible enrollment;
+  keep private bundles off git. Current Linux/Dart receipts remain historical verification,
+  not Windows or physical-phone passes. No model download or live test runs in this wrap-up.

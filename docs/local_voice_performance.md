@@ -350,3 +350,14 @@ admission, addressing and reply quality remain red. The template correction is n
 The trial was stopped with Ctrl-C; its private diagnostic bundle completed, original defaults were restored and
 the owned daemon stopped. Follow-up host inspection found no playback streams or remaining voice-entry process.
 Keep the candidate worktree, backup and private evidence; do not promote before full owner acceptance.
+
+[ADR-0226](adr/0226-require-complete-addressing-decision.md) now rejects multiword addressing replies instead
+of admitting their first ACT token. Valid labels/aliases, explicit request shortcuts and caller policy survive.
+This closes a reproduced format bug; exact ACT misclassification of noise and reply instruction-copying remain.
+Public shorter-prompt trials supplied no safe replacement. A separate streaming enum diagnostic improved format
+for both local tiers, but MiniCPM still admitted all six negative cases while Gemma3 matched all twelve labels.
+That small sample supports considering a stronger local trial, without changing defaults or qualifying behavior.
+
+Paul subsequently chose **stop live testing for now**. No parser live retry or stronger-tier live trial occurred.
+Keep microphone, doctor and live retries off until his explicit resume. Preserve the compatible candidate,
+historical reference, protected backup and private evidence; no promotion or primary pointer change is authorized.

@@ -20,8 +20,8 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0225 prefills the desktop MiniCPM alias with the supported closed-thinking block: synthetic generate/stream output is brief and markup-free.
-  Voice-persona arithmetic and ambient addressing fail quality probes; repaired live still activates on room noise and copies instructions.
+- ADR-0225 prefills closed thinking; ADR-0226 accepts only complete addressing tokens. These are format boundaries, not quality verdicts.
+  Voice-persona arithmetic and exact-label ambient addressing fail probes; live still activates on room noise and copies instructions.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
@@ -96,9 +96,9 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Repair ambient-noise activation and instruction-copying before full candidate acceptance, Current/Compact A/B and explicit promotion.
+- Complete-decision admission is verified headlessly; full live acceptance, Current/Compact A/B and promotion await owner resume.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
-- Owner lifted Linux microphone/doctor and isolated-enrollment deferrals on 2026-10-05; `docs/local_voice_performance.md` has current steps.
+- Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Linux: 666 prior headless tests; MiniCPM correction 234 focused + 124 adjacent pass; cached alias identity and no-markup probes pass.
+- Linux: 666 prior headless; template 234+124 and addressing 47+227 tests pass. Cached alias identity/no-markup properties pass; quality stays open.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

@@ -127,8 +127,8 @@ Reply with exactly one word: ACT, INGEST, or UNSURE. No punctuation, no explanat
 class LLMAddressingClassifier:
     """LLM-backed addressing classifier.
 
-    Calls the fast-tier LLM with a fixed system prompt and parses the first
-    word of the reply. Anything that doesn't parse to ``ACT``/``INGEST``/
+    Calls the fast-tier LLM with a fixed system prompt and parses one complete
+    decision token. Anything that doesn't parse to ``ACT``/``INGEST``/
     ``UNSURE`` becomes ``UNSURE`` -- a hiccup in the LLM never silently
     flips behavior; the caller's policy decides what UNSURE means.
     """
@@ -172,16 +172,19 @@ class LLMAddressingClassifier:
 
 
 def _parse_decision(reply: str) -> str:
-    """Pluck the first decision word out of an LLM reply. Anything malformed
-    is :data:`UNSURE` so an LLM hiccup never causes a spurious ACT."""
+    """Accept one complete decision token, with bounded punctuation/case cleanup.
+
+    Instructions, explanations and reasoning are malformed even when they start
+    with a valid label. The caller still owns the :data:`UNSURE` policy.
+    """
     stripped = (reply or "").strip()
     if not stripped:
         return UNSURE
-    first = stripped.split()[0].strip(".,!?:;\"'").upper()
-    if first in _VALID:
-        return first
-    if first in _DECISION_ALIASES:
-        return _DECISION_ALIASES[first]
+    decision = stripped.strip(".,!?:;\"'").upper()
+    if decision in _VALID:
+        return decision
+    if decision in _DECISION_ALIASES:
+        return _DECISION_ALIASES[decision]
     log.warning("addressing classifier returned %r; defaulting to UNSURE", reply)
     return UNSURE
 

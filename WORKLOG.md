@@ -2,6 +2,36 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — complete addressing-decision validation
+
+Valid until: later addressing/source/owner evidence supersedes this repair — then treat as history.
+
+- A public 24-case current/short-rules/short-examples probe retained all 72 outputs. Every condition produced
+  zero exact labels at seed 0, temperature 0, context 4096, output 64. Manual inspection found ACT-leading
+  instruction recitations, and the historical first-word parser admitted 12/12 negative current-prompt cases.
+  Shorter prompts lost legitimate admissions, so no replacement prompt was selected. The owned daemon stopped.
+- ADR-0226 changes only complete normalized-token validation in core.addressing. Labels, bounded aliases,
+  existing punctuation/case cleanup, explicit shortcuts and caller UNSURE policy remain. Lists, explanations,
+  competing labels and reasoning cannot grant ACT through their first word.
+- Worker 6f5501d passed `tests/test_addressing.py`: **47 passed in 0.55 s**. Adjacent `test_core_runtime.py`,
+  `test_speaker_input_gate.py`, `test_final_preprocessing_cancel.py`, `test_pretoken_cancellation.py`,
+  `test_ollama_async_cancel.py`, `test_cleanup.py`: **227 passed in 9.86 s**. Prefix: no test log, no local config,
+  no live flag, bytecode off, one-thread BLAS, low priority, task-local tmp/basetemp. Independent source review GO.
+- An original-source overlay substituted only e3e419b's historical parser in the new runtime regressions:
+  all four malformed-output cases failed as expected; clean ACT passed in the same 0.26 s run. No private file,
+  model, GPU, microphone or hardware path ran in those regression/proof commands. Rebase onto docs-only 8f80d77
+  preserved source; docs/decision are amended into the same final commit.
+- Separate public streaming JSON-string-enum diagnostic, six requests/six negatives per model: format 12/12
+  for both; semantic MiniCPM 6/12 (all negatives ACT), Gemma3 12/12. These manually inspected 24 calls used
+  the same seed/temperature/context/output bounds and no ambiguous UNSURE cases. Subsequent-request median
+  elapsed was 181 ms vs 532 ms, eleven calls each, isolated classification only. No whole-agent latency/ranking,
+  default selection or live acceptance claim. Owned daemon stopped; no model/config/source change by that probe.
+- Actual exact-ACT noise misclassification and reply copying remain separate open failures. Candidate compatible,
+  primary pointer historical, no promotion. Recordings/native receipts stay in the preserved private test lane.
+- Owner chose stop live testing for now after the headless comparison. No parser live retry or stronger-tier
+  live trial occurred. Mic/doctor/live remain stopped until explicit owner resume; candidate, historical source,
+  backup and private evidence remain preserved, with no promotion or primary pointer change.
+
 ## 2026-10-05 — fresh candidate compatibility and remaining ambient activation
 
 Valid until: new owner acoustic/addressing/reply evidence supersedes this retry — then treat as history.

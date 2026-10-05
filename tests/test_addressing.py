@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Iterator, Optional, Sequence
 
+import pytest
+
 from always_on_agent.events import Mode
 
 from core.addressing import (
@@ -85,6 +87,36 @@ def test_parse_decision_defaults_to_unsure_for_garbage():
     assert _parse_decision("   ") == UNSURE
     assert _parse_decision("hmm let me think about that") == UNSURE
     assert _parse_decision("the assistant should respond") == UNSURE  # not first word
+
+
+@pytest.mark.parametrize(
+    "reply",
+    (
+        "ACT, INGEST, or UNSURE. No punctuation, no explanation.",
+        "ACT if it is a QUESTION, a REQUEST, or a COMMAND.",
+        "ACT because the user asked a question.",
+        "ACT: answer the user.",
+        "ACT. INGEST.",
+        "ACT\nINGEST",
+        "ACT\tUNSURE",
+        "ACT/INGEST",
+        "ACT;INGEST",
+        "ACT\nExplanation: the user is asking for help.",
+        '"ACT if it is a QUESTION, a REQUEST, or a COMMAND."',
+        "'ACT, INGEST, or UNSURE'",
+        'ACT" or "INGEST',
+        "ACTION because this is a request.",
+        "ACTIVE now",
+        "<think>ACT</think>",
+        "<think>consider the request</think> ACT",
+        "ACT <think>the user is asking</think>",
+        "ACT<think>the user is asking</think>",
+        "ACT </think>",
+        "ACT\x00",
+    ),
+)
+def test_parse_decision_rejects_partial_labels_and_instruction_recitations(reply):
+    assert _parse_decision(reply) == UNSURE
 
 
 def test_classifier_returns_unsure_when_llm_raises():
@@ -260,6 +292,85 @@ def test_active_alias_acts_when_policy_is_conservative():
 
     assert runtime.wait_idle()
     assert engine.spoken == ["Paris."]
+
+
+class _RecordingAnswerLLM(EchoLLM):
+    def __init__(self):
+        super().__init__(reply="Four.")
+        self.calls: list[str] = []
+
+    def generate(self, prompt, **kwargs):
+        self.calls.append(prompt)
+        return super().generate(prompt, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("reply", "should_act"),
+    (
+        ("ACT, INGEST, or UNSURE. No punctuation, no explanation.", False),
+        ("ACT if it is a QUESTION, a REQUEST, or a COMMAND.", False),
+        ("ACT because the user wants an answer.", False),
+        ("ACT <think>the user is asking</think>", False),
+        ("ACT", True),
+    ),
+)
+def test_complete_decision_controls_runtime_answer_admission(reply, should_act):
+    engine = ScriptedEngine()
+    classification_llm = _StubLLM([reply])
+    answer_llm = _RecordingAnswerLLM()
+    runtime = VoiceRuntime(
+        engine,
+        answer_llm,
+        start_mode=Mode.ASSISTANT,
+        addressing=LLMAddressingClassifier(classification_llm),
+        unsure_acts=False,
+    )
+    invocations = []
+    unsubscribe = runtime.supervisor.capabilities.observe_invocations(invocations.append)
+    runtime.start(run_bus=False)
+    try:
+        engine.final("What is two plus two?")
+
+        assert runtime.wait_idle()
+        assert len(classification_llm.calls) == 1
+        if should_act:
+            assert engine.spoken == ["Four."]
+            assert answer_llm.calls
+            assert any(event.name == "assistant.answer" for event in invocations)
+        else:
+            assert engine.spoken == []
+            assert answer_llm.calls == []
+            assert invocations == []
+            assert any(
+                item.text == "What is two plus two?" and "ingested" in item.tags
+                for item in runtime.memory.all()
+            )
+    finally:
+        unsubscribe()
+        runtime.stop()
+
+
+def test_explicit_shortcut_preserves_runtime_answer_without_classifier_call():
+    engine = ScriptedEngine()
+    classification_llm = _StubLLM([])
+    answer_llm = _RecordingAnswerLLM()
+    runtime = VoiceRuntime(
+        engine,
+        answer_llm,
+        start_mode=Mode.ASSISTANT,
+        addressing=LLMAddressingClassifier(classification_llm),
+        unsure_acts=False,
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("What is two plus two? Answer with only the number.")
+
+        assert runtime.wait_idle()
+        assert classification_llm.calls == []
+        assert answer_llm.calls
+        assert engine.spoken == ["Four."]
+    finally:
+        runtime.stop()
 
 
 def test_no_classifier_preserves_legacy_behavior():

@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (Linux Go serving/synthetic pipe; Windows console echo and installed-package checks only).
+Last verified: 2026-10-05 (Linux serving/headless voice preparation; Windows console echo/package checks only).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -76,7 +76,6 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `TurnHandle`s, tools do not retry and failed web gets one local fallback (ADR-0021/0030/0051/0086/0094). Terminal receipts govern spoken
   history and diagnostic schema v2 binds four private PCM16 tracks plus the f32le final-input spool
   (ADR-0028/0029/0038/0100/0108/0124/0126/0138).
-
 ## Live evidence and limits
 - Exact physical STOP is red: `192151`/`193713` failed with enrollment on and off and route settling is unproven (ADR-0072). The 2026-07-16
   vault run recognized `vault` 0/6 and kept only post-GTCRN mic audio, so the failure seam is unknown (ADR-0077).
@@ -92,15 +91,14 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   closed on malformed heartbeats (ADR-0083). The exact LiveKit 1.1.14/Agents 1.6.8/API 1.2.0/protocol 1.1.21 closure is pinned and
   installed, the Microsoft AEC slice is locked behind five term acceptances, and the exact-input tool-route gate has no owner-labelled run
   (ADR-0108/0124–0126/0163/0164).
-
 ## Open gates
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
 - Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
   awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
-- Windows console checks complete; microphone/doctor remain explicitly owner-deferred. Linux/Claude continuation: `docs/local_voice_performance.md`
-  restart section; route-compatible enrollment and disjoint command/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open.
+- Linux headless preparation complete; microphone/doctor remain owner-deferred. `docs/local_voice_performance.md` has the physical checklist:
+  echo route, compatible isolated enrollment, disjoint command/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
@@ -113,6 +111,8 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
+- Linux CPython 3.12.3: 666 focused synthetic tests pass; console echo and mode asset hashes pass; launcher-template Ollama metadata passes.
+  `pip check` passes but python-dotenv is absent; echo module is unloaded. No native inference, CUDA warm, private enrollment read, doctor or capture.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and
   `docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and

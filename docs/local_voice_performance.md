@@ -237,3 +237,79 @@ open. Refresh isolated enrollment on the active capture front end before authori
 Exact playback/cancellation, bounded echo-only LocalVQE comparisons and disjoint phone ASR/memory/thermal evidence remain pending.
 No model download/promotion, installation, enrollment bypass, microphone/private-audio opening or physical A/B occurred in Windows preparation;
 no tests or runtime checks were rerun for this documentation freeze. Owner deferral remains in force for later continuation.
+
+### Linux headless preparation and physical checklist (2026-10-05)
+
+Valid until: the host environment, model assets, route or owner deferral changes — then treat as history.
+
+At source `dfa53b29fc2f2f45179a907902ced1462e2a8c7b`, the actual Linux CPython 3.12.3 venv passed
+666 focused synthetic tests in 6.87 s, with two inherited Sherpa SWIG warnings and the inherited exit warning.
+Coverage includes frontend/enrollment compatibility and fail-closed word-cut startup, private preparation/promotion
+races and durability, rendered-onset generation ownership, playback receipts/cancellation, launcher route cleanup,
+model/mode contracts and APM/double-talk. These tests use generated fixtures and injected services/devices.
+They do not inspect retained enrollment, accept biometric state or qualify acoustic behavior. Exact command: [WORKLOG](../WORKLOG.md).
+
+The actual venv ran the synthetic `--session console --llm echo --device desktop --performance current` path:
+exit 0, expected reply and control completion, 0.290 s wall. The child skipped the private config overlay,
+removed `DATABASE_URL` from its own environment and wrote fresh task-local logs with pruning disabled.
+The first wrapper incorrectly expected an `Echo:` prefix; its child had already exited 0 with the correct
+`You said:` reply. The corrected assertion passed on rerun. This is console/control evidence only.
+
+Read-only model/route inspection used the actual host settings resolved for `desktop_gpu_4090`:
+
+| Check | Observed result | Limit / outstanding prerequisite |
+|---|---|---|
+| Installed packages | Sherpa 1.13.3, Faster-Whisper 1.2.1, CTranslate2 4.8.1, pinned CUDA wheels, sentencepiece 0.2.1 and httpx 0.28.1 present; `pip check` exit 0 | python-dotenv is absent. Installed-dependency consistency does not prove complete requirements installation; no packages were installed. |
+| Selected media assets | Current selected paths/metadata pass; Responsive and Compact exact bound asset hashes and selected paths/metadata pass | Current has no candidate-hash contract. Native ASR/TTS construction, selected Parakeet/Faster-Whisper CUDA FP16 warming and full readiness were not exercised. |
+| Local LLM cache | A temporary loopback-only daemon on port 11435 with the launcher's `OLLAMA_GO_TEMPLATE=1` passes Gemma3 presence and pinned MiniCPM Q8 identity | An otherwise identical daemon without that setting rejects MiniCPM identity. No alias repair, generation, pull or warm-up ran; each owned daemon was stopped. A reused daemon must also satisfy readiness. |
+| Echo route | Actual-host `pactl` inspection succeeds; no echo-cancel module is loaded and the selected route is unbound | The earlier sandbox could not inspect it. No route/default was changed. Authorized physical setup must establish the exact capture/render front end before enrollment. |
+| Retained enrollment | Historical incompatibility remains open under ADR-0209 | No enrollment file, embedding, private recording or private receipt was opened. File-presence readiness cannot prove frontend compatibility. |
+
+The normal Ollama endpoint was not running at inspection. Session-scoped services and route provisioning
+belong to the authorized launcher; these observations do not establish a new product defect.
+No full/deferred doctor, microphone, physical playback, inference, download, enrollment transaction or default change ran.
+
+The following checklist is **blocked by Paul's microphone/doctor deferral**. It is a future owner procedure,
+not authorization to execute these commands now. Enrollment preparation and promotion also require explicit
+permission to read/mutate the named private enrollment/config files, despite being device-free.
+
+1. Obtain the owner's explicit change to the deferral and permission for private enrollment preparation,
+   recording and eventual live review. Use a fresh speaker task branch/worktree; preserve all historical files.
+   Confirm the intended physical Linux host and the `desktop_gpu_4090` profile. Recheck venv/model inventory,
+   the selected CUDA FP16 runtime and local LLM readiness when doctor is authorized; any failure blocks capture.
+2. Establish and verify the intended canonical echo-cancel capture/playback route, exact masters and frontend,
+   and calibrate reference delay through the existing echo-probe/auto-delay procedure (ADR-0005/0013).
+   Do not substitute 260 ms. Enrollment must use that exact frontend. `live.sh` owns ordinary session setup
+   and restoration but rejects enrollment and has no setup-only flag; the enrollment route setup must be
+   explicitly reviewed before the separate printed core enrollment command is run.
+3. Prepare an isolated v5 candidate with a schema-v2 preparation marker using `tools.prepare_enrollment` (ADR-0056/0066).
+   Its required inputs are `--worktree`, `--expected-config-target`, `--expected-enrollment`, `--backup`
+   and a unique `--candidate-name enrollment.v5-<id>.json`. The feature local-config link must already target
+   the explicitly named primary config. The historical enrollment and a new adjacent backup must remain
+   independent and unchanged; unsafe owners, aliases, links, races, locks or durability failures block progress.
+   Private absolute paths are deliberately unresolved here because those files remain unopened.
+4. Run only the successful preparer's exact printed command from that worktree, on the verified route:
+   `python -m core --session local --enroll --require-prepared-enrollment --enroll-seconds 12 --enroll-passes 3`.
+   Stop on frontend/model incompatibility. Do not weaken enrolled-speaker authority or choose an identity-off trial.
+5. After candidate compatibility, run separate bare-speaker sessions from the candidate worktree:
+
+   ```sh
+   ./live.sh --device desktop_gpu_4090 --performance current
+   ./live.sh --device desktop_gpu_4090 --performance responsive
+   ./live.sh --device desktop_gpu_4090 --performance compact
+   ```
+
+   Keep route, geometry, final profile and the agreed script comparable. Check direct addressing, slow first
+   synthesis without self-cut, long-reply gaps/static, exact STOP, later ordinary talk-over, own-TTS ambiguity,
+   useful first audio and recovery. Preserve complete private bundles and verify restoration after each session.
+   Use explicit selected log paths with `python -m tools.live_audio_ab /absolute/private/run-<id>.txt`;
+   keep the owner's acoustic verdict separate from log/receipt accounting. Headless timestamps are not DAC latency.
+6. Promote only after explicit owner acceptance of the complete live gate, using `tools.promote_enrollment`
+   with its exact worktree/primary/candidate/source/backup/accepted-copy paths and `--accept-live-gate`.
+   Exit 0 means active; 2 refused, 3 staged/inactive and 4 ambiguous require the documented handling (ADR-0066).
+   Historical enrollment, backup, isolated candidate, recordings and native receipts stay local and intact.
+
+LocalVQE remains a research candidate with no shipped adapter/comparison tool. A bounded disjoint echo-only
+comparison needs a separate reviewed implementation/input-authority task; no download or acoustic/default claim
+follows from this preparation. Phone ASR, offline whole-session behavior, memory, thermal and physical gates
+likewise require separately authorized device work; Linux console/assets/metadata cannot qualify them.

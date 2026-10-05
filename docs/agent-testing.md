@@ -1,6 +1,6 @@
 # Agent Testing Guide — speaker
 
-Last verified: 2026-09-07
+Last verified: 2026-10-05 (doctor deferral wording; historical gate counts below retained)
 
 ## Environment
 - Preferred interpreter: `~/work/speaker/.venv/bin/python` — it works from any worktree.
@@ -21,7 +21,7 @@ Last verified: 2026-09-07
 | Capability exception sanitization (headless) | `~/work/speaker/.venv/bin/python -m pytest tests/test_capability_exception_sanitization.py tests/test_capability_context_isolation.py tests/test_failure_cascades.py -q` | `30 passed`; provider detail must never reach `error` (ADR-0192) |
 | Whitespace | `git diff --check` | no output |
 | Scoped lint | `ruff check --select E9,F63,F7,F82 <changed files>` | clean. Whole-file lint carries inherited E731/E402/F401 debt — never claim a full-format-clean result. |
-| Readiness (no audio) | `python -m tools.doctor --defer-ollama` | `BASE READY`; this path can never issue full `READY`; run from `~/work/speaker` (models and `config.local.json` are not in task worktrees); the host must also have the ADR-0013 echo-cancel module loaded |
+| Readiness (owner-authorized) | `python -m tools.doctor --defer-ollama` | BASE-only, never full `READY`; Windows initializes communications capture. All doctor variants remain owner-deferred as of 2026-10-05. After authorization, use the actual host assets/config and ADR-0013 echo route; continuation checklist: `docs/local_voice_performance.md`. |
 | Docs | `python3 ~/work/agent-ops/scripts/check_docs.py .` | `files=34 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0`; dated files such as `docs/2026-07-17-performance-roadmap.md` are history and are not term-checked |
 | Live (opt-in, hardware) | `./live.sh` | doctor `READY` then the microphone; state exactly what ran |
 

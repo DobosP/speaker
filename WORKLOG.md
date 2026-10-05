@@ -2,6 +2,54 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — Linux bounded headless voice preparation
+
+Valid until: the host environment, assets, route or owner deferral changes — then treat as history.
+
+- Independently reviewed Windows docs-only `dfa53b29fc2f2f45179a907902ced1462e2a8c7b` was fast-forwarded onto
+  `main` from `0a88fb10e4fee2357108bbabda9b12d57e746630` and pushed without rewriting provenance.
+  Review: GO; scoped diff clean; docs gate `files=38 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0`.
+  The verified-landed local integration lane/worktree and original remote Windows task branch were removed.
+- At that source, from `docs/linux-voice-preparation-20261005`, the following actual-host synthetic gate passed
+  **666**, with **2** inherited SWIG warnings, in **6.87 s** (plus inherited swigvarlink exit warning):
+
+  ```sh
+  env SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 PYTHONDONTWRITEBYTECODE=1 \
+    TMPDIR=/home/dobo/work/_temp/docs__linux-voice-preparation-20261005 \
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+    ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider \
+    --basetemp=/home/dobo/work/_temp/docs__linux-voice-preparation-20261005/pytest \
+    tests/test_enroll.py tests/test_prepare_enrollment.py tests/test_promote_enrollment.py \
+    tests/test_speaker_input_gate.py tests/test_sherpa_playback.py tests/test_barge_onset_grace.py \
+    tests/test_playback_receipts.py tests/test_engine_playback_receipts.py tests/test_live_launcher.py \
+    tests/test_setup_doctor.py tests/test_performance_modes.py tests/test_apm_double_talk.py -q
+  ```
+
+- Native venv CPython 3.12.3: `python -I -B -m pip check` exit 0 / no broken requirements; declared python-dotenv
+  is absent, so complete install closure is not claimed. Metadata reports Sherpa 1.13.3, Faster-Whisper 1.2.1,
+  CTranslate2 4.8.1, CUDA cuBLAS 12.9.2.10/cuDNN 9.24.0.43/NVRTC 12.9.86, sentencepiece 0.2.1 and httpx 0.28.1.
+- Synthetic `python -B -m core --session console --llm echo --device desktop --performance current` exit 0:
+  expected `You said:` reply and STOP control completion. First child took 0.345 s; wrapper had the wrong prefix
+  assertion, corrected rerun passed in 0.290 s. Both skipped the private overlay, removed DATABASE_URL only in
+  the child, and used fresh `_temp` logs with pruning disabled; no existing logs or persistent database were accessed.
+- Read-only `resolve_check_config(..., 'desktop_gpu_4090')`, `apply_performance_mode(..., root=host)` and
+  `check_sherpa_models` pass selected asset paths/metadata for all three modes and exact candidate hashes for
+  Responsive/Compact. Selected final backend remains NeMo/Parakeet with Faster-Whisper. No native model load/warm.
+- Sandbox service inspection was unavailable. Actual-host `probe_pipewire_state` succeeds but no echo module
+  is loaded and `_check_pipewire_echo_route` refuses the selected unbound route. No route/default mutation.
+  The normal loopback Ollama endpoint is stopped. A temporary installed `ollama serve` on loopback port 11435
+  without the launcher's Go-template setting refuses MiniCPM identity; the ADR-0209 `OLLAMA_GO_TEMPLATE=1`
+  daemon passes `check_ollama` for Gemma3 presence and pinned MiniCPM Q8 identity. Every owned daemon was stopped;
+  no generation, pulls, alias repair, downloads, install or default change occurred.
+- Real retained enrollment/private audio remain unopened. Preparation/promotion tests use generated private
+  fixtures only. Physical STOP/talk-over, compatible isolated enrollment, CUDA FP16 warm, doctor, Current/
+  Responsive/Compact A/B, LocalVQE comparison and phone gates remain open. The existing guide now has the exact
+  prerequisite checklist; older testing-guide wording no longer describes Windows doctor as audio-free.
+  The 11,701-test and Go migration receipts were not rerun; no source/audio behavior changed.
+- Independent read-only review: GO after clarifying that schema v2 describes the preparation marker,
+  while the isolated enrollment candidate is v5. Final diff/links gate clean (`files=38`, all findings zero);
+  STATUS is 120 lines. No remaining review blocker in this bounded preparation/documentation scope.
+
 ## 2026-10-05 — Windows voice preparation and documentation freeze
 
 Valid until: the destination environment, local assets or owner microphone preference changes — then treat as history.

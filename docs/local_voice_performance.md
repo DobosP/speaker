@@ -341,3 +341,12 @@ The correction passed exact identity and the no-reasoning-markup property in pub
 Concise-prompt arithmetic was correct, but the shipped voice-persona prompt yielded the wrong answer, 4.2, in both
 API paths. An ambient statement still classified incorrectly. These answer/addressing quality limits remain open;
 the initial arithmetic substring assertion was too loose and is not a pass. Identity does not qualify open-room behavior.
+
+The repaired 4090 Responsive retry accepted the fresh candidate on the actual capture front end, warmed the
+speaker gate and started capture plus streaming RMS playback. Paul reported that only random room noises
+preceded the unsolicited speech. A short recognized fragment passed the addressing model as ACT, and the
+answer again copied internal instructions. Candidate compatibility is therefore verified, while ambient-noise
+admission, addressing and reply quality remain red. The template correction is not an instruction-copy defense.
+The trial was stopped with Ctrl-C; its private diagnostic bundle completed, original defaults were restored and
+the owned daemon stopped. Follow-up host inspection found no playback streams or remaining voice-entry process.
+Keep the candidate worktree, backup and private evidence; do not promote before full owner acceptance.

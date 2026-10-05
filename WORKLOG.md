@@ -2,6 +2,27 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — fresh candidate compatibility and remaining ambient activation
+
+Valid until: new owner acoustic/addressing/reply evidence supersedes this retry — then treat as history.
+
+- After independently reviewed e3e419b landed, the preserved candidate lane was fast-forwarded to that source
+  without preparing again or altering its candidate/backup/primary lineage. `./live.sh --device desktop_gpu_4090
+  --performance responsive --run-label responsive-enrolled-repaired-20261005` passed full READY and accepted
+  the fresh reference against the actual current capture front end. Speaker warm-up, capture and streaming RMS
+  playback started with enrolled word-cut authority preserved. Primary enrollment remains the historical reference.
+- Owner reported only random room noises before unsolicited speech. A short recognized fragment was classified
+  ACT and routed to assistant.answer; output again copied system instructions and made ungrounded tool claims.
+  This is a separate remaining noise/addressing/reply-quality failure, not a no-thinking-template pass for behavior.
+  No owner-labelled intentional question, physical STOP/talk-over or Current/Compact acceptance was obtained.
+- Root stopped with Ctrl-C: exit 130, complete clean-shutdown private diagnostic bundle, owned audio defaults
+  restored and temporary Ollama stopped. Actual-host inspection afterward found no active playback sink inputs;
+  remaining Python processes did not identify as speaker-directory/voice-entry actors. No further mic run started.
+- All recordings, embeddings, transcripts and native receipts remain local in the preserved candidate lane;
+  no primary pointer change, promotion, model download or default performance change. Next work is bounded
+  headless addressing/reply diagnosis before another owner trial. Candidate compatibility is verified, full live
+  acceptance remains open, and the original private evidence and protected backup must be retained.
+
 ## 2026-10-05 — owner Linux live trial, isolated enrollment and MiniCPM no-thinking repair
 
 Valid until: later owner live/model/route evidence supersedes this continuation — then treat as history.

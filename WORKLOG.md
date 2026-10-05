@@ -2,6 +2,23 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-05 — Windows voice preparation and documentation freeze
+
+Valid until: the destination environment, local assets or owner microphone preference changes — then treat as history.
+
+- Existing native Windows CPython 3.10.11 executed `python -B -m core --session console --llm echo --device desktop --performance current`
+  on task source based on 0a88fb10e4fee2357108bbabda9b12d57e746630: exit 0 in 1.890 s with the expected synthetic echo.
+  Private config/persistent database access was excluded and new synthetic logs were isolated without pruning existing evidence.
+- `python -I -B -m pip check` returned exit 0 / no broken installed requirements. This is not a complete repository pin gate:
+  Sherpa is 1.13.2 rather than 1.13.3; sentencepiece/python-dotenv and bound optimized-mode assets are incomplete.
+- Paul explicitly deferred microphone checks. Windows doctor opens/initializes the communications endpoint to snapshot effects, so neither
+  full nor deferred-LLM doctor ran. No Windows READY, enrollment compatibility, AEC effectiveness, physical/phone pass or default change.
+- Enrollment preparation/persistence/promotion still depends on POSIX private-file/owner/locking APIs absent on Windows. A future adapter
+  must preserve privacy, exact lineage, atomic durability and fail-closed semantics before capture; existing enrollment/audio remain local.
+- Linux retained-enrollment refresh, local LLM/echo-route readiness and owner physical STOP/talk-over/A-B remain open. Read the existing
+  restart section in `docs/local_voice_performance.md`; no private receipts, machine authority or recordings are transported by this record.
+- Documentation-only freeze: no new tests/runtime probes, installation, models/downloads, microphone/private audio or WSL activity.
+  Only STATUS, this worklog and the existing continuation guide are committed; origin publication leaves the task branch intact.
 ## 2026-10-05 — coordinator dormant serving qualification
 
 - Independent review reproduced and re-reviewed HTTP unread-body rejection and Unicode

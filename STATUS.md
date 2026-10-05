@@ -1,7 +1,7 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (Go serving and synthetic pipe gates, Linux ROG). Runtime and evidence facts are as of 2026-08-21 (ADR-0209) unless
-dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
+Last verified: 2026-10-05 (Linux Go serving/synthetic pipe; Windows console echo and installed-package checks only).
+Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
   Python audio/inference/actions remain; Go-only image has no Python/models. Tokens default-deny; pre-body refusals close promptly and HTTP/IPC reject unpaired Unicode escapes (ADR-0224).
@@ -50,7 +50,6 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
   action authority (ADR-0133), and cleanup sees only the newest four user utterances (ADR-0173). Conversation pairs, semantic memory, owner
   replay and synthetic-delay gates are stable (ADR-0051/0065/0067/0068/0070/0080); `run_tests.py cloud` carries the Hedge owner matrix
   (ADR-0190).
-
 ## Current state — voice reliability
 - ADR-0185 bounds the KWS speaker-inference lifecycle (one unfinished task process-wide, a code-owned 50 ms safety deadline, capture-owned
   reduction, busy/cold/unavailable abstain); hostile config bytes, native bounds, other wheel builds and the owner bare-speaker A/B stay
@@ -100,19 +99,20 @@ dated; frozen receipts (counts, digests, timings) are verbatim in `WORKLOG.md`.
 ## Next
 - Refresh enrollment on the active echo-cancel capture route before Responsive/Compact live A/B (ADR-0209); a session-only non-enrolled trial
   awaits explicit owner choice. Keep the guided close/far plan and paired attestation for fresh STT evidence (ADR-0157/0158).
-- Research/Windows resume TODO: `docs/local_voice_performance.md` restart section; add disjoint command/multi-voice, native-reader/gap, bare-speaker and live latency evidence before defaults change.
+- Windows console checks complete; microphone/doctor remain explicitly owner-deferred. Linux/Claude continuation: `docs/local_voice_performance.md`
+  restart section; route-compatible enrollment and disjoint command/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
   the remote closure and run its self-hosted owner live A/B (ADR-0163/0164). Kyutai stays quarantined until its bounded resource gate;
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
-
 ## Verification record (2026-10-05; commands/history in WORKLOG.md)
 - Python CI-style full gate: `11701 passed, 40 skipped, 9 warnings` in 417.14 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Actual-host doctor reached `READY` after launcher setup; microphone startup stopped on incompatible speaker enrollment. Audio/server restored; no completed live test.
-
+- Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
+  Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and
   `docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and

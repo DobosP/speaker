@@ -209,10 +209,31 @@ Windows resume steps:
   Do not reuse Linux `.venv` or absolute model/config paths. Existing model assets and
   private recordings are machine-local and are not retrieved by git; inventory destination
   assets and obtain them only through the existing model setup/licence gates.
-- Start with `.\.venv\Scripts\python.exe -m core --session console --llm echo`, then run
-  `.\.venv\Scripts\python.exe -m tools.doctor`. Base readiness with deferred Ollama is not a
+- Start with `.\.venv\Scripts\python.exe -m core --session console --llm echo`. Run
+  `.\.venv\Scripts\python.exe -m tools.doctor` only after microphone checks are explicitly authorized; deferred Ollama readiness is not a
   full live verdict. Windows capture must follow ADR-0081/0082 voice-communications checks;
   Linux `live.sh`/PulseAudio receipts cannot qualify a different device or capture domain.
 - Before a later physical test, prepare the local LLM/audio route and compatible enrollment;
   keep private bundles off git. Current Linux/Dart receipts remain historical verification,
   not Windows or physical-phone passes. No model download or live test runs in this wrap-up.
+### Windows preparation result and Linux continuation (2026-10-05)
+
+Valid until: the destination environment, assets or owner microphone preference changes — then treat as history.
+
+Windows-native CPython 3.10.11 ran `python -B -m core --session console --llm echo --device desktop --performance current`
+from the task worktree: exit 0 in 1.890 s with the expected synthetic echo response. The child skipped the private config overlay,
+removed `DATABASE_URL` only from its environment and isolated new logs with pruning disabled. `python -I -B -m pip check`
+returned exit 0 / no broken installed requirements. These results qualify console logic and installed dependency declarations only.
+
+Paul explicitly kept microphone checks deferred. The selected Windows doctor initializes a communications capture endpoint to inspect
+OS effects, even with `--defer-ollama`/`--defer-llm`; it was not run. No Windows READY, capture-domain match or fresh AEC/live result is claimed.
+The existing Sherpa wheel is 1.13.2 versus the 1.13.3 pin; sentencepiece/python-dotenv are absent, the bound INT8 encoder and Compact
+Kitten assets are missing, and enrollment preparation/persistence/promotion uses unavailable Windows `fchmod`/`getuid`/`fcntl` APIs.
+A future Windows adapter needs equivalent private ownership/ACL, handle revalidation, atomic durability and locking gates, without bypasses.
+
+For Linux/Claude continuation, read current STATUS and recheck that host's actual venv, assets, LLM and echo route; git carries no private
+recordings, enrollment or native runtime receipts. The Linux retained enrollment incompatibility and physical STOP/talk-over gates remain
+open. Refresh isolated enrollment on the active capture front end before authorized Current/Responsive/Compact A/B (ADR-0209/0056/0066).
+Exact playback/cancellation, bounded echo-only LocalVQE comparisons and disjoint phone ASR/memory/thermal evidence remain pending.
+No model download/promotion, installation, enrollment bypass, microphone/private-audio opening or physical A/B occurred in Windows preparation;
+no tests or runtime checks were rerun for this documentation freeze. Owner deferral remains in force for later continuation.

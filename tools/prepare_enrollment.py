@@ -30,6 +30,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from core._enrollment_persistence import (
+    EnrollmentPersistenceUnavailable,
+    require_enrollment_persistence,
+)
 from core.enroll import (
     ENROLLMENT_FRONTEND_VERSION,
     ENROLLMENT_PREPARATION_KEY,
@@ -314,6 +318,10 @@ def prepare_enrollment(
     candidate_name: str,
 ) -> PreparationResult:
     """Prepare isolated enrollment state without opening an audio device."""
+    try:
+        require_enrollment_persistence()
+    except EnrollmentPersistenceUnavailable as exc:
+        raise PreparationError(str(exc)) from exc
     worktree_path = Path(os.path.abspath(os.fspath(worktree)))
     _directory_stat(worktree_path, label="feature worktree")
     worktree_path = worktree_path.resolve(strict=True)

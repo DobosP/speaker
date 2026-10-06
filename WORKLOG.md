@@ -703,3 +703,75 @@ owner-requested workflow_dispatch-only GitHub Actions policy and ADR-0223. Runti
 job bodies/test commands, safety gates and permissions are preserved. STATUS combines
 both sessions' facts within its 120-line budget. The existing green local application
 results remain valid; no automatic workflow dispatch was added or invoked.
+
+
+Valid until: a native backend/security decision or newer qualification supersedes this source boundary — then treat as history.
+
+## 2026-10-06 — Windows enrollment admission and native adapter proposal
+
+Base: main 734713dde33b0f5bdf35430258fb066535f76985. Task branch
+`fix/windows-enrollment-portability`; isolated worktree
+`_worktrees/speaker/fix__windows-enrollment-portability` under the workspace.
+ADR-0227 was reserved with an exclusive-create task scratch receipt before its
+source record; no competing 0227 was found in the active ambient worker or main.
+No shared-main edit, push, merge or branch/worktree deletion occurred.
+
+Added early mutation admission before core transaction config/path inspection,
+recorder/model construction, preparation path resolution and promotion dispatch.
+Windows returns core code 5 / preparation-promotion code 2 with a clear backend
+qualification refusal. Promotion module import/help no longer requires fcntl;
+missing locking cannot admit a transaction. POSIX mode/owner/schema-v2/flock and
+commit classification remain in place. The actual native backend is unimplemented;
+`docs/windows_enrollment_persistence.md` contains the concrete interface, native
+security/identity/lock/durability requirements and twelve exact unresolved tests.
+ADR-0056/0066 stay accepted and byte-unchanged.
+
+Checks used Windows CPython 3.10.11 / pytest 9.0.3, synthetic generated fixtures,
+`SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 PYTHONDONTWRITEBYTECODE=1` and the
+main venv interpreter by absolute path. Each fresh `--basetemp` was under
+workspace `_temp/windows-enrollment-portability/` (never private enrollment).
+
+- New admission gate: `python -B -m pytest -p no:cacheprovider tests/test_enrollment_persistence_platform.py -q --basetemp <task>/pytest-admission-01`
+  → **16 passed in 1.05 s**. Covers refusal-before-path/config/model/capture,
+  synthetic file preservation, missing POSIX capabilities/lock, CLI exit 2 and
+  fresh subprocess import/help with fcntl explicitly unavailable.
+- Initial existing pure selection: **15 passed, 1 failed, 23 deselected in 0.96 s**.
+  `test_v5_migrates_v2_v3_v4_only_when_input_agc_was_absent` expects a literal POSIX
+  `/m/gtcrn.onnx` in a legacy descriptor while Windows normalizes the model path.
+  The exact node also failed on unmodified main in 0.65 s with the same mismatch.
+  No fingerprint source or that test was changed; this is an inherited fixture
+  portability defect, not a passing Windows migration gate.
+- Final bounded command:
+
+  ```powershell
+  & 'C:\Users\Paul Work\personal_repos\speaker\.venv\Scripts\python.exe' -B -m pytest -p no:cacheprovider tests/test_enrollment_persistence_platform.py tests/test_enroll.py -q -k 'test_enrollment_persistence_platform or test_l2_normalize or test_average_embeddings or test_enroll_from_recordings or test_frontend_fingerprint or test_pre_current_signal or test_legacy_enrollment or test_versioned_enrollment or test_frontend_agc or test_frontend_disabled or test_real_input_agc or test_vad_trim or test_enrollment_matches_model' --basetemp 'C:\Users\Paul Work\personal_repos\_temp\windows-enrollment-portability\pytest-bounded-final-01'
+  ```
+
+  → **31 passed, 24 deselected in 1.68 s**. This deliberately bounds the run to
+  new admission plus existing pure/injected cases; it excludes unsupported
+  POSIX transactions and the independently reproduced legacy-path failure.
+- Synthetic empty-object Win32 probe: CreateFileW/CreateDirectoryW supplied a
+  protected owner-only DACL at creation; GetSecurityInfo readback matched owner,
+  one explicit full-control allow ACE and protected control. File flush and
+  writable-directory FlushFileBuffers returned success/error 0. LockFileEx
+  contender refused with ERROR_LOCK_VIOLATION, then acquired after unlock.
+  Same-process capability only: no cross-user/process/race/crash/rename or
+  supported-filesystem durability qualification. Script/empty fixtures retained
+  only in task scratch. No administrative volume flush or real transaction ran.
+- AST parsing passed five changed Python files without generating bytecode.
+  `git diff --check` passed. Scoped Ruff **NOT RUN**: unavailable in this venv;
+  no package installation was attempted. Independent read-only source review
+  found no guard placement/coverage defect.
+
+Actual POSIX preparation/promotion regression, native adversarial ACL/reparse/
+identity tests, two-process lock, commit-failure matrix and crash durability are
+**NOT RUN / unresolved**. Full-suite/model/GPU/hardware checks were not scheduled.
+No actual enrollment, private config overlay/audio/model, microphone, doctor,
+live session or actual preparation/promotion was read/opened/run. Read-only
+existing enrollment loading and general startup config loading are outside this
+mutation guard. Source proposal is ready for coordinator review and a separately
+scheduled native backend decision; Windows persistence remains unavailable.
+
+Final docs gate: `python -I -B agent-ops/scripts/check_docs.py <task-worktree>`
+→ `files=39 dead_links=0 stale_terms=0 retired_verbs=0 orphans=0` (exit 0).
+Shared main remained clean/on main; task status budget is 120 lines.

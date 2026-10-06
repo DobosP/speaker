@@ -11,7 +11,6 @@ prints the explicitly supplied config and enrollment paths for operator review.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import math
@@ -25,6 +24,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+from core._enrollment_persistence import (
+    EnrollmentPersistenceUnavailable,
+    require_enrollment_persistence,
+)
 from core.enroll import (
     ENROLLMENT_FRONTEND_VERSION,
     ENROLLMENT_PREPARATION_KEY,
@@ -101,6 +109,15 @@ _MARKER_CONTRACT_FIELDS = (
     "gid",
     "nlink",
 )
+
+
+def _require_promotion_persistence() -> None:
+    try:
+        require_enrollment_persistence()
+    except EnrollmentPersistenceUnavailable as exc:
+        raise PromotionError(str(exc)) from exc
+    if fcntl is None:
+        raise PromotionError("private enrollment promotion requires POSIX fcntl locking")
 
 
 def _absolute(path: str | os.PathLike[str], *, label: str) -> Path:
@@ -481,6 +498,7 @@ def _strict_fsync_bound_file(snapshot: _BoundRegularPathSnapshot) -> None:
 def _config_lock(primary_config: Path) -> Iterator[tuple[int, Path]]:
     """Hold the stable advisory lock used by every cooperating promoter."""
 
+    _require_promotion_persistence()
     parent = primary_config.parent
     _require_owned_directory(parent, label="primary config directory")
     lock_path = parent / f".{primary_config.name}.enrollment-promotion.lock"
@@ -765,6 +783,7 @@ def _promote_enrollment(
     accepted_enrollment: str | os.PathLike[str],
     accept_live_gate: bool,
 ) -> PromotionResult:
+    _require_promotion_persistence()
     if not accept_live_gate:
         raise PromotionError("promotion requires explicit live-gate acceptance")
 
@@ -974,6 +993,7 @@ def promote_enrollment(
 ) -> PromotionResult:
     """Promote a live-accepted candidate, normalizing low-level failures."""
 
+    _require_promotion_persistence()
     try:
         return _promote_enrollment(
             worktree=worktree,

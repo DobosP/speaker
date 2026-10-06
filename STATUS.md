@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (owner Linux live/enrollment and MiniCPM no-thinking correction; Windows console/package history).
+Last verified: 2026-10-06 (Windows enrollment admission/native capability only; prior Linux/live receipts retained).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -104,17 +104,17 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
-## Verification record (2026-10-05; commands/history in WORKLOG.md)
+## Verification record (dated receipts; commands/history in WORKLOG.md)
 - Python CI-style full gate: `11701 passed, 40 skipped, 9 warnings` in 417.14 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
-  Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
+  Sherpa 1.13.2 differs from the 1.13.3 pin; assets are incomplete. ADR-0227 refuses Windows enrollment mutation before transaction IO/capture;
+  2026-10-06: 31 bounded tests/native ACL+flush+lock probes pass; adapter/race/crash/POSIX qualification pending: `docs/windows_enrollment_persistence.md`.
 - Linux: 666 prior headless; template 234+124 and addressing 47+227 tests pass. Cached alias identity/no-markup properties pass; quality stays open.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
-- Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and
-  `docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and
+- Index: `README.md` §Documentation; contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md`/`docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and
   `docs/target_architecture.md` §9; decisions `docs/adr/` (append-only); history and receipts `WORKLOG.md`; work queue
   `.agents/backlog.md` (read by `tools/session_bootstrap.py`; the Next above wins).

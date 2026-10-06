@@ -39,6 +39,10 @@ from datetime import datetime
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .audio_frontend import InputAGC
+from ._enrollment_persistence import (
+    EnrollmentPersistenceUnavailable,
+    require_enrollment_persistence,
+)
 from .engines.speaker_gate import (
     SpeakerGate,
     sherpa_speaker_gate,
@@ -806,6 +810,7 @@ def _atomic_write_json(
     ordinary symlink foot-gun and a check/open race while keeping a failed JSON
     write from truncating the last good enrollment/config file.
     """
+    require_enrollment_persistence()
     absolute = os.path.abspath(path)
     parent = os.path.dirname(absolute) or "."
     _safe_directory_chain(parent, create=True)
@@ -1545,6 +1550,7 @@ def _persist_local(
     Same contract as ``tools.setup_models``: model/enrollment paths are
     machine-specific, so they live in ``config.local.json`` (merged over the
     committed ``config.json`` template at load), not in the template itself."""
+    require_enrollment_persistence()
     cfg: dict = {}
     if os.path.lexists(config_path):
         cfg = _read_json_regular(config_path, label="local config")
@@ -1585,6 +1591,11 @@ def run_enrollment(
     fake-embed gate) so this runs with no microphone and no model. In
     production both are built from the ``sherpa`` config block. Returns a shell
     exit code (0 = enrolled)."""
+    try:
+        require_enrollment_persistence()
+    except EnrollmentPersistenceUnavailable as exc:
+        out(f"Enrollment aborted: {exc}")
+        return 5
     sherpa = config.get("sherpa", {}) or {}
     # Refuse unsafe persistence before opening the microphone.  Waiting until
     # ``_persist_local`` would be too late: the embedding is saved first, so a

@@ -703,3 +703,58 @@ owner-requested workflow_dispatch-only GitHub Actions policy and ADR-0223. Runti
 job bodies/test commands, safety gates and permissions are preserved. STATUS combines
 both sessions' facts within its 120-line budget. The existing green local application
 results remain valid; no automatic workflow dispatch was added or invoked.
+
+
+Valid until: the admitted targeted fixture check supplies new execution evidence — then treat this preparation record as history.
+
+## 2026-10-06 — portable legacy enrollment fingerprint fixture (source preparation only)
+
+Separate task branch `test/portable-enrollment-fingerprint-fixture`, based on
+main 734713dde33b0f5bdf35430258fb066535f76985, in workspace worktree
+`_worktrees/speaker/test__portable-enrollment-fingerprint-fixture`.
+The completed native-enrollment preparation packet e9503170966660e1656726e0f672b3e6602ca053
+and its original failure/probe/qualification record remain unchanged on their
+separate branch. All twelve native backend gaps remain held.
+
+In `tests/test_enroll.py::test_v5_migrates_v2_v3_v4_only_when_input_agc_was_absent`,
+the independently authored legacy descriptor used literal `/m/gtcrn.onnx` while
+production `_artifact_id` normalizes configured paths with host `abspath` and
+`normcase`. The earlier Windows branch run observed 15 passed / 1 failed / 23
+deselected in 0.96 s; the exact failing node reproduced on untouched main in
+0.65 s. Those original failed results are preserved, not relabelled as passes.
+
+Prepared only a test import of `os` and normalization of the expected descriptor's
+denoise-model path using `os.path.normcase(os.path.abspath(cfg["denoise_model"]))`.
+The Linux fixture spelling remains the same; Windows derives the host spelling.
+No production helper is imported for the expected value. Independent descriptor
+construction and JSON/SHA-256 hashing, schema loop `(2, 3, 4)`, exact three-alias
+count, positive same-frontend migration and negative changed-model rejection
+assertions remain intact. No runtime/fingerprint implementation, ACL/durability
+admission, marker, enrollment loading/writing or hardware gate changed.
+
+Current admitted checks: AST parsing of the edited test source without imports
+or executing the test; `git diff --check`; independent read-only source review.
+The user/coordinator restricted this continuation to light source/static work
+under the Claude003 low-memory hold. Targeted pytest, full suite, runtime imports,
+WSL, native adversarial/crash/backend, model/audio/enrollment and hardware checks
+are **NOT RUN** in this task. The patch is source-prepared, not an observed green
+Windows migration result. No new ADR is needed for this test-fixture-only change.
+
+Exact meaningful next check, **NOT RUN — requires coordinator resource admission**:
+
+```powershell
+Set-Location -LiteralPath 'C:\Users\Paul Work\personal_repos\_worktrees\speaker\test__portable-enrollment-fingerprint-fixture'
+$env:SPEAKER_TEST_LOG = '0'
+$env:SPEAKER_NO_LOCAL_CONFIG = '1'
+$env:PYTHONDONTWRITEBYTECODE = '1'
+& 'C:\Users\Paul Work\personal_repos\speaker\.venv\Scripts\python.exe' -B -m pytest -p no:cacheprovider tests/test_enroll.py::test_v5_migrates_v2_v3_v4_only_when_input_agc_was_absent -q --basetemp 'C:\Users\Paul Work\personal_repos\_temp\portable-enrollment-fingerprint-fixture\pytest-migration-admitted-01'
+```
+
+Expected: one passing test retaining positive/negative assertions for all three
+legacy schemas. POSIX fixture equivalence still needs actual scheduled POSIX
+execution; it is currently a static review conclusion. No push/merge/cleanup or
+actual enrollment/private audio/model access was performed.
+
+Final static review: independent reviewer approved the exact two-site test edit;
+AST comparison confirmed all five migration assertions are unchanged. Whitespace
+check passed and STATUS remains 120 lines. No test was executed.

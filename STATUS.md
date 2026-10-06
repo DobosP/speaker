@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (owner Linux live/enrollment and MiniCPM no-thinking correction; Windows console/package history).
+Last verified: 2026-10-06 (legacy enrollment fixture source review only; pytest deferred; prior runtime receipts retained).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -111,10 +111,10 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
+  2026-10-06: legacy migration fixture path normalized (test-only/static review); targeted pytest NOT RUN under the low-memory hold.
 - Linux: 666 prior headless; template 234+124 and addressing 47+227 tests pass. Cached alias identity/no-markup properties pass; quality stays open.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
-- Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and
-  `docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and
+- Index: `README.md` §Documentation; contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md`/`docs/testing.md`; runbooks `docs/evaluation_runbooks.md`; architecture `docs/unified_architecture.md` and
   `docs/target_architecture.md` §9; decisions `docs/adr/` (append-only); history and receipts `WORKLOG.md`; work queue
   `.agents/backlog.md` (read by `tools/session_bootstrap.py`; the Next above wins).

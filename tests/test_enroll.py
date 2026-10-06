@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -301,7 +302,10 @@ def test_v5_migrates_v2_v3_v4_only_when_input_agc_was_absent():
         },
         "gain": {"kind": "static", "gain": 1.0},
         "idle_apm": {"active": False},
-        "denoise": {"active": True, "model": "/m/gtcrn.onnx"},
+        "denoise": {
+            "active": True,
+            "model": os.path.normcase(os.path.abspath(cfg["denoise_model"])),
+        },
     }
 
     assert active.version == 5

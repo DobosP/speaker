@@ -2,6 +2,67 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-06 — unfinished fixed-shortcut repair handed to Linux
+
+Valid until: later addressing/source/owner evidence supersedes this repair — then treat as history.
+
+- Proposed ADR-0227 confines the candidate imperative shortcut to a complete fixed repeat request.
+  Search, memory, requested-speech payloads and narrated/quoted prefixes retain
+  their full original text through the learned gate. Genuine requests honor ACT;
+  conservative narration verdicts produce no answer, capability dispatch or speech.
+- The prior ambient/control characterization and this source repair are consolidated
+  into one WIP task commit, not merged to main. Diagnostic launchers and versioned receipts stay
+  in private task scratch rather than repository source.
+- Nine historical-source runtime controls failed as expected because the original
+  shortcut bypassed the classifier. The candidate has 136 focused synthetic cases
+  across addressing, ambient/control and shortcut-boundary files; independent
+  source review found no issues. Candidate execution/collection is NOT RUN and transfers to Linux.
+- Two verification admission checks started no child and no tests while system
+  free commit was below the earlier coordinator's 16 GiB floor. Original receipts
+  are retained. Paul stopped all Windows loops and authorized pushing unfinished work to origin.
+- Model/default selection, private audio/enrollment, microphone/doctor/live and
+  promotion remain unchanged. Exact-ACT model mistakes, copied replies and physical
+  STOP/talk-over quality remain open; synthetic fixtures cannot close those gates.
+- Linux handover: [unfinished source and exact checks](docs/evidence/2026-10-06-linux-addressing-handoff.md).
+  Main remains clean and unmerged; no interpreter/test/model/native/live launch follows this handoff.
+
+## 2026-10-06 — Windows synthetic ambient/control source diagnosis
+
+Valid until: later addressing/output-boundary source or owner evidence supersedes this diagnosis — then treat as history.
+
+- Base `734713dde33b0f5bdf35430258fb066535f76985`; branch `test/ambient-addressing-headless-20261006`,
+  task worktree `C:\Users\Paul Work\personal_repos\_worktrees\speaker\test__ambient-addressing-headless-20261006`.
+  No runtime source, template, model/default, enrollment or owner gate changed; no new decision/ADR.
+- Nineteen invented-text tests observe classifier/answer calls, capability started/finished receipts, speech and memory
+  separately. Conservative malformed/INGEST/UNSURE cases stay silent and recover on the next question; punctuation
+  bypasses both models; three injected spotted STOP-class controls cut held scripted playback without another verdict.
+- Exact ACT still admits synthetic ambient text, and fake-provider recitation of a public style directive reaches
+  both buffered and sentence-streaming speech. The canned reply control speaks only its reply. Passing these cases
+  describes existing reachability, not improved model semantics/reply quality or acoustic behavior.
+- Independent source review found distinct system/user roles, provider-content-only extraction and discarded warm-up
+  replies; no new whole-token parser or instruction-to-speech routing defect justified a source correction. An eight-case
+  stdlib AST-only probe separately reproduced inherited command-prefix/read-aloud overreach; no evidence attributes the
+  observed live short fragment to that shortcut, and no arbitrary quoted-content/suffix policy was introduced.
+- Shared Windows interpreter: `C:\Users\Paul Work\personal_repos\speaker\.venv\Scripts\python.exe`, CPython 3.10.11.
+  All pytest runs used `-B -m pytest -p no:cacheprovider`, task-local unique basetemp, `SPEAKER_TEST_LOG=0`,
+  `SPEAKER_NO_LOCAL_CONFIG=1`, `SPEAKER_LIVE=0`, `PYTHONDONTWRITEBYTECODE=1`, one-thread BLAS settings,
+  and TMPDIR/TEMP/TMP under `personal_repos/_temp/test__ambient-addressing-headless-20261006`.
+- Focused command: `tests/test_ambient_addressing_controls.py tests/test_addressing.py -q`:
+  initial **15 failed, 51 passed in 4.69 s** because the new assertion counted each invocation's start/finish as
+  separate calls; test-only correction **66 passed in 2.84 s**. Reviewed fixture wording/copy-directive refinement:
+  final **66 passed in 2.76 s**. No runtime edit was needed for either refinement.
+- Adjacent command: `tests/test_core_runtime.py tests/test_final_preprocessing_cancel.py tests/test_pretoken_cancellation.py
+  tests/test_cleanup.py tests/test_capability_catalog.py tests/test_history_context.py tests/test_tts_markup.py
+  tests/test_setup_minicpm.py -q`: **304 passed, 1 skipped in 30.34 s**. Only skip: unavailable Go text/template renderer.
+- `python -B -m ruff --version` reports no installed Ruff; no install. Full suite/model/GPU/doctor/microphone/live,
+  private audio/enrollment/model-file reads and promotion **NOT RUN**. Original focused-original/focused-corrected/
+  focused-final/adjacent-original/shortcut-original receipts and shortcut_probe.py stay in the task-local `_temp` lane.
+- Documentation gate: `agent-ops/scripts/check_docs.py <task-worktree>` reports **files=38 dead_links=0
+  stale_terms=0 retired_verbs=0 orphans=0**; git diff --check has no whitespace errors. Original docs receipt retained.
+- Owner pause, fresh candidate, historical reference, protected backup, private evidence and primary pointer remain
+  preserved. Exact ACT ambient classification and copied replies need their own subsequent quality/output-boundary
+  evidence; fixture passes cannot close those gates. Physical STOP/talk-over and performance acceptance remain open.
+
 ## 2026-10-05 — complete addressing-decision validation
 
 Valid until: later addressing/source/owner evidence supersedes this repair — then treat as history.

@@ -162,14 +162,7 @@ def test_classifier_short_circuits_high_precision_imperatives():
     classifier = LLMAddressingClassifier(llm)
 
     for text in (
-        "Remember for this conversation that the codename is Orion.",
-        "Look up Pipecat using your tools.",
-        "Search for current Pipecat releases with your tool.",
-        "Research Pipecat and LiveKit using your tools.",
-        "Please search for Pipecat.",
-        "Please research Pipecat and LiveKit.",
         "Repeat your previous answer exactly.",
-        "Say exactly three short sentences: Blue. White. Red.",
         "What is the project codename? Answer with the codename.",
         "What is the capital of France, I mean Japan?",
         "Which country contains the city you just named?",

@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (owner Linux live/enrollment and MiniCPM no-thinking correction; Windows console/package history).
+Last verified: 2026-10-06 (Windows synthetic diagnosis/historical controls; candidate qualification remains pending on Linux).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -20,8 +20,8 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0225 prefills closed thinking; ADR-0226 accepts only complete addressing tokens. These are format boundaries, not quality verdicts.
-  Voice-persona arithmetic and exact-label ambient addressing fail probes; live still activates on room noise and copies instructions.
+- ADR-0225 prefills closed thinking; ADR-0226 accepts complete addressing tokens. ADR-0227 is a proposed, unqualified fixed-shortcut repair.
+  Exact ACT ambient/copy reachability remains; injected controls pass headlessly. Persona arithmetic/live remain red; no quality or acoustic verdict.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Complete-decision admission is verified headlessly; full live acceptance, Current/Compact A/B and promotion await owner resume.
+- Complete-decision admission is verified; the fixed-shortcut candidate has 136 planned cases, NOT RUN. Qualify the pushed WIP on Linux.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
@@ -104,7 +104,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   PriMock overlap and AMI natural-turn stay diagnostic-only (ADR-0160/0161/0162/0166).
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
-## Verification record (2026-10-05; commands/history in WORKLOG.md)
+## Verification record (actual history; candidate NOT RUN; commands/history in WORKLOG.md)
 - Python CI-style full gate: `11701 passed, 40 skipped, 9 warnings` in 417.14 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Mobile integration: `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).

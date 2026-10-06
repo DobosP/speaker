@@ -33,21 +33,15 @@ UNSURE = "UNSURE"
 _VALID = (ACT, INGEST, UNSURE)
 _DECISION_ALIASES = {"ACTION": ACT, "ACTIVE": ACT}
 
-# High-precision imperative forms do not need a generative classifier.  Keeping
-# this deliberately anchored and small prevents MiniCPM/Gemma label drift from
-# dropping explicit commands while leaving statements and ambiguous room speech
-# on the conservative learned gate.
+# Only a complete fixed request can take this imperative shortcut. Open-ended
+# search subjects, memory clauses and requested speech payloads belong to the
+# learned gate: appending an end anchor to a free-text slot still lets that
+# slot swallow narration. Never discard the unmatched remainder of a turn.
 _EXPLICIT_ACT_RE = re.compile(
-    r"^\s*(?:"
-    r"(?:look\s+up|search\s+for|research)\s+\S.{0,240}?\s+"
-    r"(?:using|with)\s+your\s+tools?\b|"
-    r"please\s+(?:look\s+up|search\s+for|research)\s+\S|"
-    r"remember\s+for\s+(?:this|the)\s+conversation\b|"
-    r"repeat\s+your\s+previous\s+answer\s+exactly\b|"
-    r"say\s+exactly\s+(?:one|two|three|\d+)\b"
-    r")",
+    r"\s*repeat\s+your\s+previous\s+answer\s+exactly[.!?]?\s*",
     re.IGNORECASE,
 )
+
 
 _QUESTION_STEM = (
     r"(?:what|why|how|when|where|who|which|can|could|would|will|do|"
@@ -140,7 +134,7 @@ class LLMAddressingClassifier:
     def classify(self, text: str, recent: Iterable[str] = ()) -> str:
         utterance = text or ""
         if (
-            _EXPLICIT_ACT_RE.search(utterance) is not None
+            _EXPLICIT_ACT_RE.fullmatch(utterance) is not None
             or _EXPLICIT_ANSWER_FORMAT_RE.search(utterance) is not None
             or _EXPLICIT_CORRECTION_QUESTION_RE.search(utterance) is not None
             or _EXPLICIT_REFERENTIAL_QUESTION_RE.search(utterance) is not None

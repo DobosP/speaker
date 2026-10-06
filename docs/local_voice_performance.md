@@ -361,3 +361,44 @@ That small sample supports considering a stronger local trial, without changing 
 Paul subsequently chose **stop live testing for now**. No parser live retry or stronger-tier live trial occurred.
 Keep microphone, doctor and live retries off until his explicit resume. Preserve the compatible candidate,
 historical reference, protected backup and private evidence; no promotion or primary pointer change is authorized.
+
+### Synthetic source diagnosis (2026-10-06)
+
+Valid until: new addressing/output-boundary source or owner evidence supersedes this diagnosis — then treat as history.
+
+The Windows follow-up at source `734713d` adds 19 invented-text cases in
+`tests/test_ambient_addressing_controls.py`. Under conservative policy, INGEST, UNSURE and malformed ACT-leading
+replies produce no answering calls, capability invocations or speech, retain ingested context, and allow the next
+ordinary question to recover. Empty/punctuation-only finals reach neither model. Three injected spotted STOP-class
+controls cut held scripted playback without another learned verdict; this is no physical STOP or microphone verdict.
+
+An injected exact ACT still admits both synthetic ambient statements/fragments. If the fake answer provider returns
+a style directive copied from the actual public persona system prompt, both buffered and sentence-streaming speech
+emit it. A canned-answer control emits only its answer, with classifier and persona prompts kept distinct. These
+passing characterization cases demonstrate reachability; they supply no classifier, reply-quality or acoustic pass.
+Source review found the persona in the system role, response extraction from provider content, and discarded warm-up
+output. No new whole-token parser or prompt-to-speech routing defect was shown; no runtime/template/model change follows.
+
+An eight-case AST-only probe separately confirms command-prefix overreach: quoted/read-aloud suffixes can follow
+`Repeat your previous answer exactly` or `Say exactly three`, and `Please research shows the result was negative`
+also matches the deterministic shortcut. That inherited shortcut limitation does not establish the cause of the
+recorded short-fragment room-noise activation. A correction needs explicit request/quoted-content controls; it is
+not repaired by these fixtures or a generic suffix blacklist.
+
+Focused addressing tests pass 66; bounded adjacent runtime/cancellation/persona/history/markup/template tests pass
+304 with one unavailable Go-renderer skip. Ruff is unavailable. Original receipts, including a corrected test-only
+invocation-count assertion failure, remain in task-local scratch; commands and exact results are in `WORKLOG.md`.
+No private audio, enrollment, model files, model/GPU run, doctor, microphone, full suite or promotion ran.
+The owner's pause and all candidate/backup/primary-pointer and quality gates remain as recorded above.
+
+### Unfinished imperative shortcut candidate (2026-10-06)
+
+Valid until: later addressing/source/owner evidence supersedes this repair — then treat as history.
+
+[ADR-0227](adr/0227-require-complete-fixed-addressing-shortcuts.md) records the
+proposed fixed-request boundary following the synthetic diagnosis above. This WIP is unqualified; its 136 candidate cases are NOT RUN. Search,
+memory, requested-speech payloads and narrated/quoted prefixes now retain their
+full text through the candidate learned gate. Genuine open requests honor a learned ACT;
+conservative narration verdicts produce no answer, capability invocation or speech.
+The exact-ACT semantic and copied-provider-output failures remain open. Commands
+and prior actual evidence are recorded in `WORKLOG.md`; remaining checks transfer to Linux via the [handover](evidence/2026-10-06-linux-addressing-handoff.md).

@@ -72,3 +72,23 @@ stopped; unrelated user processes were not modified.
   prompt campaign, silent context pruning, cloud warm-up or per-turn deadline
   increase follows. Native main/vision, Windows/macOS, microphone, echo and
   owner live validation remain independent gates.
+
+
+## Prospective source-consistency addendum (2026-10-10)
+
+Future public benchmark results bind a fixed 15-file manifest for the native
+client, bounded decision helper, classifier, factory/model profile, persona,
+config/identity helpers and runtime prompt/registry composition seam. Hash before
+initial model metadata and after all measured/metadata calls; missing, symlinked,
+nonregular, oversized or changing sources refuse publication with fixed codes.
+Reads are bounded to 1 MiB per file and 4 MiB total (plus one detection byte),
+using chunked hashing and regular-file identity/size/mtime checks during a read.
+Reports contain only static repository-relative source names, SHA256 and byte
+counts, a canonical combined digest and matching post-run digest. Existing
+self/persona hash fields remain for compatibility.
+
+This is an explicit prospective file-byte consistency seam, not a transitive
+import closure, whole audio-application claim, loaded-bytecode attestation or
+model/native-library/platform qualification. Historical native reports and
+wrapper/source bindings are unchanged; the new manifest is not retroactively
+attached to them. No native inference was rerun for this validation repair.

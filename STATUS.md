@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-05 (owner Linux live/enrollment and MiniCPM no-thinking correction; Windows console/package history).
+Last verified: 2026-10-09 (offline reference-ring correction/benchmark; owner live/enrollment remains stopped; prior platform receipts are history).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -62,9 +62,9 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   roles (ADR-0174), and async endpoint finalization crosses a bounded route-neutral media stage (ADR-0107). Echo-probe acceptance binds to
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
-- The default Sherpa decode owner retains its DSP/VAD/ASR/confirm/word-cut/endpoint machine; ADR-0222 uses native SOS lowpass with scalar fallback. Replay is
-  not device or live evidence (ADR-0110/0111); acoustic identity is immutable through partial, final, barge, command and abort
-  (ADR-0084/0086). VAD owns live ASR segments, capture recovery rebinds rate and preserves evidence (ADR-0043/0046/0048), and only a finite
+- The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
+  ADR-0230 fixes oversized reference-ring writes and uses bounded-copy paired reads; replay is not device/live evidence (ADR-0110/0111).
+  Acoustic identity stays immutable (ADR-0084/0086); VAD owns segments and recovery rebinds rate/evidence (ADR-0043/0046/0048); only a finite
   enrolled final match mints owner trust (ADR-0027/0041/0051).
 - The opt-in Linux final pair is checksum-pinned Parakeet Unified English plus a Faster-Whisper Small verifier with SenseVoice defaults
   unchanged (ADR-0078/0080/0144/0188); streaming hotwords need the pinned English Zipformer BPE family (ADR-0114). Smart Turn v3.2 is opt-in
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Linux: 666 prior headless; template 234+124 and addressing 47+227 tests pass. Cached alias identity/no-markup properties pass; quality stays open.
+- Linux: 666 prior headless; template 234+124/addressing 47+227 and cached alias properties pass; ADR-0230 headless 437 pass/2 optional-model skips, synthetic only.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

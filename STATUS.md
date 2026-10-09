@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-09 (offline reference-ring correction/benchmark; owner live/enrollment remains stopped; prior platform receipts are history).
+Last verified: 2026-10-10 (offline LocalVQE synthetic/AFTER-HOST paired replay; owner live/enrollment remains stopped; prior receipts are history).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -63,7 +63,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
-  ADR-0230 fixes oversized reference-ring writes and uses bounded-copy paired reads; replay is not device/live evidence (ADR-0110/0111).
+  ADR-0230 fixes reference-ring writes/copies; ADR-0231 adds offline-only LocalVQE synthetic/AFTER-HOST comparison, with no AEC adoption/live claim.
   Acoustic identity stays immutable (ADR-0084/0086); VAD owns segments and recovery rebinds rate/evidence (ADR-0043/0046/0048); only a finite
   enrolled final match mints owner trust (ADR-0027/0041/0051).
 - The opt-in Linux final pair is checksum-pinned Parakeet Unified English plus a Faster-Whisper Small verifier with SenseVoice defaults
@@ -89,8 +89,8 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   (ADR-0090/0091/0099/0115–0119/0121/0122/0128/0145/0160). Legacy mic-only AMI is .852 and the natural-turn diagnostic is descriptive only
   (ADR-0092/0166).
 - Windows communications capture verifies OS AEC/NS/beamforming with owner talk-over/STOP open (ADR-0081/0082) and diagnostic replay fails
-  closed on malformed heartbeats (ADR-0083). The exact LiveKit 1.1.14/Agents 1.6.8/API 1.2.0/protocol 1.1.21 closure is pinned and
-  installed, the Microsoft AEC slice is locked behind five term acceptances, and the exact-input tool-route gate has no owner-labelled run
+  closed on malformed heartbeats (ADR-0083). LiveKit 1.1.14/Agents 1.6.8/API 1.2.0/protocol 1.1.21 stays pinned; this host has 1.1.10 (ADR-0231).
+  Microsoft AEC stays behind five term acceptances; the exact-input tool-route gate has no owner-labelled run
   (ADR-0108/0124–0126/0163/0164).
 ## Open gates
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Linux: 666 prior headless; template 234+124/addressing 47+227 and cached alias properties pass; ADR-0230 headless 437 pass/2 optional-model skips, synthetic only.
+- Linux: prior receipts remain history; ADR-0230 headless 437 pass/2 skips; ADR-0231 headless 216 pass/2 skips, 5 synthetic+5 paired cells complete; APM 1.1.10.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

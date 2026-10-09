@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-09 (headless admission/decision/reference gates; owner live stopped; prior platform receipts retained).
+Last verified: 2026-10-09 (headless admission/decision/reference/TTS gates; owner live stopped; prior platform receipts retained).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -63,9 +63,9 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
-  ADR-0230 fixes oversized reference-ring writes and uses bounded-copy paired reads; replay is not device/live evidence (ADR-0110/0111).
-  Acoustic identity stays immutable (ADR-0084/0086); VAD owns segments and recovery rebinds rate/evidence (ADR-0043/0046/0048); only a finite
-  enrolled final match mints owner trust (ADR-0027/0041/0051).
+  ADR-0230 bounds reference-ring copies; ADR-0233 prevents TTS error replay and selects callback-less delivery before inference.
+  Replay is headless evidence (ADR-0110/0111); acoustic identity stays immutable (ADR-0084/0086); VAD/recovery retain segment/rate evidence
+  (ADR-0043/0046/0048). Only a finite enrolled final match mints owner trust (ADR-0027/0041/0051).
 - The opt-in Linux final pair is checksum-pinned Parakeet Unified English plus a Faster-Whisper Small verifier with SenseVoice defaults
   unchanged (ADR-0078/0080/0144/0188); streaming hotwords need the pinned English Zipformer BPE family (ADR-0114). Smart Turn v3.2 is opt-in
   and lexical stays the endpoint default; EdAcc diagnostics are partial evidence with the owner A/B pending, the logical-turn kernel is
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Headless: admission 385; decisions 326+125; reference-ring 437 pass/2 optional-model skips (ADR-0227/0228/0230); earlier Linux receipts remain in WORKLOG.
+- Headless: admission 385; decisions 326+125; reference-ring 437 pass/2 skips; TTS no-replay/regression 657 pass/2 optional-model skips (ADR-0227/0228/0230/0233).
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

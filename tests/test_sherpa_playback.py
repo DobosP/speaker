@@ -12,6 +12,7 @@ import logging
 import sys
 import threading
 import time
+from functools import wraps
 from types import SimpleNamespace
 
 import numpy as np
@@ -25,6 +26,7 @@ from core.audio_frontend import (
     rms_of,
 )
 from core.engines._aec import FarEndRing, PlaybackFIFO
+import core.engines.sherpa as sherpa_engine
 from core.engines.sherpa import (
     SherpaConfig,
     SherpaOnnxEngine,
@@ -66,11 +68,15 @@ class _StreamingTts:
 
 
 class _NonStreamingTts:
-    """A build whose generate() has no ``callback`` param (raises TypeError)."""
+    """A build whose generate() has no ``callback`` parameter."""
 
     sample_rate = 16000
 
+    def __init__(self):
+        self.calls = 0
+
     def generate(self, text, sid=0, speed=1.0):
+        self.calls += 1
         return _GenAudio(np.arange(4000, dtype="float32"), sample_rate=16000)
 
 
@@ -721,10 +727,372 @@ def test_synthesize_falls_back_to_chunked_waveform_without_callback():
     eng = _engine(_NonStreamingTts())
     written: list = []
     eng._synthesize("hi", written.append)
-    assert eng._tts_can_stream is False  # detected and remembered
+    assert eng._tts_can_stream is False  # detected before entering generation
+    assert eng._tts.calls == 1
     # 4000 samples at 16 kHz => 0.1s (1600-sample) chunks => 3 writes (1600,1600,800).
     assert [len(w) for w in written] == [1600, 1600, 800]
     assert np.concatenate(written).shape[0] == 4000
+
+
+class _UnprintableTypeError(TypeError):
+    def __str__(self):
+        raise AssertionError("synthesis must not inspect exception text")
+
+
+class _FailingCallbackTts(_StreamingTts):
+    def __init__(self, error, *, after_callback):
+        super().__init__()
+        self.error = error
+        self.after_callback = after_callback
+
+    def generate(self, text, sid=0, speed=1.0, callback=None):
+        self.calls += 1
+        samples = np.array([0.1, 0.2], dtype="float32")
+        if self.after_callback and callback is not None:
+            callback(samples, 1.0)
+        raise self.error
+
+
+@pytest.mark.parametrize("error_type", [_UnprintableTypeError, RuntimeError])
+@pytest.mark.parametrize("after_callback", [False, True])
+def test_synthesis_backend_failure_never_retries_or_downgrades(
+    error_type, after_callback
+):
+    error = error_type()
+    tts = _FailingCallbackTts(error, after_callback=after_callback)
+    eng = _engine(tts)
+    written = []
+    with pytest.raises(error_type) as caught:
+        eng._synthesize("public phrase", written.append)
+    assert caught.value is error
+    assert tts.calls == 1
+    assert [len(chunk) for chunk in written] == ([2] if after_callback else [])
+    assert eng._tts_can_stream is True
+
+
+def test_synthesis_sink_type_error_never_replays_and_next_call_keeps_callbacks():
+    tts = _StreamingTts()
+    eng = _engine(tts)
+    written = []
+    error = _UnprintableTypeError()
+
+    def failing_sink(samples):
+        written.append(samples.copy())
+        raise error
+
+    with pytest.raises(TypeError) as caught:
+        eng._synthesize("public failed phrase", failing_sink)
+    assert caught.value is error
+    assert tts.calls == 1
+    assert len(written) == 1
+    np.testing.assert_array_equal(written[0], [np.float32(0.1), np.float32(0.2)])
+    assert eng._tts_can_stream is True
+
+    next_written = []
+    eng._synthesize("public successor phrase", next_written.append)
+    assert tts.calls == 2  # a separately requested successor, no replay retry
+    assert [len(chunk) for chunk in next_written] == [2, 1]
+    assert eng._tts_can_stream is True
+
+
+def test_synthesis_dsp_type_error_never_retries(monkeypatch):
+    error = _UnprintableTypeError()
+    tts = _StreamingTts()
+    eng = _engine(tts)
+
+    def fail_dsp(*_args):
+        raise error
+
+    monkeypatch.setattr(eng, "_dc_block", fail_dsp)
+    written = []
+    with pytest.raises(TypeError) as caught:
+        eng._synthesize("public phrase", written.append)
+    assert caught.value is error
+    assert tts.calls == 1
+    assert written == []
+    assert eng._tts_can_stream is True
+
+
+@pytest.mark.parametrize("opaque_error", [TypeError, ValueError])
+@pytest.mark.parametrize("after_callback", [False, True])
+def test_opaque_native_signature_failure_never_retries(
+    monkeypatch, opaque_error, after_callback
+):
+    def opaque_signature(_callable, **_kwargs):
+        raise opaque_error()
+
+    monkeypatch.setattr(sherpa_engine.inspect, "signature", opaque_signature)
+    error = _UnprintableTypeError()
+    tts = _FailingCallbackTts(error, after_callback=after_callback)
+    eng = _engine(tts)
+    written = []
+    with pytest.raises(TypeError) as caught:
+        eng._synthesize("public phrase", written.append)
+    assert caught.value is error
+    assert tts.calls == 1
+    assert [len(chunk) for chunk in written] == ([2] if after_callback else [])
+    assert eng._tts_can_stream is True
+
+
+@pytest.mark.parametrize("tts_type", [_StreamingTts, _NonStreamingTts])
+def test_callback_signature_is_checked_once_without_retaining_bound_method(
+    monkeypatch, tts_type
+):
+    original_signature = sherpa_engine.inspect.signature
+    inspected = []
+
+    def observed_signature(method, **kwargs):
+        inspected.append(method.__func__)
+        return original_signature(method, **kwargs)
+
+    monkeypatch.setattr(sherpa_engine.inspect, "signature", observed_signature)
+    tts = tts_type()
+    eng = _engine(tts)
+    eng._synthesize("public first phrase", lambda _samples: None)
+    eng._synthesize("public next phrase", lambda _samples: None)
+    assert inspected == [tts_type.generate]
+    assert tts.calls == 2
+    assert eng._tts_callback_signature == (id(tts), tts_type is _StreamingTts)
+    assert not any(
+        sherpa_engine.inspect.ismethod(value) and value.__self__ is tts
+        for value in vars(eng).values()
+    )
+
+
+@pytest.mark.parametrize(
+    "prior_type, replacement_type",
+    [(_NonStreamingTts, _StreamingTts), (_StreamingTts, _NonStreamingTts)],
+)
+def test_rebuilt_model_gets_its_own_callback_capability(
+    monkeypatch, prior_type, replacement_type
+):
+    eng = _engine(prior_type())
+    eng.config.coherence_barge_in_enabled = False
+    eng._synthesize("public prior phrase", lambda _samples: None)
+    assert eng._tts_callback_signature == (id(eng._tts), prior_type is _StreamingTts)
+    replacement = replacement_type()
+    for name in (
+        "build_recognizer", "build_final_recognizer", "build_final_verifier",
+        "build_vad", "build_denoiser", "build_keyword_spotter", "build_punctuation",
+    ):
+        monkeypatch.setattr(sherpa_engine, name, lambda _config: None)
+    monkeypatch.setattr(sherpa_engine, "build_aec", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sherpa_engine, "build_tts", lambda _config: replacement)
+
+    eng._build()
+    assert eng._tts is replacement
+    assert eng._tts_can_stream is True
+    assert eng._tts_callback_signature == (id(replacement), None)
+    written = []
+    eng._synthesize("public rebuilt phrase", written.append)
+    assert replacement.calls == 1
+    expected = [2, 1] if replacement_type is _StreamingTts else [1600, 1600, 800]
+    assert [len(chunk) for chunk in written] == expected
+    assert eng._tts_can_stream is (replacement_type is _StreamingTts)
+    assert eng._tts_callback_signature == (id(replacement), replacement_type is _StreamingTts)
+
+
+@pytest.mark.parametrize(
+    "prior_type, replacement_type",
+    [(_NonStreamingTts, _StreamingTts), (_StreamingTts, _NonStreamingTts)],
+)
+def test_obsolete_signature_publication_cannot_poison_rebuilt_model(
+    monkeypatch, prior_type, replacement_type
+):
+    prior = prior_type()
+    eng = _engine(prior)
+    eng.config.coherence_barge_in_enabled = False
+    replacement = replacement_type()
+    entered = threading.Event()
+    release = threading.Event()
+    original_signature = sherpa_engine.inspect.signature
+
+    def paused_signature(method, **kwargs):
+        signature = original_signature(method, **kwargs)
+        if method.__self__ is prior:
+            entered.set()
+            assert release.wait(timeout=2.0)
+        return signature
+
+    monkeypatch.setattr(sherpa_engine.inspect, "signature", paused_signature)
+    for name in (
+        "build_recognizer", "build_final_recognizer", "build_final_verifier",
+        "build_vad", "build_denoiser", "build_keyword_spotter", "build_punctuation",
+    ):
+        monkeypatch.setattr(sherpa_engine, name, lambda _config: None)
+    monkeypatch.setattr(sherpa_engine, "build_aec", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sherpa_engine, "build_tts", lambda _config: replacement)
+    errors = []
+
+    def synthesize_prior():
+        try:
+            eng._synthesize("public prior phrase", lambda _samples: None)
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=synthesize_prior, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(timeout=1.0)
+        eng._build()  # reset while old signature check has not yet published
+        release.set()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        assert errors == []
+        assert eng._tts_callback_signature == (id(prior), prior_type is _StreamingTts)
+        written = []
+        eng._synthesize("public successor phrase", written.append)
+        expected = [2, 1] if replacement_type is _StreamingTts else [1600, 1600, 800]
+        assert [len(chunk) for chunk in written] == expected
+        assert replacement.calls == 1
+        assert eng._tts_callback_signature == (id(replacement), replacement_type is _StreamingTts)
+    finally:
+        release.set()
+        worker.join(timeout=1.0)
+
+
+def test_decorated_callback_adapter_uses_its_actual_callable_contract():
+    class _WrappedTts(_NonStreamingTts):
+        @wraps(_NonStreamingTts.generate)
+        def generate(self, *args, **kwargs):
+            callback = kwargs.pop("callback", None)
+            audio = super().generate(*args, **kwargs)
+            assert callback is not None
+            callback(audio.samples[:2], 1.0)
+            return audio
+
+    tts = _WrappedTts()
+    eng = _engine(tts)
+    written = []
+    eng._synthesize("public phrase", written.append)
+    assert tts.calls == 1
+    assert [len(chunk) for chunk in written] == [2]
+    assert eng._tts_can_stream is True
+
+
+def test_keyword_variadic_api_type_error_is_not_callback_support_evidence():
+    class _KeywordTts:
+        sample_rate = 16000
+        calls = 0
+
+        def generate(self, text, sid=0, speed=1.0, **kwargs):
+            self.calls += 1
+            raise _UnprintableTypeError()
+
+    tts = _KeywordTts()
+    eng = _engine(tts)
+    with pytest.raises(TypeError):
+        eng._synthesize("public phrase", lambda _samples: None)
+    assert tts.calls == 1
+    assert eng._tts_can_stream is True
+
+
+def test_whole_clip_gain_seed_defers_signature_check_until_callback_eligible(
+    monkeypatch,
+):
+    original_signature = sherpa_engine.inspect.signature
+    inspected = []
+
+    def observed_signature(method, **kwargs):
+        inspected.append(method.__func__)
+        return original_signature(method, **kwargs)
+
+    monkeypatch.setattr(sherpa_engine.inspect, "signature", observed_signature)
+    tts = _StreamingTts()
+    eng = _engine(tts)
+    eng.config.tts_target_rms = 0.12
+    eng._synthesize("public gain seed", lambda _samples: None)
+    assert inspected == []
+    assert eng._tts_normalize_gain is not None
+    eng._synthesize("public callback phrase", lambda _samples: None)
+    assert inspected == [_StreamingTts.generate]
+    assert tts.calls == 2
+
+
+def test_signature_mismatch_other_than_callback_does_not_enable_fallback():
+    class _WrongArgumentsTts:
+        sample_rate = 16000
+        calls = 0
+
+        def generate(self, text, extra_required, sid=0, speed=1.0):
+            self.calls += 1
+            raise AssertionError("argument binding must reject before inference")
+
+    tts = _WrongArgumentsTts()
+    eng = _engine(tts)
+    with pytest.raises(TypeError):
+        eng._synthesize("public phrase", lambda _samples: None)
+    assert tts.calls == 0
+    assert eng._tts_can_stream is True
+
+
+def test_callback_failure_has_one_failed_receipt_and_no_regeneration(monkeypatch):
+    tts = _FailingCallbackTts(TypeError("public backend failure"), after_callback=True)
+    eng = _engine(tts)
+    probe = _ReceiptProbe()
+    _start_playback_harness(monkeypatch, eng, default_sr=22050)
+    eng.speak_tracked(
+        TrackedSpeech("failed-callback", "public phrase"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert started == []  # fake driver has not rendered any queued PCM
+        assert len(terminal) == 1
+        receipt = terminal[0][0]
+        assert receipt.outcome is PlaybackOutcome.FAILED
+        assert receipt.safe_text_prefix == ""
+        assert receipt.played_samples == 0
+        assert receipt.total_samples == 2
+        assert tts.calls == 1
+        assert eng._tts_can_stream is True
+    finally:
+        eng.stop()
+
+
+def test_callback_failure_after_render_cannot_mint_completed_receipt(monkeypatch):
+    class _FailureAfterRenderTts(_StreamingTts):
+        def __init__(self):
+            super().__init__()
+            self.submitted = threading.Event()
+            self.release_failure = threading.Event()
+
+        def generate(self, text, sid=0, speed=1.0, callback=None):
+            self.calls += 1
+            assert callback is not None
+            callback(np.array([0.1, 0.2], dtype="float32"), 1.0)
+            self.submitted.set()
+            assert self.release_failure.wait(timeout=2.0)
+            raise TypeError("public backend failure")
+
+    tts = _FailureAfterRenderTts()
+    eng = _engine(tts)
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, eng, default_sr=22050)
+    eng.speak_tracked(
+        TrackedSpeech("rendered-failure", "public phrase"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert tts.submitted.wait(timeout=1.0)
+        holder["stream"].pull(2)
+        assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
+        tts.release_failure.set()
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert len(started) == len(terminal) == 1
+        receipt = terminal[0][0]
+        assert receipt.outcome is PlaybackOutcome.FAILED
+        assert receipt.safe_text_prefix == ""
+        assert receipt.played_samples == receipt.total_samples == 2
+        assert tts.calls == 1
+        assert eng._tts_can_stream is True
+    finally:
+        tts.release_failure.set()
+        eng.stop()
 
 
 def test_synthesize_normalizes_then_declicks_when_target_rms_set():

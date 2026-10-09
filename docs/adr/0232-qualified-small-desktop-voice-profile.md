@@ -84,3 +84,16 @@ once with matched options resolved that diagnostic, without raising the bound.
 - Exact native-measured source and aggregate receipts are retained separately
   from later validation-only/tooling edits; private enrollment and recordings
   remain untouched. Headless gates are receipts, not live acceptance.
+
+
+## Installer boundary clarification (2026-10-10)
+
+Native SDK metadata calls disable redirects and ambient proxy/auth inputs.
+Parent symlinks and Modelfile syntax/control characters are refused before
+filesystem/native writes. Exclusive source publication is unchanged. A portable
+fail-busy installer lock spans alias recheck/import/identity and releases only
+the same owned regular inode; different localhost spellings/asset roots
+cooperate for the same temporary-directory namespace and daemon port/alias.
+Ollama create has no compare-and-swap here: external writers or different
+user/temp namespaces can still race alias publication. The lock is not a
+daemon-wide atomic-create guarantee. Actual Windows execution remains open.

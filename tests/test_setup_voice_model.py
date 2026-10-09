@@ -80,6 +80,7 @@ def test_parent_symlink_and_unowned_partial_are_refused_without_replacing(monkey
     (tmp_path / "models").symlink_to(actual, target_is_directory=True)
     with pytest.raises(setup.SetupRefused, match="parent_symlink"):
         setup.ensure_asset(tmp_path, opener=Opener())
+    assert list(actual.iterdir()) == []  # refusal precedes redirected mkdir
     (tmp_path / "models").unlink()
     asset = tmp_path / setup.PROFILE_ASSET_RELATIVE
     asset.parent.mkdir(parents=True)
@@ -152,3 +153,100 @@ def test_cli_endpoint_rejection_never_prints_credentials_or_starts_download(monk
     captured = capsys.readouterr()
     assert "PASSWORD_CANARY" not in captured.out + captured.err
     assert "local_endpoint_required" in captured.err
+
+
+def test_native_client_disables_proxy_credentials_and_external_redirects(monkeypatch, tmp_path):
+    import sys
+    pin(monkeypatch)
+    asset = tmp_path / "model.gguf"
+    asset.write_bytes(DATA)
+    shown = json.loads((Path(__file__).parent / "fixtures/qwen_voice_model_show.json").read_text())
+    calls = []
+    def client_factory(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(list=lambda: {"models": [{"model": PROFILE_ALIAS}]}, show=lambda _: shown)
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(Client=client_factory))
+    monkeypatch.setattr(setup.tempfile, "gettempdir", lambda: str(tmp_path))
+    setup.install_alias(asset, "http://127.0.0.1:11434", run=lambda *_a, **_k: pytest.fail("no import"))
+    assert calls == [{"host": "http://127.0.0.1:11434", "timeout": 20,
+                      "trust_env": False, "follow_redirects": False,
+                      "headers": {"authorization": "Bearer speaker-local-model-setup"}}]
+
+
+def test_cooperating_lock_refuses_busy_without_listing_or_overwriting(monkeypatch, tmp_path):
+    pin(monkeypatch)
+    asset = tmp_path / "model.gguf"
+    asset.write_bytes(DATA)
+    monkeypatch.setattr(setup.tempfile, "gettempdir", lambda: str(tmp_path))
+    host = "http://127.0.0.1:11434"
+    lock = setup._alias_lock_path(host)
+    lock.write_bytes(b"another installer")
+    client = SimpleNamespace(list=lambda: pytest.fail("busy installer must not list"))
+    with pytest.raises(setup.SetupRefused, match="alias_installer_busy"):
+        setup.install_alias(asset, host, client=client)
+    assert lock.read_bytes() == b"another installer"
+    assert asset.read_bytes() == DATA
+
+
+def test_cooperating_lock_spans_alias_recheck_import_and_identity(monkeypatch, tmp_path):
+    pin(monkeypatch)
+    asset = tmp_path / "model.gguf"
+    asset.write_bytes(DATA)
+    monkeypatch.setattr(setup.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(setup.shutil, "which", lambda _: "/public/ollama")
+    host = "http://127.0.0.1:11434"
+    lock = setup._alias_lock_path(host)
+    shown = json.loads((Path(__file__).parent / "fixtures/qwen_voice_model_show.json").read_text())
+    steps = []
+    def listed():
+        assert lock.is_file()
+        steps.append("recheck")
+        return {"models": []}
+    def run(*_args, **_kwargs):
+        assert lock.is_file()
+        with pytest.raises(setup.SetupRefused, match="alias_installer_busy"):
+            with setup._alias_installer_lock("http://localhost:11434"):
+                pytest.fail("different host spelling bypassed cooperating lock")
+        steps.append("import")
+        return SimpleNamespace(returncode=0)
+    def show(_alias):
+        assert lock.is_file()
+        steps.append("identity")
+        return shown
+    setup.install_alias(asset, host, client=SimpleNamespace(list=listed, show=show), run=run)
+    assert steps == ["recheck", "import", "identity"]
+    assert not lock.exists()
+
+
+def test_failed_alias_import_releases_only_owned_lock_preserving_asset(monkeypatch, tmp_path):
+    pin(monkeypatch)
+    asset = tmp_path / "model.gguf"
+    asset.write_bytes(DATA)
+    monkeypatch.setattr(setup.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(setup.shutil, "which", lambda _: "/public/ollama")
+    host = "http://127.0.0.1:11434"
+    with pytest.raises(setup.SetupRefused, match="alias_import_failed"):
+        setup.install_alias(asset, host, client=SimpleNamespace(list=lambda: {"models": []}),
+                            run=lambda *_a, **_k: SimpleNamespace(returncode=1))
+    assert not setup._alias_lock_path(host).exists()
+    assert asset.read_bytes() == DATA
+
+
+def test_installer_never_unlinks_a_replaced_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup.tempfile, "gettempdir", lambda: str(tmp_path))
+    lock = setup._alias_lock_path("http://127.0.0.1:11434")
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"preserve replacement")
+    with setup._alias_installer_lock("http://127.0.0.1:11434"):
+        setup.os.replace(replacement, lock)
+    assert lock.read_bytes() == b"preserve replacement"
+
+
+@pytest.mark.parametrize("character", ['"', "\n", "\r", "\x00"])
+def test_modelfile_syntax_characters_are_refused_before_filesystem_or_native_io(monkeypatch, tmp_path, character):
+    root = tmp_path / ("unsupported" + character + "root")
+    with pytest.raises(setup.SetupRefused, match="unsupported_asset_path"):
+        setup.ensure_asset(root, opener=Opener())
+    monkeypatch.setattr(setup, "_verify_file", lambda path: pytest.fail("must reject before file read"))
+    with pytest.raises(setup.SetupRefused, match="unsupported_asset_path"):
+        setup.install_alias(root / "model.gguf", "http://127.0.0.1:11434")

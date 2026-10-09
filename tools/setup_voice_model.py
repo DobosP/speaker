@@ -7,6 +7,7 @@ The original upstream GGUF and Ollama's rewritten GGUF have distinct pins.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from hashlib import sha256
 import ipaddress
 import json
@@ -81,8 +82,12 @@ def _verify_file(path: Path) -> bool:
 
 
 def ensure_asset(root: Path, *, opener=None, clock=time.monotonic) -> Path:
+    if any(character in str(root) for character in ('"', "\n", "\r", "\x00")):
+        raise SetupRefused("unsupported_asset_path")
     root = root.absolute()
     asset = root / PROFILE_ASSET_RELATIVE
+    if asset.parent.resolve() != asset.parent:
+        raise SetupRefused("asset_parent_symlink_refused")
     asset.parent.mkdir(parents=True, exist_ok=True)
     if asset.parent.resolve() != asset.parent:
         raise SetupRefused("asset_parent_symlink_refused")
@@ -130,41 +135,79 @@ def ensure_asset(root: Path, *, opener=None, clock=time.monotonic) -> Path:
     return asset
 
 
+def _alias_lock_path(host: str) -> Path:
+    # All cooperating installers for this loopback port/alias share one lock,
+    # including different asset roots and localhost/IP spellings. Temporary
+    # directories may be per-user/platform; this is no daemon-wide CAS claim.
+    key = f"{urlsplit(host).port}:{PROFILE_ALIAS}"
+    digest = sha256(key.encode("utf-8")).hexdigest()
+    return Path(tempfile.gettempdir()) / f"speaker-voice-alias-{digest}.lock"
+
+
+@contextmanager
+def _alias_installer_lock(host: str):
+    lock_path = _alias_lock_path(host)
+    try:
+        descriptor = os.open(
+            lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600,
+        )
+    except FileExistsError:
+        raise SetupRefused("alias_installer_busy") from None
+    owned = os.fstat(descriptor)
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+        try:
+            current = lock_path.lstat()
+            if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                    and (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino)):
+                lock_path.unlink()
+        except FileNotFoundError:
+            pass  # never delete a replacement or another installer's lock
+
+
 def install_alias(asset: Path, host: str, *, client=None, run=subprocess.run) -> None:
     host = local_host(host)
+    if any(character in asset.as_posix() for character in ('"', "\n", "\r", "\x00")):
+        raise SetupRefused("unsupported_asset_path")
     if not _verify_file(asset):
         raise SetupRefused("source_asset_mismatch")
     if client is None:
         import ollama
-        client = ollama.Client(host=host, timeout=20, trust_env=False,
+        client = ollama.Client(host=host, timeout=20, trust_env=False, follow_redirects=False,
                                headers={"authorization": "Bearer speaker-local-model-setup"})
-    listed = client.list()
-    rows = listed.get("models", ()) if isinstance(listed, dict) else listed.models
-    names = {row.get("model") if isinstance(row, dict) else row.model for row in rows}
-    if PROFILE_ALIAS in names:
+    # Recheck only after exclusive cooperating admission. Ollama's create API
+    # has no compare-and-swap here: an external writer can still race this check.
+    with _alias_installer_lock(host):
+        listed = client.list()
+        rows = listed.get("models", ()) if isinstance(listed, dict) else listed.models
+        names = {row.get("model") if isinstance(row, dict) else row.model for row in rows}
+        if PROFILE_ALIAS in names:
+            if not verify_voice_model_identity(show=client.show).ok:
+                raise SetupRefused("existing_alias_mismatch")
+            return
+        executable = shutil.which("ollama")
+        if executable is None:
+            raise SetupRefused("ollama_cli_missing")
+        # The CLI handles local GGUF upload/import. Keep model content and native
+        # stderr private, and bind the resulting alias before declaring readiness.
+        with tempfile.TemporaryDirectory(prefix="speaker-voice-model-") as scratch:
+            modelfile = Path(scratch) / "Modelfile"
+            modelfile.write_text(
+                f'FROM "{asset.as_posix()}"\nPARAMETER temperature 0.7\nPARAMETER top_p 0.95\n'
+                'PARAMETER num_ctx 4096\nPARAMETER stop "<|im_end|>"\n', encoding="utf-8")
+            env = {key: os.environ[key] for key in ("HOME", "USERPROFILE", "PATH", "SYSTEMROOT", "TEMP", "TMP")
+                   if key in os.environ}
+            env.update(OLLAMA_HOST=host, NO_PROXY="127.0.0.1,localhost,::1")
+            result = run([executable, "create", PROFILE_ALIAS, "-f", str(modelfile)],
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         timeout=120, check=False)
+            if result.returncode:
+                raise SetupRefused("alias_import_failed")
         if not verify_voice_model_identity(show=client.show).ok:
-            raise SetupRefused("existing_alias_mismatch")
-        return
-    executable = shutil.which("ollama")
-    if executable is None:
-        raise SetupRefused("ollama_cli_missing")
-    # The CLI handles local GGUF upload/import. Keep model content and native
-    # stderr private, and bind the resulting alias before declaring readiness.
-    with tempfile.TemporaryDirectory(prefix="speaker-voice-model-") as scratch:
-        modelfile = Path(scratch) / "Modelfile"
-        modelfile.write_text(
-            f'FROM "{asset.as_posix()}"\nPARAMETER temperature 0.7\nPARAMETER top_p 0.95\n'
-            'PARAMETER num_ctx 4096\nPARAMETER stop "<|im_end|>"\n', encoding="utf-8")
-        env = {key: os.environ[key] for key in ("HOME", "USERPROFILE", "PATH", "SYSTEMROOT", "TEMP", "TMP")
-               if key in os.environ}
-        env.update(OLLAMA_HOST=host, NO_PROXY="127.0.0.1,localhost,::1")
-        result = run([executable, "create", PROFILE_ALIAS, "-f", str(modelfile)],
-                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     timeout=120, check=False)
-        if result.returncode:
-            raise SetupRefused("alias_import_failed")
-    if not verify_voice_model_identity(show=client.show).ok:
-        raise SetupRefused("imported_alias_mismatch")
+            raise SetupRefused("imported_alias_mismatch")
 
 
 def main(argv=None) -> int:

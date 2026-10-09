@@ -2,6 +2,31 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-09 — bounded local decision requests (ADR-0228)
+
+Valid until: a later decision/provider contract supersedes this receipt — then treat as history.
+
+- Added independent per-request 16-token/256-character/three-second decision bounds with
+  Ollama JSON string-enum and llama.cpp GBNF, exact complete-label reduction, local-only
+  factory routing and unchanged answer/model/context/residency settings. Direct compatible-
+  API clients abstain rather than start a transport whose local/cancel contract is unproved.
+- Capability-router disambiguation uses the helper; addressing wiring belongs to the separate
+  conversational-admission branch. Format correctness is not semantic/reply quality.
+- Final native-free gate: **326 passed in 8.84 s**, no audio/models/daemon/cloud. Command used
+  `SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 PYTHONDONTWRITEBYTECODE=1`,
+  task-local TMPDIR/basetemp and one-thread BLAS, then the main venv Python `-B -m pytest
+  -p no:cacheprovider -q` on `test_llm_decision.py test_capability_router.py
+  test_ollama_async_cancel.py test_llamacpp_cancel.py test_llamacpp_options.py
+  test_llamacpp_thinking.py test_llamacpp_tool_chat.py test_llm_egress_policy.py
+  test_multi_provider_llm.py test_pretoken_cancellation.py` under `tests/`.
+- Earlier expanded attempts exposed two test-fixture incompatibilities (keyword-only Hedge
+  construction and missing optional image/history arguments); corrected fixtures and final
+  all-source gate above passed. Wrapped native option propagation has its own regression.
+- Deadline tests cancel the existing async provider before first token and verify owned close;
+  cooperative limits cannot preempt a foreign blocking iterator or non-aborting native call.
+  No new timeout thread, model/default promotion, enrollment/private-recording mutation, live
+  result, phone/thermal claim or microphone/doctor call follows.
+
 ## 2026-10-05 — complete addressing-decision validation
 
 Valid until: later addressing/source/owner evidence supersedes this repair — then treat as history.

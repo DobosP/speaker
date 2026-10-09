@@ -35,6 +35,11 @@ from ._hedge_source_owner import (
     try_claim_hedge_source_owner,
 )
 from .llm_threads import DEFAULT_LLM_THREAD_RESERVE, resolve_llamacpp_thread_pair
+from .llm_decision import (
+    collect_llm_decision as collect_llm_decision,
+    current_decision_request,
+    DecisionRequest,
+)
 
 # Per-turn context published by the capability layer so the LLM stack can
 # pick a routing chain (sensitivity / intent_kind / mode) without changing
@@ -721,6 +726,11 @@ class OllamaLLM:
             kwargs["keep_alive"] = self._keep_alive
         if self._think is not None:
             kwargs["think"] = self._think
+        decision = current_decision_request()
+        if decision is not None:
+            kwargs["options"] = decision.options(self._options or {}, "num_predict")
+            kwargs["format"] = decision.schema()
+            kwargs["think"] = False
         return kwargs
 
     def generate(
@@ -1772,6 +1782,13 @@ class LlamaCppLLM:
             msgs.append({"role": "user", "content": prompt})
         return msgs
 
+    def _decision_options(self, decision: DecisionRequest | None) -> dict:
+        if decision is None:
+            return self._options
+        options = decision.options(self._options, "max_tokens")
+        options["grammar"] = decision.grammar()
+        return options
+
     def _require_minicpm_tool_template(self, client: object) -> None:
         if self.tool_format != LLAMACPP_TOOL_FORMAT_MINICPM5:
             raise RuntimeError(
@@ -2100,6 +2117,7 @@ class LlamaCppLLM:
             images=images,
             history=history,
             cancel_event=cancel_event,
+            decision=current_decision_request(),
         )
 
     def _stream_captured(
@@ -2110,6 +2128,7 @@ class LlamaCppLLM:
         images: Optional[Sequence[ImageInput]],
         history: Optional[Sequence[HistoryTurn]],
         cancel_event: object | None,
+        decision: DecisionRequest | None = None,
     ) -> Iterator[str]:
         client = self._begin_inference(cancel_event)
         native_stream = None
@@ -2121,7 +2140,7 @@ class LlamaCppLLM:
         try:
             native_stream = client.create_chat_completion(
                 messages=self._messages(prompt, system, images, history),
-                stream=True, **self._options
+                stream=True, **self._decision_options(decision)
             )
             iterator = iter(native_stream)
             while True:

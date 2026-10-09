@@ -790,3 +790,44 @@ Headless gate: `tests/test_stream_speech_cancellation.py`,
 `test_streaming_tts.py`, `test_capability_stream_close.py`,
 `test_capability_context_isolation.py`, `test_pretoken_cancellation.py`,
 `test_playback_history.py`: 50 passed in 3.42 s. No audio/model/live run.
+
+
+Valid until: the selected model, template, persona or device configuration changes — then treat as history.
+
+## 2026-10-10 — Explicit small desktop model and spoken prompt (ADR-0232)
+
+One approved official Qwen2.5-1.5B Q4_K_M asset was pinned and imported locally;
+source and native rewritten-container pins are separate. All 339 tensor payloads
+and metadata matched; no other model was downloaded. Matched ChatML/raw and
+direct/core controls did not establish a MiniCPM transport bug. Full/minimal
+Qwen public canaries scored 22/24 and 24/24 with zero instruction recitations.
+
+Final 4090 factory QA preserved caps of 8192 context and 512 output tokens with
+num_gpu=999, requested fast threads=2, actual spoken runtime system and fixed
+public Iris persona: 32/32 exact answers (8 development, 8 evaluation,
+8 confirmation, 8 new holdout), no empty/recitation/think-markup outputs.
+Split answer medians were 187–215 ms, max 261 ms. Resident bounded helper:
+12/12 correct, zero false ACT, median 336 ms, max 391 ms. Explicit warm-up was
+outside those timings. Across 45 post-call resource samples, daemon and
+all-thread descendants reached 688431104 RSS bytes, 2 processes/59 threads,
+with zero read failures; Ollama reported 1360758046 resident VRAM bytes.
+No continuous peak, resource reservation or physical latency claim follows.
+All owned daemons stopped.
+
+The first factory run kept the committed anonymous persona while its benchmark
+expected Iris; preserve it as mismatched identity-scoring evidence, not a model
+quality failure. Native-measured source is archived beside aggregate receipts;
+later typed-scope/CLI privacy/tooling edits do not relabel those old hashes.
+Earlier root-child-only RSS samples omitted descendants and are not full RSS.
+The initial decision run with differing native thread options returned unavailable
+at 3 seconds; matched resident settings passed without changing the deadline.
+
+Final native-free gate: 511 passed in 3.50 s across profile/setup/persona/quality,
+residency/threads/catalog/goal/memory/context/stream/decision/router and provider/
+privacy files. Ruff has no introduced findings; readiness retains its existing
+E731 lambda. Diff and docs checker pass. The committed quality tool now exposes
+fixed factory settings and the eight public holdout questions. Exact setup uses
+cached bytes and verifies the existing alias without replacing it. Explicit
+current default/rollback remains; main/vision/tools/caps are retained. No cloud,
+microphone, doctor, audio route or owner recording was used. CPU-only and
+macOS/Windows/native/live/owner gates remain pending.

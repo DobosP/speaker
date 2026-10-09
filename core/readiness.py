@@ -14,6 +14,7 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Optional
 
+from .voice_model_profile import PROFILE_ALIAS, verify_voice_model_identity
 from .minicpm_identity import (
     MINICPM_Q8_CONTRACT,
     is_minicpm_model_name,
@@ -587,6 +588,25 @@ def check_ollama(
             hint = "python -m tools.setup_minicpm"
         else:
             hint = f"ollama pull {needed}"
+        if needed == PROFILE_ALIAS:
+            hint = "python -m tools.setup_voice_model --profile qwen2.5-1.5b"
+            if ok:
+                if show is None:
+                    try:
+                        shared_client = _ollama_client(host, client_factory=client_factory)
+                        show = shared_client.show
+                    except Exception:
+                        out.append(Check(f"ollama model {needed}", False,
+                                         "voice_model_identity_unavailable", hint))
+                        continue
+                identity = verify_voice_model_identity(show=show)
+                out.append(Check(f"ollama model {needed}", identity.ok,
+                                 "pinned Q4_K_M template/parameters/capabilities verified"
+                                 if identity.ok else identity.error,
+                                 "" if identity.ok else hint))
+            else:
+                out.append(Check(f"ollama model {needed}", False, "not installed", hint))
+            continue
         if ok and needed == MINICPM_Q8_CONTRACT.alias:
             if show is None:
                 try:

@@ -17,6 +17,7 @@ named parts) stays the default for direct callers/tests;
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Mapping, Optional
 
 # --- prompt building blocks (one source of truth per sentence) ----------------
@@ -102,6 +103,11 @@ class PersonaConfig:
     name: str = ""
     persona: str = ""
     extra: str = ""
+    prompt_profile: str = "legacy"
+
+    def __post_init__(self) -> None:
+        if type(self.prompt_profile) is not str or self.prompt_profile not in {"legacy", "spoken"}:
+            raise ValueError("assistant.prompt_profile must be legacy or spoken")
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, object]]) -> "PersonaConfig":
@@ -110,6 +116,7 @@ class PersonaConfig:
             name=str(data.get("name", "") or ""),
             persona=str(data.get("persona", "") or ""),
             extra=str(data.get("extra", "") or ""),
+            prompt_profile=data.get("prompt_profile", "legacy"),
         )
 
 
@@ -157,6 +164,31 @@ def build_system_prompt(
     expressive-TTS tag grammar the runtime supplies when SherpaConfig.tts_markup
     is on; empty -> nothing appended (DEFAULT_SYSTEM and tag-unaware callers stay
     byte-identical)."""
+    if persona is not None and persona.prompt_profile == "spoken":
+        identity = (f"You are {persona.name}, a local voice assistant."
+                    if persona.name else "You are a local voice assistant.")
+        parts = [identity]
+        if persona.persona:
+            parts.append(persona.persona)
+        parts.append(
+            "Answer the user's request directly in natural spoken language. "
+            "Keep simple answers brief; give requested stories and explanations in full. "
+            "If input is unintelligible, ask one brief question. State uncertainty "
+            "instead of inventing facts."
+        )
+        names = getattr(registry, "names", None)
+        optional_tools = vault_enabled or (callable(names) and bool(
+            set(names()).intersection(_OPTIONAL_LOCAL_TOOLS)))
+        if optional_tools or web_enabled:
+            parts.append("Use only configured tools; do not claim an action without its result."
+                         + ("" if web_enabled else " You have no web access."))
+        else:
+            parts.append("You have no web or device access.")
+        if markup_guidance:
+            parts.append(markup_guidance)
+        if persona.extra:
+            parts.append(persona.extra)
+        return " ".join(parts)
     if persona is not None and persona.name:
         identity = f"You are {persona.name}, a local, on-device voice assistant."
     else:
@@ -193,3 +225,35 @@ def build_system_prompt(
     if persona is not None and persona.extra:
         parts.append(persona.extra)
     return "\n\n".join(parts)
+
+
+def capability_summary_for_query(
+    query: str, registry: object, *, persona: PersonaConfig | None,
+    web_enabled: bool,
+) -> str | None:
+    """Answer only a complete, unquoted capability question from the live registry.
+
+    This is a spoken-profile presentation shortcut, never a tool execution or
+    authority grant. Compound/quoted/translation requests remain model requests.
+    """
+    if persona is None or persona.prompt_profile != "spoken" or type(query) is not str:
+        return None
+    prefix = "(?:please\\s+)?"
+    if persona.name:
+        prefix += "(?:" + re.escape(persona.name) + r"[, :]\s*)?"
+    question = (
+        r"(?:what can you do|what tools do you have|"
+        r"what are your (?:capabilities|skills)|"
+        r"list your (?:capabilities|skills|available tools))"
+    )
+    if re.fullmatch(prefix + question + r"[.!?]?", query.strip(), re.IGNORECASE) is None:
+        return None
+    manifest = getattr(registry, "manifest", None)
+    if not callable(manifest):
+        return None
+    summaries = [spec.summary.rstrip(". ") for spec in manifest()
+                 if spec.user_facing and (spec.egress != "cloud" or web_enabled)]
+    identity = f"I'm {persona.name}. " if persona.name else ""
+    if not summaries:
+        return identity + "I have no user-facing capabilities configured."
+    return identity + "My available capabilities are: " + "; ".join(summaries) + "."

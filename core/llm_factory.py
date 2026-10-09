@@ -30,6 +30,7 @@ from .llm import (
     SensitivityRouterLLM,
 )
 from .routing import build_chain_selector, order_presets_by_cost
+from .voice_model_profile import PROFILE_ALIAS, apply_voice_model_profile
 from .llm_threads import auto_llm_threads as _auto_llm_threads
 
 # Keep the historical logger name ("speaker.app") so the cloud-drop INFO logs
@@ -59,6 +60,27 @@ def _role_keep_alive(config: dict, role: str):
     raise ValueError("llm role keep_alive must be a duration string, finite seconds, or null")
 
 
+def _fast_options(base: dict | None, llm_cfg: dict) -> dict | None:
+    if "fast_options" not in llm_cfg:
+        return base
+    role = llm_cfg["fast_options"]
+    if type(role) is not dict or set(role) - {"temperature", "top_p", "seed", "num_thread"}:
+        raise ValueError("llm.fast_options has unsupported keys")
+    for key, value in role.items():
+        if key in {"seed", "num_thread"}:
+            upper = 2**31 - 1 if key == "seed" else 8
+            lower = 0 if key == "seed" else 1
+            valid = type(value) is int and lower <= value <= upper
+        else:
+            valid = (type(value) in {int, float} and math.isfinite(value)
+                     and (0 <= value <= 2 if key == "temperature" else 0 < value <= 1))
+        if not valid:
+            raise ValueError("llm.fast_options contains an invalid value")
+    if base is not None and type(base) is not dict:
+        raise ValueError("llm.options must be a dictionary")
+    return {**(base or {}), **role}
+
+
 def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | None]:
     """Return ``(main_llm, fast_llm)``.
 
@@ -74,6 +96,9 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     args = args_or_config
     if args.llm == "echo":
         return EchoLLM(), None
+    config, selected_profile = apply_voice_model_profile(config)
+    if selected_profile and args.fast_model and args.fast_model != PROFILE_ALIAS:
+        raise ValueError("--fast-model conflicts with voice profile; select --voice-model current")
     llm_cfg = config.get("llm", {})
     options = llm_cfg.get("options")
     # Narrow construction seam for local diagnostic/evaluation callers that
@@ -82,6 +107,9 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     client_headers = getattr(args, "ollama_client_headers", None)
     ollama_timeout = getattr(args, "ollama_timeout", 60.0)
     backend = llm_cfg.get("backend", "ollama")
+    fast_options = _fast_options(options, llm_cfg)
+    if backend != "ollama" and "fast_options" in llm_cfg:
+        raise ValueError("llm.fast_options requires the ollama backend")
 
     if backend == "llamacpp":
         # Resolve both generation and prompt/batch counts at the provider
@@ -142,6 +170,12 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     think = llm_cfg.get("think", False)
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
+    if fast_model == main_model and fast_options is not options:
+        # Ollama runner topology is shared by a daemon model. Different thread
+        # counts reload that same runner between role calls; sampling is per
+        # request and remains distinct, while native threads are harmonized.
+        if "num_thread" in fast_options:
+            options = {**(options or {}), "num_thread": fast_options["num_thread"]}
     if fast_model == main_model and any(key in llm_cfg for key in ("main_keep_alive", "fast_keep_alive")):
         # Ollama residency belongs to the daemon model, not either Python role.
         # A main request must not expire the same weights the fast role pins.
@@ -160,7 +194,7 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
         OllamaLLM(
             model=fast_model,
             host=host,
-            options=options,
+            options=fast_options,
             keep_alive=fast_keep_alive,
             think=think,
             timeout=ollama_timeout,

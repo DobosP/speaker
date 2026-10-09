@@ -21,7 +21,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
 - ADR-0225 prefills closed thinking; ADR-0226 accepts complete addressing tokens; ADR-0228 bounds local decision requests independently of answers.
-  Voice-persona arithmetic and exact-label ambient addressing fail probes; live still activates on room noise and copies instructions.
+  MiniCPM semantic/reply probes fail; explicit Qwen+spoken factory canaries pass (ADR-0232); owner live acceptance remains open.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Local decision/provider gates 326+125 pass (ADR-0228); sentence-level cancellation gate 50 passes. Prior Linux/template/addressing receipts retained; reply quality stays open.
+- Local decision/provider 326+125 and cancellation 50 pass; profile/persona/factory regression 511 passes (ADR-0228/0232). Prior receipts retained; CPU/live quality stays open.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

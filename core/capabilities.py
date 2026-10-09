@@ -43,7 +43,7 @@ from .conversation import (
 )
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import LLM_FIRST_TOKEN, MetricsRecorder, mark_first_token
-from .persona import DEFAULT_SYSTEM
+from .persona import DEFAULT_SYSTEM, PersonaConfig, capability_summary_for_query
 from .routing import (
     FAST,
     LIVE_CONTEXT_KEY,
@@ -506,6 +506,7 @@ def attach_llm_capabilities(
     load_snapshot: Optional[Callable[[], Optional[float]]] = None,
     image_provider: Optional[Callable[[], Optional[Sequence[object]]]] = None,
     before_conversation_read: Optional[Callable[[], bool]] = None,
+    persona: Optional[PersonaConfig] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -726,6 +727,26 @@ def attach_llm_capabilities(
                     "streamed": callable(emit),
                 },
             )
+        capability_summary = capability_summary_for_query(
+            query, registry, persona=persona,
+            web_enabled=context.get(CLOUD_EGRESS_SCOPE_CONTEXT_KEY) is CloudEgressScope.CURRENT_TURN_ONLY,
+        )
+        if capability_summary is not None:
+            if cancel is not None and cancel.is_set():
+                return CapabilityResult(True, "", data={"cancelled": True, "route": "control"})
+            if memory is not None and not skip_user_memory:
+                try:
+                    memory.add(query, tags=("user",))
+                except Exception:  # normal user-memory best effort
+                    log.exception("capability-summary user-memory write failed")
+            emit = context.get("emit_speech")
+            if callable(emit):
+                emit(capability_summary)
+            return CapabilityResult(True, capability_summary, data={
+                "handled_local": True, "capability_summary": True,
+                "route": "control", "streamed": callable(emit),
+                "cancelled": bool(cancel is not None and cancel.is_set()),
+            })
         # A high-confidence session-memory command should not depend on a small
         # model inventing a good acknowledgement. Store the exact user turn in
         # the normal conversation window and emit one fixed, non-echoing reply;

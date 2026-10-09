@@ -117,13 +117,15 @@ def collect_llm_decision(
     )
 
     request = DecisionRequest(choices, max_tokens, timeout_sec)
+    context = snapshot_capability_context()
+    external = _CombinedCancelEvent(context.get("cancel_event"), cancel_event)
+    if external.is_set():
+        raise LLMCallCancelled("decision cancelled before request")
     # Direct compatible-API clients do not enforce capability egress scope.
     # This helper cannot attest their locality/cancellation contract, so do not
     # start them. Factory hybrids below still reduce to their audited local leg.
     if isinstance(llm, OpenAICompatLLM):
         return None
-    context = snapshot_capability_context()
-    external = _CombinedCancelEvent(context.get("cancel_event"), cancel_event)
     budget = _DecisionCancel(external, timeout_sec)
     # LOCAL_ONLY is the strictest egress scope; all other context/authority
     # carriers are preserved. Classification cannot expand a retained-data scope.
@@ -146,6 +148,8 @@ def collect_llm_decision(
                 return None
             if type(piece) is not str:
                 return None
+            if not piece:
+                continue
             chars += len(piece)
             if chars > MAX_DECISION_CHARS:
                 return None

@@ -1104,3 +1104,39 @@ The final full logic rerun uses ordinary CI scheduling with the existing
 single-thread native environment, no bytecode/cache, live audio disabled and
 the two CI LiveKit exclusions. Test wall time is not a performance comparison
 with the earlier low-priority receipts. Failed logs/fixtures are preserved.
+
+
+Valid until: private-writer boundary or recognized-Git fixture semantics change — then treat as history.
+
+## 2026-10-10 — Repair inherited final-STT recognized-Git fixture
+
+Third full attempt: **1 failed, 7902 passed, 32 skipped in 233.74 s** at
+`test_private_writer_is_mode_600_no_clobber_and_refuses_git_and_symlink`.
+The runtime helper is unchanged from pristine 734713d: a directory marker needs
+HEAD, whereas an empty `.git` directory is inert. The test made an empty marker
+and default-mode parent. A 0755 parent caused unrelated private-parent refusal,
+masking the defect in usual focused runs; root's full runner uses umask 077 and
+therefore made the parent 0700, exposing the incorrect Git-refusal expectation.
+
+Paired exact test, no source edits: pristine main 734713d passed in 0.73 s and
+integrated 2f3dd90 passed in 0.95 s with the default umask; under explicit `umask 077`
+both failed with DID NOT RAISE in 0.71 s and 0.90 s respectively. No ordering-induced
+production change is needed. Shared main stayed clean; test logs/bytecode/cache
+were disabled and synthetic fixtures remained in the task scratch directory.
+
+The test-only repair sets its Git parent explicitly to 0700 and creates `.git/HEAD`
+using the existing preparer fixture pattern. No production guard is relaxed.
+Adjacent scan covered all six affected media evaluator tests, the command/noise
+preparer and conversation qualification: other recognized markers already have
+HEAD or nonempty gitdir-files, or use the actual checkout; no second misuse found.
+
+```sh
+umask 077
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_production_final_stt_eval.py tests/test_prepare_public_command_noise_corpus.py -q --basetemp=/home/dobo/work/_temp/codex__resume-question-admission/pytest-writer-fixed-077
+```
+
+**70 passed, 1 optional-corpus skip in 2.99 s**. The repaired exact test additionally
+passed under explicit `umask 022` in 0.85 s with basetemp `pytest-writer-fixed-022`.
+Scoped Ruff/whitespace pass; docs report 38 files and zero issues, STATUS 120 lines.
+No recording, native model, network, doctor,
+microphone, hardware or live execution occurred; historical receipts are intact.

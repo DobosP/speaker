@@ -19,7 +19,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from core.llm import OllamaLLM
+from core.llm import OllamaLLM, collect_llm_decision
 from core.persona import PersonaConfig, build_system_prompt, _SKILLS_HEADER, _SKILLS_GUIDANCE
 from tools.conversation_eval.identity import verify_minicpm_identity, verify_ollama_blob_identity
 
@@ -124,6 +124,80 @@ def systems() -> dict[str, str]:
             "spoken": build_system_prompt(persona=PersonaConfig(name="Iris", prompt_profile="spoken"))}
 
 
+
+DECISION_CASES = (
+    ("What is the capital of France?", "ACT"),
+    ("Please explain how a bicycle works.", "ACT"),
+    ("What is seven plus five?", "ACT"),
+    ("Could you explain why rain falls?", "ACT"),
+    ("I think I left the stove on.", "INGEST"),
+    ("No, I already told you yesterday.", "INGEST"),
+    ("N Sanos you know.", "INGEST"),
+    ("I just kind cast brand.", "INGEST"),
+)
+
+
+def process_tree_sample(pid: int) -> dict:
+    """Linux aggregate observation of an explicitly supplied owned daemon.
+
+    Follow children from every thread. RSS is a sample of summed process RSS,
+    not reserved/private memory or a continuous peak. Never return names/paths.
+    """
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("resource_pid_refused")
+    pending, seen = [pid], set()
+    rss = threads = failures = 0
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        try:
+            status = Path(f"/proc/{current}/status").read_text()
+            rss += int(next((line.split()[1] for line in status.splitlines()
+                             if line.startswith("VmRSS:")), "0")) * 1024
+            tasks = tuple(Path(f"/proc/{current}/task").iterdir())
+            threads += len(tasks)
+            for task in tasks:
+                try:
+                    pending.extend(int(x) for x in (task / "children").read_text().split())
+                except OSError:
+                    failures += 1
+        except OSError:
+            failures += 1
+    return {"rss_bytes": rss, "processes": len(seen), "threads": threads, "read_failures": failures}
+
+
+def resident_decisions(client, *, observer=lambda: None) -> tuple[dict, float]:
+    from core.addressing import LLMAddressingClassifier, _SYSTEM_PROMPT
+    from core.llm_decision import DecisionRequest, decision_request
+    classifier = LLMAddressingClassifier(client)
+    # Explicit warm outside timing, matched native runner options + enum format.
+    # Use a different public prompt, so no scored response is precomputed.
+    token = decision_request.set(DecisionRequest(("ACT", "INGEST", "UNSURE")))
+    at = time.monotonic()
+    try:
+        client.generate(classifier._build_prompt("What is the capital of Portugal?", ()), system=_SYSTEM_PROMPT)
+    finally:
+        decision_request.reset(token)
+    warm = time.monotonic() - at
+    rows = []
+    for text, expected in DECISION_CASES:
+        at = time.monotonic()
+        label = collect_llm_decision(client, classifier._build_prompt(text, ()),
+                                     system=_SYSTEM_PROMPT, choices=("ACT", "INGEST", "UNSURE"))
+        rows.append({"correct": label == expected, "available": label is not None,
+                     "false_act": label == "ACT" and expected != "ACT",
+                     "elapsed_seconds": time.monotonic() - at})
+        observer()
+    return {"calls": len(rows), "correct": sum(x["correct"] for x in rows),
+            "available": sum(x["available"] for x in rows),
+            "false_act": sum(x["false_act"] for x in rows),
+            "elapsed_p50_seconds": statistics.median(x["elapsed_seconds"] for x in rows),
+            "elapsed_max_seconds": max(x["elapsed_seconds"] for x in rows),
+            "max_tokens": 16, "timeout_seconds": 3.0}, warm
+
+
 def normalized(value: str) -> str:
     return " ".join(re.findall(r"[-+]?\d+(?:\.\d+)?|[a-z]+", value.casefold()))
 
@@ -213,7 +287,8 @@ def public_factory_client(host: str, device_profile: str):
 
 def run(model: str, host: str, *, show_failures: bool = False,
         confirmation: bool = False, conditions: tuple[str, ...] | None = None, freeform: bool = False,
-        factory_profile: str | None = None, factory_holdout: bool = False) -> dict:
+        factory_profile: str | None = None, factory_holdout: bool = False,
+        decision_checks: bool = False, owned_daemon_pid: int | None = None) -> dict:
     try:
         before = identity(model, host)
     except Exception:
@@ -232,12 +307,22 @@ def run(model: str, host: str, *, show_failures: bool = False,
     options = {"temperature": 0.0, "seed": 0, "top_p": 0.95, "num_ctx": 4096, "num_predict": 128, "num_thread": 2}
     client = OllamaLLM(model, host=host, options=options, keep_alive="60s", think=False,
                        timeout=20.0, client_headers=HEADERS)
+    warm_seconds = None
+    resource_samples = []
+    def observe():
+        if owned_daemon_pid is not None:
+            resource_samples.append(process_tree_sample(owned_daemon_pid))
+    if decision_checks and not factory_profile:
+        raise ValueError("factory_profile_refused")
     if factory_profile:
         if model != MODELS[2] or conditions not in {None, ("spoken",)}:
             raise ValueError("factory_profile_refused")
         client, system, options = public_factory_client(host, factory_profile)
         variants = {"spoken": system}
+        warm_at = time.monotonic()
         client.generate("Respond with exactly the word READY.", system=system)
+        warm_seconds = time.monotonic() - warm_at
+    observe()
     start = time.monotonic()
     for name, system in variants.items():
         for ordinal, case in enumerate(cases):
@@ -248,17 +333,28 @@ def run(model: str, host: str, *, show_failures: bool = False,
                 call_kwargs = {"system": system}
                 if case.history:
                     call_kwargs["history"] = [{"role": role, "content": content} for role, content in case.history]
-                output = client.generate(case.prompt, **call_kwargs)
+                pieces, first_text = [], None
+                for piece in client.stream(case.prompt, **call_kwargs):
+                    if piece:
+                        if piece.strip() and first_text is None:
+                            first_text = time.monotonic() - at
+                        pieces.append(piece)
+                output = "".join(pieces)
             except Exception:
                 raise ValueError("public_model_call_refused") from None
             elapsed = time.monotonic() - at
             result = score(case, output, system)
             rows.append({"condition": name, "split": case.split, "ordinal": ordinal,
-                         "elapsed_seconds": elapsed, **result})
+                         "elapsed_seconds": elapsed, "first_text_seconds": first_text, **result})
+            observe()
             if show_failures and not result["exact"]:
                 # Inputs and outputs here can only come from the fixed public
                 # canaries above; no caller file, memory or audio is accepted.
                 print(json.dumps({"condition": name, "case_ordinal": ordinal, "public_output": output[:512]}), file=sys.stderr)
+    decision_result = None
+    decision_warm_seconds = None
+    if decision_checks:
+        decision_result, decision_warm_seconds = resident_decisions(client, observer=observe)
     if identity(model, host) != before:
         raise ValueError("model_identity_changed")
     if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != source_before:
@@ -270,11 +366,15 @@ def run(model: str, host: str, *, show_failures: bool = False,
         for split in dict.fromkeys(case.split for case in cases):
             group = [x for x in rows if x["condition"] == name and x["split"] == split]
             timing = sorted(x["elapsed_seconds"] for x in group)
+            first_text = [x["first_text_seconds"] for x in group if x["first_text_seconds"] is not None]
             cells.append({"condition": name, "split": split, "calls": len(group),
                           "strict_scored_calls": sum(x["exact"] is not None for x in group),
                           **{key: sum(bool(x[key]) for x in group) for key in ("exact", "empty", "instruction_recitation", "reasoning_markup")},
                           "elapsed_p50_seconds": statistics.median(timing),
                           "elapsed_max_seconds": max(timing),
+                          "first_text_observations": len(first_text),
+                          "first_text_p50_seconds": statistics.median(first_text) if first_text else None,
+                          "first_text_max_seconds": max(first_text) if first_text else None,
                           "system_sha256": hashlib.sha256(system.encode()).hexdigest()})
     return {"schema_version": 1, "model": model, "model_blob_sha256": before[0],
             "upstream_asset_sha256": QWEN_SHA256 if model == MODELS[2] else None,
@@ -282,6 +382,14 @@ def run(model: str, host: str, *, show_failures: bool = False,
             "cases_sha256": hashlib.sha256(repr(cases).encode()).hexdigest(),
             "persona_source_sha256": persona_before,
             "factory_profile": factory_profile,
+            "warm_seconds": warm_seconds,
+            "decision": decision_result, "decision_warm_seconds": decision_warm_seconds,
+            "resources": ({"scope": "owned_daemon_and_all_thread_descendants_post_call_samples_not_continuous_peak",
+                           "samples": len(resource_samples),
+                           **{key: max(sample[key] for sample in resource_samples)
+                              for key in ("rss_bytes", "processes", "threads")},
+                           "read_failures": sum(sample["read_failures"] for sample in resource_samples)}
+                          if resource_samples else None),
             "options": options, "cells": cells, "calls": len(rows),
             "scope": "public_text_development_diagnostic_no_audio_tools_or_training_disjoint_claim"}
 
@@ -298,6 +406,8 @@ def main(argv=None) -> int:
     case_selector.add_argument("--factory-holdout", action="store_true")
     parser.add_argument("--factory-profile", choices=("desktop_gpu_4090", "cpu_laptop"),
                         help="use public Qwen factory profile, fixed Iris and explicit warm; CPU forces num_gpu=0")
+    parser.add_argument("--decision-checks", action="store_true")
+    parser.add_argument("--owned-daemon-pid", type=int)
     parser.add_argument("--conditions", nargs="+", choices=("current", "without_skills", "identity_only", "minimal_voice", "spoken"))
     args = parser.parse_args(argv)
     try:
@@ -306,14 +416,15 @@ def main(argv=None) -> int:
             raise ValueError("output_exists")
         report = run(args.model, host, show_failures=args.show_public_failures,
                      confirmation=args.confirmation, conditions=tuple(args.conditions) if args.conditions else None,
-                     freeform=args.freeform, factory_profile=args.factory_profile, factory_holdout=args.factory_holdout)
+                     freeform=args.freeform, factory_profile=args.factory_profile, factory_holdout=args.factory_holdout, decision_checks=args.decision_checks,
+                     owned_daemon_pid=args.owned_daemon_pid)
         with args.output.open("x", encoding="utf-8") as destination:
             json.dump(report, destination, indent=2, allow_nan=False)
         print(json.dumps({"model": args.model, "calls": report["calls"], "cells": report["cells"]}))
         return 0
     except Exception as error:
         allowed = {"identity_before_refused", "public_model_call_refused", "model_identity_changed",
-                   "evaluation_source_changed", "evaluation_deadline", "output_exists", "conditions_refused", "factory_profile_refused"}
+                   "evaluation_source_changed", "evaluation_deadline", "output_exists", "conditions_refused", "factory_profile_refused", "resource_pid_refused"}
         code = str(error) if type(error) is ValueError and str(error) in allowed else "evaluation_refused"
         print("voice_model_quality_refused:" + code, file=sys.stderr)
         return 2

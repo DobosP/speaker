@@ -57,6 +57,8 @@ def fake_models(monkeypatch):
         def generate(self, prompt, *, system, history=None):
             calls.append(prompt)
             return by_prompt[prompt]
+        def stream(self, prompt, **kwargs):
+            yield self.generate(prompt, **kwargs)
     monkeypatch.setattr(quality, 'OllamaLLM', Model)
     monkeypatch.setattr(quality, 'systems', lambda: {'current': 'public current', 'minimal_voice': 'public candidate'})
     return calls
@@ -116,8 +118,50 @@ def test_factory_mode_uses_actual_returned_budget_and_fixed_spoken_system(monkey
         def generate(self, prompt, **kwargs):
             assert kwargs["system"] == "fixed spoken factory system"
             return "Iris" if "name" in prompt else "4"
+        def stream(self, prompt, **kwargs):
+            yield self.generate(prompt, **kwargs)
     monkeypatch.setattr(quality, "public_factory_client", lambda host, device: (FactoryModel(), "fixed spoken factory system", options))
     monkeypatch.setattr(quality, "systems", lambda: {"spoken": "component system"})
     report = quality.run(quality.MODELS[2], "http://127.0.0.1:11435", factory_profile="desktop_gpu_4090", conditions=("spoken",))
     assert report["factory_profile"] and report["options"] == options
     assert all(row["condition"] == "spoken" for row in report["cells"])
+
+
+def test_decision_checks_use_exact_fixed_cases_and_unchanged_deadline(monkeypatch):
+    from core.llm_decision import decision_request
+    calls = []
+    class Client:
+        def generate(self, prompt, **kwargs):
+            request = decision_request.get()
+            assert request.max_tokens == 16 and request.timeout_sec == 3.0
+            return '"ACT"'
+    expected = dict(quality.DECISION_CASES)
+    def collect(client, prompt, *, system, choices):
+        assert choices == ("ACT", "INGEST", "UNSURE")
+        # Actual classifier wraps the fixed text, without accepting caller data.
+        text = next(text for text in expected if text in prompt)
+        calls.append(text)
+        return expected[text]
+    monkeypatch.setattr(quality, "collect_llm_decision", collect)
+    result, warm = quality.resident_decisions(Client())
+    assert result["calls"] == result["correct"] == result["available"] == 8
+    assert result["false_act"] == 0 and len(calls) == 8
+    assert result["timeout_seconds"] == 3 and result["max_tokens"] == 16
+    assert warm >= 0
+
+
+def test_process_resource_sampling_has_only_aggregate_scalars(tmp_path, monkeypatch):
+    real_path = quality.Path
+    def mapped(path):
+        return tmp_path / str(path).lstrip("/")
+    monkeypatch.setattr(quality, "Path", mapped)
+    # Child belongs to a worker thread, absent from the main thread's children.
+    for pid, tid, children in ((10, 10, ""), (10, 11, "20"), (20, 20, "")):
+        task = tmp_path / f"proc/{pid}/task/{tid}"
+        task.mkdir(parents=True)
+        (task / "children").write_text(children)
+        (tmp_path / f"proc/{pid}/status").write_text("VmRSS:\t100 kB\n")
+    result = quality.process_tree_sample(10)
+    assert result == {"rss_bytes": 200 * 1024, "processes": 2, "threads": 3, "read_failures": 0}
+    assert all(type(value) is int for value in result.values())
+    monkeypatch.setattr(quality, "Path", real_path)

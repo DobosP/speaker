@@ -1066,6 +1066,8 @@ def resolve_check_config(config: dict, device=None) -> tuple[dict, str]:
 
 
 def _ollama_models_from_resolved(config: dict) -> tuple[str, ...]:
+    from .voice_model_profile import apply_voice_model_profile
+    config, _ = apply_voice_model_profile(config)
     llm = config.get("llm", {}) if isinstance(config, dict) else {}
     backend = str(llm.get("backend", "") or "").lower()
     if backend and backend != "ollama":
@@ -1168,6 +1170,8 @@ def run_runtime_checks(
 ) -> list[Check]:
     """Run one shared readiness contract over one selected device profile."""
     merged = config if resolved else resolve_check_config(config, device)[0]
+    from .voice_model_profile import apply_voice_model_profile
+    merged, _ = apply_voice_model_profile(merged)
     llm = (merged.get("llm", {}) or {}) if isinstance(merged, dict) else {}
     backend = str(llm.get("backend", "ollama") or "ollama").lower()
 

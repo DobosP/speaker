@@ -1063,6 +1063,8 @@ class _SelectedLiveConfig:
     final_stt_profile_schema_version: int | None = None
     performance_mode: str | None = None
     performance_mode_sha256: str | None = None
+    voice_model_profile: str | None = None
+    voice_model_profile_sha256: str | None = None
     effective_device: str | None = None
     effective_input_gain: float | None = None
     capture_config_sha256: str | None = None
@@ -1077,14 +1079,17 @@ def _selected_live_config(
     *,
     guided_capture: bool = False,
     performance: str | None = None,
+    voice_model: str | None = None,
+    model: str | None = None,
+    fast_model: str | None = None,
     input_gain: float | None = None,
 ) -> _SelectedLiveConfig:
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
     if not config_path.exists():
-        if final_stt_profile or performance not in (None, "current"):
+        if final_stt_profile or performance not in (None, "current") or voice_model not in (None, "current"):
             raise LauncherError(
-                "--final-stt-profile needs the repository config.json profile map"
+                "selected profiles need the repository config.json profile map"
             )
         return _SelectedLiveConfig("ollama", None)
     try:
@@ -1104,6 +1109,10 @@ def _selected_live_config(
         config = apply_device_profile(config, device, strict=True)
         from core.performance import apply_performance_mode
         config, performance_metadata = apply_performance_mode(config, performance, root=root)
+        from core.voice_model_selection import select_voice_model
+        config, voice_metadata = select_voice_model(
+            config, voice_model, model=model, fast_model=fast_model,
+        )
         capture_config_sha256 = None
         effective_input_gain = None
         final_stt_metadata = None
@@ -1183,6 +1192,8 @@ def _selected_live_config(
         ),
         performance_mode=(performance_metadata.name if performance_metadata is not None else None),
         performance_mode_sha256=(performance_metadata.sha256 if performance_metadata is not None else None),
+        voice_model_profile=(voice_metadata.name if voice_metadata is not None else None),
+        voice_model_profile_sha256=(voice_metadata.sha256 if voice_metadata is not None else None),
         effective_device=str(device),
         effective_input_gain=effective_input_gain,
         capture_config_sha256=capture_config_sha256,
@@ -1391,6 +1402,7 @@ _VALUE_OPTIONS = (
     ("--final-stt-profile", "final_stt_profile"),
     ("--device", "device"),
     ("--performance", "performance"),
+    ("--voice-model", "voice_model"),
     ("--mode", "mode"),
     ("--input-gain", "input_gain"),
 )
@@ -1440,6 +1452,8 @@ def _live_parser() -> argparse.ArgumentParser:
         ),
     )
     from core.performance import PERFORMANCE_MODE_NAMES
+    from core.voice_model_profile import VOICE_MODEL_PROFILE_NAMES
+    parser.add_argument("--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None)
     parser.add_argument("--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
                         help="session model/resource mode; current preserves existing settings")
     parser.add_argument("--device", default=None)
@@ -1611,6 +1625,7 @@ def run_live_session(
             args.no_speaker_enrollment,
             guided_capture=bool(args.guided_stt_capture),
             performance=args.performance,
+            voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
             input_gain=args.input_gain,
         )
         if args.guided_stt_capture:
@@ -1677,6 +1692,12 @@ def run_live_session(
             doctor.extend(["--device", args.device])
         if args.performance is not None:
             doctor.extend(["--performance", args.performance])
+        if args.voice_model is not None:
+            doctor.extend(["--voice-model", args.voice_model])
+        if args.model is not None:
+            doctor.extend(["--model", args.model])
+        if args.fast_model is not None:
+            doctor.extend(["--fast-model", args.fast_model])
         if args.final_stt_profile:
             doctor.extend(["--final-stt-profile", args.final_stt_profile])
         if args.no_speaker_enrollment:

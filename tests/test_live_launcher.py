@@ -1973,3 +1973,28 @@ def test_performance_mode_forwarded_to_both_doctor_and_voice(tmp_path):
         index = command.index("--performance")
         assert command[index:index + 2] == ("--performance", "current")
         assert command.count("--performance") == 1
+
+
+def test_voice_model_and_model_overrides_forward_to_doctor_and_core(tmp_path):
+    ops = _FakeOps(nodes=True, ollama_healthy=True)
+    options = ["--voice-model", "current", "--model", "custom-main", "--fast-model", "custom-fast"]
+    assert _run_session(["--llm", "echo", *options], ops=ops, root=tmp_path) == 0
+    doctor = next(command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor"))
+    for command in (doctor, _voice_command(ops)):
+        for flag, value in zip(options[::2], options[1::2]):
+            index = command.index(flag)
+            assert command[index:index + 2] == (flag, value)
+            assert command.count(flag) == 1
+
+
+def test_conflicting_voice_profile_has_no_host_side_effects(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({
+        "device": "safe", "device_profiles": {"safe": {"sherpa": {"aec_enabled": False}}},
+        "llm": {"backend": "ollama", "main_model": "main", "fast_model": "old"},
+        "sherpa": {"aec_enabled": False},
+    }))
+    ops = _FakeOps(nodes=True, ollama_healthy=True)
+    assert _run_session(["--voice-model", "qwen2.5-1.5b", "--fast-model", "custom"],
+                        ops=ops, root=tmp_path) == 2
+    assert not ops.popen_calls
+    assert not _commands(ops)

@@ -58,6 +58,8 @@ def apply_voice_model_profile(
     if name == "current":
         if requested is None or config.get("voice_model_profile", "current") == "current":
             return config, None
+        if (config.get("llm") or {}).get("fast_model") == PROFILE_ALIAS:
+            raise ValueError("current requires the original device config before voice-model selection")
         result = deepcopy(config)
         result["voice_model_profile"] = "current"
         return result, None

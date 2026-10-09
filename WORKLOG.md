@@ -897,3 +897,20 @@ Aggregate reports and source/binding receipts remain separate for the grouped
 and mixed protocols; the benchmark includes a fixed --interleave-checks flag.
 Synthetic benchmark tests: 27 passed in 0.20 s; Ruff/diff pass. No raw input,
 output or recording is in those aggregate reports, and no other model downloaded.
+
+
+## 2026-10-10 — Shared desktop model selection
+
+Valid until: model/profile or entrypoint changes — then treat as history.
+
+Core, doctor and the Linux launcher now share `select_voice_model`; explicit
+model overrides reach both readiness and runtime. Conflicting fast selection
+refuses before host setup. Current rollback uses the original config and
+refuses an already resolved candidate. Direct readiness resolves the profile
+marker; runtime passes the selected persona to capabilities. No default switch
+or microphone/doctor execution occurred.
+
+Fake-only gate: voice_model_selection, voice_model_profile, live_launcher,
+setup_doctor and performance_modes: **365 passed, 2 warnings in 2.35s**.
+The first run had two test-fixture errors (an empty strict device profile),
+corrected without changing device validation. No native model run in this gate.

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from core.performance import PERFORMANCE_MODE_NAMES, apply_performance_mode
+from core.voice_model_profile import VOICE_MODEL_PROFILE_NAMES
+from core.voice_model_selection import select_voice_model
 from core.config import (
     FINAL_STT_PROFILE_NAMES,
     SpeakerIdentityPolicyError,
@@ -86,6 +88,9 @@ def run_all(
     device=None,
     final_stt_profile: str | None = None,
     performance: str | None = None,
+    voice_model: str | None = None,
+    model: str | None = None,
+    fast_model: str | None = None,
     config_root: Path | None = None,
     no_speaker_enrollment: bool = False,
     llm_mode: str = "configured",
@@ -101,6 +106,12 @@ def run_all(
     if performance_metadata is not None:
         prefix.append(Check("performance mode", True,
                             f"{performance_metadata.name}; sha256={performance_metadata.sha256}"))
+    merged, voice_metadata = select_voice_model(
+        merged, voice_model, model=model, fast_model=fast_model,
+    )
+    if voice_metadata is not None:
+        prefix.append(Check("voice model", True,
+                            f"{voice_metadata.name}; sha256={voice_metadata.sha256}"))
     if final_stt_profile:
         merged, metadata = apply_final_stt_profile(merged, final_stt_profile)
         prefix.append(Check(
@@ -170,6 +181,10 @@ def main(argv: list[str] | None = None) -> int:
         allow_abbrev=False,
     )
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--fast-model", default=None)
+
     parser.add_argument("--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
                         help="check the same session model/resource mode as core and live.sh")
     parser.add_argument(
@@ -240,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
                 performance=args.performance,
+                voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
                 config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
                 llm_mode="echo",
@@ -263,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
                     device=args.device,
                     final_stt_profile=args.final_stt_profile,
                     performance=args.performance,
+                    voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
                     config_root=Path(args.config).resolve().parent,
                     no_speaker_enrollment=args.no_speaker_enrollment,
                     llm_mode="echo",
@@ -273,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
                 performance=args.performance,
+                voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
                 config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
             )
@@ -285,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             "--no-speaker-enrollment",
         )]
     except ValueError as exc:
-        label = ("performance mode" if args.performance not in (None, "current")
+        label = ("voice model" if args.voice_model not in (None, "current")
+                 else "performance mode" if args.performance not in (None, "current")
                  else "final STT profile" if args.final_stt_profile else "device profile")
         checks = [Check(
             label,

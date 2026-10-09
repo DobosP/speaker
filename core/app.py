@@ -27,6 +27,8 @@ from .config import (
     load_config,
     resolve_device,
 )
+from .voice_model_profile import VOICE_MODEL_PROFILE_NAMES, apply_voice_model_profile
+from .voice_model_selection import select_voice_model
 from .performance import PERFORMANCE_MODE_NAMES, PerformanceModeError, apply_performance_mode
 from .engine import AudioEngine
 from .llm import LLMClient, OllamaLLM
@@ -949,6 +951,7 @@ def build_runtime(
     on-hardware validation harness (``tools/live_session``), so both drive the
     exact same assistant (same continuation / capability-catalog / never-stuck /
     endpoint / context-aggregation wiring)."""
+    config, _ = apply_voice_model_profile(config)
     agent_config = None
     if agent_on:
         from .agent import AgentBrainConfig
@@ -1205,6 +1208,10 @@ def main(argv: list[str] | None = None) -> int:
         dest="publisher_identity",
         default=None,
         help="exact trusted-LAN audio publisher; never grants action authority",
+    )
+    parser.add_argument(
+        "--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None,
+        help="select the local voice model and matching spoken prompt; current restores the base selection",
     )
     parser.add_argument(
         "--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
@@ -1577,6 +1584,28 @@ def main(argv: list[str] | None = None) -> int:
             performance_mode_schema_version=performance_metadata.schema_version,
         )
         print(f"[performance] {performance_metadata.name}; models/resources changed; capability policy preserved", file=sys.stderr)
+    try:
+        config, voice_metadata = select_voice_model(
+            config, args.voice_model, model=args.model, fast_model=args.fast_model,
+        )
+    except ValueError as exc:
+        try:
+            monitor.stop()
+        except Exception:  # preserve the selection error
+            pass
+        try:
+            runlog.finalize(None)
+        except Exception:  # preserve the selection error
+            pass
+        print(f"[voice-model] {exc}", file=sys.stderr)
+        return 2
+    if voice_metadata is not None:
+        runlog.summary.note(
+            voice_model_profile=voice_metadata.name,
+            voice_model_profile_sha256=voice_metadata.sha256,
+            voice_model_profile_schema_version=voice_metadata.schema_version,
+        )
+        print(f"[voice-model] {voice_metadata.name}; local voice model and spoken prompt selected", file=sys.stderr)
     final_stt_metadata = None
     if args.final_stt_profile:
         try:

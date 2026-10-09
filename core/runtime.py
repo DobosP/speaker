@@ -459,6 +459,7 @@ class VoiceRuntime:
         self._current_frame: Optional[object] = None
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
+            persona=persona,
             escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
             recent_context=recent_context_config,
             live_routing=live_routing, load_snapshot=load_snapshot,

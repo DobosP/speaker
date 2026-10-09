@@ -84,3 +84,19 @@ once with matched options resolved that diagnostic, without raising the bound.
 - Exact native-measured source and aggregate receipts are retained separately
   from later validation-only/tooling edits; private enrollment and recordings
   remain untouched. Headless gates are receipts, not live acceptance.
+
+## Desktop entrypoint integration (2026-10-10)
+
+`--voice-model qwen2.5-1.5b` selects the same resolved model/prompt in core,
+readiness and the Linux launcher. The launcher forwards explicit main/fast model
+overrides to readiness as well as core. A conflicting fast override refuses
+before route/server setup. `--voice-model current` applies to the original
+device/performance config; applying rollback to an already resolved Qwen object
+refuses instead of reporting a false rollback. Programmatic factory/runtime and
+readiness callers resolve the same marker. Selection never opens audio, starts
+a server or changes saved config. The runtime passes the resolved persona to
+the capability provider so the spoken capability-summary path is actually used.
+
+The shared selection/identity/launcher/readiness/performance fake gate passes
+365 tests (two inherited SWIG warnings). This is configuration consistency,
+not a physical READY or another platform's native evidence.

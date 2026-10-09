@@ -932,3 +932,24 @@ tests/test_resume.py, tests/test_post_barge_response.py, tests/test_continuation
 112 passed in 4.09 s. Scoped E9/F63/F7/F82 Ruff passes. The runtime persona wiring in the
 orchestrator's separate worktree was untouched. No native model, doctor, microphone,
 phone, route change, recording, cloud call or action-authority promotion occurred.
+
+
+Valid until: the setup transport, asset publication or alias API changes — then treat as history.
+
+## 2026-10-10 — Independently review pinned voice-model installation
+
+Read-only review found Ollama SDK redirects enabled on loopback metadata calls
+and parent mkdir occurring before symlink refusal. Setup now disables redirects
+and checks parents before creating directories; quoted/control-character paths
+cannot inject Modelfile directives. A cooperating O_EXCL fail-busy lock spans
+alias recheck/create/post-identity and removes only its own regular inode.
+Source bytes remain exclusively published and existing mismatches are refused.
+External Ollama writers and separate user/temp namespaces are not covered by
+daemon CAS; no atomic alias-create claim is made. Windows path syntax uses
+quoted forward slashes, but no Windows native run occurred.
+
+Thirty fake installer tests passed in 0.37 s; Ruff/diff pass. They cover
+redirect/proxy client construction, no redirected mkdir, concurrent busy lock,
+recheck/import/identity ownership, failed import, replaced-lock preservation and
+Modelfile path refusal before I/O. No new download, alias import or native run
+was performed for these validation-only setup repairs.

@@ -465,15 +465,27 @@ def _stream_and_speak(
             buffer += token
             sentences, buffer = drain_complete_sentences(buffer)
             for sentence in sentences:
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                    break
                 emit(sentence)
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                break
+        # A final token can contain several sentences, and an emitter can revoke
+        # the turn without another provider token arriving to observe it.
+        if cancel is not None and cancel.is_set():
+            cancelled = True
+        tail = buffer.strip()
+        if tail and not cancelled:
+            emit(tail)
+        if cancel is not None and cancel.is_set():
+            cancelled = True
     finally:
         # Barge-in cut: start provider cancellation/cleanup immediately rather
         # than at GC time (see :func:`_close_token_stream`).
         if cancelled:
             _close_token_stream(tokens)
-    tail = buffer.strip()
-    if tail and not cancelled:
-        emit(tail)
     return "".join(parts).strip(), cancelled
 
 

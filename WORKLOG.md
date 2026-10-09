@@ -845,3 +845,18 @@ fixture regression rejects the later override. This validation-only tightening
 does not change the measured valid native alias or any model request.
 
 Focused identity gate: 31 passed in 0.23 s; Ruff/diff pass.
+
+
+Valid until: the fixed public factory benchmark protocol changes — then treat as history.
+
+## 2026-10-10 — Define bounded CPU factory qualification
+
+The committed public benchmark accepts only desktop_gpu_4090 or cpu_laptop
+factory settings; cpu_laptop explicitly requests num_gpu=0 and fast threads=2
+while retaining its 2048-context/256-output caps. Eight fixed resident decisions
+retain the 16-token/3-second production helper. Separate different-prompt warm-up
+is outside scoring; no graded answer is precomputed. First nonempty text timing
+is model text latency, not audio. Optional owned-daemon Linux resource samples
+follow descendants from every thread and return numeric counts/RSS only; they
+are post-call observations, not continuous peaks. Synthetic gate:26 passed in
+0.23 s; Ruff/diff pass. No CPU inference result is claimed yet.

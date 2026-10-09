@@ -39,7 +39,7 @@ from typing import Iterable, Mapping, Optional, Protocol, Sequence, runtime_chec
 from always_on_agent.react import should_escalate
 
 from .contract import is_stop_command, normalize_command
-from .llm import LLMCallCancelled, LLMClient, collect_llm_text
+from .llm import LLMCallCancelled, LLMClient, collect_llm_decision
 from .routing import (
     FAST,
     MAIN,
@@ -449,13 +449,14 @@ class LLMCapabilityRouter:
                     return self._cache_action
         action: Optional[str]
         try:
-            reply = collect_llm_text(
+            reply = collect_llm_decision(
                 self._llm,
                 self._prompt(text),
                 system=_LLM_SYSTEM,
+                choices=("SIMPLE", "RESEARCH", "ACT"),
                 cancel_event=cancel_event,
             )
-            action = _parse_action(reply)
+            action = _parse_action(reply) if reply is not None else None
         except LLMCallCancelled:
             raise
         except Exception:  # noqa: BLE001 - routing must never break a turn

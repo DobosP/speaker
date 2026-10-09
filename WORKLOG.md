@@ -2,6 +2,22 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-09 — explicit console and desktop-first implementation scope
+
+Valid until: later session assembly or owner scope supersedes this receipt — then treat as history.
+
+- Owner clarified Linux/Windows/macOS desktop core first. Mobile PCM work is preserved on
+  `codex/mobile-pcm-streaming` at `dfcef686aff2ce3b69eff41803acbfbb019cb425`, unmerged and
+  incompletely qualified; it is excluded from desktop integration. Its proposed ADR-0229 is
+  on that branch only. Desktop TTS callback failure handling replaces the active media stage.
+- Explicit console assembly keeps dependency-free echo/text operation without a learned
+  ambient classifier. An enabled speech classifier missing its local model still refuses.
+  This adds no owner/live-origin/tool authority. Factory/session gates: **126 passed in 4.71 s**.
+- A synthetic six-text candidate-inspection microbenchmark (7 blocks, 6000 calls each) measured
+  median block mean **4.519 microseconds**, max block mean **4.889 microseconds** on this Linux
+  host. This is only Python cue inspection, not callback-tail, model, acoustic or whole-turn
+  performance; it provides no reason for a language rewrite of this small state machine.
+
 ## 2026-10-09 — decision collector boundary review repairs
 
 Valid until: later decision collector evidence supersedes this receipt — then treat as history.

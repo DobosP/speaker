@@ -938,6 +938,7 @@ def build_runtime(
     gui_actions_on: bool = False,
     force_planner: bool = False,
     force_stream_tts: bool = False,
+    explicit_text_input: bool = False,
     load_fraction=None,
     diagnostic_observer=None,
     diagnostic_invalidator=None,
@@ -999,17 +1000,22 @@ def build_runtime(
         intents = LocalIntentHandler(engine.speak, phrases=intents_cfg.get("phrases"))
 
     # Input gate: optional ACT/INGEST classifier between ASR_FINAL and the
-    # brain (core/addressing.py). Requires a fast LLM client; if either is
-    # missing, the enabled gate abstains; it cannot silently admit every final.
+    # brain (core/addressing.py). An enabled gate without a local fast client
+    # refuses admission; missing inference cannot silently admit every final.
     input_gate_cfg = config.get("input_gate", {}) or {}
+    # The console is an explicit typed-user surface, not ambient recognition.
+    # This assembly choice supplies no owner/direct-live/action authority.
+    if type(explicit_text_input) is not bool:
+        raise ValueError("explicit_text_input must be boolean")
+    input_gate_enabled = bool(input_gate_cfg.get("enabled", False)) and not explicit_text_input
     addressing = None
-    if input_gate_cfg.get("enabled", False) and fast_llm is not None:
+    if input_gate_enabled and fast_llm is not None:
         from .addressing import LLMAddressingClassifier
 
         addressing = LLMAddressingClassifier(
             fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
         )
-    if input_gate_cfg.get("enabled", False) and addressing is None:
+    if input_gate_enabled and addressing is None:
         from .addressing import UnavailableAddressingClassifier
         addressing = UnavailableAddressingClassifier()
     unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
@@ -1039,7 +1045,7 @@ def build_runtime(
             input_gate_cfg.get("conversation_admission"),
             assistant_name=persona.name if persona is not None else "",
         )
-        if input_gate_cfg.get("enabled", False) else None
+        if input_gate_enabled else None
     )
 
     memory = _build_memory(config, fast_llm)
@@ -1852,6 +1858,7 @@ def main(argv: list[str] | None = None) -> int:
         gui_actions_on=bool(getattr(args, "gui_actions", False)),
         force_planner=bool(args.planner),
         force_stream_tts=bool(args.stream_tts),
+        explicit_text_input=args.engine == "console",
         load_fraction=monitor.load_fraction,
         diagnostic_observer=(
             getattr(engine, "record_diagnostic_observation", None)

@@ -373,9 +373,15 @@ remain acceptance requirements. The preserved October 5 enrollment/evidence lane
 |---|---|---|---|
 | 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | In progress: `codex/voice-admission`. |
 | 2. Decisions and answers | Independent bounded local decision requests; public-only model quality cases; evidence-backed spoken-answer corrections. | Semantic negatives and answer behavior scored separately from valid formatting; cancellation/egress preserved; latency and failures reported. | In progress: `codex/voice-model-quality`. |
-| 3. Mobile media | Bounded generation-owned PCM delivery and cancellation; evaluate genuine within-sentence synthesis separately. | Flutter/native ownership and bounded-buffer tests, analyzer and supported builds; no WAV callback advertised as incremental synthesis. | In progress: `codex/mobile-pcm-streaming`. |
+| 3. Desktop media/portability | Profile Linux/Windows/macOS core playback and portable persistence; repair an independently reproduced bottleneck or defect. | Deterministic lifecycle/resource/platform checks; actual OS/audio claims only when run. | Desktop scout in progress; mobile deferred by owner. |
 | 4. Echo reference | Correct absolute reference timeline and bounded-copy reads; measured allocations/latency; assess offline candidate comparison. | Deterministic wrap/delay/overflow/concurrent tests plus APM/DTD; no acoustic default or enrollment promotion without physical comparison. | In progress: `codex/acoustic-reference`. |
 | 5. Integration | Review each stage, run combined desktop/mobile gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical/phone claims listed independently. | Pending stages 1–4. |
+
+Owner priority clarified: Linux, Windows and macOS desktop core first; mobile frameworks are
+out of the current implementation target. Android PCM work is preserved separately at
+`codex/mobile-pcm-streaming` / `dfcef686aff2ce3b69eff41803acbfbb019cb425`, unmerged and
+not fully qualified. It must not be included in the desktop landing. Android/iOS and a lighter
+future shell remain later work; Flutter is the prior demo, not a required future architecture.
 
 Current constraint: the installed VITS model finishes a sentence before its native callback;
 mobile full-sentence RMS/declick requires that waveform. Removing WAV transport can reduce

@@ -56,3 +56,10 @@ The targeted gate passes 385 tests; final integration reruns are recorded in
 WORKLOG. No microphone/doctor/phone run, enrollment promotion, acoustic default change,
 model download, raw audio egress or native quality claim follows. Physical validation
 remains required under ADR-0209; later answer-quality work has its own evidence.
+
+### Explicit console assembly
+
+The console factory explicitly disables the ambient classifier for typed input. An enabled
+speech gate without a local classifier still refuses; this preserves the no-model console
+smoke route without confusing missing classification with semantic uncertainty. Typed input
+keeps its existing unknown/unverified instruction provenance and gains no action authority.

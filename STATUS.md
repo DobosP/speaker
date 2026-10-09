@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Complete-decision admission is verified headlessly; full live acceptance, Current/Compact A/B and promotion await owner resume.
+- Desktop-first plan: `docs/local_voice_performance.md`; admission/decision fixes are headless-verified; answer quality and live A/B remain open.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Headless: admission 385; decisions 326+125; reference-ring 437 pass/2 optional-model skips (ADR-0227/0228/0230); earlier Linux receipts remain in WORKLOG.
+- Headless: admission/factory 385+126; decisions 326+125; reference-ring 437 pass/2 optional-model skips (ADR-0227/0228/0230); earlier Linux receipts remain in WORKLOG.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

@@ -345,3 +345,32 @@ def test_capture_cue_never_resolves_device_tools_or_calls_unknown_classifier():
     finally:
         rt._device_tool_dispatcher = None
         rt.stop()
+
+
+@pytest.mark.parametrize("explicit,expected", [(False, []), (True, ["Echo reply."])])
+def test_factory_console_preserved_while_missing_speech_classifier_refuses(
+    explicit, expected
+):
+    from core.app import build_runtime
+
+    engine = ScriptedEngine()
+    rt = build_runtime(
+        {
+            "input_gate": {"enabled": True, "unsure_acts": True},
+            "warm_on_start": False,
+            "memory": {"backend": "session"},
+        },
+        engine=engine,
+        llm=EchoLLM(reply="Echo reply."),
+        fast_llm=None,
+        router=None,
+        start_mode=Mode.ASSISTANT,
+        explicit_text_input=explicit,
+    )
+    rt.start(run_bus=False)
+    try:
+        engine.final("What is two plus two?")
+        assert rt.wait_idle()
+        assert engine.spoken == expected
+    finally:
+        rt.stop()

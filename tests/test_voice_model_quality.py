@@ -165,3 +165,27 @@ def test_process_resource_sampling_has_only_aggregate_scalars(tmp_path, monkeypa
     assert result == {"rss_bytes": 200 * 1024, "processes": 2, "threads": 3, "read_failures": 0}
     assert all(type(value) is int for value in result.values())
     monkeypatch.setattr(quality, "Path", real_path)
+
+
+def test_interleaved_check_never_prewarms_decision_prefix_between_answer_calls(monkeypatch):
+    fake_models(monkeypatch)
+    sequence = []
+    class Client:
+        def generate(self, prompt, **kwargs):
+            sequence.append("answer_warm")
+            return "READY"
+        def stream(self, prompt, **kwargs):
+            sequence.append("answer")
+            yield "4"
+    def collect(*args, **kwargs):
+        sequence.append("decision")
+        return None
+    monkeypatch.setattr(quality, "public_factory_client", lambda *a: (Client(), "spoken", {"num_thread": 2}))
+    monkeypatch.setattr(quality, "collect_llm_decision", collect)
+    result = quality.run(quality.MODELS[2], "http://127.0.0.1:11435",
+                         factory_profile="cpu_laptop", interleave_checks=True)
+    assert sequence == ["answer_warm"] + ["answer", "decision"] * 4
+    assert result["calls"] == 4
+    assert result["interleaved_decision"]["calls"] == 4
+    assert result["interleaved_decision"]["available"] == 0
+    assert result["decision_warm_seconds"] is None

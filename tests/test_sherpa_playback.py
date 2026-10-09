@@ -35,7 +35,7 @@ from core.engines.sherpa import (
     _resample_linear,
     _resample_playback,
 )
-from core.engine import EngineCallbacks, PlaybackOutcome, PlaybackReceipt, TrackedSpeech
+from core.engine import EngineCallbacks, OutputState, PlaybackOutcome, PlaybackReceipt, TrackedSpeech
 from core.metrics import TTS_FIRST_AUDIO
 
 
@@ -175,6 +175,7 @@ def _start_playback_harness(
     )
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
     engine._playback_stopping.clear()
+    engine._output_state = OutputState.READY
     engine._running.set()
     engine._start_receipt_dispatcher()
     engine._play_thread = threading.Thread(

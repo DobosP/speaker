@@ -17,6 +17,17 @@ def _noop_text(*_args, **_kwargs) -> None:
     pass
 
 
+
+class OutputState(str, Enum):
+    """Fixed output-only lifecycle; capture liveness is independent."""
+
+    READY = "ready"
+    UNAVAILABLE = "unavailable"
+    RECOVERABLE = "recoverable"
+    POISONED = "poisoned"
+    STOPPED = "stopped"
+
+
 class PlaybackOutcome(str, Enum):
     """Terminal result for one opt-in tracked speech fragment."""
 
@@ -326,6 +337,10 @@ class EngineCallbacks:
     # is never dispatched through a mutable command map; engines must abstain if
     # the runtime does not bind it.
     on_control_stop_result: Optional[Callable[[CommandDetection], None]] = None
+    # Advisory output transition code; concurrent transitions may supersede it.
+    # Consumers re-read engine.output_state before display/recovery. Never an
+    # exception string or transcript, and never native-cleanup authority.
+    on_output_state: Callable[[str], None] = _noop_text
 
 
 class AudioEngine(ABC):
@@ -355,6 +370,14 @@ class AudioEngine(ABC):
     @abstractmethod
     def stop_speaking(self) -> None:
         """Immediately halt playback (used on confirmed barge-in)."""
+
+    @property
+    def output_state(self) -> OutputState:
+        return OutputState.READY
+
+    def recover_output(self) -> bool:
+        """Try explicit nonblocking output recovery; default engines decline."""
+        return False
 
     @property
     def is_speaking(self) -> bool:

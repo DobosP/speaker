@@ -442,6 +442,7 @@ from ..engine import (
     AudioEngine,
     EngineCallbacks,
     OwnerVerification,
+    OutputState,
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
@@ -494,6 +495,7 @@ from ._kws_speaker_inference_owner import (  # noqa: E402
     try_claim_kws_speaker_inference_owner,
 )
 from ._denoiser import build_denoiser
+from ._output_cleanup import OutputCleanupOwner
 from ._aec import (
     AecDelayCalibrator,
     FarEndRing,
@@ -2356,6 +2358,13 @@ class SherpaOnnxEngine(AudioEngine):
         # owner must never upgrade that bundle to a clean shutdown.
         self._capture_startup_rollback = threading.Event()
         self._playback_stopping = threading.Event()
+        self._output_state = OutputState.READY
+        self._output_cleanup: Optional[OutputCleanupOwner] = None
+        self._output_quarantine = False
+        self._output_open_uncertain = False
+        self._output_failure_latched = False
+        self._output_reset_request: Optional[tuple[int, int]] = None
+        self._output_reset_ack: Optional[tuple[int, int]] = None
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
         # Per-utterance generation counter (rc-3). Every queued sentence carries
@@ -3929,6 +3938,213 @@ class SherpaOnnxEngine(AudioEngine):
                     "--enroll` to enroll your voice."
                 )
 
+    # --- output-only failure and exact cleanup ownership ---
+    @property
+    def output_state(self) -> OutputState:
+        return getattr(self, "_output_state", OutputState.READY)
+
+    def _set_output_state(self, state: OutputState) -> None:
+        with self._receipt_lock:
+            if self._output_state is state:
+                return
+            self._output_state = state
+        log.warning("output state: %s", state.value)
+        try:
+            self._cb.on_output_state(state.value)
+        except BaseException:
+            log.error("output state observer failed")
+
+    def _close_output_exact(self, out, timeout: float = 1.0) -> bool:
+        """Share one closer across failure, idle release and full shutdown."""
+        rejected = False
+        with self._out_lock:
+            owner = self._output_cleanup
+            if owner is not None and owner.stream is not out:
+                rejected = not owner.snapshot().closed
+                if not rejected:
+                    owner = None
+            if not rejected:
+                if self._running.is_set() and (
+                    owner is None or not owner.snapshot().closed
+                ):
+                    self._output_quarantine = True
+                    self._speaking.set()
+                if owner is None:
+                    owner = OutputCleanupOwner(out)
+                    self._output_cleanup = owner
+                if self._out_stream is out:
+                    self._out_stream = None
+        if rejected:
+            self._set_output_state(OutputState.POISONED)
+            return False
+        try:
+            clean = owner.close(timeout)
+        except BaseException:
+            self._set_output_state(OutputState.POISONED)
+            raise
+        if not clean:
+            self._set_output_state(OutputState.POISONED)
+        return clean
+
+    def _fail_output(self) -> None:
+        """Revoke only output. Keep capture, controls and receipt dispatch alive."""
+        with self._receipt_lock:
+            first_failure = not self._output_failure_latched
+            self._output_failure_latched = True
+            if self._output_state is OutputState.READY:
+                self._output_state = OutputState.UNAVAILABLE
+            retained_owner = self._output_cleanup
+            self._output_quarantine = bool(
+                self._output_quarantine or self._out_stream is not None
+                or (retained_owner is not None and not retained_owner.snapshot().closed)
+            )
+            if first_failure:
+                with self._gen_condition:
+                    self._stop_speaking.set()
+                    self._speak_gen += 1
+                    if getattr(self, "_output_quarantine", False):
+                        self._speaking.set()
+                    self._gen_condition.notify_all()
+            self._synth_active = False
+            fifo = self._fifo
+            if fifo is not None:
+                fifo.interrupt_tags(PlaybackOutcome.FAILED, 0)
+            callbacks = []
+            while True:
+                try:
+                    item = self._play_q.get_nowait()
+                except queue.Empty:
+                    break
+                self._queue_direct_receipt(item[4], PlaybackOutcome.FAILED)
+                if item[1] is not None:
+                    callbacks.append(item[1])
+            self._terminalize_unbound_receipts(claimed_outcome=PlaybackOutcome.FAILED)
+        if first_failure and self._output_state is OutputState.UNAVAILABLE:
+            log.error("output state: unavailable; capture remains active")
+            try:
+                self._cb.on_output_state(OutputState.UNAVAILABLE.value)
+            except BaseException:
+                log.error("output state observer failed")
+        for callback in callbacks:
+            try:
+                callback()
+            except BaseException:
+                log.error("discarded output completion observer failed")
+
+    def _finish_output_failure(self, clean: bool) -> None:
+        uncertain = not clean or self._output_open_uncertain
+        if uncertain:
+            if not self._output_quarantine:
+                # A constructor which never returned received no PCM. Do not
+                # reset capture DSP or invent audible playback in that case.
+                self._speaking.clear()
+                self._synth_active = False
+            self._set_output_state(OutputState.POISONED)
+            return
+        # Native silence is known; mutable AEC/detector state still belongs to
+        # capture. It acknowledges this request at a safe frame boundary before
+        # ordinary ASR/quarantine is reopened. No output thread waits for DSP.
+        self._output_quarantine = True
+        self._speaking.set()
+        self._output_reset_request = (self._capture_epoch, self._speak_gen)
+        if self._capture_owner_and_effects_are_idle():
+            self._consume_output_reset()
+
+    def _consume_output_reset(self) -> bool:
+        request = getattr(self, "_output_reset_request", None)
+        if request is None:
+            return False
+        capture_owner = self._capture_thread is threading.current_thread()
+        if capture_owner:
+            if request[0] != self._capture_epoch:
+                return False
+        elif not self._capture_owner_and_effects_are_idle():
+            return False
+        try:
+            if self._echo_coherence is not None:
+                self._echo_coherence.reset()
+            if self._dtd is not None:
+                self._dtd.new_run()
+            if self._aec is not None:
+                self._aec.reset()
+            if self._aec_asr is not None:
+                self._aec_asr.reset()
+        except BaseException:
+            self._output_reset_request = None
+            self._set_output_state(OutputState.POISONED)
+            return False
+        if self._output_reset_request is not request:
+            return False
+        self._output_reset_request = None
+        self._output_reset_ack = request
+        self._output_quarantine = False
+        self._synth_active = False
+        self._speaking.clear()
+        self._playback_level = 0.0
+        self._last_playback_at = 0.0
+        self._last_speaking_end = time.monotonic()
+        self._play_resampler = None
+        self._playback_reference_resampler = None
+        self._clear_playback_reference()
+        try:
+            self._cb.on_speech_end()
+        except BaseException:
+            log.error("output end observer failed")
+        self._set_output_state(
+            OutputState.RECOVERABLE if self._running.is_set() else OutputState.STOPPED
+        )
+        return True
+
+    def recover_output(self) -> bool:
+        """Explicit, nonblocking recovery. Failed fragments are never replayed."""
+        if not self._receipt_lock.acquire(blocking=False):
+            return False
+        try:
+            if (
+                not self._running.is_set()
+                or self._playback_stopping.is_set()
+                or self._virtual_audio_binder is not None
+                or self._output_state is not OutputState.RECOVERABLE
+                or self._capture_resource_hold.is_set()
+                or self._output_open_uncertain
+                or self._output_reset_request is not None
+                or self._thread_may_start_or_is_alive(self._play_thread)
+            ):
+                return False
+            owner = self._output_cleanup
+            if owner is not None and not owner.snapshot().closed:
+                return False
+            if not self._tts_lock.acquire(blocking=False):
+                return False
+            try:
+                self._output_state = OutputState.READY
+                self._output_failure_latched = False
+                self._fifo = None
+                self._play_resampler = None
+                self._playback_reference_resampler = None
+                self._output_quarantine = False
+                try:
+                    self._play_thread = threading.Thread(
+                        target=self._playback_loop, name="sherpa-playback", daemon=True
+                    )
+                    self._play_thread.start()
+                except BaseException as error:
+                    self._output_state = OutputState.UNAVAILABLE
+                    self._set_output_state(OutputState.POISONED)
+                    if not isinstance(error, Exception):
+                        raise
+                    return False
+            finally:
+                self._tts_lock.release()
+        finally:
+            self._receipt_lock.release()
+        log.info("output state: ready after explicit recovery")
+        try:
+            self._cb.on_output_state(OutputState.READY.value)
+        except BaseException:
+            log.error("output state observer failed")
+        return True
+
     # --- sink-attested playback receipts ---
     @property
     def playback_capabilities(self) -> PlaybackCapabilities:
@@ -4962,16 +5178,16 @@ class SherpaOnnxEngine(AudioEngine):
                     fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
                 self._out_stream = None
                 self._fifo = None
-            if out is not None:
-                try:
-                    out.stop()
-                    out.close()
-                except Exception:  # noqa: BLE001 - device may be mid-teardown
-                    pass
+            output_closed = (
+                self._close_output_exact(out) if out is not None else (
+                    self._output_cleanup is None or self._output_cleanup.snapshot().closed
+                )
+            )
             self._terminalize_unbound_receipts()
 
-        if not capture_closed:
+        if not capture_closed or not output_closed:
             return False
+        self._consume_output_reset()
         self._capture_resource_hold.clear()
         if close_recorders:
             self._close_recorders(
@@ -5220,6 +5436,11 @@ class SherpaOnnxEngine(AudioEngine):
     @guard_kws_speaker_inference_mutation
     def start(self, callbacks: EngineCallbacks) -> None:
         self._require_kws_speaker_inference_idle_before_mutation()
+        output_owner = self._output_cleanup
+        if self._output_open_uncertain or (
+            output_owner is not None and not output_owner.snapshot().closed
+        ):
+            raise RuntimeError("cannot start audio: output cleanup remains uncertain")
         prior_decode_owner = self._streaming_decode_owner
         if prior_decode_owner is not None:
             owner_snapshot = prior_decode_owner.snapshot()
@@ -5317,6 +5538,11 @@ class SherpaOnnxEngine(AudioEngine):
 
         self._cb = callbacks
         self._playback_stopping.clear()
+        self._output_state = OutputState.READY
+        self._output_quarantine = False
+        self._output_failure_latched = False
+        self._output_reset_request = None
+        self._output_reset_ack = None
         with self._virtual_route_failure_lock:
             self._virtual_route_failure = ""
             self._virtual_route_failure_in_progress = False
@@ -5698,6 +5924,8 @@ class SherpaOnnxEngine(AudioEngine):
 
     def stop(self) -> None:
         self._playback_stopping.set()
+        if self._output_state is not OutputState.POISONED:
+            self._set_output_state(OutputState.STOPPED)
         with self._gen_condition:
             self._gen_condition.notify_all()
         self._virtual_route_stop.set()
@@ -5880,11 +6108,7 @@ class SherpaOnnxEngine(AudioEngine):
                 if fifo is not None:
                     fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
                 if out is not None:
-                    try:
-                        out.stop()
-                        out.close()
-                    except Exception:  # noqa: BLE001 - device may be mid-teardown
-                        pass
+                    self._close_output_exact(out)
             self._terminalize_unbound_receipts()
         play_thread = self._play_thread
         wake_play_thread = bool(
@@ -6035,6 +6259,11 @@ class SherpaOnnxEngine(AudioEngine):
         # Non-blocking: hand the utterance to the single playback worker. Keeping
         # one sink (instead of a thread per call) is what makes sentence-level
         # streaming play in order rather than on top of itself.
+        if self.output_state in (OutputState.UNAVAILABLE, OutputState.RECOVERABLE, OutputState.POISONED):
+            if on_done:
+                on_done()
+            self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
+            return
         if self._playback_stopping.is_set():
             if on_done:
                 on_done()
@@ -6088,6 +6317,11 @@ class SherpaOnnxEngine(AudioEngine):
         if ticket is not None:
             ticket.sink_text = text
         with self._receipt_lock:
+            if self.output_state in (OutputState.UNAVAILABLE, OutputState.RECOVERABLE, OutputState.POISONED):
+                if on_done:
+                    on_done()
+                self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
+                return
             if self._playback_stopping.is_set():
                 if on_done:
                     on_done()
@@ -6109,6 +6343,12 @@ class SherpaOnnxEngine(AudioEngine):
                 # (rc-3): every sentence enqueued before now is invalidated, so
                 # one that slipped past the queue drain is skipped by the worker.
                 self._speak_gen += 1
+        if getattr(self, "_output_quarantine", False):
+            with self._receipt_lock:
+                self._drain_play_q()
+                if self._fifo is not None:
+                    self._fifo.interrupt_tags(PlaybackOutcome.FAILED, 0)
+            return  # keep existing speaking/echo quarantine until exact cleanup
         # Cut the live audio by FLUSHING the playback FIFO rather than aborting
         # the stream. flush() drops every queued sample in one short lock, so the
         # very next PortAudio callback emits a silent zero-fill -- equivalent to
@@ -6186,7 +6426,10 @@ class SherpaOnnxEngine(AudioEngine):
         # latched True and disarms further barge-ins), and reset the echo refs the
         # worker would otherwise reset. All idempotent -- the worker clearing them
         # again on its way out is harmless.
-        self._speaking.clear()
+        with self._receipt_lock:
+            if getattr(self, "_output_quarantine", False):
+                return  # a concurrent failure retained uncertain native audio
+            self._speaking.clear()
         self._barge_in_fired_this_run = False
         self._word_cut_energy_run = 0
         self._virtual_near_end_above = False
@@ -9266,6 +9509,7 @@ class SherpaOnnxEngine(AudioEngine):
                         del self._capture_callback_context.media_cancel_event
                     except AttributeError:
                         pass
+                self._consume_output_reset()
                 self._drain_capture_control_events(capture_epoch)
                 if not self._running.is_set():
                     break
@@ -12470,11 +12714,11 @@ class SherpaOnnxEngine(AudioEngine):
         )
 
     def _playback_loop(self) -> None:
-        import sounddevice as sd
-
         out = None
+        output_failed = False
         try:
-            while self._running.is_set():
+            import sounddevice as sd
+            while self._running.is_set() and self._output_state is OutputState.READY:
                 try:
                     text, on_done, item_gen, directives, ticket = self._play_q.get(
                         timeout=0.1
@@ -12602,6 +12846,9 @@ class SherpaOnnxEngine(AudioEngine):
 
                 try:
                     if out is None:
+                        owner = self._output_cleanup
+                        if owner is not None and not owner.snapshot().closed:
+                            raise RuntimeError("output cleanup remains uncertain")
                         out_dev = _norm_device(self.config.output_device)
                         self._tts_sr = (
                             int(getattr(self._tts, "sample_rate", 0)) or 22050
@@ -12641,6 +12888,7 @@ class SherpaOnnxEngine(AudioEngine):
                                 break
                             except Exception:  # noqa: BLE001 - try the next candidate
                                 continue
+                        self._output_open_uncertain = True
                         out = sd.OutputStream(
                             channels=1,
                             samplerate=play_sr,
@@ -12649,6 +12897,7 @@ class SherpaOnnxEngine(AudioEngine):
                             latency="low",
                             callback=self._audio_cb,
                         )
+                        self._output_open_uncertain = False
                         # PortAudio/ALSA creates the PipeWire stream in the
                         # constructor. Prove its *initial* target while it is
                         # still stopped; never activate then move a wrong route.
@@ -12796,7 +13045,9 @@ class SherpaOnnxEngine(AudioEngine):
                             fifo_for_item.close_tag(ticket, terminal_status)
                     # (true barge-in-stop is stamped in stop_speaking() at the
                     # abort() instant -- the moment audio actually goes silent.)
-                except Exception:
+                except BaseException:
+                    output_failed = True
+                    self._fail_output()
                     if ticket is not None and fifo_for_item is not None:
                         with self._receipt_lock:
                             fifo_for_item.interrupt_tags(PlaybackOutcome.FAILED)
@@ -12808,7 +13059,7 @@ class SherpaOnnxEngine(AudioEngine):
                         on_done()
                     # Only fall idle once the queue drains, so the capture loop
                     # doesn't flap ASR/barge-in on/off between adjacent sentences.
-                    if self._play_q.empty():
+                    if not output_failed and self._play_q.empty():
                         # The reply's last sentence is fully produced: close the
                         # dry-gap window BEFORE the drain wait so the natural
                         # tail drain's zero-reads are never counted as gaps.
@@ -12923,13 +13174,15 @@ class SherpaOnnxEngine(AudioEngine):
                         if self.config.release_output_when_idle and out is not None:
                             if self._fifo is not None:
                                 self._fifo.flush()
+                            self._output_quarantine = True
+                            self._speaking.set()
                             with self._out_lock:
                                 self._out_stream = None
-                            try:
-                                out.stop()
-                                out.close()
-                            except Exception:  # noqa: BLE001 - already aborted/closed
-                                pass
+                            if not self._close_output_exact(out):
+                                self._fail_output()
+                                raise RuntimeError("output cleanup remains uncertain")
+                            self._output_quarantine = False
+                            self._speaking.clear()
                             out = None
                             self._fifo = None
                             # The next open may negotiate a different play_sr;
@@ -12938,12 +13191,12 @@ class SherpaOnnxEngine(AudioEngine):
                             self._play_resampler = None
                             self._playback_reference_resampler = None
                         self._cb.on_speech_end()
-        except Exception as exc:
+        except BaseException:
             if self._virtual_audio_binder is not None:
-                self._fail_virtual_route(f"virtual playback route failed closed: {exc}")
-            log.exception("playback loop crashed -- the assistant has gone mute")
-            self._playback_stopping.set()
-            self._running.clear()
+                self._fail_virtual_route("virtual playback worker failed closed")
+            log.error("playback worker failed; output unavailable")
+            output_failed = True
+            self._fail_output()
             with self._receipt_lock:
                 self._drain_play_q()
                 fifo = self._fifo
@@ -12953,6 +13206,13 @@ class SherpaOnnxEngine(AudioEngine):
                     claimed_outcome=PlaybackOutcome.FAILED
                 )
         finally:
+            if (
+                not output_failed and self._running.is_set()
+                and not self._playback_stopping.is_set()
+                and self._output_state is OutputState.READY
+            ):
+                output_failed = True
+                self._fail_output()
             # `_running` is shared with capture recovery/fatal state. The loop
             # can therefore end without raising here while tracked audio is
             # still queued. Terminalize that ownership before dropping the FIFO
@@ -12964,7 +13224,8 @@ class SherpaOnnxEngine(AudioEngine):
                 else PlaybackOutcome.FAILED
             )
             with self._receipt_lock:
-                self._drain_play_q()
+                if not output_failed:
+                    self._drain_play_q()
                 fifo = self._fifo
                 if fifo is not None:
                     fifo.interrupt_tags(exit_outcome)
@@ -12983,12 +13244,20 @@ class SherpaOnnxEngine(AudioEngine):
                     if claimed_out is not None:
                         self._out_stream = None
                         self._fifo = None
+                clean = True
                 if claimed_out is not None:
-                    try:
-                        claimed_out.stop()
-                        claimed_out.close()
-                    except Exception:  # noqa: BLE001 - may already be aborted/closed
-                        pass
+                    clean = self._close_output_exact(claimed_out)
+                elif out is not None:
+                    if self._virtual_audio_binder is None:
+                        # A concurrent stop may have claimed the shared handle
+                        # before publishing its closer. The exact local identity
+                        # joins/creates that same owner, never a second close.
+                        clean = self._close_output_exact(out)
+                    else:
+                        owner = self._output_cleanup
+                        clean = bool(owner is not None and owner.stream is out and owner.snapshot().closed)
+                if output_failed:
+                    self._finish_output_failure(clean)
             elif out is not None:
                 # stop() sets the hold before clearing _running, so seeing it
                 # here is ordinary coordinated teardown.  stop() emits ERROR

@@ -372,11 +372,11 @@ remain acceptance requirements. The preserved October 5 enrollment/evidence lane
 
 | Stage | Deliverable | Acceptance | Progress |
 |---|---|---|---|
-| 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | Complete headless: ambient-before-cancel admission, explicit console preservation and rendered-resume follow-up regression. |
+| 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | Complete headless: ambient-before-cancel admission, canonical commands, exact rejected-partial retirement, console preservation and rendered-resume follow-up. |
 | 2. Decisions and answers | Independent bounded local decision requests; public-only model quality cases; evidence-backed spoken-answer corrections. | Semantic negatives and answer behavior scored separately from valid formatting; cancellation/egress preserved; latency and failures reported. | Complete evaluation: explicit Qwen/spoken profile and bounded decisions; GPU mixed cases pass; CPU latency/semantic gate remains open; compact prompt rejected (ADR-0235). |
 | 3. Desktop media/portability | Profile Linux/Windows/macOS core playback and portable persistence; repair an independently reproduced bottleneck or defect. | Deterministic lifecycle/resource/platform checks; actual OS/audio claims only when run. | Implemented: no replay after TTS errors, isolated output failure and bounded explicit recovery. Native Windows/macOS and physical tests remain open. |
 | 4. Echo reference | Correct absolute reference timeline and bounded-copy reads; measured allocations/latency; assess offline candidate comparison. | Deterministic wrap/delay/overflow/concurrent tests plus APM/DTD; no acoustic default or enrollment promotion without physical comparison. | Complete offline: ring repair plus five synthetic and five recorded comparison cells; no AEC default change. |
-| 5. Integration | Review each stage, run combined desktop gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical and other-OS claims listed independently. | Pending stages 1–4. |
+| 5. Integration | Review each stage, run combined desktop gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical and other-OS claims listed independently. | Complete software verification: 12192 passed, 41 skipped; scoped lint/docs clean; native evidence preserved. Physical and other-OS gates remain open. |
 
 Owner priority clarified: Linux, Windows and macOS desktop core first; mobile frameworks are
 out of the current implementation target. Android PCM work is preserved separately at
@@ -423,3 +423,19 @@ Windows secure enrollment persistence still needs a reviewed native file/ACL
 implementation and a Windows runner; macOS audio behavior also requires actual
 hardware. No cross-platform READY, physical latency or acoustic acceptance is
 implied by Linux headless tests. Mobile work remains the separate deferred branch.
+
+### Final combined verification (2026-10-10)
+
+Valid until: implementation changes or a new platform/physical result — then treat as history.
+
+The final desktop CI-style suite passed **12,192 tests**, with **41 skips** and
+**nine inherited dependency warnings**, in 562.40 seconds. Physical audio was
+disabled; the two LiveKit exclusions match CI. The unchanged stop/restart flow
+and a new exact-key rejected-final regression are included. Scoped fatal-error
+Ruff checks and repository documentation checks are clean. Native and audio
+quality limits above remain independent of this logic gate.
+
+The real console entrypoint also returned the expected echo using public typed
+input and forced in-memory state. No phone code was merged. The protected prior
+enrollment, backup and recordings remain unchanged. The owner’s October 5 stop
+still governs any microphone, doctor or live retry.

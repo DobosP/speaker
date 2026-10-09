@@ -1165,3 +1165,37 @@ Observed **342 passed in 32.66 s**; two synthetic watchdog diagnostics appeared
 without failures. Ruff/whitespace/docs checks pass. No native/full-suite/device/
 audio/model/network experiment ran in this repair lane. Final combined integration
 verification follows separately; original flow assertions and deadlines remain.
+
+
+## 2026-10-10 — Final combined desktop implementation verification
+
+Valid until: source, dependency, platform or physical-route changes — then treat as history.
+
+Final tested source: 259448c180857ba588ec648e43d2445817496f24. The CI-style
+logic gate passed **12192 tests, 41 skipped, 9 warnings in 562.40 s** after the
+exact rejected-final retirement fix. Flags: `SPEAKER_TEST_LOG=0`,
+`SPEAKER_NO_LOCAL_CONFIG=1`, `SPEAKER_LIVE=0`, `PYTHONDONTWRITEBYTECODE=1`,
+OMP/OpenBLAS/MKL/NumExpr threads 1; shared venv Python `-B -m pytest
+-p no:cacheprovider tests -q --maxfail=1 --ignore=tests/test_livekit_audio.py
+--ignore=tests/test_livekit_engine.py` with a fresh private `/var/tmp` fixture
+root, moved into task scratch afterward. This final run used ordinary
+scheduling and umask 077. The warnings are the two Sherpa SWIG and seven
+existing Pillow deprecations; the separate interpreter-exit SWIG warning stays
+historical dependency output, not a failure.
+
+The earlier complete pre-fix receipt, 12187/41 skips/9 warnings in 523.23 s, is
+retained separately with source 26c4938494dea6faae68c8471c7b9fddaf5c7991.
+No failed, rejected or earlier native receipt was relabeled as this final run.
+All 58 final changed Python files pass scoped fatal-error Ruff checks. The
+repository documentation checker reports 38 files with zero findings, and
+`git diff --check` is clean. No microphone/doctor/live validation or model rerun accompanies this
+logic gate. Mobile source is unchanged; dfcef68 is not an integration ancestor.
+
+Durable ignored archives: `logs/runs/desktop-core-integration-20261010`,
+`logs/runs/voice-model-quality-20261010-d2157e2`,
+`models/candidates/reference-ring/ac0897d`, and
+`models/candidates/localvqe/evidence`. The model archive preserves 139 files
+(4,318,917 bytes), manifest SHA256
+556b511e4b8762d35ae6ea2f6c9843ffbf1a84423dfaf3ed94fc655ccaa1dcbe.
+Only aggregate findings enter Git. The protected live candidate/backup/recordings
+and deferred mobile branch stay separate from desktop landing/cleanup.

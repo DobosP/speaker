@@ -84,8 +84,8 @@ explicit resume and preparation of the retained compatible enrollment lane, is:
 
 This command still requires full route/model/enrollment readiness. The four
 GPU mixed-context cases passed, with median first text 447 ms and maximum
-decision time 629 ms. These are component measurements after the normal startup
-sequence, not audible latency. CPU tests had 11–14-second answer outliers and
+decision time 629 ms. These are component measurements after the fast-answer/classifier warm calls; main
+model and media startup were not exercised, and this is not audible latency. CPU tests had 11–14-second answer outliers and
 six false ACT labels among 16 standalone negative cases, so CPU performance
 remains unqualified. The separate conversation-admission gate rejects those
 16 idle negative fixtures before classification; that is not a general semantic

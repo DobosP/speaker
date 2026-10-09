@@ -166,3 +166,10 @@ def test_ollama_parameter_map_render_order_and_capability_order_are_not_identity
     assert profile.verify_voice_model_identity(show=lambda _: actual).ok
     actual["modelfile"] += "PARAMETER temperature 0.0\n"
     assert not profile.verify_voice_model_identity(show=lambda _: actual).ok
+
+
+def test_duplicate_template_cannot_hide_a_later_effective_prompt_override():
+    actual = shown()
+    actual["modelfile"] += "\nTEMPLATE different later behavior\n"
+    identity = profile.verify_voice_model_identity(show=lambda _: actual)
+    assert not identity.ok and identity.error == "voice_model_identity_mismatch"

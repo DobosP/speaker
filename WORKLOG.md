@@ -772,3 +772,21 @@ owner-requested workflow_dispatch-only GitHub Actions policy and ADR-0223. Runti
 job bodies/test commands, safety gates and permissions are preserved. STATUS combines
 both sessions' facts within its 120-line budget. The existing green local application
 results remain valid; no automatic workflow dispatch was added or invoked.
+
+
+Valid until: the reply streaming/cancellation contract changes — then treat as history.
+
+## 2026-10-10 — Observe reply revocation between emitted sentences
+
+A deterministic public-only provider token containing two sentences reproduced
+continued emission and cancelled=False when the first emitter revoked the task.
+The real TaskManager emitter independently protects audio; this establishes a
+capability cancellation-metadata/cleanup defect, not a proven audio escape.
+`_stream_and_speak` now checks revocation before each sentence, after exhaustion
+and after the final tail, then closes the provider through the existing seam.
+Uncancelled text and playback-grounded history semantics are unchanged.
+
+Headless gate: `tests/test_stream_speech_cancellation.py`,
+`test_streaming_tts.py`, `test_capability_stream_close.py`,
+`test_capability_context_isolation.py`, `test_pretoken_cancellation.py`,
+`test_playback_history.py`: 50 passed in 3.42 s. No audio/model/live run.

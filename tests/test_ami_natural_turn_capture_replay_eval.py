@@ -430,7 +430,7 @@ def test_fake_run_preserves_generic_report_and_scores_overlap_min_order(
     )
     assert report["execution"] == {
         "closure_sha256": subject._closure_sha256(),
-        "source_files": 58,
+        "source_files": 59,
     }
     assert "brief answer host phrase" not in json.dumps(report, sort_keys=True)
 

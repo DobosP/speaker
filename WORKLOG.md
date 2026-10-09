@@ -1086,3 +1086,21 @@ Final focused result: **264 passed in 14.20 s**. Scoped Ruff, whitespace and doc
 checks pass. The original production flow and all its assertions/timing bounds
 are unchanged. These are fake model/device control-plane receipts; no native,
 private recording, microphone, download, cloud or physical validation occurred.
+
+
+## 2026-10-10 — Complete prospective inventory regression gate
+
+Valid until: evaluator imports or source inventories change — then treat as history.
+
+The second full attempt stopped at one remaining AMI fake-report expectation:
+**1 failed, 225 passed, 11 skipped in 82.54s**. Its expected prospective source
+count was still 58, although the exact closure was correctly 59. Corrected that
+expectation without changing guards or historical reports. All six affected
+evaluator modules (AMI, generic capture, EdAcc endpoint, LiveKit causal endpoint,
+Microsoft AEC and production final STT) then passed **460 tests, 3 skips in
+43.16s**, with private hermetic synthetic fixtures.
+
+The final full logic rerun uses ordinary CI scheduling with the existing
+single-thread native environment, no bytecode/cache, live audio disabled and
+the two CI LiveKit exclusions. Test wall time is not a performance comparison
+with the earlier low-priority receipts. Failed logs/fixtures are preserved.

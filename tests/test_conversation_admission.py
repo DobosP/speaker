@@ -446,3 +446,139 @@ def test_heard_resumed_question_admits_short_answer_without_resume_authority():
         assert engine.spoken == ["Which city?"] * 3
     finally:
         rt.stop()
+
+
+@pytest.mark.parametrize("text", [
+    "Run a harmless test command.", "Execute a harmless test command.",
+    "Dictate these public notes", "Cauta voce", "Cerceteaza voce", "Scrie text",
+    "Assistant, tell me a story", "assistant tell me a story",
+    "Hey, could you explain photosynthesis?", "Hello assistant, explain photosynthesis",
+    "Hi, assistant: what is two plus two?", "Okay, please execute a harmless command",
+])
+def test_canonical_requests_and_bounded_vocatives_remain_candidates(text):
+    gate = ConversationAdmission(ConversationAdmissionConfig())
+    assert gate.inspect(text, input_epoch=1).candidate
+
+
+@pytest.mark.parametrize("text", [
+    '"Run a harmless test command."', "'Execute a harmless command please'",
+    'Assistant, "run a harmless command"', 'Hey, "execute a harmless command"',
+    "He said run a harmless command", "She asked the assistant to execute a command",
+    "Someone said hey could you explain photosynthesis", "The assistant told me a story",
+    "Assistant went home yesterday", "Hey, she said execute a command",
+])
+def test_quoted_or_reported_commands_and_greetings_stay_ambient(text):
+    rt, engine, classifier = runtime()
+    try:
+        live(engine, text)
+        assert rt.wait_idle()
+        assert classifier.calls == []
+        assert engine.spoken == []
+        assert rt.supervisor.state.pending_confirmations == {}
+    finally:
+        rt.stop()
+
+
+@pytest.mark.parametrize("text", [
+    "Run a harmless test command.", "Execute a harmless test command.",
+])
+def test_canonical_staged_commands_still_need_confirmation_before_provider(text):
+    rt, engine, classifier = runtime()
+    calls = []
+    unsubscribe = rt.supervisor.capabilities.observe_invocations(calls.append)
+    try:
+        live(engine, text)
+        assert rt.wait_idle()
+        assert len(rt.supervisor.state.pending_confirmations) == 1
+        assert engine.spoken  # existing prompt reached the scripted receipt sink
+        assert calls == []  # candidate admission is never action permission
+        assert len(classifier.calls) == 1  # semantic admission remains separate
+        assert classifier.calls[0][0] == text
+    finally:
+        unsubscribe()
+        rt.stop()
+
+
+@pytest.mark.parametrize("text", [
+    "Assistant, tell me a story", "Hey, could you explain photosynthesis?",
+])
+def test_vocative_inspection_preserves_immutable_addressing_input(text):
+    rt, engine, classifier = runtime()
+    try:
+        live(engine, text)
+        assert rt.wait_idle()
+        assert classifier.calls[0][0] == text
+        assert engine.spoken == ["Four."]
+    finally:
+        rt.stop()
+
+
+@pytest.mark.parametrize("text", [
+    "Browse my notes about travel.", "Consult my vault about travel.",
+    "Query my notes for travel.", "Go into my notes to find travel.",
+    "Kindly browse my notes about travel.", "Computer search my notes for travel.",
+    "Jarvis search my notes for travel.", "Asistent search my notes for travel.",
+    "Please kindly search my notes for travel.",
+])
+def test_existing_vault_request_grammar_has_a_cheap_candidate_cue(text):
+    from always_on_agent.speech_analyzer import is_vault_lookup_request
+    assert is_vault_lookup_request(text)  # audit actual shipped parser forms
+    gate = ConversationAdmission(ConversationAdmissionConfig())
+    assert gate.inspect(text, input_epoch=1).candidate
+
+
+@pytest.mark.parametrize("text", [
+    '"Browse my notes about travel."', 'Kindly "query my notes for travel"',
+    "He said consult my vault about travel", "Computer said the room was quiet",
+    "Jarvis went home", "She asked the computer to browse my notes",
+])
+def test_vault_courtesy_words_do_not_admit_quoted_or_reported_requests(text):
+    gate = ConversationAdmission(ConversationAdmissionConfig())
+    assert not gate.inspect(text, input_epoch=1).candidate
+
+
+
+def test_quoted_short_answer_requires_an_actually_heard_question():
+    gate = ConversationAdmission(ConversationAdmissionConfig())
+    assert not gate.inspect('"Paris"', input_epoch=1).candidate
+    gate.note_admitted(input_epoch=1, input_generation=1)
+    gate.note_rendered("Which city?", input_epoch=1, input_generation=1)
+    assert gate.inspect('"Paris"', input_epoch=1).reason == "heard_question"
+    assert not gate.inspect('"Paris"', input_epoch=2).candidate
+
+
+def test_exact_heard_answer_ticket_carries_quote_after_arrival_closes_window():
+    clock = [10.0]
+    gate = ConversationAdmission(ConversationAdmissionConfig(), clock=lambda: clock[0])
+    own = _acoustic("quoted-answer")
+    gate.note_admitted(input_epoch=1, input_generation=1)
+    gate.note_rendered("Which city?", input_epoch=1, input_generation=1)
+    assert gate.observe("Paris", input_epoch=1, acoustic=own, partial=True).reason == "heard_question"
+    gate.note_arrival(input_epoch=1, input_generation=2)
+    clock[0] += 1
+    assert gate.observe('"Paris"', input_epoch=1, acoustic=own).reason == "same_utterance"
+    assert not gate.observe('"Paris"', input_epoch=1, acoustic=_acoustic("other-answer")).candidate
+
+
+def test_request_ticket_cannot_turn_idle_quoted_command_into_a_request():
+    gate = ConversationAdmission(ConversationAdmissionConfig())
+    own = _acoustic("quoted-command")
+    assert gate.observe("Run a harmless command", input_epoch=1, acoustic=own, partial=True).candidate
+    assert not gate.observe('"Run a harmless command"', input_epoch=1, acoustic=own).candidate
+    assert gate._partial_cue is None
+
+
+@pytest.mark.parametrize("changed", ["epoch", "keys", "expiry"])
+def test_quoted_heard_answer_ticket_keeps_original_identity_and_expiry(changed):
+    clock = [10.0]
+    gate = ConversationAdmission(ConversationAdmissionConfig(), clock=lambda: clock[0])
+    own = _acoustic("quoted-bounded-answer")
+    gate.note_admitted(input_epoch=1, input_generation=1)
+    gate.note_rendered("Which city?", input_epoch=1, input_generation=1)
+    gate.observe("Paris", input_epoch=1, acoustic=own, partial=True)
+    gate.note_arrival(input_epoch=1, input_generation=2)
+    epoch = 2 if changed == "epoch" else 1
+    acoustic = _acoustic("other-bounded-answer") if changed == "keys" else own
+    if changed == "expiry":
+        clock[0] += 30
+    assert not gate.observe('"Paris"', input_epoch=epoch, acoustic=acoustic).candidate

@@ -30,6 +30,37 @@ _REQUEST = re.compile(
 )
 _FILLERS = frozenset({"uh", "um", "hmm", "hm", "ah", "er", "oh"})
 
+_FOLLOWUP_REQUESTS = frozenset({
+    "tell me more",
+    "go on",
+    "start again",
+    "try again",
+    "anything else",
+    "and then",
+    "why",
+    "how come",
+    "hello",
+    "hello there",
+    "hi",
+    "hey",
+    "thank you",
+    "thanks",
+    "any updates",
+    "any news",
+})
+
+# Preserve the controller's explicit non-assistant request prefixes that the
+# conversational verb list does not already include (speech_analyzer.py).
+# Match raw leading syntax so a quoted command is not manufactured by _WORDS.
+_CANONICAL_REQUEST = re.compile(
+    r"^(?:please\s+)?(?:run|execute|dictate|cerceteaza|cauta|scrie|browse|consult|query)\s+\S|"
+    r"^(?:please\s+)?go\s+(?:in|into|inside(?:\s+of)?|through|to|within)\s+\S", re.I
+)
+_GREETING_PREFIX = re.compile(r"^(?:hey|hello|hi|okay|ok)[\s,:!]+", re.I)
+_ASSISTANT_PREFIX = re.compile(r"^(?:assistant|computer|jarvis|asistent)[\s,:]+", re.I)
+_POLITE_PREFIX = re.compile(r"^(?:please|kindly)\s+", re.I)
+_QUOTE_STARTS = ('"', "'", "“", "‘")
+
 
 @dataclass(frozen=True)
 class ConversationAdmissionConfig:
@@ -84,7 +115,7 @@ class ConversationAdmission:
         self._admitted: tuple[int, int] | None = None
         self._answer_until = 0.0
         self._latest_arrival: tuple[int, int] | None = None
-        self._partial_cue: tuple[int, frozenset, float] | None = None
+        self._partial_cue: tuple[int, frozenset, float, bool] | None = None
 
     def observe(
         self, text: str, *, input_epoch: int, acoustic=None, partial: bool = False
@@ -112,10 +143,19 @@ class ConversationAdmission:
             )
             if ticket is not None and (ticket[0] != input_epoch or now >= ticket[2]):
                 self._partial_cue = None
+            if cue.reason == "quoted_text" and not (carried and ticket[3]):
+                # Idle quoted instructions cannot inherit a request cue. Only
+                # this exact utterance's prior heard-answer cue survives the
+                # arrival-time window closure; it adds no action authority.
+                if ticket is not None and ticket[1] == keys:
+                    self._partial_cue = None
+                return cue
             if carried:
                 cue = ConversationCue(True, "same_utterance")
             if partial and cue.candidate and keys and not carried:
-                self._partial_cue = (input_epoch, keys, now + 30.0)
+                self._partial_cue = (
+                    input_epoch, keys, now + 30.0, cue.reason == "heard_question"
+                )
             elif not partial and cue.candidate:
                 self._partial_cue = None
         return cue
@@ -141,7 +181,19 @@ class ConversationAdmission:
         words = tuple(_WORDS.findall(text.lower()))
         if not words or all(word in _FILLERS for word in words):
             return ConversationCue(False, "no_content")
-        normalized = " ".join(words)
+        raw = text.strip()
+        # Prefix removal is cue inspection only. The immutable input passed to
+        # addressing, the controller and provenance checks is never rewritten.
+        request_text = _GREETING_PREFIX.sub("", raw, count=1)
+        request_text = _POLITE_PREFIX.sub("", request_text, count=1)
+        request_text = _ASSISTANT_PREFIX.sub("", request_text, count=1)
+        request_text = _POLITE_PREFIX.sub("", request_text, count=1)
+        quoted = raw.startswith(_QUOTE_STARTS) or request_text.startswith(_QUOTE_STARTS)
+        original_normalized = " ".join(words)
+        normalized = (
+            original_normalized if request_text == raw
+            else " ".join(_WORDS.findall(request_text.lower()))
+        )
         normalized = re.sub(
             r"\b(what|where|when|who|why|how)'s\b", r"\1 is", normalized
         )
@@ -159,34 +211,24 @@ class ConversationAdmission:
         )
         what_question = bool(re.match(r"^what\s+(?!a\b|an\b)\S+\s+\S", normalized))
         named = words[1:] if words[0] in {"hey", "hello", "hi", "okay", "ok"} else words
-        if self._name and named[: len(self._name)] == self._name:
+        if not quoted and self._name and named[: len(self._name)] == self._name:
             return ConversationCue(True, "addressed_name")
-        if wh_question or what_question or aux_question or _REQUEST.search(normalized):
+        if not quoted and (
+            _CANONICAL_REQUEST.match(request_text)
+            or wh_question or what_question or aux_question or _REQUEST.search(normalized)
+        ):
             return ConversationCue(True, "request")
         # Simple elliptical follow-up requests are still requests, even without
         # an open answer window or a model inventing engagement from memory.
-        if normalized.startswith(("weather in ", "weather for ", "a recipe for ")) or (
-            normalized.endswith(" please") and len(words) >= 3
+        if not quoted and (
+            normalized.startswith(("weather in ", "weather for ", "a recipe for ")) or (
+                normalized.endswith(" please") and len(words) >= 3
+            )
         ):
             return ConversationCue(True, "elliptical_request")
-        if normalized in {
-            "tell me more",
-            "go on",
-            "start again",
-            "try again",
-            "anything else",
-            "and then",
-            "why",
-            "how come",
-            "hello",
-            "hello there",
-            "hi",
-            "hey",
-            "thank you",
-            "thanks",
-            "any updates",
-            "any news",
-        }:
+        if not quoted and (
+            normalized in _FOLLOWUP_REQUESTS or original_normalized in _FOLLOWUP_REQUESTS
+        ):
             return ConversationCue(True, "followup_request")
         with self._lock:
             if (
@@ -195,7 +237,7 @@ class ConversationAdmission:
                 and self._clock() < self._answer_until
             ):
                 return ConversationCue(True, "heard_question")
-        return ConversationCue(False, "no_engagement")
+        return ConversationCue(False, "quoted_text" if quoted else "no_engagement")
 
     def note_admitted(self, *, input_epoch: int, input_generation: int) -> None:
         with self._lock:

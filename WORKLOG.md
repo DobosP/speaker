@@ -1063,3 +1063,26 @@ Result: **7 passed in 12.26 s**. Scoped E9/F63/F7/F82 Ruff and whitespace pass;
 the documentation checker reports 38 files and zero issues, with STATUS at 120 lines.
 These are source-binding/headless checks, with no private corpus read, model
 inference, device/doctor/live run, network call or change to the live-stop gate.
+
+Valid until: conversational admission or canonical request grammar changes — then treat as history.
+
+## 2026-10-10 — Repair canonical request admission and stop/restart flow (ADR-0227)
+
+Reproduced the two integration failures unchanged: stop/restart confirmation and
+the strict three-run flow report were red (`2 failed in 51.34 s`). The early cue
+rejected the shipped Run/Execute command forms before staging; deterministic
+models already implemented stream. No fixture/deadline/assertion changes were
+needed. Audited and retained existing dictation/controller and vault request
+verbs plus bounded greeting/vocative/courtesy inspection. Original addressing
+input and downstream confirmation/provenance remain unchanged. Idle quotes stay
+ambient; a frozen exact heard-answer ticket preserves a quoted final across
+arrival-time window closure. Hot-path phrase storage/parsed-word reuse retained.
+
+```sh
+SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_conversation_admission.py tests/test_conversation_flow.py tests/test_speech_analyzer_contract.py tests/test_addressing.py tests/test_post_barge_response.py tests/test_continuation.py tests/test_resume.py tests/test_voice_session.py -q
+```
+
+Final focused result: **264 passed in 14.20 s**. Scoped Ruff, whitespace and docs
+checks pass. The original production flow and all its assertions/timing bounds
+are unchanged. These are fake model/device control-plane receipts; no native,
+private recording, microphone, download, cloud or physical validation occurred.

@@ -76,3 +76,38 @@ unknown origin, no owner verification, response-only scope and skipped user memo
 no retained query gains direct-live or tool authority. A genuine enabled ResumeConfig
 regression fails before the fix and passes afterward; the admission/resume/post-barge/
 continuation headless gate passes 112 tests in 4.09 seconds. No native model or live run.
+
+
+### 2026-10-10 addendum — preserve canonical requests and bounded vocatives
+
+Restore the shipped controller's explicit run/execute/dictate forms and existing
+ASCII Romanian controller prefixes, plus the audited vault browse/consult/query
+and go-in/into/through/to/within forms, as cheap anchored request candidates.
+Inspect at most one greeting, one generic assistant/computer/jarvis/asistent
+vocative and two bounded courtesy positions before the same request grammar.
+This is cue inspection only: the original transcript, semantic addressing call,
+controller parsing, confirmation, provenance and task/tool authority are unchanged.
+Reminder/app verbs were already covered. No new synonyms or general parser is
+introduced, and this does not qualify multilingual ASR.
+
+The integration stop/restart flow failed because `Run a harmless test command.`
+was ingested before the existing staged-command confirmation path. Its model
+fake already supported streaming. The two unchanged failing tests reproduced
+red in 51.34 seconds; the repair reaches the original receipted confirmation and
+provider lifecycle with no scenario, assertion or deadline changes.
+
+Idle quoted/reported commands and greetings remain ambient. A quote can still be
+a valid answer to an actually heard current question. Freeze a heard-answer bit
+on creation of the existing one exact partial cue: only that heard-answer ticket
+may carry a quoted final after partial arrival closes the answer window. Its
+input epoch/acoustic keys/original 30-second expiry remain exact, with no renewal;
+a request-origin ticket cannot turn an idle quoted instruction into a request.
+Hard empty/oversized/invalid-type refusals are unchanged. Keep follow-up phrases
+in a module-level frozenset and reuse the original parsed words when no prefix
+changed, avoiding new per-observation set allocation or duplicate word parsing.
+
+The admission/unchanged flow/controller/addressing/post-barge/continuation/resume/
+session gate passes 264 tests in 14.20 seconds. It includes staged Run/Execute
+confirmation with zero provider calls before confirmation, raw addressing-text
+preservation, parser-parity requests, ambient negatives and exact heard-answer
+quote carry. No microphone, native model, device, network or live validation ran.

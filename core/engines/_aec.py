@@ -78,12 +78,13 @@ class FarEndRing:
         if n == 0:
             return
         with self._lock:
-            if n >= self._cap:
-                self._buf[:] = x[-self._cap :]
-                self._written += n
-                return
-            start = self._written % self._cap
-            end = start + n
+            # Keep each retained sample at its absolute timeline index modulo
+            # capacity, including a write that replaces the entire ring.  The
+            # tail of an oversized write need not begin at array index zero.
+            retained = min(n, self._cap)
+            start = (self._written + n - retained) % self._cap
+            x = x[n - retained :]
+            end = start + retained
             if end <= self._cap:
                 self._buf[start:end] = x
             else:
@@ -120,10 +121,20 @@ class FarEndRing:
                 lo = hi - n
                 if hi <= 0:
                     continue
-                idx = np.arange(lo, hi)
-                valid = (idx >= avail_lo) & (idx < written)
-                if valid.any():
-                    out[valid] = self._buf[idx[valid] % self._cap]
+                copy_lo = max(lo, avail_lo)
+                copy_hi = min(hi, written)
+                count = copy_hi - copy_lo
+                if count <= 0:
+                    continue
+                source = copy_lo % self._cap
+                destination = copy_lo - lo
+                first = min(count, self._cap - source)
+                out[destination : destination + first] = self._buf[
+                    source : source + first
+                ]
+                remaining = count - first
+                if remaining:
+                    out[destination + first : destination + count] = self._buf[:remaining]
         return outputs
 
     def read(self, n: int, delay: int) -> np.ndarray:

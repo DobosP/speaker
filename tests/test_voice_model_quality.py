@@ -120,7 +120,7 @@ def test_factory_mode_uses_actual_returned_budget_and_fixed_spoken_system(monkey
             return "Iris" if "name" in prompt else "4"
         def stream(self, prompt, **kwargs):
             yield self.generate(prompt, **kwargs)
-    monkeypatch.setattr(quality, "public_factory_client", lambda host, device: (FactoryModel(), "fixed spoken factory system", options))
+    monkeypatch.setattr(quality, "public_factory_client", lambda host, device: (FactoryModel(), "fixed spoken factory system", options, quality.LLMAddressingClassifier(FactoryModel(), prompt_profile="qwen2.5-1.5b")))
     monkeypatch.setattr(quality, "systems", lambda: {"spoken": "component system"})
     report = quality.run(quality.MODELS[2], "http://127.0.0.1:11435", factory_profile="desktop_gpu_4090", conditions=("spoken",))
     assert report["factory_profile"] and report["options"] == options
@@ -137,7 +137,7 @@ def test_decision_checks_use_exact_fixed_cases_and_unchanged_deadline(monkeypatc
             return '"ACT"'
     expected = dict(quality.DECISION_CASES)
     def collect(client, prompt, *, system, choices):
-        assert choices == ("ACT", "INGEST", "UNSURE")
+        assert choices == quality.DECISION_CHOICES
         # Actual classifier wraps the fixed text, without accepting caller data.
         text = next(text for text in expected if text in prompt)
         calls.append(text)
@@ -180,7 +180,7 @@ def test_interleaved_check_never_prewarms_decision_prefix_between_answer_calls(m
     def collect(*args, **kwargs):
         sequence.append("decision")
         return None
-    monkeypatch.setattr(quality, "public_factory_client", lambda *a: (Client(), "spoken", {"num_thread": 2}))
+    monkeypatch.setattr(quality, "public_factory_client", lambda *a: (Client(), "spoken", {"num_thread": 2}, quality.LLMAddressingClassifier(Client(), prompt_profile="qwen2.5-1.5b")))
     monkeypatch.setattr(quality, "collect_llm_decision", collect)
     result = quality.run(quality.MODELS[2], "http://127.0.0.1:11435",
                          factory_profile="cpu_laptop", interleave_checks=True)
@@ -189,3 +189,51 @@ def test_interleaved_check_never_prewarms_decision_prefix_between_answer_calls(m
     assert result["interleaved_decision"]["calls"] == 4
     assert result["interleaved_decision"]["available"] == 0
     assert result["decision_warm_seconds"] is None
+
+
+def test_adversarial_matrix_keeps_full_shortcuts_separate_from_forced_native_semantics(monkeypatch):
+    from core.llm_decision import current_decision_request
+    calls = []
+    class Model:
+        def stream(self, prompt, **kwargs):
+            assert current_decision_request() is not None
+            calls.append(prompt)
+            yield '"INGEST"'
+    model = Model()
+    gate = quality.LLMAddressingClassifier(model, prompt_profile="qwen2.5-1.5b")
+    report = quality.adversarial_matrix(model, gate)
+    groups = {row["kind"]: row for row in report["groups"]}
+    assert groups["positive"]["shortcut"] == 2
+    assert groups["negative"]["shortcut"] == 0
+    assert groups["negative"]["forced_available"] == groups["negative"]["forced_correct"] == 16
+    assert groups["ambiguous"]["strict_scored_calls"] == 0
+    assert len(calls) == 32 * 2 - 2
+
+
+def test_mixed_context_is_fixed_public_and_never_trimmed_to_make_timing_pass():
+    assert len(quality.PUBLIC_RECENT) == 4
+    assert quality.MIXED_DECISION_CASES[2] == ("Paris.", "ACT", quality.PUBLIC_RECENT)
+    assert quality.CONTEXT_CASES[0][3] is quality.PUBLIC_RECENT
+
+
+def test_startup_direct_prefill_is_diagnostic_only_bounded_local_and_restores_context():
+    from core.llm import capability_context
+    from core.llm_decision import current_decision_request
+    from always_on_agent.models import CLOUD_EGRESS_SCOPE_CONTEXT_KEY, CloudEgressScope
+    class Client:
+        def stream(self, prompt, **kwargs):
+            request = current_decision_request()
+            context = capability_context.get()
+            assert request.max_tokens == 16
+            assert context[CLOUD_EGRESS_SCOPE_CONTEXT_KEY] is CloudEgressScope.LOCAL_ONLY
+            assert 19 < context["cancel_event"].deadline - quality.time.monotonic() <= 20
+            yield '"INGEST"'
+    client = Client()
+    token = capability_context.set({"marker": "original"})
+    try:
+        result = quality.diagnostic_startup_prefill(client, quality.LLMAddressingClassifier(client))
+        assert result["available"] and result["startup_timeout_seconds"] == 20
+        assert capability_context.get() == {"marker": "original"}
+        assert current_decision_request() is None
+    finally:
+        capability_context.reset(token)

@@ -97,3 +97,13 @@ cooperate for the same temporary-directory namespace and daemon port/alias.
 Ollama create has no compare-and-swap here: external writers or different
 user/temp namespaces can still race alias publication. The lock is not a
 daemon-wide atomic-create guarantee. Actual Windows execution remains open.
+
+
+## Later qualification scope (2026-10-10; ADR-0235)
+
+The CPU grouped resident pass is not CPU qualification. Actual production warm
+and mixed recent-context controls exposed long answer tails and component
+semantic failures; the shorter addressing candidate and20-second direct
+prefill were rejected. Retain the legacy addressing policy and explicit model
+selection. See [ADR-0235](0235-retain-legacy-addressing-after-compact-probe.md).
+No CPU default, successful startup warm, model-semantic or live promotion follows.

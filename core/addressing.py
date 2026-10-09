@@ -8,8 +8,8 @@ nonsense transcripts answered as polite "I don't know that name" replies).
 This module is the gate: a thin pre-LLM classification step that returns
 ``ACT`` for utterances genuinely directed at the assistant and ``INGEST``
 for ambient speech (background noise, the user thinking out loud, reading
-aloud, another person in the room). ``UNSURE`` is the safe fallback when
-the classifier can't decide; the caller picks a policy.
+aloud, another person in the room). ``UNSURE`` is a genuine semantic ambiguity; unavailable or malformed model
+results fail closed to ``INGEST``. The caller picks a policy for semantic ambiguity.
 
 See ``docs/target_architecture.md`` §9.8 for the design decision and
 ``PROJECT_KICKOFF.md`` §2 for the product intent. Speaker-ID gating (so
@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
-from .llm import LLMCallCancelled, LLMClient, collect_llm_text
+from .llm import LLMCallCancelled, LLMClient, collect_llm_decision
 
 log = logging.getLogger("speaker.addressing")
 
@@ -31,6 +31,7 @@ INGEST = "INGEST"
 UNSURE = "UNSURE"
 
 _VALID = (ACT, INGEST, UNSURE)
+DECISION_CHOICES = (ACT, INGEST, UNSURE, "ACTION", "ACTIVE")
 _DECISION_ALIASES = {"ACTION": ACT, "ACTIVE": ACT}
 
 # High-precision imperative forms do not need a generative classifier.  Keeping
@@ -127,15 +128,27 @@ Reply with exactly one word: ACT, INGEST, or UNSURE. No punctuation, no explanat
 class LLMAddressingClassifier:
     """LLM-backed addressing classifier.
 
-    Calls the fast-tier LLM with a fixed system prompt and parses one complete
-    decision token. Anything that doesn't parse to ``ACT``/``INGEST``/
-    ``UNSURE`` becomes ``UNSURE`` -- a hiccup in the LLM never silently
-    flips behavior; the caller's policy decides what UNSURE means.
+    Calls the fast-tier LLM with the retained legacy system prompt and parses
+    one complete decision token. Unavailable/malformed results become INGEST;
+    genuine model UNSURE remains distinct and follows the caller's policy.
+    Supported voice-model profile names do not select the rejected short prompt.
     """
 
-    def __init__(self, llm: LLMClient, *, max_context: int = 4) -> None:
+    def __init__(self, llm: LLMClient, *, max_context: int = 4,
+                 prompt_profile: str = "current") -> None:
+        if type(prompt_profile) is not str or prompt_profile not in {"current", "qwen2.5-1.5b"}:
+            raise ValueError("unsupported addressing prompt_profile")
         self._llm = llm
         self._max_context = max_context
+        self._prompt_profile = prompt_profile
+        # A shorter candidate failed native negative cases (ADR-0235).
+        # Both supported voice-model selections retain the legacy policy.
+        self._system_prompt = _SYSTEM_PROMPT
+
+    @property
+    def system_prompt(self) -> str:
+        """The exact selected production prompt, also used by public diagnostics."""
+        return self._system_prompt
 
     def classify(self, text: str, recent: Iterable[str] = ()) -> str:
         utterance = text or ""
@@ -148,17 +161,20 @@ class LLMAddressingClassifier:
             return ACT
         prompt = self._build_prompt(text, recent)
         try:
-            reply = collect_llm_text(
+            reply = collect_llm_decision(
                 self._llm,
                 prompt,
-                system=_SYSTEM_PROMPT,
+                system=self._system_prompt,
+                choices=DECISION_CHOICES,
             )
         except LLMCallCancelled:
             raise
         except Exception:  # noqa: BLE001
-            log.exception("addressing classifier LLM call failed; defaulting to UNSURE")
-            return UNSURE
-        return _parse_decision(reply)
+            log.exception("addressing classifier unavailable; refusing reply admission")
+            return INGEST
+        # A missing/expired/malformed result is not a semantic UNSURE. An
+        # ambiguity-friendly caller must not turn transport failure into ACT.
+        return _parse_decision(reply) if reply is not None else INGEST
 
     def _build_prompt(self, text: str, recent: Iterable[str]) -> str:
         context = [line for line in list(recent)[-self._max_context:] if line]
@@ -187,6 +203,13 @@ def _parse_decision(reply: str) -> str:
         return _DECISION_ALIASES[decision]
     log.warning("addressing classifier returned %r; defaulting to UNSURE", reply)
     return UNSURE
+
+
+class UnavailableAddressingClassifier:
+    """An enabled input gate cannot silently disappear with its local model."""
+
+    def classify(self, text: str, recent: Iterable[str] = ()) -> str:
+        return INGEST
 
 
 class ScriptedAddressingClassifier:

@@ -885,3 +885,32 @@ redirect/proxy client construction, no redirected mkdir, concurrent busy lock,
 recheck/import/identity ownership, failed import, replaced-lock preservation and
 Modelfile path refusal before I/O. No new download, alias import or native run
 was performed for these validation-only setup repairs.
+
+
+Valid until: the addressing, model, startup or context policy changes — then treat as history.
+
+## 2026-10-10 — Reject compact addressing and retain scoped explicit Qwen (ADR-0235)
+
+One492-character system plus JSON-input candidate failed all16 negative
+component cases with false ACT, both full classifier and forced helper. CPU
+mixed decisions1/4 correct (3available), GPU2/4 correct. Rejected source and
+aggregates are retained; neither it nor a new prompt policy is shipped.
+
+Restored legacy1546-character system/format and actual3-second classify-hi
+startup warm: CPU mixed4 answers/decisions correct, but max answer11.226s;
+CPU semantic cell max answer14.410s. Aggregate-only old receipts do not identify
+which ordinal was slow. Component matrix: positives7/8 (one semanticUNSURE),
+negatives10/16 (six falseACT, zero shortcuts); context short-answer full path
+timed out while later forced helper succeeded, and context quote forced helper
+was unavailable. No invented ground truth for the four ambiguous cases.
+ConversationAdmission independently rejects all16 idle negative fixtures, so
+component failures do not establish whole-runtime activated replies.
+
+GPU actual-warm legacy mixed-context4 answers/decisions passed, decision max
+629ms. One approved20-second benchmark-only direct-prefill diagnostic expired
+at20.012s. Later mixed4 passed: answers1.31–1.37s, decisions1.65–2.70s; all
+per-ordinal timings retained without text. No successful bounded prefill, warm
+API, per-turn deadline increase, CPU default or semantic promotion follows.
+Explicit Qwen reply profile remains; CPU's existing input_gate=false unchanged.
+No more native experiments authorized in this iteration; all owned daemons
+retired and user services untouched. Model text latency is not physical audio.

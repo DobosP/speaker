@@ -170,6 +170,7 @@ _EVALUATOR_SOURCE_FILES = (
     "core/engines/_acoustic_turn.py",
     "core/engines/_cuda_wheels.py",
     "core/engines/_faster_whisper.py",
+    "core/engines/_output_cleanup.py",
     "core/engines/_sherpa_models.py",
     "core/engines/file_replay.py",
     "core/engines/sherpa.py",

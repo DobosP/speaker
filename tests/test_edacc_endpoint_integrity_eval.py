@@ -510,6 +510,7 @@ def test_shadow_source_binding_is_strictly_conditional() -> None:
         logical_turn_async_terminal_delivery=True,
     )
     assert default_files == endpoint_eval._SOURCE_FILES
+    assert "core/engines/_output_cleanup.py" in default_files
     assert shadow_files == (
         *default_files,
         "always_on_agent/logical_turn.py",

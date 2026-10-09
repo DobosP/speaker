@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (headless admission/resume/decision/reference/TTS gates; owner live stopped; prior platform receipts retained).
+Last verified: 2026-10-10 (headless admission/resume/decision/reference/TTS/source-inventory gates; owner live stopped; prior receipts retained).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -64,6 +64,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
   ADR-0230 bounds reference-ring copies; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
+  Prospective replay source inventories bind the output-cleanup import; seven headless identity/closure checks pass, with historical receipts unchanged (ADR-0234 addendum).
   Replay is headless evidence (ADR-0110/0111); acoustic identity stays immutable (ADR-0084/0086); VAD/recovery retain segment/rate evidence
   (ADR-0043/0046/0048). Only a finite enrolled final match mints owner trust (ADR-0027/0041/0051).
 - The opt-in Linux final pair is checksum-pinned Parakeet Unified English plus a Faster-Whisper Small verifier with SenseVoice defaults

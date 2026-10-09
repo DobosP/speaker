@@ -131,6 +131,7 @@ _SOURCE_FILES = (
     "core/endpointing.py",
     "core/engine.py",
     "core/engines/_asr_segment.py",
+    "core/engines/_output_cleanup.py",
     "core/engines/_semantic_hold.py",
     "core/engines/sherpa.py",
     "tools/bench/production.py",

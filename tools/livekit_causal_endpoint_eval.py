@@ -82,6 +82,7 @@ _EXECUTION_CLOSURE_RELATIVE_PATHS = (
     "tools/streaming_stt/bounded_io.py",
     "tools/setup_models.py",
     "core/endpointing.py",
+    "core/engines/_output_cleanup.py",
     "core/engines/sherpa.py",
     "always_on_agent/acoustic.py",
     "always_on_agent/text.py",

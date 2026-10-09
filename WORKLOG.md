@@ -1140,3 +1140,28 @@ passed under explicit `umask 022` in 0.85 s with basetemp `pytest-writer-fixed-0
 Scoped Ruff/whitespace pass; docs report 38 files and zero issues, STATUS 120 lines.
 No recording, native model, network, doctor,
 microphone, hardware or live execution occurred; historical receipts are intact.
+
+
+Valid until: negative-final retirement or input-continuation ownership changes — then treat as history.
+
+## 2026-10-10 — Retire matching rejected typed partials (ADR-0227)
+
+The combined integration gate before this repair was reported green at 12,187
+passed, 41 skipped, 9 warnings in 523.23 s; that receipt does not include this
+negative-final repair. A targeted actual-runtime probe then proved a matching
+quoted rejection left both a partial fence and arrival reservation alive, causing
+the next short add-on's model request to inherit the old unheard request. Matching
+abort cleared both. Five new typed-runtime cases reproduced `2 failed, 3 passed`
+in 3.58 s before the fix. Applied exact acoustic-key retirement only: commit the
+existing partial generation and clear its matching continuation, with no automatic
+restoration/reissue and no unmatched/unkeyed effects. Heard quoted answers retain
+their existing admitted path.
+
+```sh
+SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_rejected_partial_final.py tests/test_conversation_admission.py tests/test_continuation.py tests/test_resume.py tests/test_post_barge_response.py tests/test_conversation_flow.py tests/test_core_runtime.py tests/test_acoustic_lineage.py tests/test_final_preprocessing_cancel.py -q
+```
+
+Observed **342 passed in 32.66 s**; two synthetic watchdog diagnostics appeared
+without failures. Ruff/whitespace/docs checks pass. No native/full-suite/device/
+audio/model/network experiment ran in this repair lane. Final combined integration
+verification follows separately; original flow assertions and deadlines remain.

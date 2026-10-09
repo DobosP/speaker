@@ -20,7 +20,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0225/0226 retain template/label boundaries; ADR-0227 gates conversational admission before replacement; ADR-0228 bounds local decisions.
+- ADR-0225/0226 retain template/label boundaries; ADR-0227 gates admission before replacement while retaining canonical commands/vault requests and bounded vocatives; ADR-0228 bounds local decisions.
   Explicit Qwen+spoken factory canaries pass (ADR-0232); GPU mixed turns pass; CPU startup/semantic failures and rejected compact prompt remain open (ADR-0235).
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
@@ -110,7 +110,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Headless: admission/factory 385+126, resume 112; decisions 326+125; reference 437/2 skips; TTS 657/2 skips; cancellation 50; profile/identity 511+31, selection 365+17, setup 30, final model scope 210; LocalVQE 216/2 skips and 5+5 native cells; output/capture recovery 940/2 skips.
+- Headless: admission/factory 385+126, repaired requests/flow 264, resume 112; decisions 326+125; reference 437/2 skips; TTS 657/2 skips; cancellation 50; profile/identity 511+31, selection 365+17, setup 30, final model scope 210; LocalVQE 216/2 skips and 5+5 native cells; output/capture recovery 940/2 skips.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

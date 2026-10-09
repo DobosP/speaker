@@ -2176,6 +2176,11 @@ class VoiceRuntime:
                     return
                 if not self.supervisor.commit_input_generation(input_generation):
                     return
+                if self._conversation_admission is not None:
+                    self._conversation_admission.note_admitted(
+                        input_epoch=terminal_input_epoch,
+                        input_generation=input_generation,
+                    )
                 # Consume only after terminal ownership won against a newer final.
                 resume_prompt = self._resume.resume_prompt(text) or resume_prompt
                 log.info("resume request %r -> continuing the interrupted reply", text)

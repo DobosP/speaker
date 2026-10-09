@@ -8,12 +8,14 @@ from always_on_agent.conversation_admission import (
     ConversationAdmission,
     ConversationAdmissionConfig,
 )
-from always_on_agent.events import AgentEvent, Mode
+from always_on_agent.events import AgentEvent, EventKind, Mode
+from always_on_agent.models import SYNTHETIC_RESUME_TAIL_METADATA_KEY
 from core.addressing import ACT, ScriptedAddressingClassifier
 from core.engine import FinalTranscript
 from core.engines.scripted import ScriptedEngine
 from core.llm import EchoLLM
 from core.runtime import VoiceRuntime
+from core.resume import ResumeConfig
 
 
 @pytest.mark.parametrize(
@@ -372,5 +374,75 @@ def test_factory_console_preserved_while_missing_speech_classifier_refuses(
         engine.final("What is two plus two?")
         assert rt.wait_idle()
         assert engine.spoken == expected
+    finally:
+        rt.stop()
+
+
+def test_heard_resumed_question_admits_short_answer_without_resume_authority():
+    engine = ScriptedEngine(hold_speech=True)
+    classifier = ScriptedAddressingClassifier(default=ACT)
+    rt = VoiceRuntime(
+        engine,
+        EchoLLM(reply="Which city?"),
+        start_mode=Mode.ASSISTANT,
+        addressing=classifier,
+        unsure_acts=False,
+        conversation_admission=ConversationAdmissionConfig(),
+        resume_config=ResumeConfig(enabled=True, echo_guard_enabled=True),
+    )
+    rt.start(run_bus=False)
+    events = []
+    rt.bus.subscribe(events.append)
+
+    def wait_for_speech():
+        deadline = time.monotonic() + 2
+        while not engine.is_speaking and time.monotonic() < deadline:
+            rt.bus.drain()
+            time.sleep(0.001)
+        assert engine.is_speaking
+
+    try:
+        live(engine, "Can you help plan a trip?")
+        wait_for_speech()
+        engine.finish_speaking()
+        assert rt.wait_idle()
+        engine.barge_in()
+        rt.bus.drain()
+        assert rt._resume.preview_resume_prompt("continue") is not None
+
+        live(engine, "continue")
+        wait_for_speech()
+        resumed = [
+            event
+            for event in events
+            if event.kind == EventKind.STT_FINAL
+            and event.payload.get("metadata", {}).get(
+                SYNTHETIC_RESUME_TAIL_METADATA_KEY
+            )
+        ]
+        assert len(resumed) == 1
+        assert resumed[0].payload["origin"] == "unknown"
+        assert resumed[0].payload["owner_verified"] is False
+        assert resumed[0].payload["metadata"]["post_barge_response_only"] is True
+        assert resumed[0].payload["metadata"]["skip_user_memory"] is True
+        assert not rt._conversation_admission.inspect(
+            "Paris", input_epoch=rt.supervisor.input_epoch
+        ).candidate  # Admission alone cannot stand in for rendered speech.
+        engine.finish_speaking()
+        assert rt.wait_idle()
+
+        live(engine, "Paris")
+        deadline = time.monotonic() + 2
+        while len(classifier.calls) < 2 and time.monotonic() < deadline:
+            rt.bus.drain()
+            time.sleep(0.001)
+        assert [call[0] for call in classifier.calls] == [
+            "Can you help plan a trip?",
+            "Paris",
+        ]
+        wait_for_speech()
+        engine.finish_speaking()
+        assert rt.wait_idle()
+        assert engine.spoken == ["Which city?"] * 3
     finally:
         rt.stop()

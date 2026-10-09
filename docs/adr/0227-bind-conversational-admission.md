@@ -63,3 +63,16 @@ The console factory explicitly disables the ambient classifier for typed input. 
 speech gate without a local classifier still refuses; this preserves the no-model console
 smoke route without confusing missing classification with semantic uncertainty. Typed input
 keeps its existing unknown/unverified instruction provenance and gains no action authority.
+
+### 2026-10-10 addendum — questions in resumed replies
+
+Bind the current synthetic-resume generation to conversational admission only after
+terminal ownership and input-generation commit succeed. The response-only resume path
+previously published its reply without that identity, so a completed resumed question
+could not open its bounded answer window and a short answer was ingested as ambient.
+Admission still cannot stand in for rendered speech: the held resumed question leaves
+the window closed until its exact completed playback receipt. The resumed event retains
+unknown origin, no owner verification, response-only scope and skipped user memory;
+no retained query gains direct-live or tool authority. A genuine enabled ResumeConfig
+regression fails before the fix and passes afterward; the admission/resume/post-barge/
+continuation headless gate passes 112 tests in 4.09 seconds. No native model or live run.

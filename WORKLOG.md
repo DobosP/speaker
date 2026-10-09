@@ -831,3 +831,17 @@ cached bytes and verifies the existing alias without replacing it. Explicit
 current default/rollback remains; main/vision/tools/caps are retained. No cloud,
 microphone, doctor, audio route or owner recording was used. CPU-only and
 macOS/Windows/native/live/owner gates remain pending.
+
+
+Valid until: the pinned model identity parser changes — then treat as history.
+
+## 2026-10-10 — Independent identity review follow-up
+
+Independent review demonstrated that a second differing TEMPLATE directive
+could be omitted by the shared first-template parser. The project verifier now
+requires exactly one FROM and one TEMPLATE before hashing effective behavior.
+Parameter order remains normalized; duplicate parameters remain bound. Public
+fixture regression rejects the later override. This validation-only tightening
+does not change the measured valid native alias or any model request.
+
+Focused identity gate: 31 passed in 0.23 s; Ruff/diff pass.

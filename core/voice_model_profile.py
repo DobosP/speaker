@@ -90,7 +90,8 @@ def portable_config_digest(shown: object) -> str:
     """Canonical effective behavior, with exact templates and unordered maps."""
     modelfile = str(_field(shown, "modelfile", "") or "")
     directives = _top_level_directives(modelfile)
-    if sum(key == "FROM" for key, _ in directives) != 1:
+    if (sum(key == "FROM" for key, _ in directives) != 1
+            or sum(key == "TEMPLATE" for key, _ in directives) != 1):
         return ""
     if any(key not in {"FROM", "TEMPLATE", "PARAMETER", "LICENSE"} for key, _ in directives):
         return ""

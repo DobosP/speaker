@@ -288,7 +288,8 @@ def public_factory_client(host: str, device_profile: str):
 def run(model: str, host: str, *, show_failures: bool = False,
         confirmation: bool = False, conditions: tuple[str, ...] | None = None, freeform: bool = False,
         factory_profile: str | None = None, factory_holdout: bool = False,
-        decision_checks: bool = False, owned_daemon_pid: int | None = None) -> dict:
+        decision_checks: bool = False, owned_daemon_pid: int | None = None,
+        interleave_checks: bool = False) -> dict:
     try:
         before = identity(model, host)
     except Exception:
@@ -303,7 +304,10 @@ def run(model: str, host: str, *, show_failures: bool = False,
         variants = {key: variants[key] for key in conditions}
     cases = (FACTORY_HOLDOUT_CASES if factory_holdout else FREEFORM_CASES if freeform
              else CONFIRMATION_CASES if confirmation else CASES)
+    if interleave_checks:
+        cases = CASES[:4]
     rows = []
+    interleaved = []
     options = {"temperature": 0.0, "seed": 0, "top_p": 0.95, "num_ctx": 4096, "num_predict": 128, "num_thread": 2}
     client = OllamaLLM(model, host=host, options=options, keep_alive="60s", think=False,
                        timeout=20.0, client_headers=HEADERS)
@@ -312,7 +316,7 @@ def run(model: str, host: str, *, show_failures: bool = False,
     def observe():
         if owned_daemon_pid is not None:
             resource_samples.append(process_tree_sample(owned_daemon_pid))
-    if decision_checks and not factory_profile:
+    if (decision_checks or interleave_checks) and not factory_profile:
         raise ValueError("factory_profile_refused")
     if factory_profile:
         if model != MODELS[2] or conditions not in {None, ("spoken",)}:
@@ -347,6 +351,17 @@ def run(model: str, host: str, *, show_failures: bool = False,
             rows.append({"condition": name, "split": case.split, "ordinal": ordinal,
                          "elapsed_seconds": elapsed, "first_text_seconds": first_text, **result})
             observe()
+            if interleave_checks:
+                from core.addressing import LLMAddressingClassifier, _SYSTEM_PROMPT
+                text, expected = DECISION_CASES[(0, 1, 6, 7)[ordinal]]
+                classifier = LLMAddressingClassifier(client)
+                decision_at = time.monotonic()
+                label = collect_llm_decision(client, classifier._build_prompt(text, ()),
+                                             system=_SYSTEM_PROMPT, choices=("ACT", "INGEST", "UNSURE"))
+                interleaved.append({"correct": label == expected, "available": label is not None,
+                                    "false_act": label == "ACT" and expected != "ACT",
+                                    "elapsed_seconds": time.monotonic() - decision_at})
+                observe()
             if show_failures and not result["exact"]:
                 # Inputs and outputs here can only come from the fixed public
                 # canaries above; no caller file, memory or audio is accepted.
@@ -384,6 +399,15 @@ def run(model: str, host: str, *, show_failures: bool = False,
             "factory_profile": factory_profile,
             "warm_seconds": warm_seconds,
             "decision": decision_result, "decision_warm_seconds": decision_warm_seconds,
+            "interleaved_decision": ({"calls": len(interleaved),
+                                     "correct": sum(x["correct"] for x in interleaved),
+                                     "available": sum(x["available"] for x in interleaved),
+                                     "false_act": sum(x["false_act"] for x in interleaved),
+                                     "elapsed_p50_seconds": statistics.median(x["elapsed_seconds"] for x in interleaved),
+                                     "elapsed_max_seconds": max(x["elapsed_seconds"] for x in interleaved),
+                                     "max_tokens": 16, "timeout_seconds": 3.0,
+                                     "scope": "four_answer_then_decision_cycles_without_decision_rewarm"}
+                                    if interleaved else None),
             "resources": ({"scope": "owned_daemon_and_all_thread_descendants_post_call_samples_not_continuous_peak",
                            "samples": len(resource_samples),
                            **{key: max(sample[key] for sample in resource_samples)
@@ -407,6 +431,7 @@ def main(argv=None) -> int:
     parser.add_argument("--factory-profile", choices=("desktop_gpu_4090", "cpu_laptop"),
                         help="use public Qwen factory profile, fixed Iris and explicit warm; CPU forces num_gpu=0")
     parser.add_argument("--decision-checks", action="store_true")
+    parser.add_argument("--interleave-checks", action="store_true")
     parser.add_argument("--owned-daemon-pid", type=int)
     parser.add_argument("--conditions", nargs="+", choices=("current", "without_skills", "identity_only", "minimal_voice", "spoken"))
     args = parser.parse_args(argv)
@@ -417,7 +442,7 @@ def main(argv=None) -> int:
         report = run(args.model, host, show_failures=args.show_public_failures,
                      confirmation=args.confirmation, conditions=tuple(args.conditions) if args.conditions else None,
                      freeform=args.freeform, factory_profile=args.factory_profile, factory_holdout=args.factory_holdout, decision_checks=args.decision_checks,
-                     owned_daemon_pid=args.owned_daemon_pid)
+                     owned_daemon_pid=args.owned_daemon_pid, interleave_checks=args.interleave_checks)
         with args.output.open("x", encoding="utf-8") as destination:
             json.dump(report, destination, indent=2, allow_nan=False)
         print(json.dumps({"model": args.model, "calls": report["calls"], "cells": report["cells"]}))

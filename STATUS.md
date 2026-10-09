@@ -21,7 +21,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
 - ADR-0225/0226 retain template/label boundaries; ADR-0227 gates conversational admission before replacement; ADR-0228 bounds local decisions.
-  Explicit Qwen+spoken factory canaries pass (ADR-0232); MiniCPM semantic/reply probes and owner acoustic/live acceptance remain open.
+  Explicit Qwen+spoken factory canaries pass (ADR-0232); CPU resident 8+8 passes but mixed decisions 3/4; cold/live acceptance remains open.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.

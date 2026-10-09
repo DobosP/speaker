@@ -860,3 +860,40 @@ is model text latency, not audio. Optional owned-daemon Linux resource samples
 follow descendants from every thread and return numeric counts/RSS only; they
 are post-call observations, not continuous peaks. Synthetic gate:26 passed in
 0.23 s; Ruff/diff pass. No CPU inference result is claimed yet.
+
+
+Valid until: the CPU model, addressing prompt or warm/cache policy changes — then treat as history.
+
+## 2026-10-10 — CPU resident pass and cold mixed-prefix failure (ADR-0232)
+
+The committed public factory protocol forced num_gpu=0 and requested threads=2
+with unchanged cpu_laptop caps (2048 context/256 output). Eight fresh public
+holdout answers were exact, with no empty/recitation/markup outputs. Median
+first model text was 393 ms (max 452 ms); complete short answer 558 ms (max
+614 ms). Eight resident addressing decisions were available/correct with zero
+false ACT, median 591 ms/max 674 ms, within the unchanged 16-token/3-second
+helper. Answer warm 2.624 s and matched-format classifier warm 5.714 s were
+excluded from scoring. These are grouped resident results, not cold readiness.
+
+Four further fixed answer→decision cycles had no classifier rewarm: four
+answers were exact, but only three decisions were available/correct; one was
+unavailable at 3.009 s. No false ACT. Answer max grew to 1.860 s, first model
+text max 1.759 s. This fails cold mixed-prefix CPU qualification. A longer
+startup prefill may help the first classification, but the grouped result alone
+cannot justify CPU defaults; the shorter profile-specific addressing prompt or
+cache policy must be qualified without raising the per-turn deadline. No runtime
+prompt/model/default was changed after this result.
+
+Post-call samples followed daemon descendants through every process thread.
+Grouped max summed RSS 1401872384 bytes across 17 samples; mixed max 1401892864
+bytes across 9 samples, two processes, zero read failures. Ollama reported zero
+resident VRAM in both runs (resident model size 1240433949 bytes). These are
+sampled sums/API measures, not continuous peaks or full application memory.
+The unchanged CPU main/vision Gemma3:4b client was constructed but never loaded
+or called. No CPU READY, Mac/Windows, audio, live or native main-tier claim.
+All owned daemons/workers stopped and preexisting services remained untouched.
+
+Aggregate reports and source/binding receipts remain separate for the grouped
+and mixed protocols; the benchmark includes a fixed --interleave-checks flag.
+Synthetic benchmark tests: 27 passed in 0.20 s; Ruff/diff pass. No raw input,
+output or recording is in those aggregate reports, and no other model downloaded.

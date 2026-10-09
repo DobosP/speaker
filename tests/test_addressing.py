@@ -119,9 +119,9 @@ def test_parse_decision_rejects_partial_labels_and_instruction_recitations(reply
     assert _parse_decision(reply) == UNSURE
 
 
-def test_classifier_returns_unsure_when_llm_raises():
+def test_classifier_refuses_admission_when_llm_raises():
     cls = LLMAddressingClassifier(_RaisingLLM())
-    assert cls.classify("what time is it") == UNSURE
+    assert cls.classify("what time is it") == INGEST
 
 
 def test_classifier_normalizes_exact_active_alias():

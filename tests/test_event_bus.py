@@ -81,6 +81,7 @@ def test_every_event_kind_has_an_explicit_mailbox_policy():
     }
     data = {
         EventKind.STT_PARTIAL,
+        EventKind.AMBIENT_TRANSCRIPT,
         EventKind.SPEECH_OBSERVATION,
         EventKind.INTENT_DECISION,
         EventKind.TASK_PROGRESS,

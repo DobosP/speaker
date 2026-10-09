@@ -361,3 +361,26 @@ That small sample supports considering a stronger local trial, without changing 
 Paul subsequently chose **stop live testing for now**. No parser live retry or stronger-tier live trial occurred.
 Keep microphone, doctor and live retries off until his explicit resume. Preserve the compatible candidate,
 historical reference, protected backup and private evidence; no promotion or primary pointer change is authorized.
+
+
+## Implementation plan (2026-10-09)
+
+Owner scope: execute the researched improvements, with substantial refactoring allowed.
+Runtime authority, local-only audio, exact cancellation, optional capabilities and seven modes
+remain acceptance requirements. The preserved October 5 enrollment/evidence lane is not modified.
+
+| Stage | Deliverable | Acceptance | Progress |
+|---|---|---|---|
+| 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | In progress: `codex/voice-admission`. |
+| 2. Decisions and answers | Independent bounded local decision requests; public-only model quality cases; evidence-backed spoken-answer corrections. | Semantic negatives and answer behavior scored separately from valid formatting; cancellation/egress preserved; latency and failures reported. | In progress: `codex/voice-model-quality`. |
+| 3. Mobile media | Bounded generation-owned PCM delivery and cancellation; evaluate genuine within-sentence synthesis separately. | Flutter/native ownership and bounded-buffer tests, analyzer and supported builds; no WAV callback advertised as incremental synthesis. | In progress: `codex/mobile-pcm-streaming`. |
+| 4. Echo reference | Correct absolute reference timeline and bounded-copy reads; measured allocations/latency; assess offline candidate comparison. | Deterministic wrap/delay/overflow/concurrent tests plus APM/DTD; no acoustic default or enrollment promotion without physical comparison. | In progress: `codex/acoustic-reference`. |
+| 5. Integration | Review each stage, run combined desktop/mobile gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical/phone claims listed independently. | Pending stages 1–4. |
+
+Current constraint: the installed VITS model finishes a sentence before its native callback;
+mobile full-sentence RMS/declick requires that waveform. Removing WAV transport can reduce
+copies/storage, but a different qualified streaming model is needed for earlier intra-sentence
+samples. Installed local-model headless probes are permitted in this implementation; the prior
+owner stop of microphone/doctor/live tests is not treated as lifted by a refactoring request.
+A physical trial is a final owner gate once the implementation is reviewable. Phone and thermal
+acceptance require the corresponding physical device and are never inferred from desktop tests.

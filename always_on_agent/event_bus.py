@@ -39,6 +39,7 @@ class EventMailboxPolicy:
 
 _EVENT_LANES: dict[EventKind, MailboxLane] = {
     EventKind.STT_PARTIAL: MailboxLane.DATA,
+    EventKind.AMBIENT_TRANSCRIPT: MailboxLane.DATA,
     EventKind.STT_FINAL: MailboxLane.CONTROL,
     EventKind.STT_ABORTED: MailboxLane.CONTROL,
     EventKind.SPEECH_OBSERVATION: MailboxLane.DATA,

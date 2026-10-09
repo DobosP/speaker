@@ -828,6 +828,14 @@ class AgentSupervisor:
                 timer_token=event.payload.get("timer_token"),
             )
             return
+        if event.kind == EventKind.AMBIENT_TRANSCRIPT:
+            # Best-effort DATA traffic cannot consume the control reserve or
+            # grant turn/direct-live/owner authority. Noise overload may drop
+            # context; it must never fault the lifecycle mailbox.
+            text = event.payload.get("text")
+            if type(text) is str and text.strip() and len(text) <= 8192:
+                self.memory.add(text, tags=("ingested",))
+            return
         if event.kind == EventKind.MEMORY_COMMIT:
             if event.payload.get("source") == "playback_receipt":
                 schedule_followup = bool(

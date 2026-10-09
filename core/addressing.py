@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
-from .llm import LLMCallCancelled, LLMClient, collect_llm_text
+from .llm import LLMCallCancelled, LLMClient, collect_llm_decision
 
 log = logging.getLogger("speaker.addressing")
 
@@ -148,17 +148,20 @@ class LLMAddressingClassifier:
             return ACT
         prompt = self._build_prompt(text, recent)
         try:
-            reply = collect_llm_text(
+            reply = collect_llm_decision(
                 self._llm,
                 prompt,
                 system=_SYSTEM_PROMPT,
+                choices=(ACT, INGEST, UNSURE, "ACTION", "ACTIVE"),
             )
         except LLMCallCancelled:
             raise
         except Exception:  # noqa: BLE001
-            log.exception("addressing classifier LLM call failed; defaulting to UNSURE")
-            return UNSURE
-        return _parse_decision(reply)
+            log.exception("addressing classifier unavailable; refusing reply admission")
+            return INGEST
+        # A missing/expired/malformed result is not a semantic UNSURE. An
+        # ambiguity-friendly caller must not turn transport failure into ACT.
+        return _parse_decision(reply) if reply is not None else INGEST
 
     def _build_prompt(self, text: str, recent: Iterable[str]) -> str:
         context = [line for line in list(recent)[-self._max_context:] if line]
@@ -187,6 +190,13 @@ def _parse_decision(reply: str) -> str:
         return _DECISION_ALIASES[decision]
     log.warning("addressing classifier returned %r; defaulting to UNSURE", reply)
     return UNSURE
+
+
+class UnavailableAddressingClassifier:
+    """An enabled input gate cannot silently disappear with its local model."""
+
+    def classify(self, text: str, recent: Iterable[str] = ()) -> str:
+        return INGEST
 
 
 class ScriptedAddressingClassifier:

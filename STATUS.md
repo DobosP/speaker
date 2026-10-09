@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-09 (bounded local decision headless gate; prior owner/Windows evidence retained).
+Last verified: 2026-10-09 (bounded decisions and conversational admission; headless; prior live/Windows limits retained).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -20,8 +20,8 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0225 prefills closed thinking; ADR-0226 accepts complete addressing tokens; ADR-0228 bounds local decision requests independently of answers.
-  Voice-persona arithmetic and exact-label ambient addressing fail probes; live still activates on room noise and copies instructions.
+- ADR-0225/0226 retain template/label boundaries; ADR-0227 adds conversational admission before ambient replacement and bounded heard-question replies.
+  ADR-0228 bounds local decision inference. Headless gates pass; live room-noise, instruction-copying and answer quality remain unqualified.
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.

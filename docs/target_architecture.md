@@ -468,7 +468,8 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    stance; the always-on loop is still fully local.
 8. **Input gate — implicit addressing plus typed authority** (implemented;
    refined 2026-07-16). Learned addressing decides whether an ordinary final is
-   for the assistant. Exact controller-owned controls and setup-enabled tool
+   for the assistant. ADR-0227 first binds live conversational cues before input replacement;
+   heard-question answers are bounded and ambient context uses a DATA mailbox lane. Exact controller-owned controls and setup-enabled tool
    phrases have deterministic routes. Low-risk reminder/app mutations require
    an unchanged direct live request plus a separate direct spoken confirmation;
    sensitive/arbitrary actions additionally require owner verification or stay

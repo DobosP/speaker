@@ -1000,7 +1000,7 @@ def build_runtime(
 
     # Input gate: optional ACT/INGEST classifier between ASR_FINAL and the
     # brain (core/addressing.py). Requires a fast LLM client; if either is
-    # missing, the runtime falls back to legacy behavior (every final acts).
+    # missing, the enabled gate abstains; it cannot silently admit every final.
     input_gate_cfg = config.get("input_gate", {}) or {}
     addressing = None
     if input_gate_cfg.get("enabled", False) and fast_llm is not None:
@@ -1009,6 +1009,9 @@ def build_runtime(
         addressing = LLMAddressingClassifier(
             fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
         )
+    if input_gate_cfg.get("enabled", False) and addressing is None:
+        from .addressing import UnavailableAddressingClassifier
+        addressing = UnavailableAddressingClassifier()
     unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
     post_barge_response_window_sec = _post_barge_response_window(config)
 
@@ -1030,6 +1033,14 @@ def build_runtime(
     from .persona import PersonaConfig
 
     persona = PersonaConfig.from_dict(config.get("assistant"))
+    from always_on_agent.conversation_admission import ConversationAdmissionConfig
+    conversation_admission = (
+        ConversationAdmissionConfig.from_dict(
+            input_gate_cfg.get("conversation_admission"),
+            assistant_name=persona.name if persona is not None else "",
+        )
+        if input_gate_cfg.get("enabled", False) else None
+    )
 
     memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
@@ -1098,6 +1109,7 @@ def build_runtime(
         command_map=config.get("commands"),
         intents=intents,
         addressing=addressing,
+        conversation_admission=conversation_admission,
         unsure_acts=unsure_acts,
         cleaner=cleaner,
         live_routing=live_routing,

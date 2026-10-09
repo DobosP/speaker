@@ -12,6 +12,7 @@ class EventKind(str, Enum):
     STT_PARTIAL = "stt.partial"
     STT_FINAL = "stt.final"
     STT_ABORTED = "stt.aborted"
+    AMBIENT_TRANSCRIPT = "stt.ambient"
     SPEECH_OBSERVATION = "speech.observation"
     INTENT_DECISION = "intent.decision"
     CONTROL_STOP = "control.stop"

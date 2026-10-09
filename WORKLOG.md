@@ -2,6 +2,23 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-09 — conversational admission and priority preservation
+
+Valid until: later source or owner acoustic evidence supersedes this headless receipt — then treat as history.
+
+- ADR-0227 adds a typed candidate gate before ambient partial/final preemption, current rendered-question
+  windows and exact acoustic cue lifetime. Controls, continuations, typed input and non-assistant modes retain
+  their existing authority. Ambient memory is bounded/droppable DATA; no model or device-manager call runs
+  on this early capture seam. ADR-0228's request limits are wired into addressing.
+- Independent review reproduced broad-question false negatives, ambient control-queue overload, stale/auxiliary
+  question windows and unavailable-model ambiguity; all were corrected before commit. The old 30-second
+  partial ticket renewal was also removed, with exact unheard-input restoration and capture recovery fencing.
+- Targeted command: standard single-thread headless prefix, pytest -p no:cacheprovider over conversation
+  admission, addressing, acoustic lineage, post-barge, final-preprocessing cancellation, event bus, core runtime
+  and playback history plus factory/replay wiring: **385 passed in 12.39 s**, including the capture-manager avoidance regression.
+  Earlier combined factory/authority gate: **303 passed in 9.89 s**. These are deterministic state/ownership
+  checks; no recognition/model/GPU/phone/microphone result follows. Final integration receipt will follow.
+
 ## 2026-10-09 — bounded local decision requests (ADR-0228)
 
 Valid until: a later decision/provider contract supersedes this receipt — then treat as history.

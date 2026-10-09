@@ -13,6 +13,7 @@ from typing import Callable, Mapping, Optional
 from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.acoustic import AcousticLineage
 from always_on_agent.continuation import ContinuationConfig
+from always_on_agent.conversation_admission import ConversationAdmission, ConversationAdmissionConfig
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
@@ -29,6 +30,7 @@ from always_on_agent.speech_analyzer import (
     ModePolicy,
     is_assistant_mode_final_candidate,
     is_pending_confirmation_response,
+    exact_control_class,
 )
 from always_on_agent.supervisor import AgentSupervisor, ArrivalContinuation
 
@@ -217,6 +219,7 @@ class VoiceRuntime:
         command_map: Optional[dict[str, str]] = None,
         intents: Optional[LocalIntentHandler] = None,
         addressing: Optional[AddressingClassifier] = None,
+        conversation_admission: ConversationAdmissionConfig | None = None,
         unsure_acts: bool = True,
         cleaner: Optional[TranscriptCleaner] = None,
         live_routing: bool = False,
@@ -294,6 +297,11 @@ class VoiceRuntime:
         # trigger replies. See core/addressing.py and docs/target_architecture.md
         # §9.8. ``unsure_acts`` decides what to do with UNSURE -- True (default)
         # preserves prior behavior (respond on ambiguity); False is conservative.
+        self._conversation_admission = (
+            ConversationAdmission(conversation_admission)
+            if conversation_admission is not None and conversation_admission.enabled
+            else None
+        )
         self._addressing = addressing
         self._unsure_acts = unsure_acts
         # Optional transcript cleaner. When present, every ACT'd final goes
@@ -1243,6 +1251,17 @@ class VoiceRuntime:
                     outcome=resolution.outcome.value,
                     played_fraction=played_fraction,
                 )
+                if (self._conversation_admission is not None
+                        and playback_context is not None
+                        and playback_context.remember
+                        and playback_context.epoch == self.supervisor.speech_epoch
+                        and resolution.outcome == PlaybackOutcome.COMPLETED
+                        and resolution.played):
+                    self._conversation_admission.note_rendered(
+                        resolution.safe_text_prefix,
+                        input_epoch=self.supervisor.input_epoch,
+                        input_generation=playback_context.input_generation,
+                    )
                 self._resume.note_playback_receipt(
                     resolution.fragment_id,
                     resolution.safe_text_prefix,
@@ -1310,6 +1329,11 @@ class VoiceRuntime:
         """Allocate while ``_input_generation_lock`` is already held."""
 
         self._next_input_generation += 1
+        if self._conversation_admission is not None:
+            self._conversation_admission.note_arrival(
+                input_epoch=self.supervisor.input_epoch,
+                input_generation=self._next_input_generation,
+            )
         # Only substantive finals/partial fences allocate a generation. They
         # retire any not-yet-consumed marker from an older cancelled lease.
         self._arrival_superseded_generations.clear()
@@ -1566,6 +1590,11 @@ class VoiceRuntime:
                     generation=generation,
                     reservation=reservation,
                 )
+        if self._conversation_admission is not None:
+            self._conversation_admission.transfer_admitted(
+                input_epoch=input_epoch, previous_generation=published.generation,
+                input_generation=generation,
+            )
         if reissue is not None:
             self.bus.publish(reissue)
         return True
@@ -1650,6 +1679,25 @@ class VoiceRuntime:
             )
         )
 
+    def _has_conversation_cue(self, text: str, *, acoustic: AcousticLineage | None = None, partial: bool = False) -> bool:
+        """No inference: preserve controls and bind partial cues to their utterance."""
+        gate = self._conversation_admission
+        if gate is None or self.mode != Mode.ASSISTANT:
+            return True
+        if exact_control_class(text) is not None or normalize_command(text) in self._command_map:
+            return True
+        if (self.supervisor.state.pending_confirmations
+                and is_pending_confirmation_response(text)):
+            return True
+        if self._post_barge_response.is_armed(self.supervisor.input_epoch):
+            return True
+        if self.supervisor.looks_like_realtime_continuation(text):
+            return True
+        if self._resume.preview_resume_prompt(text) is not None:
+            return True
+        return gate.observe(text, input_epoch=self.supervisor.input_epoch,
+                            acoustic=acoustic, partial=partial).candidate
+
     def _on_partial_result(self, result: PartialTranscript) -> None:
         self._on_partial(
             result.text,
@@ -1672,6 +1720,8 @@ class VoiceRuntime:
                     result.revision,
                 )
                 return
+            if self._conversation_admission is not None:
+                self._conversation_admission.abandon(result.acoustic)
             post_barge_observation = self._post_barge_response.inspect(
                 self.supervisor.input_epoch,
                 "unknown",
@@ -1733,6 +1783,11 @@ class VoiceRuntime:
                         text, acoustic=acoustic, revision=revision
                     )
                 )
+                return
+            if not self._has_conversation_cue(text, acoustic=acoustic, partial=True):
+                # Keep partial observations/STOP semantics, but ambient words
+                # cannot fence a valid answer before a final is classified.
+                self.bus.publish(AgentEvent.partial(text, acoustic=acoustic, revision=revision))
                 return
             partial_generation = (
                 self._begin_partial_fence(acoustic)
@@ -1847,6 +1902,18 @@ class VoiceRuntime:
                         self.supervisor.commit_input_generation(partial_generation)
                         self._clear_arrival_continuation(partial_generation)
                     return
+            if (origin == "live_audio"
+                    and not self._has_conversation_cue(text, acoustic=acoustic)):
+                # Unlike an admitted request, a room fragment has no right to
+                # replace input ownership or stop pending/playing output. Its
+                # ambient memory write runs on the existing bounded bus, never
+                # on the capture callback. No origin/identity/tool bit is minted.
+                self.bus.publish(AgentEvent(
+                    EventKind.AMBIENT_TRANSCRIPT,
+                    {"text": text[:8192]},
+                    priority=70,
+                ))
+                return
             self._clear_partial_fence()
             self.supervisor.cancel_pending_aux_tts()
             input_generation = self._new_input_generation()
@@ -2163,6 +2230,9 @@ class VoiceRuntime:
             # trace or a behavior rule never enters the addressing classifier.
             recent = [it.text for it in self.memory.all()
                       if "vision" not in it.tags and "procedural" not in it.tags][-4:]
+            # Arrival already admitted the immutable utterance cue. Do not
+            # resample a follow-up window after a held/slow dispatch: the same
+            # final must not lose its cue merely because time elapsed.
             decision = self._addressing.classify(text, recent=recent)
             if retired():
                 return
@@ -2443,6 +2513,10 @@ class VoiceRuntime:
                 return
             if not self.supervisor.commit_input_generation(input_generation):
                 return
+            if self._conversation_admission is not None:
+                self._conversation_admission.note_admitted(
+                    input_epoch=terminal_input_epoch, input_generation=input_generation,
+                )
             self.metrics.mark(ASR_FINAL, at=final_at)
             if arrival_superseded:
                 self.metrics.mark_superseded_turn()
@@ -2611,6 +2685,8 @@ class VoiceRuntime:
             self._clear_arrival_continuation()
             self._clear_published_unheard()
             self._clear_partial_fence()
+            if self._conversation_admission is not None:
+                self._conversation_admission.invalidate()
             self.metrics.mark(BARGE_IN)
             self._watchdog.note_barge_in()
             self.supervisor.cancel_all()
@@ -2725,6 +2801,8 @@ class VoiceRuntime:
         # A deterministic command consumed the interruption itself; no later
         # ambient final may inherit the post-barge conversational grant.
         self._post_barge_response.invalidate()
+        if self._conversation_admission is not None:
+            self._conversation_admission.invalidate()
         if action == "stop":
             # Same determinism as barge-in: set cancellation before playback is
             # cut so no stale sentence from the interrupted turn is spoken
@@ -2862,6 +2940,8 @@ class VoiceRuntime:
         feedback "reconnecting microphone"), and tells the watchdog so
         it skips the false "audio thread stalled" warning during a
         legitimate reopen."""
+        if state != "open" and self._conversation_admission is not None:
+            self._conversation_admission.invalidate()
         self._watchdog.note_capture_state(state, message)
         log.info("capture state: %s (%s)", state, message)
         self.bus.publish(
@@ -3154,6 +3234,8 @@ class VoiceRuntime:
             )
         ):
             self._post_barge_response.invalidate()
+            if self._conversation_admission is not None:
+                self._conversation_admission.invalidate()
             if event.kind == EventKind.CONTROL_MODE:
                 # A queued response-only STT_FINAL may already have opened its
                 # ASR metrics turn before the higher-priority mode event fences

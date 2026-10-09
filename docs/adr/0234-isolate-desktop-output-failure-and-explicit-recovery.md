@@ -123,3 +123,27 @@ Exact scoped command (models/devices are faked or self-skip):
 ```sh
 SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_output_cleanup_owner.py tests/test_sherpa_output_recovery.py tests/test_sherpa_playback.py tests/test_sherpa_media_session.py tests/test_sherpa_duplex_runtime.py tests/test_sherpa_models.py tests/test_virtual_audio_engine.py tests/test_capture_integration.py tests/test_streaming_tts.py tests/test_tts_markup.py tests/test_tts_backend.py tests/test_audio_frontend.py tests/test_apm_double_talk.py tests/test_barge_word_cut.py tests/test_barge_confirm.py tests/test_playback_receipts.py tests/test_engine_playback_receipts.py tests/test_playback_history.py tests/test_speaker_input_gate.py tests/test_output_leveler.py -q
 ```
+
+## Addendum — prospective evaluator source bindings (2026-10-10)
+
+The unconditional Sherpa import of `core/engines/_output_cleanup.py` changed
+the evaluator import closure. The full headless gate detected the missing AMI
+source-list member; this was an inventory failure, with no new audio execution
+or quality result. Generic capture replay, Microsoft AEC/APM/DTD, production
+final-STT, EdAcc endpoint integrity and LiveKit causal endpoint now include the
+helper in their prospective source hashes. AMI derives its exact list from
+generic replay: its expected count is 59, and generic schema-4 async replay's
+count is 33. Existing exact clean-process equality checks remain strict.
+
+Historical locks, recipes, reports and native receipts are unchanged; the new
+source identity qualifies only future evaluation runs. Media-only inventories
+do not acquire unrelated conversation-admission, LLM-decision or voice-model
+selection modules. Whole-agent conversation provenance already binds clean
+Git revision plus configuration/model identity; the separately scoped native
+factory benchmark receives its own prospective manifest.
+
+Seven deterministic source-closure, source-membership, changed-helper digest
+and async-report checks passed in 12.26 s. The exact commands and an earlier
+scratch-parent setup failure are retained in `WORKLOG.md`. Scoped lint and
+whitespace checks pass. No recording, native inference, microphone, doctor,
+network or hardware validation ran; the owner-stopped live gates remain open.

@@ -431,6 +431,10 @@ def test_execution_closure_reader_admits_current_sherpa_above_public_limit():
 
     assert 512 * 1024 < len(payload) <= evaluator._MAX_EXECUTION_CLOSURE_MEMBER_BYTES
     assert closure["core/engines/sherpa.py"] == hashlib.sha256(payload).hexdigest()
+    cleanup = evaluator._REPO_ROOT / "core/engines/_output_cleanup.py"
+    assert closure["core/engines/_output_cleanup.py"] == hashlib.sha256(
+        evaluator._read_stable_execution_closure_member(cleanup)
+    ).hexdigest()
     with pytest.raises(evaluator.public_fixtures.PublicFixtureError):
         evaluator.public_fixtures._read_stable_repo_worker(sherpa)
 

@@ -42,6 +42,23 @@ _RECIPE_SHA256 = (
 _REAL_CORPUS_ENV = "SPEAKER_PRODUCTION_FINAL_STT_CORPUS"
 
 
+def test_source_identity_binds_newly_imported_output_cleanup(monkeypatch):
+    original_read = evaluate.read_regular_bounded
+    original_digest = evaluate._source_digest()
+    observed = []
+
+    def changed_output_source(path, **kwargs):
+        snapshot = original_read(path, **kwargs)
+        if Path(path).name == "_output_cleanup.py":
+            observed.append(path)
+            return SimpleNamespace(data=snapshot.data + b"\n# public identity probe\n")
+        return snapshot
+
+    monkeypatch.setattr(evaluate, "read_regular_bounded", changed_output_source)
+    assert evaluate._source_digest() != original_digest
+    assert len(observed) == 1
+
+
 def _case(
     case_id: str,
     *,

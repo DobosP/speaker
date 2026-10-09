@@ -67,6 +67,7 @@ def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
         evaluate._EVALUATOR_SOURCE_FILES
     )
     assert "core/endpointing.py" in evaluate._EVALUATOR_SOURCE_FILES
+    assert "core/engines/_output_cleanup.py" in evaluate._EVALUATOR_SOURCE_FILES
     assert "core/engines/_semantic_hold.py" in (evaluate._EVALUATOR_SOURCE_FILES)
     default_files = evaluate._evaluator_source_files()
     shadow_files = evaluate._evaluator_source_files(logical_turn_shadow=True)
@@ -1380,7 +1381,7 @@ def test_evaluator_async_mode_uses_schema_four_and_real_worker_harness(
     assert report["engine"]["final_execution"] == (
         "post-capture-dedicated-worker-drain"
     )
-    assert report["engine"]["evaluator_source_files"] == 32
+    assert report["engine"]["evaluator_source_files"] == 33
     assert "PRIVATE" not in json.dumps(evidence, sort_keys=True)
     payload = (
         json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")

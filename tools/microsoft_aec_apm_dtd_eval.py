@@ -131,6 +131,7 @@ _EAGER_LOCAL_IMPORT_FILES = (
     "core/engines/_denoiser.py",
     "core/engines/_dtd.py",
     "core/engines/_kws_speaker_inference_owner.py",
+    "core/engines/_output_cleanup.py",
     "core/engines/_semantic_hold.py",
     "core/engines/_sherpa_models.py",
     "core/engines/_sherpa_streaming_decode.py",

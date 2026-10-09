@@ -1042,7 +1042,7 @@ print(json.dumps(files))
     )
     assert completed.returncode == 0, completed.stderr.decode("utf-8")
     assert json.loads(completed.stdout) == list(subject._SOURCE_FILES)
-    assert len(subject._SOURCE_FILES) == 58
+    assert len(subject._SOURCE_FILES) == 59
 
 
 class _SpawnGapProcess:

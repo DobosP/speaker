@@ -1031,3 +1031,35 @@ Verification: `tests/test_voice_model_quality.py`, `test_addressing_profile.py`
 and `test_voice_model_profile.py`: 99 passed in 1.82 s using the shared venv
 with native/log/config access disabled and fresh owned scratch. Scoped Ruff,
 `git diff --check` and docs checker pass; STATUS stays at 120 lines.
+
+Valid until: the evaluator import closure or declared source qualification scope changes — then treat as history.
+
+## 2026-10-10 — Bind prospective media evaluators to output cleanup
+
+The first integrated full gate stopped with 3 failed, 4323 passed and 19 skipped
+in 263.11 s. One failure was AMI's exact clean-import closure: Sherpa now imports
+`core/engines/_output_cleanup.py`, absent from the prospective list. The other
+two conversation-flow failures are repaired separately. Five media evaluator
+inventories now hash the helper; AMI derives its inventory from generic replay.
+AMI's exact count changes 58 to 59 and generic schema-4 async replay 32 to 33.
+The new final-STT control proves changed helper bytes change its source digest.
+Historical locks, recipes, source receipts and native results were not edited.
+
+Audit found no related curated whole-agent list to extend: conversation
+qualification binds clean Git revision, and the legacy English LLM harness
+directly measures llama.cpp rather than the application factory. Unrelated
+control-plane modules remain outside the media inventories. The prospective
+voice-model factory manifest is a separate worker change.
+
+The first six selected checks passed in 15.42 s. An added async test's initial
+attempt failed at pytest setup because its task scratch parent did not exist;
+creating that parent under `~/work/_temp/` allowed the final seven-test gate:
+
+```sh
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_ami_natural_turn_capture_replay_eval.py::test_exact_clean_import_closure_matches_persisted_source_list tests/test_microsoft_aec_apm_dtd_eval.py::test_clean_process_eager_local_imports_equal_the_bound_closure tests/test_capture_replay_eval.py::test_evaluator_provenance_includes_streaming_decode_sources tests/test_capture_replay_eval.py::test_evaluator_async_mode_uses_schema_four_and_real_worker_harness tests/test_production_final_stt_eval.py::test_source_identity_binds_newly_imported_output_cleanup tests/test_edacc_endpoint_integrity_eval.py::test_shadow_source_binding_is_strictly_conditional tests/test_livekit_causal_endpoint_eval.py::test_execution_closure_reader_admits_current_sherpa_above_public_limit -q --basetemp=/home/dobo/work/_temp/codex__resume-question-admission/pytest-inventory-qualified
+```
+
+Result: **7 passed in 12.26 s**. Scoped E9/F63/F7/F82 Ruff and whitespace pass;
+the documentation checker reports 38 files and zero issues, with STATUS at 120 lines.
+These are source-binding/headless checks, with no private corpus read, model
+inference, device/doctor/live run, network call or change to the live-stop gate.

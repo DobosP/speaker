@@ -914,3 +914,21 @@ Fake-only gate: voice_model_selection, voice_model_profile, live_launcher,
 setup_doctor and performance_modes: **365 passed, 2 warnings in 2.35s**.
 The first run had two test-fixture errors (an empty strict device profile),
 corrected without changing device validation. No native model run in this gate.
+
+Valid until: resumed-turn identity or conversational-admission behavior changes — then treat as history.
+
+## 2026-10-10 — Preserve answers to rendered resumed questions
+
+The enabled ResumeConfig controller branch committed its synthetic-resume input
+generation without binding conversational admission. A deterministic public fixture
+reproduced the real resume event: after barge/continue, the resumed "Which city?"
+completed, but "Paris" never reached the addressing classifier. That regression failed
+on cd443a0, then passed after the five-line current-generation binding. A held resumed
+question still grants no answer window before playback completion. Its published final
+keeps unknown origin, owner_verified=false, response-only and skip-user-memory metadata.
+
+Low-priority headless command from docs/agent-testing.md: tests/test_conversation_admission.py,
+tests/test_resume.py, tests/test_post_barge_response.py, tests/test_continuation.py —
+112 passed in 4.09 s. Scoped E9/F63/F7/F82 Ruff passes. The runtime persona wiring in the
+orchestrator's separate worktree was untouched. No native model, doctor, microphone,
+phone, route change, recording, cloud call or action-authority promotion occurred.

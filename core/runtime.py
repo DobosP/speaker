@@ -1905,6 +1905,17 @@ class VoiceRuntime:
                     return
             if (origin == "live_audio"
                     and not self._has_conversation_cue(text, acoustic=acoustic)):
+                # This terminal may reject a previously plausible partial. Retire
+                # only its exact fence/reservation; do not reissue the old input
+                # or let an unrelated/unkeyed final clear another utterance.
+                cleared_fence = (
+                    self._clear_matching_partial_fence(acoustic)
+                    if acoustic is not None else None
+                )
+                if cleared_fence is not None:
+                    partial_generation, _ = cleared_fence
+                    self.supervisor.commit_input_generation(partial_generation)
+                    self._clear_arrival_continuation(partial_generation)
                 # Unlike an admitted request, a room fragment has no right to
                 # replace input ownership or stop pending/playing output. Its
                 # ambient memory write runs on the existing bounded bus, never

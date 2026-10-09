@@ -111,3 +111,26 @@ session gate passes 264 tests in 14.20 seconds. It includes staged Run/Execute
 confirmation with zero provider calls before confirmation, raw addressing-text
 preservation, parser-parity requests, ambient negatives and exact heard-answer
 quote carry. No microphone, native model, device, network or live validation ran.
+
+
+### 2026-10-10 addendum — retire an exactly matching rejected partial turn
+
+When a typed live final is rejected as ambient after a plausible positive partial,
+retire only a partial fence whose acoustic keys exactly match that terminal final.
+Commit its existing partial input generation and remove only its matching arrival
+continuation reservation. Unmatched or unkeyed finals have no retirement effect.
+This applies the existing negative-final retirement semantics without restoring,
+reissuing or automatically resuming any old input; dispatcher and tool authority
+are unchanged. A valid quoted answer to an actually heard question still follows
+the ordinary admitted-final path.
+
+The acoustic revision had already closed while the runtime fence/reservation
+remained live. In a real typed-runtime replay with an unheard request, its positive
+partial and a same-key rejected quoted final, a later short add-on inherited the
+old request. A matching typed abort cleared both states. The new five-case runtime
+regression reproduced two failures before the fix, with foreign/unkeyed isolation
+and heard-answer behavior already passing. After the 11-line runtime repair, the
+new/admission/continuation/resume/post-barge/unchanged flow/core-runtime/acoustic/
+preprocessing gate passes 342 tests in 32.66 seconds. No deadline, scenario or
+existing assertion changed. These are headless model/device doubles, with no
+native inference, microphone, network, physical or live acceptance claim.

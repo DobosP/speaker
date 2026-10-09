@@ -1016,7 +1016,8 @@ def build_runtime(
         from .addressing import LLMAddressingClassifier
 
         addressing = LLMAddressingClassifier(
-            fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
+            fast_llm, max_context=int(input_gate_cfg.get("max_context", 4)),
+            prompt_profile=config.get("voice_model_profile", "current"),
         )
     if input_gate_enabled and addressing is None:
         from .addressing import UnavailableAddressingClassifier

@@ -54,6 +54,50 @@ models pinned by other/previous requests are not automatically reclaimed; per-ro
 retention applies on subsequent requests. Shared main/fast weights retain the fast
 policy. GGUF and Flutter Gemma retain their existing context/lifetime contracts.
 
+## Small desktop voice model
+
+[ADR-0232](adr/0232-qualified-small-desktop-voice-profile.md) defines the optional
+Qwen2.5-1.5B Q4_K_M profile and its measured spoken prompt. It composes with the
+resource modes above; the configured larger model remains available for complex
+requests and vision. The public asset is approximately 1.12 GB on disk.
+[ADR-0235](adr/0235-retain-legacy-addressing-after-compact-probe.md) records the
+rejected compact addressing prompt and the retained production classifier.
+
+With an already running local Ollama daemon, provision the pinned asset/alias:
+
+```sh
+python -m tools.setup_voice_model --profile qwen2.5-1.5b
+```
+
+Select it using `--voice-model qwen2.5-1.5b` with core, doctor or the launcher.
+`--voice-model current` uses the original configured selection for that process.
+The same selection reaches readiness and runtime, and a conflicting custom
+`--fast-model` refuses before host setup. To persist an explicit selection, the
+config key is `voice_model_profile`; provisioning alone does not change it.
+
+The owner stopped physical tests on October 5. The next Linux trial, after
+explicit resume and preparation of the retained compatible enrollment lane, is:
+
+```sh
+./live.sh --device desktop_gpu_4090 --performance responsive --voice-model qwen2.5-1.5b
+```
+
+This command still requires full route/model/enrollment readiness. The four
+GPU mixed-context cases passed, with median first text 447 ms and maximum
+decision time 629 ms. These are component measurements after the normal startup
+sequence, not audible latency. CPU tests had 11–14-second answer outliers and
+six false ACT labels among 16 standalone negative cases, so CPU performance
+remains unqualified. The separate conversation-admission gate rejects those
+16 idle negative fixtures before classification; that is not a general semantic
+guarantee or a cure for startup delays.
+
+These measurements came from an occupied Linux workstation; a subsequent
+console smoke observed 94–96% total CPU load. No isolation from unrelated
+workload or universal CPU speed claim is made.
+
+Windows and macOS native evidence remains separate from these Linux measurements;
+[STATUS](../STATUS.md) lists current acceptance limits.
+
 ## Measured evidence and limits
 
 The [English comparison](english_model_comparison.md) contains three-repeat corpus

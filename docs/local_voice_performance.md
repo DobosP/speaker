@@ -309,9 +309,10 @@ permission to read/mutate the named private enrollment/config files, despite bei
    Exit 0 means active; 2 refused, 3 staged/inactive and 4 ambiguous require the documented handling (ADR-0066).
    Historical enrollment, backup, isolated candidate, recordings and native receipts stay local and intact.
 
-LocalVQE remains a research candidate with no shipped adapter/comparison tool. A bounded disjoint echo-only
-comparison needs a separate reviewed implementation/input-authority task; no download or acoustic/default claim
-follows from this preparation. Phone ASR, offline whole-session behavior, memory, thermal and physical gates
+At this historical preparation checkpoint LocalVQE had no comparison tool. The later
+[ADR-0231](adr/0231-evaluate-localvqe-offline-with-paired-input-authority.md) now records bounded
+synthetic and original AFTER-HOST paired comparisons; they do not justify acoustic/default adoption.
+Phone ASR, offline whole-session behavior, memory, thermal and physical gates
 likewise require separately authorized device work; Linux console/assets/metadata cannot qualify them.
 
 ### Owner live continuation and MiniCPM correction (2026-10-05)
@@ -371,11 +372,11 @@ remain acceptance requirements. The preserved October 5 enrollment/evidence lane
 
 | Stage | Deliverable | Acceptance | Progress |
 |---|---|---|---|
-| 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | In progress: `codex/voice-admission`. |
-| 2. Decisions and answers | Independent bounded local decision requests; public-only model quality cases; evidence-backed spoken-answer corrections. | Semantic negatives and answer behavior scored separately from valid formatting; cancellation/egress preserved; latency and failures reported. | In progress: `codex/voice-model-quality`. |
-| 3. Desktop media/portability | Profile Linux/Windows/macOS core playback and portable persistence; repair an independently reproduced bottleneck or defect. | Deterministic lifecycle/resource/platform checks; actual OS/audio claims only when run. | Desktop scout in progress; mobile deferred by owner. |
-| 4. Echo reference | Correct absolute reference timeline and bounded-copy reads; measured allocations/latency; assess offline candidate comparison. | Deterministic wrap/delay/overflow/concurrent tests plus APM/DTD; no acoustic default or enrollment promotion without physical comparison. | In progress: `codex/acoustic-reference`. |
-| 5. Integration | Review each stage, run combined desktop/mobile gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical/phone claims listed independently. | Pending stages 1–4. |
+| 1. Admission | Typed conversation cues before ambient input can retire current work; bounded follow-up state; ordinary implicit questions remain available. | Wrong ACT on idle room fragments cannot invoke answering, tools or cancellation; STOP, requests, follow-up and mode/provenance regressions pass. | Complete headless: ambient-before-cancel admission, explicit console preservation and rendered-resume follow-up regression. |
+| 2. Decisions and answers | Independent bounded local decision requests; public-only model quality cases; evidence-backed spoken-answer corrections. | Semantic negatives and answer behavior scored separately from valid formatting; cancellation/egress preserved; latency and failures reported. | Complete evaluation: explicit Qwen/spoken profile and bounded decisions; GPU mixed cases pass; CPU latency/semantic gate remains open; compact prompt rejected (ADR-0235). |
+| 3. Desktop media/portability | Profile Linux/Windows/macOS core playback and portable persistence; repair an independently reproduced bottleneck or defect. | Deterministic lifecycle/resource/platform checks; actual OS/audio claims only when run. | Implemented: no replay after TTS errors, isolated output failure and bounded explicit recovery. Native Windows/macOS and physical tests remain open. |
+| 4. Echo reference | Correct absolute reference timeline and bounded-copy reads; measured allocations/latency; assess offline candidate comparison. | Deterministic wrap/delay/overflow/concurrent tests plus APM/DTD; no acoustic default or enrollment promotion without physical comparison. | Complete offline: ring repair plus five synthetic and five recorded comparison cells; no AEC default change. |
+| 5. Integration | Review each stage, run combined desktop gates, preserve benchmark receipts and update current STATUS. | Qualified commits integrated without losing concurrent changes; physical and other-OS claims listed independently. | Pending stages 1–4. |
 
 Owner priority clarified: Linux, Windows and macOS desktop core first; mobile frameworks are
 out of the current implementation target. Android PCM work is preserved separately at
@@ -390,3 +391,35 @@ samples. Installed local-model headless probes are permitted in this implementat
 owner stop of microphone/doctor/live tests is not treated as lifted by a refactoring request.
 A physical trial is a final owner gate once the implementation is reviewable. Phone and thermal
 acceptance require the corresponding physical device and are never inferred from desktop tests.
+
+### Desktop implementation findings (2026-10-10)
+
+Valid until: changed source/model/platform or fresh physical evidence — then treat as history.
+
+- Conversation admission now precedes input replacement. Idle fragments cannot
+  interrupt useful work merely because a small model returns ACT. Current heard
+  questions still permit short answers; controls and provenance retain their
+  existing authority ([ADR-0227](adr/0227-bind-conversational-admission.md)).
+- Addressing and routing decisions have independent token/output/deadline bounds
+  with unavailable decisions kept distinct from semantic uncertainty. Large
+  answer budgets remain available ([ADR-0228](adr/0228-bound-local-model-decisions.md)).
+- Desktop synthesis cannot retry after entering a native generate call. Output
+  failure terminalizes queued receipts and preserves capture/control processing;
+  exact uncertain native cleanup remains quarantined. Explicit recovery never
+  replays a failed fragment ([ADR-0233](adr/0233-never-retry-entered-desktop-tts-generation.md),
+  [ADR-0234](adr/0234-isolate-desktop-output-failure-and-explicit-recovery.md)).
+- The reference-ring repair removed temporary index arrays and fixed oversized
+  writes. Synthetic paired-read means fell from 20.56–49.04 us to 6.20–8.32 us,
+  depending on the case; these are microbenchmarks, not whole-turn latency
+  ([ADR-0230](adr/0230-bound-played-reference-ring-copies.md)).
+- Offline LocalVQE ran against synthetic signals and one original 141.6-second
+  local AFTER-HOST mic/reference pair. Its 203K model used 0.343 seconds of processing wall time per second of
+  recording, versus 0.016 for the installed APM echo-only comparator. The unlabeled recording cannot establish
+  echo/near-speech/ASR quality; no AEC adoption follows ([ADR-0231](adr/0231-evaluate-localvqe-offline-with-paired-input-authority.md)).
+
+The measured changes retain native Sherpa/ONNX/Ollama inference and use existing
+NumPy native copies. They do not establish a Python-to-Rust rewrite benefit.
+Windows secure enrollment persistence still needs a reviewed native file/ACL
+implementation and a Windows runner; macOS audio behavior also requires actual
+hardware. No cross-platform READY, physical latency or acoustic acceptance is
+implied by Linux headless tests. Mobile work remains the separate deferred branch.

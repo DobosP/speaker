@@ -483,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Complete stage 2 in local Ollama (https://ollama.com):")
     print("    ollama pull gemma3:12b")
     print("    python -m tools.setup_minicpm")
+    print("Optional pinned desktop voice candidate: python -m tools.setup_voice_model --profile qwen2.5-1.5b")
+    print("Select it explicitly with --voice-model qwen2.5-1.5b; see docs/performance_modes.md.")
     print("    python -m tools.doctor")
     print("\nOnly the final doctor READY result authorizes the Sherpa runtime:")
     print(f"    {normal_voice_entry()}")

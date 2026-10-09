@@ -2,6 +2,8 @@
   "llm_model": "gemma3:12b",
   "_device_comment": "device-adapt-1: 'auto' probes the host (cores/RAM/GPU/mobile) at launch via tools.recommend_profile and applies the matching device_profile, so an unconfigured low-spec box stops silently running the heavy 'desktop' tier. The choice is logged at startup and overridable with --device <name> or a config.local.json override. Auto-selection is provably cloud-safe: every profile keeps local_only/cloud-off (tests/test_device_profile_invariants.py).",
   "device": "auto",
+  "voice_model_profile": "current",
+  "_voice_model_profile_comment": "Explicit desktop Qwen selection and rollback: ADR-0232 and docs/performance_modes.md. CLI --voice-model overrides this marker; provisioning does not change it.",
   "_voice_session_comment": "Audio is device-only by default. Enabling trusted-LAN audio is an explicit machine-local setup grant made with tools.setup_assistant --allow-trusted-lan-audio; it is not a general Internet/cloud audio permission and does not grant speaker or action authority.",
   "voice_session": {
     "audio_egress": "device_only"

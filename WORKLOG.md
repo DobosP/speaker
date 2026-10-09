@@ -982,3 +982,25 @@ API, per-turn deadline increase, CPU default or semantic promotion follows.
 Explicit Qwen reply profile remains; CPU's existing input_gate=false unchanged.
 No more native experiments authorized in this iteration; all owned daemons
 retired and user services untouched. Model text latency is not physical audio.
+
+
+## 2026-10-10 — Desktop integration preflight and first broad gate
+
+Valid until: changed integration source or a new full gate — then treat as history.
+
+Actual runtime/persona/classifier assembly and installer/profile tests passed
+**61 tests in 2.00s**. The first CI-style full run was interrupted for repair
+after **3 failed, 4323 passed, 19 skipped in 263.11s**. One failure was a
+prospective AMI source inventory missing the new output-cleanup module. Two
+assertions reported the same stop/restart scenario regression: admission omitted
+the canonical run/execute command verbs before command.stage could confirm them.
+The complete failure log and synthetic fixtures remain private task evidence.
+
+The real `python -m core --session console --llm echo --voice-model current`
+entrypoint returned exit0 and the expected reply to public text, using a scratch
+current-directory config, forced in-memory storage and no warm/audio/model calls.
+An initial unsupported `--config` invocation returned argparse exit2 before
+startup; both receipts are preserved. Console final process RSS was38.8MB, which
+is not full voice-agent memory. Its system samples showed94–96% host CPU use;
+these occupied-host observations are not hardware-isolated model performance.
+No unrelated process was stopped and no microphone/doctor/live check ran.

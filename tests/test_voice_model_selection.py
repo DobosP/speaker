@@ -109,6 +109,59 @@ def test_conflict_precedes_readiness_side_effects(monkeypatch):
 
 def test_direct_readiness_lists_selected_voice_alias():
     from core.readiness import profile_ollama_models
+
     config = {**base(), "voice_model_profile": "qwen2.5-1.5b"}
     assert profile_ollama_models(config, "safe") == ("vision", PROFILE_ALIAS)
     assert config["llm"]["fast_model"] == "previous"
+
+
+def test_runtime_assembly_binds_raw_profile_marker_and_explicit_cli_selection(
+    monkeypatch,
+):
+    from always_on_agent.events import Mode
+    from always_on_agent.memory import SessionMemory
+    from always_on_agent.models import CLOUD_EGRESS_SCOPE_CONTEXT_KEY, CloudEgressScope
+    from core import app
+    from core.engines.scripted import ScriptedEngine
+    from core.routing import HeuristicRouter
+    from tests.test_spoken_persona import Model
+
+    original = {**base(), "voice_model_profile": "qwen2.5-1.5b"}
+    original["input_gate"] = {"enabled": True}
+    original["assistant"] = {
+        "name": "Iris",
+        "persona": "Speak kindly.",
+        "extra": "Use Celsius.",
+    }
+    saved = deepcopy(original)
+    selected, _ = select_voice_model(original, "qwen2.5-1.5b")
+    # Exercise real runtime assembly and its registered provider without any
+    # startup, backend client, saved memory, model, device or network access.
+    monkeypatch.setattr(app, "_build_memory", lambda *_a, **_kw: SessionMemory())
+    observed = []
+    for config in (original, selected):
+        model = Model()
+        runtime = app.build_runtime(
+            config,
+            engine=ScriptedEngine(),
+            llm=model,
+            fast_llm=model,
+            router=HeuristicRouter(),
+            start_mode=Mode.ASSISTANT,
+        )
+        assert runtime._addressing._prompt_profile == "qwen2.5-1.5b"
+        prompt = runtime._system_prompt
+        assert (
+            "Answer the user's request directly in natural spoken language." in prompt
+        )
+        assert "Speak kindly." in prompt and "Use Celsius." in prompt
+        result = runtime.supervisor.capabilities.invoke(
+            "assistant.answer",
+            "what can you do",
+            {CLOUD_EGRESS_SCOPE_CONTEXT_KEY: CloudEgressScope.LOCAL_ONLY},
+        )
+        assert result.ok and result.data["capability_summary"]
+        assert model.calls == []
+        observed.append((prompt, result.text))
+    assert observed[0] == observed[1]
+    assert original == saved

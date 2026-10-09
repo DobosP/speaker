@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -347,6 +348,29 @@ def _calibration_has_suspicious_transient(calibration: dict) -> bool:
     if ambient <= 0.0:
         return True
     return peak / ambient >= _INPUT_CAL_TRANSIENT_CREST_RATIO
+
+
+def _tts_generate_rejects_callback(generate: Callable[..., object]) -> bool:
+    """Prove a callback-less API before entering synthesis; never probe by retry.
+
+    Native bindings can have an opaque signature. Treat those as callback-capable
+    (the pinned Sherpa API is) and let their errors propagate. A TypeError raised
+    inside inference, DSP or the sink is not evidence of an unsupported keyword.
+    No callable/signature is retained after this check.
+    """
+    try:
+        signature = inspect.signature(generate, follow_wrapped=False)
+    except (TypeError, ValueError):
+        return False
+    try:
+        signature.bind("", sid=0, speed=1.0, callback=None)
+    except TypeError:
+        try:
+            signature.bind("", sid=0, speed=1.0)
+        except TypeError:
+            return False  # another required/invalid argument is not a fallback
+        return True
+    return False
 
 
 def _auto_threads() -> int:
@@ -2483,10 +2507,11 @@ class SherpaOnnxEngine(AudioEngine):
         # startup (warm vs the first reply); the playback thread is otherwise the
         # sole synthesizer, so this is uncontended on the hot path.
         self._tts_lock = threading.Lock()
-        # Whether this sherpa-onnx build supports the streaming TTS callback
-        # (play audio as it is synthesized). Flipped off on the first build that
-        # rejects the ``callback`` kwarg, after which we chunk the finished wave.
+        # Callback support is checked once, under the model lock, before the
+        # first callback-eligible synthesis. Only a conclusive callback-less
+        # signature selects whole-clip delivery. Errors never downgrade/retry.
         self._tts_can_stream = True
+        self._tts_callback_signature: Optional[tuple[int, Optional[bool]]] = None
         # Output-leveler inter-sentence loudness slew state (output_leveler).
         # Carries the applied loudness gain (dB) across sentences so loudness
         # converges smoothly (time-aware, AGC2-style) across a multi-sentence
@@ -3292,8 +3317,11 @@ class SherpaOnnxEngine(AudioEngine):
                     "coherence barge-in requested but scipy unavailable; "
                     "falling back to the level-margin gate"
                 )
-        # Capture evidence must not construct any playback model.
+        # Capture evidence must not construct any playback model. Callback
+        # capability belongs to this model, not a previously stopped build.
         self._tts = None if capture_only else build_tts(c)
+        self._tts_can_stream = True
+        self._tts_callback_signature = (id(self._tts), None)
         # Speech denoiser (None unless denoise_enabled AND a model path is set).
         # build_denoiser fails open (returns None) on a bad path so start() never
         # crashes; the capture-loop branch is skipped when this is None.
@@ -13065,10 +13093,11 @@ class SherpaOnnxEngine(AudioEngine):
         gen: Optional[int] = None,
         directives: Optional[dict] = None,
     ) -> None:
-        """Synthesize ``text``, handing each audio chunk to ``write`` as it is
-        produced. sherpa-onnx ``OfflineTts.generate`` streams via a ``callback``,
-        so the first samples play before the whole sentence is synthesized; a
-        build without that param falls back to chunking the finished waveform.
+        """Synthesize ``text``, handing callback chunks to ``write`` when the
+        model makes them available. This API does not guarantee within-sentence
+        generation; current batch voices can deliver only after full synthesis.
+        A conclusively callback-less API uses the finished-waveform path without
+        entering generation twice. Once generation starts, all errors propagate.
 
         ``gen`` is the per-utterance generation (rc-3): when set, synthesis stops
         if a barge bumps :attr:`_speak_gen` past it, even if the worker's
@@ -13124,13 +13153,33 @@ class SherpaOnnxEngine(AudioEngine):
             # sampling before the lock would retain stale None and redundantly
             # force another whole-clip render.
             carried_gain = getattr(self, "_tts_normalize_gain", None)
-            streaming_candidate = bool(
+            signature_cache = getattr(self, "_tts_callback_signature", None)
+            model_id = id(tts)
+            cached_support = (
+                signature_cache[1]
+                if signature_cache is not None and signature_cache[0] == model_id
+                else None
+            )
+            # A rebuilt model must not inherit an old model's capability, even
+            # if an obsolete preflight publishes after the build's reset. Only
+            # primitive identity/support values are retained; no model/method.
+            callback_capable = (
                 self._tts_can_stream
+                if signature_cache is None
+                else cached_support is not False
+            )
+            streaming_candidate = bool(
+                callback_capable
                 and not leveler_on
                 and (
                     target_rms <= 0.0 or (target_rms > 0.0 and carried_gain is not None)
                 )
             )
+            if streaming_candidate and cached_support is None:
+                supported = not _tts_generate_rejects_callback(tts.generate)
+                self._tts_callback_signature = (model_id, supported)
+                self._tts_can_stream = supported
+                streaming_candidate = supported
             log.info(
                 "tts resolved: %s",
                 json.dumps(
@@ -13151,8 +13200,8 @@ class SherpaOnnxEngine(AudioEngine):
                     default=str,
                 ),
             )
-            # Streaming path (first samples play before the whole sentence is
-            # synthesized). The output_leveler still owns a whole-clip AGC2-style
+            # Callback delivery path (chunk timing remains model-dependent).
+            # The output_leveler still owns a whole-clip AGC2-style
             # stage and stays non-streaming. normalize_rms can stream after the
             # first target_rms>0 sentence seeds _tts_normalize_gain; lowpass_hz can
             # stream through a fresh per-utterance IIR filter. The filter is not
@@ -13163,12 +13212,7 @@ class SherpaOnnxEngine(AudioEngine):
                 if target_rms > 0.0 and carried_gain is not None
                 else None
             )
-            _stream_with_rms = _norm_gain is not None
-            if (
-                self._tts_can_stream
-                and not leveler_on
-                and (target_rms <= 0.0 or _stream_with_rms)
-            ):
+            if streaming_candidate:
                 _lowpass = StreamingLowpass(stream_sr, lowpass_hz)
                 _raw_sumsq = 0.0
                 _raw_count = 0
@@ -13176,8 +13220,8 @@ class SherpaOnnxEngine(AudioEngine):
                 # summary below -- scalar-only (no spectral metrics): a per-chunk
                 # FFT would need Welch-style aggregation across non-uniform chunk
                 # sizes, and buffering the whole clip just to measure it would
-                # defeat the point of this streaming path (first audio before the
-                # whole sentence is ready). The whole-clip path below logs the
+                # add storage to the callback path. Actual first-chunk timing is
+                # model-dependent. The whole-clip path below logs the
                 # full metric set (incl. hf_ratio/spectral_flatness) instead.
                 _q_sum = 0.0
                 _q_sumsq = 0.0
@@ -13238,34 +13282,31 @@ class SherpaOnnxEngine(AudioEngine):
                         else 1
                     )
 
-                try:
-                    tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
-                    if _norm_gain is not None and _raw_count > 0:
-                        r = math.sqrt(_raw_sumsq / float(_raw_count))
-                        if r > 1e-6:
-                            self._tts_normalize_gain = min(float(target_rms) / r, 20.0)
-                    if _q_n > 0:
-                        log.info(
-                            "tts audio quality: %s",
-                            json.dumps(
-                                {
-                                    "mode": "streaming",
-                                    "rms": round(math.sqrt(_q_sumsq / _q_n), 5),
-                                    "peak": round(_q_peak, 5),
-                                    "clip_pct": round(100.0 * _q_clip / _q_n, 3),
-                                    "dc_offset": round(_q_sum / _q_n, 6),
-                                    "hf_ratio": None,
-                                    "spectral_flatness": None,
-                                    "n_samples": _q_n,
-                                },
-                                sort_keys=True,
-                                ensure_ascii=True,
-                                default=str,
-                            ),
-                        )
-                    return
-                except TypeError:
-                    self._tts_can_stream = False  # this build has no streaming callback
+                tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
+                if _norm_gain is not None and _raw_count > 0:
+                    r = math.sqrt(_raw_sumsq / float(_raw_count))
+                    if r > 1e-6:
+                        self._tts_normalize_gain = min(float(target_rms) / r, 20.0)
+                if _q_n > 0:
+                    log.info(
+                        "tts audio quality: %s",
+                        json.dumps(
+                            {
+                                "mode": "streaming",
+                                "rms": round(math.sqrt(_q_sumsq / _q_n), 5),
+                                "peak": round(_q_peak, 5),
+                                "clip_pct": round(100.0 * _q_clip / _q_n, 3),
+                                "dc_offset": round(_q_sum / _q_n, 6),
+                                "hf_ratio": None,
+                                "spectral_flatness": None,
+                                "n_samples": _q_n,
+                            },
+                            sort_keys=True,
+                            ensure_ascii=True,
+                            default=str,
+                        ),
+                    )
+                return
 
             audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)

@@ -1004,3 +1004,30 @@ startup; both receipts are preserved. Console final process RSS was38.8MB, which
 is not full voice-agent memory. Its system samples showed94–96% host CPU use;
 these occupied-host observations are not hardware-isolated model performance.
 No unrelated process was stopped and no microphone/doctor/live check ran.
+
+Valid until: the explicit benchmark source list, model or measurement protocol changes — then treat as history.
+
+## 2026-10-10 — Bind future public voice benchmarks to the actual source seam
+
+Root integration review found the benchmark guarded only its own file/persona
+while classification/factory/native request behavior depended on other modules.
+The prospective fixed manifest includes the harness, identity adapters, Ollama
+client/decision/factory/model-profile/classifier/persona/config helpers and
+runtime prompt assembly/registry/model enums: 15 source paths, at most 1 MiB
+each and 4 MiB total plus one detection byte. It hashes before any model
+metadata call and after every measured/metadata call, refuses unavailable or
+changed source with coarse fixed codes, and publishes only public relative
+filenames, per-file hashes/counts and canonical before/after digest. No dynamic
+import crawl, whole audio closure or loaded-bytecode/native attestation claim.
+
+Original native aggregate reports, wrapper bindings and retained source remain
+unchanged in the durable ignored archive. This adds prospective evidence only;
+no model/native/audio/live run or download occurred. Deterministic tests mutate
+each bound source during a fake run, reject invalid/oversized sources before
+model metadata, refuse disappearance after measurement, verify complete typed
+hash/count receipts and ensure coarse CLI failures publish no report or paths.
+
+Verification: `tests/test_voice_model_quality.py`, `test_addressing_profile.py`
+and `test_voice_model_profile.py`: 99 passed in 1.82 s using the shared venv
+with native/log/config access disabled and fresh owned scratch. Scoped Ruff,
+`git diff --check` and docs checker pass; STATUS stays at 120 lines.

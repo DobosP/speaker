@@ -110,6 +110,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner live: fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
+- Public model benchmark now binds a bounded 15-file prospective source seam before/after runs (ADR-0235); historical native receipts unchanged.
 - Headless: admission/factory 385+126, resume 112; decisions 326+125; reference 437/2 skips; TTS 657/2 skips; cancellation 50; profile/identity 511+31, selection 365+17, setup 30, final model scope 210; LocalVQE 216/2 skips and 5+5 native cells; output/capture recovery 940/2 skips.
   Full CUDA FP16 doctor passed; candidate compatibility passes without promotion; live gates remain open. python-dotenv absent; pip check passes.
 ## Doc map

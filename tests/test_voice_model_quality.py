@@ -237,3 +237,107 @@ def test_startup_direct_prefill_is_diagnostic_only_bounded_local_and_restores_co
         assert current_decision_request() is None
     finally:
         capability_context.reset(token)
+
+
+def fake_source_tree(monkeypatch, tmp_path):
+    monkeypatch.setattr(quality, "_SOURCE_ROOT", tmp_path)
+    for relative in quality._SOURCE_FILES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(("fixed public source fixture " + relative).encode())
+    return tmp_path
+
+
+def test_prospective_manifest_is_exact_bounded_and_contains_only_public_names_hashes_counts(monkeypatch, tmp_path):
+    import hashlib
+    root = fake_source_tree(monkeypatch, tmp_path)
+    result = quality.source_manifest()
+    assert result["file_count"] == len(quality._SOURCE_FILES) == 15
+    assert result["total_bytes"] <= quality._SOURCE_MAX_TOTAL_BYTES
+    assert [row["file"] for row in result["files"]] == list(quality._SOURCE_FILES)
+    assert all(set(row) == {"file", "bytes", "sha256"} for row in result["files"])
+    assert all(type(row["bytes"]) is int and 0 < row["bytes"] <= quality._SOURCE_MAX_FILE_BYTES for row in result["files"])
+    payload = {key: value for key, value in result.items() if key != "sha256"}
+    expected = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert result["sha256"] == expected
+    assert result == quality.source_manifest()
+    encoded = json.dumps(result)
+    assert str(root) not in encoded and "fixed public source fixture" not in encoded
+    assert "not_full_import_or_audio_closure" in result["scope"]
+
+
+@pytest.mark.parametrize("relative", quality._SOURCE_FILES)
+def test_any_bound_behavior_source_mutation_during_run_refuses_public_result(monkeypatch, tmp_path, relative):
+    root = fake_source_tree(monkeypatch, tmp_path)
+    fake_models(monkeypatch)
+    class ChangedModel:
+        def __init__(self, *args, **kwargs):
+            self.changed = False
+        def stream(self, prompt, **kwargs):
+            if not self.changed:
+                (root / relative).write_bytes(b"changed source; never expose this content")
+                self.changed = True
+            yield "4"
+    monkeypatch.setattr(quality, "OllamaLLM", ChangedModel)
+    with pytest.raises(ValueError, match="^evaluation_source_changed$"):
+        quality.run(quality.MODELS[0], "http://127.0.0.1:11435", conditions=("current",))
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory", "oversized", "total_oversized"])
+def test_invalid_before_snapshot_refuses_before_model_identity_or_native_construction(monkeypatch, tmp_path, kind):
+    root = fake_source_tree(monkeypatch, tmp_path)
+    path = root / "core/llm.py"
+    if kind == "missing":
+        path.unlink()
+    elif kind == "symlink":
+        target = tmp_path / "external-secret-canary"
+        target.write_bytes(b"SECRET_CANARY_DO_NOT_EXPOSE")
+        path.unlink()
+        path.symlink_to(target)
+    elif kind == "directory":
+        path.unlink()
+        path.mkdir()
+    elif kind == "oversized":
+        monkeypatch.setattr(quality, "_SOURCE_MAX_FILE_BYTES", 8)
+    else:
+        monkeypatch.setattr(quality, "_SOURCE_MAX_TOTAL_BYTES", 8)
+    monkeypatch.setattr(quality, "identity", lambda *a: pytest.fail("source validation must come first"))
+    with pytest.raises(ValueError, match="^evaluation_source_unavailable$"):
+        quality.run(quality.MODELS[0], "http://127.0.0.1:11435", conditions=("current",))
+
+
+def test_source_disappearing_after_measurement_fails_closed_without_filesystem_details(monkeypatch, tmp_path):
+    root = fake_source_tree(monkeypatch, tmp_path)
+    fake_models(monkeypatch)
+    class Model:
+        def __init__(self, *a, **k):
+            pass
+        def stream(self, prompt, **kwargs):
+            (root / "core/addressing.py").unlink(missing_ok=True)
+            yield "4"
+    monkeypatch.setattr(quality, "OllamaLLM", Model)
+    with pytest.raises(ValueError, match="^evaluation_source_changed$"):
+        quality.run(quality.MODELS[0], "http://127.0.0.1:11435", conditions=("current",))
+
+
+def test_success_receipt_binds_pre_and_post_seam_and_keeps_legacy_hash_fields(monkeypatch, tmp_path):
+    fake_source_tree(monkeypatch, tmp_path)
+    fake_models(monkeypatch)
+    result = quality.run(quality.MODELS[0], "http://127.0.0.1:11435", conditions=("current",))
+    manifest = result["source_manifest"]
+    hashes = {row["file"]: row["sha256"] for row in manifest["files"]}
+    assert result["source_manifest_after_sha256"] == manifest["sha256"]
+    assert result["source_sha256"] == hashes["tools/voice_model_quality.py"]
+    assert result["persona_source_sha256"] == hashes["core/persona.py"]
+
+
+def test_cli_source_refusal_is_coarse_and_never_writes_a_report(monkeypatch, tmp_path, capsys):
+    root = fake_source_tree(monkeypatch, tmp_path)
+    (root / "core/llm_factory.py").unlink()
+    output = tmp_path / "must-not-publish.json"
+    assert quality.main(["--host", "http://127.0.0.1:11435", "--model", quality.MODELS[0],
+                         "--output", str(output)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "voice_model_quality_refused:evaluation_source_unavailable"
+    assert str(tmp_path) not in captured.out + captured.err
+    assert not output.exists()

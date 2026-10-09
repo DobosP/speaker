@@ -12,9 +12,11 @@ from dataclasses import dataclass
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import statistics
+import stat
 import sys
 import time
 from urllib.parse import urlsplit
@@ -31,6 +33,83 @@ QWEN_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
 # bind the measured runtime blob separately rather than weakening identity.
 QWEN_RUNTIME_SHA256 = "098cb604ff3cc846891b7e8c00abe4f52f5c6fdc936e21e7e41f2eaf22c1c7cb"
 HEADERS = {"authorization": "Bearer speaker-public-quality-evaluation"}
+
+
+# Prospective file-byte consistency for this explicit behavior seam. This is
+# deliberately not a transitive import/native dependency or whole-audio closure.
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_FILES = (
+    "tools/voice_model_quality.py",
+    "tools/conversation_eval/identity.py",
+    "core/llm.py",
+    "core/llm_decision.py",
+    "core/llm_factory.py",
+    "core/voice_model_profile.py",
+    "core/minicpm_identity.py",
+    "core/addressing.py",
+    "core/persona.py",
+    "core/config.py",
+    "core/runtime.py",
+    "core/capabilities.py",
+    "always_on_agent/capabilities.py",
+    "always_on_agent/models.py",
+    "config.json",
+)
+_SOURCE_MAX_FILE_BYTES = 1024 * 1024
+_SOURCE_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+_SOURCE_SCOPE = "explicit_native_client_classifier_factory_persona_config_seam_not_full_import_or_audio_closure"
+
+
+def source_manifest() -> dict:
+    """Read fixed public source paths with bounded I/O; return only hashes/counts.
+
+    Refuse missing/nonregular/symlinked/oversized/changing files without exposing
+    filesystem details. Stable before/after file bytes do not attest imported
+    bytecode, monkeypatches, native libraries or the unlisted application.
+    """
+    rows = []
+    total = 0
+    try:
+        for relative in _SOURCE_FILES:
+            path = _SOURCE_ROOT / relative
+            if path.resolve() != path:
+                raise ValueError
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= _SOURCE_MAX_FILE_BYTES:
+                raise ValueError
+            if total + before.st_size > _SOURCE_MAX_TOTAL_BYTES:
+                raise ValueError
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise ValueError
+                digest, size = hashlib.sha256(), 0
+                while True:
+                    block = stream.read(min(64 * 1024, _SOURCE_MAX_FILE_BYTES - size + 1,
+                                            _SOURCE_MAX_TOTAL_BYTES - total - size + 1))
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > _SOURCE_MAX_FILE_BYTES or total + size > _SOURCE_MAX_TOTAL_BYTES:
+                        raise ValueError
+                    digest.update(block)
+                after = os.fstat(stream.fileno())
+            current = path.lstat()
+            def fingerprint(info):
+                return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+            if fingerprint(before) != fingerprint(after) or fingerprint(after) != fingerprint(current):
+                raise ValueError
+            if size != before.st_size:
+                raise ValueError
+            total += size
+            rows.append({"file": relative, "bytes": size, "sha256": digest.hexdigest()})
+    except (OSError, ValueError):
+        raise ValueError("evaluation_source_unavailable") from None
+    payload = {"schema_version": 1, "scope": _SOURCE_SCOPE, "files": rows,
+               "file_count": len(rows), "total_bytes": total}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return {**payload, "sha256": hashlib.sha256(canonical).hexdigest()}
 
 
 @dataclass(frozen=True)
@@ -448,13 +527,14 @@ def run(model: str, host: str, *, show_failures: bool = False,
         interleave_checks: bool = False, adversarial_decisions: bool = False,
         startup_classifier_warm: bool = False, startup_direct_prefill: bool = False) -> dict:
     host = local_host(host)
+    sources_before = source_manifest()
     try:
         before = identity(model, host)
     except Exception:
         raise ValueError("identity_before_refused") from None
-    source_before = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    persona_path = Path(__file__).resolve().parents[1] / "core/persona.py"
-    persona_before = hashlib.sha256(persona_path.read_bytes()).hexdigest()
+    source_hashes = {row["file"]: row["sha256"] for row in sources_before["files"]}
+    source_before = source_hashes["tools/voice_model_quality.py"]
+    persona_before = source_hashes["core/persona.py"]
     variants = systems()
     if conditions is not None:
         if len(set(conditions)) != len(conditions) or any(x not in variants for x in conditions):
@@ -540,9 +620,11 @@ def run(model: str, host: str, *, show_failures: bool = False,
     adversarial_result = adversarial_matrix(client, classifier, observer=observe) if adversarial_decisions else None
     if identity(model, host) != before:
         raise ValueError("model_identity_changed")
-    if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != source_before:
-        raise ValueError("evaluation_source_changed")
-    if hashlib.sha256(persona_path.read_bytes()).hexdigest() != persona_before:
+    try:
+        sources_after = source_manifest()
+    except ValueError:
+        raise ValueError("evaluation_source_changed") from None
+    if sources_after != sources_before:
         raise ValueError("evaluation_source_changed")
     cells = []
     for name, system in variants.items():
@@ -564,6 +646,8 @@ def run(model: str, host: str, *, show_failures: bool = False,
             "model_config_sha256": before[1], "source_sha256": source_before,
             "cases_sha256": hashlib.sha256(repr(cases).encode()).hexdigest(),
             "persona_source_sha256": persona_before,
+            "source_manifest": sources_before,
+            "source_manifest_after_sha256": sources_after["sha256"],
             "factory_profile": factory_profile,
             "addressing_system_sha256": hashlib.sha256(classifier.system_prompt.encode()).hexdigest(),
             "adversarial_decisions": adversarial_result,
@@ -630,7 +714,7 @@ def main(argv=None) -> int:
         return 0
     except Exception as error:
         allowed = {"identity_before_refused", "public_model_call_refused", "model_identity_changed",
-                   "evaluation_source_changed", "evaluation_deadline", "output_exists", "conditions_refused", "factory_profile_refused", "resource_pid_refused"}
+                   "evaluation_source_changed", "evaluation_source_unavailable", "evaluation_deadline", "output_exists", "conditions_refused", "factory_profile_refused", "resource_pid_refused"}
         code = str(error) if type(error) is ValueError and str(error) in allowed else "evaluation_refused"
         print("voice_model_quality_refused:" + code, file=sys.stderr)
         return 2

@@ -2,6 +2,17 @@
 
 Append-only dated history, newest first (agent-ops doc governance §2). `STATUS.md` is current truth; entries here are records and are never edited after landing.
 
+## 2026-10-09 — decision collector boundary review repairs
+
+Valid until: later decision collector evidence supersedes this receipt — then treat as history.
+
+- Root review found that empty chunks consumed list entries without increasing the character
+  bound. They are now skipped; a 100,000-empty-chunk regression asserts peak traced collection
+  memory stays below 128 KiB. Pre-cancelled direct compatible-API requests now raise the same
+  cancellation signal before their unsupported-client refusal.
+- Final focused decision/router/async-cancellation gate: **125 passed in 3.81 s**, native-free,
+  using the preceding receipt's environment and task-local basetemp. No model/live claim.
+
 ## 2026-10-09 — bounded local decision requests (ADR-0228)
 
 Valid until: a later decision/provider contract supersedes this receipt — then treat as history.

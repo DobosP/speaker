@@ -230,3 +230,28 @@ def test_factory_hybrid_preserves_native_decision_options_in_source_owner():
     assert decide(hybrid) == "ACT"
     assert native.calls[0]["options"]["num_predict"] == 16
     assert native.calls[0]["format"]["enum"] == list(CHOICES)
+
+
+def test_pre_cancelled_direct_compatible_client_preserves_cancellation():
+    from core.llm import OpenAICompatLLM
+    event = threading.Event()
+    event.set()
+    client = OpenAICompatLLM("public-cloud", client=object())
+    with pytest.raises(LLMCallCancelled):
+        decide(client, cancel_event=event)
+
+
+def test_empty_piece_storm_does_not_grow_the_collected_parts():
+    import tracemalloc
+    class EmptyStorm:
+        def stream(self, *args, **kwargs):
+            for _ in range(100_000):
+                yield ""
+            yield "ACT"
+    tracemalloc.start()
+    try:
+        assert decide(EmptyStorm()) == "ACT"
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 128 * 1024

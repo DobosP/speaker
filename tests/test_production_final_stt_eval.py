@@ -1291,8 +1291,11 @@ def test_private_writer_is_mode_600_no_clobber_and_refuses_git_and_symlink(
     assert report.read_bytes() == payload
 
     git_root = tmp_path / "recognized-git"
-    git_root.mkdir()
-    (git_root / ".git").mkdir()
+    git_root.mkdir(mode=0o700)
+    marker = git_root / ".git"
+    marker.mkdir()
+    # An empty .git directory is inert; HEAD makes this a recognized marker.
+    (marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     inside_git = git_root / "must-not-exist.json"
     with pytest.raises(evaluate.ProductionFinalEvaluationError):
         evaluate._write_new_private(inside_git, payload)

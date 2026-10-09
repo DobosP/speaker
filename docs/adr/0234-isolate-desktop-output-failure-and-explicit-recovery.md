@@ -147,3 +147,22 @@ and async-report checks passed in 12.26 s. The exact commands and an earlier
 scratch-parent setup failure are retained in `WORKLOG.md`. Scoped lint and
 whitespace checks pass. No recording, native inference, microphone, doctor,
 network or hardware validation ran; the owner-stopped live gates remain open.
+
+## Addendum — recognized-Git fixture under private umask (2026-10-10)
+
+The third integrated full gate stopped with one private-writer fixture failure
+after 7902 passes and 32 skips (233.74 s). The unchanged fixture created an
+empty `.git` directory, which the existing command/noise preparer boundary
+deliberately treats as inert. Under the runner's `umask 077`, its parent was
+private and publication therefore succeeded. Under the usual umask, the test
+passed for an unrelated reason: its parent was 0755 and failed private-directory
+validation. The exact isolated test reproduced this pattern on both pristine
+734713d and integrated 2f3dd90; it is inherited fixture debt, not output recovery.
+
+The fixture now sets its parent to 0700 and creates `.git/HEAD`, matching the
+existing recognized-Git preparer test. Production guards and historical evidence
+are unchanged. The complete final-STT evaluator and command/noise preparer tests
+pass under `umask 077`: 70 passed, 1 optional-corpus skip in 2.99 s. The repaired
+single test also passes under `umask 022` (0.85 s). Adjacent evaluator refusal
+fixtures contain no second instance of this empty-marker/permission masking.
+This is headless fixture qualification; no native model, recording or live run.

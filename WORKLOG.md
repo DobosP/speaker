@@ -997,11 +997,11 @@ the canonical run/execute command verbs before command.stage could confirm them.
 The complete failure log and synthetic fixtures remain private task evidence.
 
 The real `python -m core --session console --llm echo --voice-model current`
-entrypoint returned exit0 and the expected reply to public text, using a scratch
+entrypoint returned exit 0 and the expected reply to public text, using a scratch
 current-directory config, forced in-memory storage and no warm/audio/model calls.
-An initial unsupported `--config` invocation returned argparse exit2 before
-startup; both receipts are preserved. Console final process RSS was38.8MB, which
-is not full voice-agent memory. Its system samples showed94–96% host CPU use;
+An initial unsupported `--config` invocation returned argparse exit 2 before
+startup; both receipts are preserved. Console final process RSS was 38.8 MB, which
+is not full voice-agent memory. Its system samples showed 94–96% host CPU use;
 these occupied-host observations are not hardware-isolated model performance.
 No unrelated process was stopped and no microphone/doctor/live check ran.
 

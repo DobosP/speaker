@@ -1324,3 +1324,47 @@ Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835.
 Valid until: source changes or new physical/platform evidence — then treat as history.
 
 Source ca2fe03375a1cf6b0b07cda9681387d22b81eda7: 12369 passed, 41 skipped, 9 dependency warnings, 225.76 s. CI LiveKit exclusions retained; no microphone/doctor/native platform run. New coverage includes actual console Echo finalization and unavailable-stage fallback. Changed 23 Python files pass scoped fatal-error Ruff; 38 docs checked with no findings; whitespace clean. Ignored current keeper logs/runs/desktop-pass-two-20261010 contains source-bound receipt, current runner, compact logs and public scheduling/baseline results; fresh hermetic pytest fixtures removed after result. Source-qualified worker branches merge into the integration ancestry; original live/mobile keepers remain excluded from cleanup.
+
+
+Valid until: Ollama bridge completion, queue or SDK cleanup semantics change — then treat as history.
+
+## 2026-10-10 — Remove local Ollama terminal poll (ADR-0244)
+
+Audit of main 1bed9e2 found the local async bridge already bounds queued items,
+isolates clients/loops and owns cancellation cleanup. Its natural done Event did
+not notify Queue.get, however. Five public fake-local cases with response/client
+cleanup already complete each paid 50.168–50.239 ms for terminal next(), p50
+50.208 ms. The fix publishes a private notification after exact private loop
+return and drains known-complete queues nonblockingly; full queues need no
+notification slot or dropped output. A timed-empty race rechecks queued data/error
+after observing done. No model/provider/pool/cap/locality change follows.
+
+The first focused run exposed two error-settlement assertions: 2 failed,
+26 passed in 2.07 s. Moving done to loop return allowed a queued provider error
+to reach the caller just before done; terminal errors now wait for that same
+owner completion, preserving the original exception object and allowing
+cancellation to win. Focused rerun: **28 passed in 1.23 s**. Independent final
+bridge review from desktop_review is GO, including this error boundary.
+
+```sh
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_ollama_terminal_wakeup.py tests/test_ollama_async_cancel.py tests/test_hedge_source_owner.py tests/test_hedge_chain.py tests/test_multi_provider_llm.py tests/test_llm_decision.py tests/test_llamacpp_cancel.py tests/test_startup_warm_priority.py tests/test_pretoken_cancellation.py tests/test_capability_stream_close.py tests/test_stream_speech_cancellation.py tests/test_llm_egress_policy.py tests/test_capability_context_isolation.py -q --basetemp=/home/dobo/work/_temp/codex__ollama-terminal-wakeup/pytest-qualified
+```
+
+**302 passed in 7.24 s**. Fake native-abort tests do not load native models.
+The compact current paired result is docs/evidence/ollama-terminal-wakeup-2026-10-10.json;
+the reproducible setup is tools/bench_ollama_terminal_wakeup.py. It extracts only
+the two pinned Git bridge classes into the same public fixture environment and
+binds source hashes, with five alternating adjacent cases per variant. After
+known cleanup, terminal next() p50 was baseline 50.1314 ms versus current 0.0090 ms.
+This is not model, whole-turn, physical audio or phone performance; no CPU
+isolation was established. Reproduce with a fresh output path:
+
+```sh
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m tools.bench_ollama_terminal_wakeup --output <fresh-json>
+```
+
+No SDK request, daemon, network/cloud, private data, model download/inference,
+microphone, doctor or device ran. Original baselines, source branches and live/
+mobile keepers remain untouched; only compact public evidence enters Git.
+Scoped fatal-error Ruff, new-file formatting and whitespace pass; docs report
+38 files with zero findings, and STATUS remains at 120 lines.

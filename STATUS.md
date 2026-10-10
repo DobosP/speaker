@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (third-pass watchdog 115, TTS 224, ASR 914/1, local-stream 302 headless checks; full integration pending; live stopped).
+Last verified: 2026-10-10 (third combined desktop gate 12537 passed/41 skipped; owner live stopped; native platform gates open).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Desktop-first plan: `docs/local_voice_performance.md`; third software pass in progress; ADR-0241 inspects watchdog history incrementally; live/other-OS gates open; ADR-0236 retains rolling compact evidence.
+- Desktop-first plan: `docs/local_voice_performance.md`; third software pass verified (ADR-0241–0244); live/other-OS gates open; ADR-0236 retains rolling compact evidence.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
@@ -105,7 +105,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 ## Verification record (2026-10-10; older platform receipts labelled; commands/history in WORKLOG.md)
-- Python CI-style full gate: `12369 passed, 41 skipped, 9 warnings` in 225.76 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
+- Python CI-style full gate: `12537 passed, 41 skipped, 9 warnings` in 232.76 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Prior mobile (2026-10-05): `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Prior Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.

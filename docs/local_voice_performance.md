@@ -522,13 +522,38 @@ models. Desktop English remains the target, with live testing paused.
 
 | Step | Reproduced baseline problem | Implementation / acceptance |
 |---|---|---|
-| Long-session monitoring | Every watchdog tick scans all historical metric records; warning deduplication grows after old stalls. | ADR-0241: incremental observer with full history retained. 115 focused tests and independent review GO; at 50,000 settled synthetic turns, final paired p50 6.23–6.86 ms/tick becomes 2.57–2.71 us, with lower initial and steady traced allocation. Combined integration pending. |
-| Speech synthesis cancellation | A cancelled job waiting for the model lock can still enter native generation; cancelled callbacks/returns still perform conversion or DSP. | ADR-0242: exact-generation checkpoints at those boundaries; healthy samples/styles/receipts and entered-native cleanup ownership must remain equivalent. In progress. |
-| Final recognition cancellation | Revoked final work can still enter offline recognition and the independent verifier; stale errors can alter verifier health. | ADR-0243: exact-work checkpoints and a distinct cancellation unwind; no stale fallback/circuit-break effects. Healthy decision equivalence and worker progression tests required. In progress. |
-| Local model completion | A cleanly finished Ollama producer leaves its consumer waiting for a 50 ms queue poll. | ADR-0244: prompt terminal notification after actual cleanup, preserving every token/error and bounded buffering. Queue-full/cancellation races required. In progress. |
-| Combined qualification | Isolated fixes must preserve the full desktop contract together. | Full CI-style headless gate, source-bound compact receipts, current STATUS and verified origin/main landing; retain only the latest owned setup plus compact historical results. Pending. |
+| Long-session monitoring | Every watchdog tick scans all historical metric records; warning deduplication grows after old stalls. | ADR-0241: incremental observer with full history retained. 115 focused tests and independent review GO; at 50,000 settled synthetic turns, final paired p50 6.23–6.86 ms/tick becomes 2.57–2.71 us, with lower initial and steady traced allocation. Included in the 12537-pass combined gate. |
+| Speech synthesis cancellation | A cancelled job waiting for the model lock can still enter native generation; cancelled callbacks/returns still perform conversion or DSP. | Complete, ADR-0242: exact-generation checkpoints; 224 focused passes, bitwise healthy PCM equivalence, each reproduced stale native/DSP counter 1→0. Cleanup ownership retained. |
+| Final recognition cancellation | Revoked final work can still enter offline recognition and the independent verifier; stale errors can alter verifier health. | Complete, ADR-0243: exact-work checkpoints and distinct cancellation unwind; 914 passes/1 optional skip, 48/48 healthy baseline decisions identical, no stale fallback/health effects; sole-worker progression covered. |
+| Local model completion | A cleanly finished Ollama producer leaves its consumer waiting for a 50 ms queue poll. | Complete, ADR-0244: terminal notification after cleanup, with token/error ordering and bounded buffering preserved. 302 focused passes; fake-local post-cleanup terminal wait p50 50.1314→0.0090 ms; queue-full/cancellation/error settlement covered. |
+| Combined qualification | Isolated fixes must preserve the full desktop contract together. | Complete software qualification: 12537 passes/41 skips, source-bound compact receipts, scoped lint and docs clean; verified landing and rolling owned-work cleanup. No live/platform qualification inferred. |
 
 Cancellation checkpoints cannot preempt an already-entered native call. They
 prevent obsolete successor work and preserve cleanup ownership until the entered
 call returns. Native acoustic quality, quiet-host CPU model qualification and
 Windows/macOS hardware validation remain separate from these deterministic gates.
+
+### Third-pass combined verification
+
+Valid until: source changes or a new device/platform result — then treat as history.
+
+Source `a75fda8ef7c4f9074d62ea643d60d6926b2f6fa3` passed **12,537 tests**,
+with **41 skips** and **nine dependency deprecation warnings**, in 232.76 seconds.
+CI's two LiveKit file exclusions are retained. Twelve changed Python files pass
+scoped fatal-error Ruff; the 38-file documentation check has no findings. Each
+lane received independent review. Integrated ASR/TTS function bytes, Ollama source
+and watchdog source hashes match their qualified component evidence.
+
+All four changes preserve existing models, resource profiles, capability and
+audio-egress policy. They remove obsolete work and recurring waits; an entered
+native operation still owns its resources until true return. Watchdog measurements
+are monitoring overhead, and the Ollama comparison measures queue completion
+after known cleanup. Neither is a measured whole-agent or physical speech speedup.
+
+The current ignored keeper is `logs/runs/desktop-pass-three-20261010/`: runner,
+compact full-suite receipt/log, the exact TTS probe matching its committed hash,
+and reproduction notes. Other component probes and scalar results are committed
+in `tools/` and `docs/evidence/`. Generated private pytest fixtures are removed
+after their result, and verified merged task worktrees/scratch are pruned.
+Original baselines, recordings, enrollment and the deferred mobile packet remain
+protected. No microphone, doctor, live retry or new model download occurred.

@@ -1442,3 +1442,9 @@ microphone, doctor or device ran. Original baselines, source branches and live/
 mobile keepers remain untouched; only compact public evidence enters Git.
 Scoped fatal-error Ruff, new-file formatting and whitespace pass; docs report
 38 files with zero findings, and STATUS remains at 120 lines.
+
+## Third-pass combined qualification (2026-10-10)
+
+Valid until: source changes or new physical/platform evidence — then treat as history.
+
+Source a75fda8ef7c4f9074d62ea643d60d6926b2f6fa3 passed 12537 tests, 41 skips and 9 dependency warnings in 232.76 s, with CI LiveKit exclusions and fresh private hermetic fixtures. Twelve changed Python files pass scoped fatal-error Ruff; 38 docs checked with no findings. Independent reviews passed all four lanes. Integrated ASR/TTS function bytes, Ollama source and watchdog hashes match qualified component evidence. No physical/model quality claim follows. Current compact keeper: logs/runs/desktop-pass-three-20261010; exact 3861-byte TTS probe hash verified before retaining it, other probes/results in Git. Synthetic full-suite fixtures removed after result; merged source cleanup follows verified publication. Protected original baselines, live/enrollment evidence and unmerged mobile work remain intact.

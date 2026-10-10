@@ -265,6 +265,60 @@ def test_to_dict_no_turns_gives_empty_latency_dict(tmp_path):
     assert data["latency"] == {}
 
 
+def test_stage_breakdown_export_is_separate_scalar_only_and_detached(tmp_path):
+    legacy = [{"first_audio_latency": 0.7, "first_token_to_audio": 0.4}]
+    rows = [{
+        "preprocessing_to_model_request": 0.1,
+        "model_request_to_first_token": 0.2,
+        "first_token_to_speakable_text": 0.15,
+        "speakable_text_to_tts_admission": 0.05,
+        "tts_admission_to_render_observed": 0.3,
+        "transcript": "PRIVATE SOURCE MUST NOT APPEAR",
+        "turn_token": 999,
+    }]
+    runlog = setup_logging(log_dir=str(tmp_path), run_id="stages", console=False)
+    runlog.finalize(legacy, stage_breakdown_records=rows)
+    rows[0]["preprocessing_to_model_request"] = 999
+    data = json.loads((tmp_path / "run-stages.summary.json").read_text())
+    assert data["turns"] == legacy
+    assert data["latency"]["first_audio_latency"]["p50"] == 0.7
+    stages = data["latency_stage_breakdown"]
+    assert stages["scope"] == "observed_turn_bound_pipeline_to_receipt_dispatch_seconds"
+    assert stages["turns"][0]["preprocessing_to_model_request"] == 0.1
+    assert stages["aggregates"]["model_request_to_first_token"] == {
+        "p50": 0.2, "p95": 0.2, "max": 0.2, "n": 1,
+    }
+    assert "PRIVATE" not in json.dumps(stages)
+    assert "turn_token" not in json.dumps(stages)
+    runlog.finalize(stage_breakdown_records=[{}])
+    assert json.loads((tmp_path / "run-stages.summary.json").read_text()) == data
+
+
+def test_stage_breakdown_export_discards_invalid_values_and_unknown_payloads():
+    from core.runlog import RunSummary
+    summary = RunSummary("stages", "unused")
+    summary.attach_stage_breakdowns([
+        {"model_request_to_first_token": value}
+        for value in (0.0, 0.2, None, True, -1, float("nan"), float("inf"), "0.2", 10**400)
+    ] + ["PRIVATE NOT A ROW"])
+    stages = summary.to_dict()["latency_stage_breakdown"]
+    assert len(stages["turns"]) == 9
+    assert stages["aggregates"]["model_request_to_first_token"] == {
+        "p50": 0.1, "p95": 0.19, "max": 0.2, "n": 2,
+    }
+    assert json.dumps(stages, allow_nan=False)
+    assert "PRIVATE" not in json.dumps(stages)
+
+
+def test_finite_stage_intervals_cannot_overflow_summary_median():
+    from core.runlog import RunSummary
+    summary = RunSummary("stages", "unused")
+    summary.attach_stage_breakdowns([{"model_request_to_first_token": 1e308}] * 2)
+    stages = summary.to_dict()["latency_stage_breakdown"]
+    assert stages["aggregates"]["model_request_to_first_token"]["p50"] == 1e308
+    assert json.dumps(stages, allow_nan=False)
+
+
 @pytest.mark.parametrize(
     "wd_message, expected_hint_substring",
     [

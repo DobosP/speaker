@@ -19,7 +19,11 @@ from typing import Callable, Iterator, Optional
 
 SPEECH_END = "speech_end"          # user stopped speaking (last voiced audio)
 ASR_FINAL = "asr_final"            # recognizer emitted the final transcript
+LLM_REQUESTED = "llm_requested"      # answering capability dispatches its model request
 LLM_FIRST_TOKEN = "llm_first_token"  # first token streamed from the model
+TTS_TEXT_READY = "tts_text_ready"    # first speakable text fragment is ready to emit
+TTS_ADMITTED = "tts_admitted"        # exact normal fragment registered for tracked output
+TTS_RENDER_START_OBSERVED = "tts_render_start_observed"  # exact onset receipt dispatched
 TTS_REQUESTED = "tts_requested"      # an admitted reply is waiting for first audio
 TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
 BARGE_IN = "barge_in"              # user spoke over playback
@@ -36,6 +40,32 @@ _TURN_START = (SPEECH_END, ASR_FINAL)
 # is a real token value: it represents the absence of an open turn at capture
 # time and must not later attach to a newly opened one.
 _ANY_TURN = object()
+
+# Observed pipeline boundaries, not isolated native compute/queue timings.
+_BREAKDOWN_STAGES = (
+    ASR_FINAL, LLM_REQUESTED, LLM_FIRST_TOKEN, TTS_TEXT_READY,
+    TTS_ADMITTED, TTS_RENDER_START_OBSERVED,
+)
+_SCOPED_BREAKDOWN_MARKS = (
+    LLM_REQUESTED, TTS_TEXT_READY, TTS_ADMITTED, TTS_RENDER_START_OBSERVED,
+)
+_BREAKDOWN_INTERVALS = (
+    ("preprocessing_to_model_request", ASR_FINAL, LLM_REQUESTED),
+    ("model_request_to_first_token", LLM_REQUESTED, LLM_FIRST_TOKEN),
+    ("first_token_to_speakable_text", LLM_FIRST_TOKEN, TTS_TEXT_READY),
+    ("speakable_text_to_tts_admission", TTS_TEXT_READY, TTS_ADMITTED),
+    ("tts_admission_to_render_observed", TTS_ADMITTED, TTS_RENDER_START_OBSERVED),
+)
+
+
+def _finite_timestamp(value: object) -> Optional[float]:
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
 
 
 def _delta(stamps: dict[str, float], a: str, b: str) -> Optional[float]:
@@ -95,6 +125,25 @@ class TurnRecord:
             "first_token_to_audio": _round(self.first_token_to_audio),
             "barge_in_latency": _round(self.barge_in_latency),
         }
+
+    def stage_breakdown(self) -> dict[str, Optional[float]]:
+        """Additive observed intervals; missing/invalid boundaries stay unknown.
+
+        This does not alter legacy metrics or distinguish native inference,
+        synthesis, queue wait, DSP and device buffering inside an interval.
+        Render onset is receipt-dispatch observation, not a DAC/first-PCM clock.
+        Use MetricsRecorder.stage_breakdowns() for a lock-protected snapshot.
+        """
+        out = {}
+        for key, start, end in _BREAKDOWN_INTERVALS:
+            first = _finite_timestamp(self.stamps.get(start))
+            last = _finite_timestamp(self.stamps.get(end))
+            out[key] = (
+                _round(last - first)
+                if first is not None and last is not None and last >= first
+                else None
+            )
+        return out
 
 
 def _round(value: Optional[float]) -> Optional[float]:
@@ -156,8 +205,19 @@ class MetricsRecorder:
 
         ``turn_token`` optionally binds a delayed stamp to the opaque identity
         returned by :meth:`current_turn_token`; if another turn is now open the
-        stale stamp is ignored atomically under the recorder lock."""
-        now = self._clock() if at is None else float(at)
+        stale stamp is ignored atomically under the recorder lock. The additive
+        new request/text/admission/render boundaries require an explicit current
+        positive token and finite non-negative timestamps in pipeline order;
+        their omission never changes legacy stamps or EWMA behavior."""
+        scoped_breakdown = stage in _SCOPED_BREAKDOWN_MARKS
+        if scoped_breakdown:
+            if type(turn_token) is not int or turn_token <= 0:
+                return
+            now = _finite_timestamp(self._clock() if at is None else at)
+            if now is None:
+                return
+        else:
+            now = self._clock() if at is None else float(at)
         with self._lock:
             # Provider threads can outlive a cancelled turn.  A task-scoped
             # first-token stamp is valid only while the monotonic turn token
@@ -167,6 +227,18 @@ class MetricsRecorder:
                 current_token = self._current.turn_token if self._current is not None else None
                 if current_token != turn_token:
                     return
+            if scoped_breakdown:
+                if self._current is None:
+                    return
+                position = _BREAKDOWN_STAGES.index(stage)
+                for index, boundary in enumerate(_BREAKDOWN_STAGES):
+                    if boundary == stage or boundary not in self._current.stamps:
+                        continue
+                    observed = _finite_timestamp(self._current.stamps[boundary])
+                    if observed is None or (
+                        index < position and observed > now
+                    ) or (index > position and observed < now):
+                        return
             if stage in _TURN_START:
                 # A repeat of the same start stage signals the next utterance:
                 # bank the open turn before opening a fresh one.
@@ -336,6 +408,14 @@ class MetricsRecorder:
         """Return an opaque identity token for task-scoped future stamps."""
         with self._lock:
             return self._current.turn_token if self._current is not None else None
+
+    def stage_breakdowns(self) -> list[dict[str, Optional[float]]]:
+        """Snapshot additive stage intervals in the same order as records()."""
+        with self._lock:
+            records = [*self._completed]
+            if self._current is not None:
+                records.append(self._current)
+            return [record.stage_breakdown() for record in records]
 
     def reset(self) -> None:
         with self._lock:

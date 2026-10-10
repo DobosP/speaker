@@ -250,8 +250,7 @@ def test_delay_continuity_reset_preserves_converged_operating_delay():
     calibrator._operating = 321
     calibrator._acquired = True
     calibrator._median.append(321)
-    calibrator._mic = np.ones(160, dtype="float32")
-    calibrator._far = np.ones(160, dtype="float32")
+    calibrator.observe(np.ones(160, dtype="float32"), np.ones(160, dtype="float32"))
     calibrator._since = 160
 
     calibrator.reset_continuity()

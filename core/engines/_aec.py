@@ -216,10 +216,53 @@ class AecDelayCalibrator:
         self._operating = self._seed  # measured after the first accept
         self._acquired = False  # snapped to the first accepted estimate?
         self._median: deque = deque(maxlen=max(1, int(median_history)))
-        # Rolling window_ms of the two 16 kHz streams (single writer: capture thread).
-        self._mic = np.zeros(0, dtype=np.float32)
-        self._far = np.zeros(0, dtype=np.float32)
+        # Fixed paired history (single writer: capture thread). Append only the
+        # new samples; materialize chronological windows at estimation time.
+        self._mic_buffer = np.empty(self._window, dtype=np.float32)
+        self._far_buffer = np.empty(self._window, dtype=np.float32)
+        self._window_count = 0
+        self._window_pos = 0
         self._since = 0  # energetic samples since the last recalc
+
+    def _append_window(self, mic: np.ndarray, far: np.ndarray, n: int) -> None:
+        retained = min(n, self._window)
+        start = (self._window_pos + n - retained) % self._window
+        first = min(retained, self._window - start)
+        offset = n - retained
+        self._mic_buffer[start : start + first] = mic[offset : offset + first]
+        self._far_buffer[start : start + first] = far[offset : offset + first]
+        remaining = retained - first
+        if remaining:
+            self._mic_buffer[:remaining] = mic[offset + first :]
+            self._far_buffer[:remaining] = far[offset + first :]
+        self._window_pos = (self._window_pos + n) % self._window
+        self._window_count = min(self._window, self._window_count + n)
+
+    def _snapshot_window(self, buffer: np.ndarray) -> np.ndarray:
+        """Return exactly the retained chronological samples, independently owned."""
+        count = self._window_count
+        out = np.empty(count, dtype=np.float32)
+        if count:
+            start = (self._window_pos - count) % self._window
+            first = min(count, self._window - start)
+            out[:first] = buffer[start : start + first]
+            if first < count:
+                out[first:] = buffer[: count - first]
+        return out
+
+    @property
+    def _mic(self) -> np.ndarray:
+        return self._snapshot_window(self._mic_buffer)
+
+    @property
+    def _far(self) -> np.ndarray:
+        return self._snapshot_window(self._far_buffer)
+
+    def _clear_windows(self) -> None:
+        self._window_count = 0
+        self._window_pos = 0
+        self._mic_buffer.fill(0)
+        self._far_buffer.fill(0)
 
     def _clamp(self, d: int) -> int:
         """Bound the delay to [0, max_delay]; a negative or out-of-range estimate is
@@ -237,8 +280,7 @@ class AecDelayCalibrator:
             return
         mic = mic[:n]
         far = far[:n]
-        self._mic = np.concatenate([self._mic, mic])[-self._window :]
-        self._far = np.concatenate([self._far, far])[-self._window :]
+        self._append_window(mic, far, n)
         # Only advance the recalc timer on real playback -- silence carries no echo
         # to align to, so we neither run nor reset the operating value on it.
         if float(np.sqrt(np.mean(far**2))) >= self._ENERGY_FLOOR_RMS:
@@ -272,8 +314,7 @@ class AecDelayCalibrator:
         value and force a slow re-acquire from the coarse seed every interrupt).
         The energy-gated sliding window + median already absorb a mid-session
         drift without a reset."""
-        self._mic = np.zeros(0, dtype=np.float32)
-        self._far = np.zeros(0, dtype=np.float32)
+        self._clear_windows()
         self._since = 0
         self._median.clear()
         self._acquired = False
@@ -288,8 +329,7 @@ class AecDelayCalibrator:
         use a known-worse alignment.
         """
 
-        self._mic = np.zeros(0, dtype=np.float32)
-        self._far = np.zeros(0, dtype=np.float32)
+        self._clear_windows()
         self._since = 0
         # Accepted lag history describes the unchanged physical echo path. Keep
         # it with the operating estimate so the first later measurement remains

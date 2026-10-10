@@ -506,8 +506,7 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     delay._operating = 321
     delay._acquired = True
     delay._median.extend((300, 321))
-    delay._mic = np.ones(160, dtype="float32")
-    delay._far = np.ones(160, dtype="float32")
+    delay.observe(np.ones(160, dtype="float32"), np.ones(160, dtype="float32"))
     delay._since = 160
     engine._aec_delay_cal = delay
     engine._aec_ref_delay = 321

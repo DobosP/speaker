@@ -63,7 +63,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
-  ADR-0230 bounds reference-ring copies; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
+  ADR-0230 bounds reference-ring copies; ADR-0238 bounds calibration history copies with exact estimator math; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
   Replay source inventories bind output cleanup (7 checks); final-STT Git refusal uses a private HEAD fixture (70 passed/1 skip under umask 077); historical receipts unchanged (ADR-0234 addenda).
   Replay is headless evidence (ADR-0110/0111); acoustic identity stays immutable (ADR-0084/0086); VAD/recovery retain segment/rate evidence
   (ADR-0043/0046/0048). Only a finite enrolled final match mints owner trust (ADR-0027/0041/0051).
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Final turn-state scope: 342 passed; Linux console echo exit 0 with in-memory state and no audio/models. Native/focused receipts: ADR-0227–0235.
+- Final turn-state scope: 342 passed; AEC window scope 467 passed/1 optional skip; Linux console echo exit 0 with in-memory state and no audio/models. Native/focused receipts: ADR-0227–0235.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

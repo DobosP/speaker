@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "baseline_source_commit": "70345ae309b7fd84c27d520d0bdaa972e112a2bd",
+  "baseline_class_sha256": "580f9f1726a8dbd5c8b942fc49b46921a80feaefc50d1dd6d918d546d1df628e",
+  "current_class_sha256": "bb64d51b7546cd3d00ec33981b2bd0d9e71a64eed9af86f573d01ca74d5af872",
+  "synthetic_only": true,
+  "native_model_or_device": false,
+  "thread_environment_requested_one": true,
+  "window_exact_cases": 36,
+  "estimator_ast_unchanged": true,
+  "synthetic_delay_snapshot": {
+    "sample_rate_hz": 16000,
+    "seed_delay_samples": 80,
+    "operating_delay_samples": 384,
+    "accepted_estimate": true
+  },
+  "idle_100ms_observe": {
+    "baseline": [
+      {
+        "p50_us": 27.8055,
+        "p95_us": 32.721
+      },
+      {
+        "p50_us": 21.965,
+        "p95_us": 30.282
+      }
+    ],
+    "ring": [
+      {
+        "p50_us": 19.2725,
+        "p95_us": 22.206
+      },
+      {
+        "p50_us": 15.022,
+        "p95_us": 20.334
+      }
+    ]
+  },
+  "timing_method": "adjacent_alternating_pairs_unpaced",
+  "idle_incremental_allocation": {
+    "baseline": {
+      "incremental_traced_current_bytes": 205184,
+      "incremental_traced_peak_bytes": 308072,
+      "retained_window_storage_bytes": 204800
+    },
+    "ring": {
+      "incremental_traced_current_bytes": 32,
+      "incremental_traced_peak_bytes": 7704,
+      "retained_window_storage_bytes": 192000
+    }
+  },
+  "complete_storage_and_working_peak": {
+    "idle": {
+      "baseline": {
+        "traced_current_bytes": 206424,
+        "traced_peak_bytes": 309312
+      },
+      "ring": {
+        "traced_current_bytes": 193384,
+        "traced_peak_bytes": 201056
+      }
+    },
+    "energetic_recalculation": {
+      "baseline": {
+        "traced_current_bytes": 206592,
+        "traced_peak_bytes": 496180
+      },
+      "ring": {
+        "traced_current_bytes": 193536,
+        "traced_peak_bytes": 483156
+      }
+    }
+  },
+  "rolling_copy_bytes_full_idle_block": {
+    "baseline": 204800,
+    "ring": 12800
+  }
+}

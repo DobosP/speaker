@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "scope": "public_fake_sdk_terminal_next_after_known_cleanup;not_model_turn_or_audio_latency",
+  "synthetic_only": true,
+  "network_or_native_model": false,
+  "cpu_isolation_attested": false,
+  "baseline_commit": "1bed9e21df29c7885a88757b07e154e2ade972a3",
+  "baseline_llm_source_sha256": "c334ff55f7732ce4bcfb5d5b33d3ce4c03ea65baf81deb607dd1a3608f118ce5",
+  "current_llm_source_sha256": "b52e4135641a02108b37bb8fc8e716020659aa76ffdbafb54b2d4f42b439a02d",
+  "baseline_bridge_sha256": "2fca621653ba4bed98de070f6e22d043eef14ad3bbee352feecf7a5a68689a26",
+  "current_bridge_sha256": "ce5f92516e735bc68395eec3ecd905cb4ae416ec8d4a2a28836d10db3098828c",
+  "fixture_source_sha256": "d2e6d4ae0e2a4082c6492ec2893f9065d88b8530fb893f88b5c0acbfd11f8b1d",
+  "benchmark_source_sha256": "7c7b557d02934af264d7c585ec7a45848cd99bb38b1e379d88b0fd39f72aeaf3",
+  "method": "adjacent_alternating_variants;one_public_chunk;wait_known_done_before_terminal_next",
+  "cases_per_variant": 5,
+  "terminal_next_ms": {
+    "baseline": {
+      "p50": 50.1314,
+      "min": 50.0995,
+      "max": 50.2107
+    },
+    "current": {
+      "p50": 0.009,
+      "min": 0.0042,
+      "max": 0.0099
+    }
+  }
+}

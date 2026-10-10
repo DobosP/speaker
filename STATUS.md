@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (third-pass watchdog 115, TTS 224, ASR 914/1 headless gates; combined qualification pending; live stopped).
+Last verified: 2026-10-10 (third-pass watchdog 115, TTS 224, ASR 914/1, local-stream 302 headless checks; full integration pending; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Focused: warm 207, buffer 467/1 skip, ADR-0240 latency 392, producers 57, Unicode/markup 121, final-ASR cancellation 914/1 skip; actual console Echo finalization passes without audio/models.
+- Third-pass focused: watchdog 115, TTS 224, final-ASR 914/1 skip, Ollama terminal/owner 302; prior console Echo finalization passes without audio/models; earlier receipts in WORKLOG.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

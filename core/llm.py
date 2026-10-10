@@ -305,6 +305,9 @@ class _OllamaStreamFailure:
     error: BaseException
 
 
+_OLLAMA_STREAM_TERMINAL = object()
+
+
 class _OllamaAsyncStreamProducer:
     """Own one async request without retaining its public sync iterator."""
 
@@ -355,6 +358,19 @@ class _OllamaAsyncStreamProducer:
             self.cancel()
         return self.is_cancelled()
 
+    def publish_done(self) -> None:
+        """Wake a waiting consumer only after this request's cleanup finished.
+
+        A full data queue needs no wakeup: the consumer will drain it and see
+        done without another blocking poll. Never wait or discard data to make
+        room for this optional terminal notification.
+        """
+        self.done.set()
+        try:
+            self.items.put_nowait(_OLLAMA_STREAM_TERMINAL)
+        except queue.Full:
+            pass
+
     async def enqueue(self, item: object) -> bool:
         """Bounded async-to-sync put that keeps cancellation schedulable."""
         full_since: Optional[float] = None
@@ -383,8 +399,10 @@ class _OllamaAsyncStreamProducer:
                 self.items.put_nowait(_OllamaStreamFailure(exc))
             except queue.Full:
                 pass
-            finally:
-                self.done.set()
+        finally:
+            # The loop's own failure, if any, also precedes terminal. Cleanup
+            # and loop shutdown have returned before a consumer can finish.
+            self.publish_done()
 
     async def watch_cancel(self, request_task: asyncio.Task) -> None:
         while True:
@@ -485,11 +503,8 @@ class _OllamaAsyncStreamProducer:
                 )
             except Exception:
                 pass
-            try:
-                if failure is not None:
-                    await self.enqueue(_OllamaStreamFailure(failure))
-            finally:
-                self.done.set()
+            if failure is not None:
+                await self.enqueue(_OllamaStreamFailure(failure))
 
 
 class _OllamaAsyncTokenStream:
@@ -579,16 +594,36 @@ class _OllamaAsyncTokenStream:
                     raise StopIteration
                 continue
             try:
-                item = self._producer.items.get(timeout=0.05)
+                item = (
+                    self._producer.items.get_nowait()
+                    if self._producer.done.is_set()
+                    else self._producer.items.get(timeout=0.05)
+                )
             except queue.Empty:
                 if self._producer.done.is_set():
-                    self._mark_terminal()
-                    raise StopIteration
-                continue
+                    # Completion may race a timed get's empty result. All data
+                    # and errors precede done, so recheck after observing done
+                    # before declaring exhaustion; never lose the final item.
+                    try:
+                        item = self._producer.items.get_nowait()
+                    except queue.Empty:
+                        self._mark_terminal()
+                        raise StopIteration
+                else:
+                    continue
             if self._producer.sync_external_cancel():
                 continue
-            if isinstance(item, _OllamaStreamFailure):
+            if item is _OLLAMA_STREAM_TERMINAL:
                 self._mark_terminal()
+                raise StopIteration
+            if isinstance(item, _OllamaStreamFailure):
+                # An error is terminal too. Its queue publication can precede
+                # the private loop's final return; retain ownership until then,
+                # just as close/cancellation do, and let revocation win.
+                self._producer.done.wait()
+                self._mark_terminal()
+                if self._producer.sync_external_cancel():
+                    raise StopIteration
                 raise item.error
             return str(item)
 

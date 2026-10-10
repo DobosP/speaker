@@ -320,3 +320,21 @@ def test_invalid_or_capture_mode_stops_at_launcher_parser(args):
 
     with pytest.raises(SystemExit):
         _parse_live_arguments(args)
+
+
+@pytest.mark.parametrize(
+    "space", ["\u00a0", "\u2003", "\u202f", "\u3000", "\x85", "\v", "\f"]
+)
+@pytest.mark.parametrize("tag", ["[voice:soft]", "[emotion:calm]", "[rate:0.9]"])
+def test_unicode_space_cannot_promote_interior_voice_directive(space, tag):
+    from core.tts_markup import parse_tts_markup
+
+    prefix = "There is a clear way to approach this problem, "
+    text = prefix + space + tag + " proceed safely."
+    expected = stream_sentences([text])
+    for split in range(len(text) + 1):
+        assert chunks((text[:split], text[split:])) == expected
+    assert chunks((prefix, space, tag, " proceed safely.")) == expected
+    assert chunks(iter(text)) == expected
+    for fragment in chunks(iter(text)):
+        assert parse_tts_markup(fragment)[1] == parse_tts_markup(text)[1]

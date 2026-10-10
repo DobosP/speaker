@@ -439,3 +439,49 @@ The real console entrypoint also returned the expected echo using public typed
 input and forced in-memory state. No phone code was merged. The protected prior
 enrollment, backup and recordings remain unchanged. The owner’s October 5 stop
 still governs any microphone, doctor or live retry.
+
+## Second desktop pass: mature implementation lessons (2026-10-10)
+
+Valid until: source changes, a newer reviewed upstream release or physical evidence — then treat as history.
+
+The owner requested another implementation pass **before** a live trial. Desktop
+Linux/Windows/macOS and English remain the scope; microphone and doctor runs stay
+paused. Published releases and source ownership mechanisms are useful evidence,
+but a working dictation app, remote satellite or cloud-backed example is not proof
+of a complete local open-speaker conversational agent on this hardware.
+
+| Reviewed implementation | What its working scope establishes | Applied here or explicit limit |
+|---|---|---|
+| [Home Assistant local voice](https://www.home-assistant.io/voice_control/voice_remote_local_assistant/) and [Speech-to-Phrase 1.4.3](https://github.com/OHF-Voice/speech-to-phrase/blob/78354721f5c8cc55ec8e80dc7ff372d49b044eaa/README.md) | Restricted command recognition can use far less compute; the host runs the pipeline. Its published Pi speed is restricted-grammar evidence. | Preserve open-ended English conversation. Do not replace general ASR with a home-control grammar. The [current upstream notice](https://github.com/OHF-Voice/speech-to-phrase#speech-to-phrase) moves development to OHF-Voice/apps with constrained CTC; that rewrite is not a locally measured comparison here. |
+| [Linux Voice Assistant 1.1.15](https://github.com/OHF-Voice/linux-voice-assistant/blob/43a183a2322cde4c9e2558f333124941fdeaa439/linux_voice_assistant/satellite.py#L556) | A usable Linux satellite coordinates listening/playback and delegates the assistant pipeline; playback-time wake behavior and AEC hardware assumptions matter. | Retain the local pipeline and exact barge-in authority. Muting recognition for all TTS would remove a required capability. |
+| [OpenVoiceOS Dinkum 0.11.0a2](https://github.com/OpenVoiceOS/ovos-dinkum-listener/blob/45a96175e988e5b8f0d71c020e43e2893bca8c28/ovos_dinkum_listener/voice_loop/voice_loop.py) | Explicit listening states, bounded pre-roll, timeouts and platform plugins; this cited release is a prerelease. Locality depends on selected plugins. | Keep explicit modes and bounded capture ownership. Continuous-listening examples do not establish echo immunity. |
+| [RealtimeSTT 1.1.2](https://github.com/KoljaB/RealtimeSTT/blob/07df3600286ea7794cf87d905aab6fccbb09dfc0/RealtimeSTT_server/production_server.py#L2957) | Latest pending work is owned before worker start and stale preview results are fenced. | Our exact generation/receipt cancellation remains the authority. Their advisory request-to-publish release timings are not end-of-speech-to-audio latency. |
+| [RealtimeTTS 0.8.10](https://github.com/KoljaB/RealtimeTTS/blob/50abd79cfb6033fe2781abc7c97291fe70dcc3ea/RealtimeTTS/text_to_stream.py#L520) | An early first fragment can overlap ongoing text generation with synthesis; later chunks can be longer. | Implemented bounded opt-in first-fragment delivery in ADR-0239, with expression/numeric guards, cancellation and no replay. Physical prosody remains unqualified. |
+| [Pipecat 1.12.0 latency observer](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/observers/user_bot_latency_observer.py#L367) | Separate service/turn latency contributions make the bottleneck diagnosable. Its Piper example also uses hosted ASR/LLM. | Implemented scalar-only, captured-turn stages and exact playback receipt observations in ADR-0240. No unbounded upstream queue or cloud service is introduced. |
+| [whisper.cpp 1.9.5](https://github.com/ggml-org/whisper.cpp/blob/d1be6fde11ac6e0407606b4e42fe72d34add8037/README.md) | Native quantization, platform acceleration, fixed audio history and cooperative abort are practical building blocks. | Implemented paired fixed calibration buffers using existing NumPy native copies (ADR-0238). This is a recognizer/runtime reference, not a complete agent or a reason to change ASR without quality evidence. |
+| [Handy 0.9.8 model ownership](https://github.com/cjpais/Handy/blob/v0.9.8/src-tauri/src/managers/transcription.rs) | A desktop local dictation app uses explicit model ownership, cleanup and idle behavior. | Implemented foreground retirement of speculative warm-up (ADR-0237), preserving selected model residency and foreground limits. Rust alone does not establish a faster voice agent. |
+
+### Plan and measured progress
+
+| Step | Completion condition | Result |
+|---|---|---|
+| Review mature projects and reproduce a local cost | Cite exact source and distinguish product scope from latency claims. | Complete; current release/source review above, warm-lock reproducer and paired buffer baseline retained. |
+| Let real input retire warm work | Cancellable warm stream, no successor helper after retirement, local-only built-in selection, no second invocation after entered error. | Complete headlessly; 207 focused tests. Foreign noncooperative native work is not preempted. |
+| Reduce recurring calibration allocation | Byte-identical chronological inputs and unchanged estimator/acceptance math. | Complete; 467 tests/1 optional skip. 16× fewer window-copy bytes per observed block; synthetic p50 22–28 to 15–19 µs on this loaded Linux host. |
+| Offer earlier first speech without capability loss | Explicit option, unchanged normal mode, directive/numeric guards, exact cancellation/no duplicate fallback. | Complete headlessly; reproducible synthetic arrival steps 25→10 and 56→29, one additional fragment. No audible-latency claim. |
+| Expose observed latency contributions | Captured turn token, bounded exact fragment binding, additive summary, no raw text/audio, legacy metrics unchanged. | Implemented; worker scope 392 passes, actual producer/finalizer integration under combined verification. Receipt observation is not a DAC timestamp. |
+| Integrate, qualify and retain compact evidence | Combined desktop gate, source/receipt binding, documentation, verified landing and owned transient cleanup. | In progress; final receipt below records the completed combined gate. Physical, quiet-host CPU and other-OS evidence remain separate. |
+
+The default ASR/TTS models and acoustic thresholds are retained. Prior recorded
+model comparisons and rejected candidates remain evidence, not reasons to deploy
+an unqualified replacement. The current gain comes from scheduling and memory
+ownership around already-native inference. A Rust module remains conditional on
+a measured residual Python bottleneck plus a portable ABI and cleanup tests.
+[ADR-0236](adr/0236-rolling-owned-experiment-retention.md) records the rolling
+retention policy and exactly which historical copied trees were pruned.
+
+`--speech-latency fast` selects ADR-0239 through the existing core/launcher path;
+`normal` restores full-sentence delivery. It acts only when streaming TTS is on,
+can add one synthesis call, and needs a later owner-authorized prosody/latency A/B.
+Performance/model profiles remain independent; no downloaded model or cloud path
+is selected by this option.

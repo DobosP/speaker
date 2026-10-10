@@ -13,7 +13,6 @@ from typing import Mapping
 from .contract import _next_cut, drain_complete_sentences
 
 SPEECH_LATENCY_MODES = ("normal", "fast")
-_SPACES = " \t\r\n"
 _PROTECTED = frozenset('[]{}<>`"“”‘’()')
 _MAX_FIRST_SCAN = 1024
 
@@ -82,21 +81,21 @@ def _first_fragment_cut(
             and text[i + 1].isalnum()
         ):
             return None
-        if char not in _SPACES:
+        if not char.isspace():
             if not in_word:
                 words += 1
                 in_word = True
         else:
             in_word = False
         clause = char in ",;:" and i > 0 and not text[i - 1].isdigit()
-        word_cut = char in _SPACES and words >= config.max_words
+        word_cut = char.isspace() and words >= config.max_words
         if not (clause or word_cut) or len(text[: i + 1].strip()) < config.min_chars:
             continue
         end = i + 1 if clause else i
-        if clause and (i + 1 >= len(text) or text[i + 1] not in _SPACES):
+        if clause and (i + 1 >= len(text) or not text[i + 1].isspace()):
             continue
         after = i + 1
-        while after < min(len(text), _MAX_FIRST_SCAN) and text[after] in _SPACES:
+        while after < min(len(text), _MAX_FIRST_SCAN) and text[after].isspace():
             after += 1
         if after >= min(len(text), _MAX_FIRST_SCAN):
             return None  # wait for real continuation, not a new timer/thread
@@ -120,7 +119,7 @@ class SpeechChunker:
     def feed(self, text: str) -> list[str]:
         self._buffer += text
         if self._first_pending and self._early_possible:
-            self._buffer = self._buffer.lstrip(_SPACES)
+            self._buffer = self._buffer.lstrip()
             normal = _next_cut(self._buffer)
             candidate = _first_fragment_cut(self._buffer, self.config)
             if candidate is None and (

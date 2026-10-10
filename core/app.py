@@ -1986,7 +1986,14 @@ def main(argv: list[str] | None = None) -> int:
                 runlog.summary.note(diagnostic_status=status_payload)
             except Exception:  # noqa: BLE001 - private evidence status is additive
                 runlog.logger.warning("could not summarize diagnostic status")
-        runlog.finalize(records)
+        try:
+            stage_records = runtime.metrics.stage_breakdowns()
+        except Exception:  # diagnostics cannot mask runtime cleanup failures
+            stage_records = None
+        if stage_records is None:
+            runlog.finalize(records)
+        else:
+            runlog.finalize(records, stage_breakdown_records=stage_records)
         print(f"[log] full log: {runlog.log_path}")
         print(f"[log] summary:  {runlog.summary_path}")
         if record_path is not None:

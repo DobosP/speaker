@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (headless warm/latency/first-fragment gates; combined integration pending; owner live stopped).
+Last verified: 2026-10-10 (headless warm/buffer/Unicode/cancellation/latency producers pass; full integration pending; owner live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Desktop-first plan: `docs/local_voice_performance.md`; second improvement pass in progress at owner request; live tests remain paused and other-OS gates remain open.
+- Desktop-first plan: `docs/local_voice_performance.md`; second pass under full verification; live tests paused; ADR-0236 pruned only superseded owned copies and retains compact keepers.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Final turn-state scope: 342 passed; latency/receipt scope: 392 passed; AEC window scope: 467 passed/1 skip; prior Linux console echo exits 0 without audio/models.
+- Final turn-state scope: 342 passed; ADR-0240 latency/receipt scope: 392 passed; AEC window scope: 467 passed/1 skip; prior Linux console echo exits 0 without audio/models.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

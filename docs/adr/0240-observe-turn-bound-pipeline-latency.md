@@ -58,3 +58,13 @@ in 2.45 s. These fake-clock and controlled-engine checks establish ownership and
 serialization behavior, not actual audio latency. Linux/Windows/macOS physical
 validation remains open; owner live testing is stopped. No native inference,
 recording, microphone, doctor, network or device execution ran for this change.
+
+### Producer integration
+
+Assistant/research request and first-speakable-text marks use only the token
+captured in dispatch metadata; the older first-token fallback is unchanged.
+The app exports the separate stage snapshot during finalization. Missing dispatch
+provenance stays unknown. Producer regressions also found a pre-existing
+nonstream cancellation seam: a wrapper can stop without yielding another token.
+The collector now rechecks cancellation at exhaustion and closes the provider,
+so its partial text is not reported as a completed answer or marked ready.

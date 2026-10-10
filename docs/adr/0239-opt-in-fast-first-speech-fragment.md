@@ -57,3 +57,12 @@ cancellation, callback errors, no duplicate fallback, runtime streaming selectio
 CLI parity and capture isolation. Later physical A/B must judge prosody and actual
 first audio before any proposal to change the default. Rust is not required for
 this bounded policy; native inference remains in the existing runtimes.
+
+### Integration review correction
+
+The first review reproduced a Unicode-whitespace seam: ASCII-only lookahead
+could mistake NBSP for safe continuation, then downstream Unicode stripping
+promoted an interior voice tag. First-fragment whitespace now uses the same
+Unicode semantics as stripping/tag parsing. Regressions cover every two-part
+split, character arrivals and whitespace-only arrivals for voice/emotion/rate
+tags with seven whitespace forms. No physical or model run was needed.

@@ -42,7 +42,7 @@ from .conversation import (
     history_messages,
 )
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
-from .metrics import LLM_FIRST_TOKEN, MetricsRecorder, mark_first_token
+from .metrics import LLM_FIRST_TOKEN, LLM_REQUESTED, TTS_TEXT_READY, MetricsRecorder, mark_first_token
 from .persona import DEFAULT_SYSTEM, PersonaConfig, capability_summary_for_query
 from .routing import (
     FAST,
@@ -438,6 +438,10 @@ def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]
                 break
             parts.append(token)
     finally:
+        # A cancelling wrapper may end without yielding again. Recheck at
+        # exhaustion so partial text cannot be reported as a completed answer.
+        if cancel is not None and cancel.is_set():
+            cancelled = True
         if cancelled:
             _close_token_stream(tokens)
     return "".join(parts).strip(), cancelled
@@ -581,6 +585,11 @@ def attach_llm_capabilities(
             return meta["metrics_turn_token"]
         return recorder.current_turn_token() if recorder is not None else None
 
+    def _captured_stage_token(context: Mapping[str, object]) -> object:
+        """New intervals require dispatch provenance, never the latest open turn."""
+        meta = context.get("metadata")
+        return meta.get("metrics_turn_token") if isinstance(meta, Mapping) else None
+
     def _enrich_context(query: str, context: dict[str, object]) -> dict[str, object]:
         """Add ``intent_kind`` + ``sensitivity`` to the context before routing.
 
@@ -615,6 +624,7 @@ def attach_llm_capabilities(
         )
         cancel = context.get("cancel_event")
         metric_turn = _metric_turn_token(context)
+        stage_turn = _captured_stage_token(context)
         if "vault.search" in registry.names():
             # Availability-scoped planner marker: note/vault phrases must only
             # change routing when the optional machine-local tool really exists.
@@ -1237,6 +1247,8 @@ def attach_llm_capabilities(
                     hd = dynamic_hedge_delay_ms(context.get(LIVE_CONTEXT_KEY), base_ms)
                     if hd is not None:
                         stream_kwargs["hedge_delay_ms"] = hd
+            if recorder is not None:
+                recorder.mark(LLM_REQUESTED, turn_token=stage_turn)
             tokens = mark_first_token(
                 attempt_model.stream(query, **stream_kwargs), recorder,  # type: ignore[arg-type]
                 fold_local_ttft=fold_local,
@@ -1244,7 +1256,11 @@ def attach_llm_capabilities(
                 turn_token=metric_turn,
             )
             if callable(emit):
-                text, cancelled = _stream_and_speak(tokens, cancel, _emit_tracked, chunking=speech_chunking)  # type: ignore[arg-type]
+                text, cancelled = _stream_and_speak(
+                    tokens, cancel, _emit_tracked, chunking=speech_chunking,  # type: ignore[arg-type]
+                    on_first_text=(lambda: recorder.mark(TTS_TEXT_READY, turn_token=stage_turn))
+                    if recorder is not None else None,
+                )
                 log.info(
                     "%s tier %s in %.2fs (%d chars, streamed)",
                     attempt_tier, "cancelled" if cancelled else "done",
@@ -1261,6 +1277,8 @@ def attach_llm_capabilities(
                     },
                 )
             text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
+            if text and not cancelled and recorder is not None:
+                recorder.mark(TTS_TEXT_READY, turn_token=stage_turn)
             log.info(
                 "%s tier %s in %.2fs (%d chars)",
                 attempt_tier, "cancelled" if cancelled else "done",
@@ -1317,6 +1335,7 @@ def attach_llm_capabilities(
             include_resume_tail=False,
         )
         metric_turn = _metric_turn_token(context)
+        stage_turn = _captured_stage_token(context)
         previous = context.get("previous_steps", [])
         gathered_parts: list[str] = []
         gathered_private = False
@@ -1363,6 +1382,8 @@ def attach_llm_capabilities(
         _enrich_context(query, context)
         ctx_token = capability_context.set(context)
         try:
+            if recorder is not None:
+                recorder.mark(LLM_REQUESTED, turn_token=stage_turn)
             tokens = mark_first_token(
                 llm.stream(prompt, system=system), recorder,
                 fold_local_ttft=_answers_locally(llm),
@@ -1370,9 +1391,15 @@ def attach_llm_capabilities(
                 turn_token=metric_turn,
             )
             if callable(emit):
-                text, cancelled = _stream_and_speak(tokens, cancel, emit, chunking=speech_chunking)  # type: ignore[arg-type]
+                text, cancelled = _stream_and_speak(
+                    tokens, cancel, emit, chunking=speech_chunking,  # type: ignore[arg-type]
+                    on_first_text=(lambda: recorder.mark(TTS_TEXT_READY, turn_token=stage_turn))
+                    if recorder is not None else None,
+                )
                 return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})
             text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
+            if text and not cancelled and recorder is not None:
+                recorder.mark(TTS_TEXT_READY, turn_token=stage_turn)
             return CapabilityResult(True, text, data={"cancelled": cancelled})
         finally:
             capability_context.reset(ctx_token)

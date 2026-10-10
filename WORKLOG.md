@@ -1306,3 +1306,15 @@ SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OP
 Observed 467 passed/1 optional-model skip in 10.11s. Source pin/exact-window/default
 synthetic delay and reset comparisons pass. No native models, devices, microphone,
 private recordings, network model transfer, live probe or acoustic default change.
+
+## Rolling retention applied (2026-10-10)
+
+Valid until: keeper migration or another explicit retention instruction — then treat as history.
+
+ADR-0236 supersedes earlier accumulation of owned full captures. Verified the retained 12192-pass log hash and canonical copies of all duplicated synthetic identity arrays, then removed prior integration worktree-logs and worker-logs: 657 files / 49,690,305 logical bytes. The old trees are gone; retention-pruned-20261010.json records history only. Compact original baseline receipts, model/evidence keepers, original recordings, protected live setup and unmerged mobile packet remain. Other owners’ storage changes are not attributed to this cleanup.
+
+## Second-pass integration source freeze (2026-10-10)
+
+Valid until: source changes or a new platform/physical result — then treat as history.
+
+Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835. Independent ownership reviews returned GO. Combined focused gate:514passed/2dependency warnings in6.71s. Review then reproduced/fixed Unicode-whitespace directive promotion; speech/markup/cancellation gate:121passed in1.53s. Actual producer/finalizer review required captured dispatch metadata for new stages, preserving legacy fallback, and found nonstream silent-cancellation at exhaustion. Final producer/close/cancellation gate:57passed in0.58s, including48 new cases and real console Echo finalization/fallback. These are headless tests, no model/audio/hardware claims. Full source qualification follows.

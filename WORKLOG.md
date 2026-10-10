@@ -1318,3 +1318,9 @@ ADR-0236 supersedes earlier accumulation of owned full captures. Verified the re
 Valid until: source changes or a new platform/physical result — then treat as history.
 
 Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835. Independent ownership reviews returned GO. Combined focused gate:514passed/2dependency warnings in6.71s. Review then reproduced/fixed Unicode-whitespace directive promotion; speech/markup/cancellation gate:121passed in1.53s. Actual producer/finalizer review required captured dispatch metadata for new stages, preserving legacy fallback, and found nonstream silent-cancellation at exhaustion. Final producer/close/cancellation gate:57passed in0.58s, including48 new cases and real console Echo finalization/fallback. These are headless tests, no model/audio/hardware claims. Full source qualification follows.
+
+## Second-pass full qualification (2026-10-10)
+
+Valid until: source changes or new physical/platform evidence — then treat as history.
+
+Source ca2fe03375a1cf6b0b07cda9681387d22b81eda7: 12369 passed, 41 skipped, 9 dependency warnings, 225.76 s. CI LiveKit exclusions retained; no microphone/doctor/native platform run. New coverage includes actual console Echo finalization and unavailable-stage fallback. Changed 23 Python files pass scoped fatal-error Ruff; 38 docs checked with no findings; whitespace clean. Ignored current keeper logs/runs/desktop-pass-two-20261010 contains source-bound receipt, current runner, compact logs and public scheduling/baseline results; fresh hermetic pytest fixtures removed after result. Source-qualified worker branches merge into the integration ancestry; original live/mobile keepers remain excluded from cleanup.

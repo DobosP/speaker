@@ -469,8 +469,8 @@ of a complete local open-speaker conversational agent on this hardware.
 | Let real input retire warm work | Cancellable warm stream, no successor helper after retirement, local-only built-in selection, no second invocation after entered error. | Complete headlessly; 207 focused tests. Foreign noncooperative native work is not preempted. |
 | Reduce recurring calibration allocation | Byte-identical chronological inputs and unchanged estimator/acceptance math. | Complete; 467 tests/1 optional skip. 16× fewer window-copy bytes per observed block; synthetic p50 22–28 to 15–19 µs on this loaded Linux host. |
 | Offer earlier first speech without capability loss | Explicit option, unchanged normal mode, directive/numeric guards, exact cancellation/no duplicate fallback. | Complete headlessly; reproducible synthetic arrival steps 25→10 and 56→29, one additional fragment. No audible-latency claim. |
-| Expose observed latency contributions | Captured turn token, bounded exact fragment binding, additive summary, no raw text/audio, legacy metrics unchanged. | Implemented; worker scope 392 passes, actual producer/finalizer integration under combined verification. Receipt observation is not a DAC timestamp. |
-| Integrate, qualify and retain compact evidence | Combined desktop gate, source/receipt binding, documentation, verified landing and owned transient cleanup. | In progress; final receipt below records the completed combined gate. Physical, quiet-host CPU and other-OS evidence remain separate. |
+| Expose observed latency contributions | Captured turn token, bounded exact fragment binding, additive summary, no raw text/audio, legacy metrics unchanged. | Complete headlessly; worker scope 392, actual producer/finalizer and cleanup scope 57, combined gate 12369 passes. Receipt observation is not a DAC timestamp. |
+| Integrate, qualify and retain compact evidence | Combined desktop gate, source/receipt binding, documentation, verified landing and owned transient cleanup. | Complete software qualification; 12369 tests pass, scoped lint/docs clean, compact receipts retained. Physical, quiet-host CPU and other-OS evidence remain separate. |
 
 The default ASR/TTS models and acoustic thresholds are retained. Prior recorded
 model comparisons and rejected candidates remain evidence, not reasons to deploy
@@ -485,3 +485,27 @@ retention policy and exactly which historical copied trees were pruned.
 can add one synthesis call, and needs a later owner-authorized prosody/latency A/B.
 Performance/model profiles remain independent; no downloaded model or cloud path
 is selected by this option.
+
+### Second-pass combined verification
+
+Valid until: implementation changes or new platform/physical evidence — then treat as history.
+
+Source `ca2fe03375a1cf6b0b07cda9681387d22b81eda7` passed **12,369 tests**,
+with **41 skips** and **nine dependency deprecation warnings**, in 225.76 seconds.
+The two LiveKit file exclusions match CI. This elapsed time is test-run duration,
+not a performance comparison with the prior suite or a voice-latency result.
+All 23 changed Python files pass scoped fatal-error Ruff checks; the 38-file
+documentation gate has no findings. Independent source reviews returned GO.
+
+Actual assistant/research producers, console Echo finalization and snapshot-error
+fallback are covered. Unicode whitespace cannot promote interior voice directives;
+nonstream wrapper exhaustion rechecks cancellation. New diagnostic stages require
+the captured dispatch token while legacy metrics keep their existing schema.
+
+The ignored `logs/runs/desktop-pass-two-20261010/` keeper holds the full compact
+test log, source-bound result, current runner, synthetic text scheduling report
+and small baseline receipts. The AEC setup/result are committed in `tools/` and
+`docs/evidence/`. No large model, workspace or fixture snapshot is duplicated.
+No microphone, doctor, live trial, new model download or native platform validation
+ran. Recognition/echo/prosody quality and Windows/macOS device behavior remain
+independent acceptance gates, as requested.

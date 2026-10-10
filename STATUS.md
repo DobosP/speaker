@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (headless warm/buffer/Unicode/cancellation/latency producers pass; full integration pending; owner live stopped).
+Last verified: 2026-10-10 (combined desktop gate 12369 passed/41 skipped; owner live stopped; Windows/macOS physical gates open).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -20,7 +20,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0239 adds opt-in fast first-fragment scheduling, with normal unchanged and physical quality unvalidated. ADR-0225/0226 retain template/label boundaries; ADR-0227 retains canonical requests/vocatives and retires only matching rejected partials before successor work; ADR-0228 bounds local decisions.
+- ADR-0239 adds opt-in fast first fragments with Unicode/directive guards; normal unchanged, physical quality unvalidated. ADR-0225/0226 retain template/label boundaries; ADR-0227 retains canonical requests/vocatives and retires only matching rejected partials before successor work; ADR-0228 bounds local decisions.
   Explicit Qwen+spoken factory canaries pass (ADR-0232); GPU mixed turns pass; CPU startup/semantic failures and rejected compact prompt remain open (ADR-0235).
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Desktop-first plan: `docs/local_voice_performance.md`; second pass under full verification; live tests paused; ADR-0236 pruned only superseded owned copies and retains compact keepers.
+- Desktop-first plan: `docs/local_voice_performance.md`; second software pass verified; live tests paused and other-OS gates open; ADR-0236 retains rolling compact evidence.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve
@@ -105,13 +105,13 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 ## Verification record (2026-10-10; older platform receipts labelled; commands/history in WORKLOG.md)
-- Python CI-style full gate: `12192 passed, 41 skipped, 9 warnings` in 562.40 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
+- Python CI-style full gate: `12369 passed, 41 skipped, 9 warnings` in 225.76 s; CI's two LiveKit files excluded, with hermetic synthetic fixtures.
 - Prior mobile (2026-10-05): `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Prior Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Final turn-state scope: 342 passed; ADR-0240 latency/receipt scope: 392 passed; AEC window scope: 467 passed/1 skip; prior Linux console echo exits 0 without audio/models.
+- Focused: warm 207, buffer 467/1 skip, ADR-0240 latency 392, producers 57, Unicode/markup 121; actual console Echo finalization passes without audio/models.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

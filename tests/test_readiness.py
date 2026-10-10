@@ -34,7 +34,7 @@ class _WarmRecordingLLM:
         return "ok"
 
     def stream(self, prompt, *, system=None, images=None):
-        yield "ok"
+        yield self.generate(prompt, system=system, images=images)
 
 
 def test_audioengine_warm_is_optional_noop():
@@ -227,6 +227,8 @@ def test_media_first_warm_preserves_legacy_llm_fallback(fallback_fails):
             calls.append("engine")
 
     class _LegacyLLM(_WarmRecordingLLM):
+        stream = None  # this fixture intentionally exposes only the legacy API
+
         def generate(self, prompt):
             calls.append("legacy")
             if fallback_fails:
@@ -280,7 +282,8 @@ def test_warm_ready_set_even_if_a_warm_step_raises():
             raise RuntimeError("model not pulled")
 
         def stream(self, prompt, *, system=None, images=None):
-            yield "x"
+            raise RuntimeError("model not pulled")
+            yield  # pragma: no cover - generator shape, failure before token one
 
     runtime = VoiceRuntime(ScriptedEngine(), _BoomLLM(), warm_on_start=True)
     runtime.start(run_bus=False)
@@ -305,7 +308,7 @@ def test_cloud_hybrid_warms_only_the_local_leg():
             return "ok"
 
         def stream(self, prompt, *, system=None, images=None):
-            yield "ok"
+            yield self.generate(prompt, system=system, images=images)
 
     local, cloud = _Rec(), _Rec()
     hedge = HedgeLLM(local=local, cloud=cloud)

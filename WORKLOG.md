@@ -1371,3 +1371,31 @@ SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OP
 No model, microphone, doctor, device, original recording, model transfer or live
 run occurred. Native/platform/physical acceptance and protected owner evidence
 remain open and untouched.
+
+Valid until: TTS generation cancellation, DSP or native ownership changes — then treat as history.
+
+## 2026-10-10 — Retire stopped synthesis before native/DSP work (ADR-0242)
+
+A public synthetic Event/lock probe on 1bed9e2 measured one obsolete native entry
+after model-lock wait, one cancelled callback DSP/direct sink offer and one
+cancelled whole-clip DSP pass. The production FIFO independently prevented
+stale audible output; these counters are wasted wrapper work, not audio escape.
+Exact generation/stop checkpoints now reject those stages, giving zero for each
+counter on the same synthetic probe. The compact record is
+`docs/evidence/tts-generation-retirement.json`, with the protected baseline,
+probe hash and synthesis/file source hashes; no full source/cache snapshot added.
+
+Successor progress no longer needs an obsolete fake native render to finish.
+Entered native cleanup retains its lock until true return; errors propagate once
+and cannot trigger regeneration. Healthy PCM is bitwise identical under both
+speaker-lock policies with unchanged emotion speed. Existing FIFO/receipt/fade/
+resampling/cleanup ownership and live model/option selection are unchanged.
+Native kernels and already-entered DSP remain nonpreemptible; later checkpoints
+withhold known retired work/carry. No native RTF/physical latency claim follows.
+
+Affected headless gate: tts_generation_retirement, sherpa_playback, tts_markup,
+streaming_tts, audio_frontend: 224 passed in 3.06 s. The two old tests intentionally
+expecting a stale first chunk were corrected to assert zero native entry/write;
+no other contract was relaxed. New-test Ruff, scoped engine/playback lint and
+diff checks pass. Independent read-only review GO. No native model, private
+recording, microphone, doctor, route change, download or live run occurred.

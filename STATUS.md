@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (prior combined gate 12369/41; third-pass watchdog scope 115 passes; full integration pending; live stopped).
+Last verified: 2026-10-10 (third-pass watchdog 115, TTS 224, ASR 914/1 headless gates; combined qualification pending; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -63,7 +63,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
-  ADR-0230 bounds reference-ring copies; ADR-0238 bounds calibration history copies with exact estimator math; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
+  ADR-0230 bounds reference-ring copies; ADR-0238 bounds calibration history copies with exact estimator math; ADR-0233/0234 prevent replay/isolate output failure; ADR-0242 retires stale synthesis before native/DSP work; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
   Replay source inventories bind output cleanup (7 checks); final-STT Git refusal uses a private HEAD fixture (70 passed/1 skip under umask 077); historical receipts unchanged (ADR-0234 addenda).
   Replay is headless evidence (ADR-0110/0111); acoustic identity stays immutable (ADR-0084/0086); VAD/recovery retain segment/rate evidence
   (ADR-0043/0046/0048). Only a finite enrolled final match mints owner trust (ADR-0027/0041/0051).

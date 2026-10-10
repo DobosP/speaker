@@ -720,8 +720,9 @@ def test_synthesize_stops_early_when_interrupted():
     written: list = []
     eng._stop_speaking.set()  # barge-in before synthesis
     eng._synthesize("hello there", written.append)
-    # First chunk is handed over, then the callback returns 0 and synthesis stops.
-    assert len(written) == 1
+    # Known retirement must be checked before entering native generation.
+    assert written == []
+    assert eng._tts.calls == 0
 
 
 def test_synthesize_falls_back_to_chunked_waveform_without_callback():
@@ -1452,9 +1453,9 @@ def test_synthesize_streaming_aborts_on_generation_mismatch():
     written.clear()
     eng._speak_gen = 8  # a barge bumped the generation past this utterance's gen
     eng._synthesize("hi", written.append, gen=7)
-    # First chunk is handed over, then on_chunk returns 0 and synthesis stops --
-    # same shape as the _stop_speaking interrupt path.
-    assert len(written) == 1
+    # A fresh claim may clear stop, but the old generation cannot enter native.
+    assert written == []
+    assert eng._tts.calls == 1  # only the healthy first request entered
 
 
 def test_synthesize_nonstreaming_aborts_before_write_on_generation_mismatch():

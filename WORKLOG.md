@@ -1324,3 +1324,32 @@ Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835.
 Valid until: source changes or new physical/platform evidence — then treat as history.
 
 Source ca2fe03375a1cf6b0b07cda9681387d22b81eda7: 12369 passed, 41 skipped, 9 dependency warnings, 225.76 s. CI LiveKit exclusions retained; no microphone/doctor/native platform run. New coverage includes actual console Echo finalization and unavailable-stage fallback. Changed 23 Python files pass scoped fatal-error Ruff; 38 docs checked with no findings; whitespace clean. Ignored current keeper logs/runs/desktop-pass-two-20261010 contains source-bound receipt, current runner, compact logs and public scheduling/baseline results; fresh hermetic pytest fixtures removed after result. Source-qualified worker branches merge into the integration ancestry; original live/mobile keepers remain excluded from cleanup.
+
+
+Valid until: TTS generation cancellation, DSP or native ownership changes — then treat as history.
+
+## 2026-10-10 — Retire stopped synthesis before native/DSP work (ADR-0242)
+
+A public synthetic Event/lock probe on 1bed9e2 measured one obsolete native entry
+after model-lock wait, one cancelled callback DSP/direct sink offer and one
+cancelled whole-clip DSP pass. The production FIFO independently prevented
+stale audible output; these counters are wasted wrapper work, not audio escape.
+Exact generation/stop checkpoints now reject those stages, giving zero for each
+counter on the same synthetic probe. The compact record is
+`docs/evidence/tts-generation-retirement.json`, with the protected baseline,
+probe hash and synthesis/file source hashes; no full source/cache snapshot added.
+
+Successor progress no longer needs an obsolete fake native render to finish.
+Entered native cleanup retains its lock until true return; errors propagate once
+and cannot trigger regeneration. Healthy PCM is bitwise identical under both
+speaker-lock policies with unchanged emotion speed. Existing FIFO/receipt/fade/
+resampling/cleanup ownership and live model/option selection are unchanged.
+Native kernels and already-entered DSP remain nonpreemptible; later checkpoints
+withhold known retired work/carry. No native RTF/physical latency claim follows.
+
+Affected headless gate: tts_generation_retirement, sherpa_playback, tts_markup,
+streaming_tts, audio_frontend: 224 passed in 3.06 s. The two old tests intentionally
+expecting a stale first chunk were corrected to assert zero native entry/write;
+no other contract was relaxed. New-test Ruff, scoped engine/playback lint and
+diff checks pass. Independent read-only review GO. No native model, private
+recording, microphone, doctor, route change, download or live run occurred.

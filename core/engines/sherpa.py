@@ -13374,6 +13374,13 @@ class SherpaOnnxEngine(AudioEngine):
         (direct callers/tests) keeps the legacy ``_stop_speaking``-only check."""
         import numpy as np
 
+        def retired() -> bool:
+            return self._stop_speaking.is_set() or (
+                gen is not None and self._speak_gen != gen
+            )
+
+        if retired():
+            return
         tts = self._tts
         if self.config.tts_markup:
             parsed_text, parsed_directives = parse_tts_markup(
@@ -13414,9 +13421,13 @@ class SherpaOnnxEngine(AudioEngine):
             stream_sr = int(getattr(tts, "sample_rate", 0) or self._tts_sr or 22050)
         except (TypeError, ValueError):
             stream_sr = 22050
-        # Hold the TTS lock for the whole synthesis so a concurrent startup warm
-        # pass can't drive the same model at the same time.
+        # Serialize entered native generation (including its callbacks) with
+        # startup warm; cancellation never lends the lock to a successor early.
         with self._tts_lock:
+            # A stop may win while warm/another owner held the native model.
+            # Never spend a new native render on an already retired generation.
+            if retired():
+                return
             # Read the warm seed only after acquiring the model lock. A startup
             # warm may have established it while this first reply waited here;
             # sampling before the lock would retain stale None and redundantly
@@ -13507,10 +13518,14 @@ class SherpaOnnxEngine(AudioEngine):
                         _q_peak, \
                         _q_clip, \
                         _q_n
+                    if retired():
+                        return 0
                     raw = np.asarray(samples, dtype="float32").reshape(-1)
                     # DC-block FIRST so the raw-RMS/peak/dc metrics + normalize all
                     # see a centred signal (state carries across chunks + sentences).
                     raw = self._dc_block(raw, stream_sr)
+                    if retired():
+                        return 0
                     blk = raw
                     if _norm_gain is not None:
                         if raw.size:
@@ -13541,17 +13556,18 @@ class SherpaOnnxEngine(AudioEngine):
                         _q_peak = max(_q_peak, float(np.max(np.abs(blk64))))
                         _q_clip += int(np.count_nonzero(np.abs(blk64) >= 0.99))
                         _q_n += int(blk64.size)
+                    if retired():
+                        return 0
                     write(blk)
-                    return (
-                        0
-                        if (
-                            self._stop_speaking.is_set()
-                            or (gen is not None and self._speak_gen != gen)
-                        )
-                        else 1
-                    )
+                    return 0 if retired() else 1
 
+                if retired():
+                    return
                 tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
+                # Cancellation does not release this lock while native generate
+                # is entered. Only its true return reaches this checkpoint.
+                if retired():
+                    return
                 if _norm_gain is not None and _raw_count > 0:
                     r = math.sqrt(_raw_sumsq / float(_raw_count))
                     if r > 1e-6:
@@ -13577,11 +13593,21 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                 return
 
+            if retired():
+                return
             audio = tts.generate(text, sid=sid, speed=speed)
+        # Batch models may ignore cancellation until their native call returns.
+        # Do not then copy/filter/measure their already retired waveform.
+        if retired():
+            return
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         # DC-block FIRST (before declick/leveler/normalize + their level metrics).
+        if retired():
+            return
         samples = self._dc_block(samples, sr)
+        if retired():
+            return
         if leveler_on:
             # OUTPUT LEVELER path: declick FIRST (so the limiter's true-peak
             # estimate is not driven by a VITS impulse spike declick would have
@@ -13595,7 +13621,9 @@ class SherpaOnnxEngine(AudioEngine):
                     declick(samples, threshold=self.config.tts_declick_threshold),
                     dtype="float32",
                 ).reshape(-1)
-            samples, self._tts_level_gain_db = output_leveler(
+            if retired():
+                return
+            samples, next_level_gain_db = output_leveler(
                 samples,
                 target_dbfs=self.config.tts_loudness_target_dbfs,
                 true_peak_dbtp=self.config.tts_true_peak_dbtp,
@@ -13603,6 +13631,9 @@ class SherpaOnnxEngine(AudioEngine):
                 prev_gain_db=self._tts_level_gain_db,
                 max_slew_db_per_s=self.config.tts_loudness_slew_db_per_s,
             )
+            if retired():
+                return
+            self._tts_level_gain_db = next_level_gain_db
             samples = np.asarray(samples, dtype="float32").reshape(-1)
         else:
             # Legacy whole-clip path: normalize_rms needs the full clip's RMS.
@@ -13613,6 +13644,8 @@ class SherpaOnnxEngine(AudioEngine):
             samples = np.asarray(
                 normalize_rms(samples, target_rms), dtype="float32"
             ).reshape(-1)
+            if retired():
+                return
             if target_rms > 0.0 and raw_rms > 1e-6:
                 # Store the actual linear gain applied; subsequent sentences can
                 # use the streaming path with this as their feed-forward seed.
@@ -13640,6 +13673,8 @@ class SherpaOnnxEngine(AudioEngine):
             # Keep the final playback buffer finite and inside float full-scale.
             samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
             np.clip(samples, -1.0, 1.0, out=samples)
+        if retired():
+            return
         # Final-signal quality snapshot -- the EXACT samples about to reach the
         # FIFO/speaker, at the TTS's native rate (see audio_quality_metrics'
         # docstring for why this is more trustworthy than the .ref.wav AEC tap).
@@ -13654,9 +13689,7 @@ class SherpaOnnxEngine(AudioEngine):
         )
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
-            if self._stop_speaking.is_set() or (
-                gen is not None and self._speak_gen != gen
-            ):
+            if retired():
                 break
             write(samples[i : i + chunk])
 

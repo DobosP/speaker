@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "1bed9e21df29c7885a88757b07e154e2ade972a3",
+  "baseline": {
+    "retired_native_entries_after_lock_wait": 1,
+    "direct_stale_callback_writes": 1,
+    "cancelled_wholeclip_dsp_passes": 1,
+    "cancelled_callback_dsp_passes": 1,
+    "cancelled_callback_direct_writes": 1,
+    "callback_stop_result": 0,
+    "errors": [],
+    "native_models_loaded": 0,
+    "audio_devices_opened": 0,
+    "scope": "synthetic_boundary_work_counts;production_fifo_independently_fences_stale_audio"
+  },
+  "candidate": {
+    "retired_native_entries_after_lock_wait": 0,
+    "direct_stale_callback_writes": 0,
+    "cancelled_wholeclip_dsp_passes": 0,
+    "cancelled_callback_dsp_passes": 0,
+    "cancelled_callback_direct_writes": 0,
+    "callback_stop_result": 0,
+    "errors": [],
+    "native_models_loaded": 0,
+    "audio_devices_opened": 0,
+    "scope": "synthetic_boundary_work_counts;production_fifo_independently_fences_stale_audio"
+  },
+  "candidate_source_sha256": "7c395ec4113b49fca243c338af3f2f43f475c168057320ea11c0b1034adc4574",
+  "probe_source_sha256": "5792161407c9c796d5a21adbb2e4eea3a8ee667017d5800623b94e37ae62549d",
+  "verification": {
+    "passed": 224,
+    "seconds": 3.06,
+    "successor_progress_and_healthy_equivalence_tests_passed": true
+  },
+  "scope": "synthetic_native_entry_and_DSP_work_counters_not_model_performance_or_audibility",
+  "valid_until": "TTS generation cancellation or native/DSP ownership policy changes",
+  "candidate_synthesis_source_sha256": "4d8a4e0b175cbed4e7bdb3979d0553881200c4154e7096882f88a781db81e8ec",
+  "baseline_synthesis_source_sha256": "51afa5eb04d092d5ef82b56868e5728195abccb08069d72b69c85d3f9793d613"
+}

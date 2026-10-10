@@ -763,6 +763,7 @@ def _postprocess_final_text(
     text: str,
     *,
     log_exceptions: bool = True,
+    is_current: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Apply the production punctuation/casing policy to one raw final.
 
@@ -770,11 +771,16 @@ def _postprocess_final_text(
     sounddevice engine cannot silently disagree about the text sent to the
     runtime.
     """
+    _check_final_asr_current(is_current)
     result = text
     if punctuation is not None:
         try:
             result = punctuation.add_punctuation(result)
+            _check_final_asr_current(is_current)
+        except _FinalAsrCancelled:
+            raise
         except Exception:  # noqa: BLE001 - never let post-proc lose a turn
+            _check_final_asr_current(is_current)
             if log_exceptions:
                 log.exception("punctuation model failed; using raw text")
             result = text
@@ -783,6 +789,15 @@ def _postprocess_final_text(
         # terminators (its output may stay all-caps from the source model).
         result = restore_casing(result, force=punctuation is not None)
     return result
+
+
+class _FinalAsrCancelled(Exception):
+    """Exact final work was revoked; no model error or fallback is implied."""
+
+
+def _check_final_asr_current(is_current: Optional[Callable[[], bool]]) -> None:
+    if is_current is not None and not is_current():
+        raise _FinalAsrCancelled
 
 
 def _resolve_final_transcript(
@@ -798,6 +813,7 @@ def _resolve_final_transcript(
     allow_empty_streaming: bool = False,
     attested_repair: Optional[Callable[..., str]] = None,
     log_exceptions: bool = True,
+    is_current: Optional[Callable[[], bool]] = None,
 ) -> FinalTranscriptDecision:
     """Resolve the established final, then apply exact acoustic consensus.
 
@@ -807,7 +823,13 @@ def _resolve_final_transcript(
     streaming-only hypothesis. The verifier sees the exact same endpoint-owned
     PCM as the offline recognizer. An empty streaming hypothesis remains
     fail-closed unless its caller separately authorized offline recovery.
+
+    An optional exact-work predicate fences each model boundary. Revocation
+    unwinds without fallback or verifier-health changes; an entered native call
+    still owns its resources until it returns. Recorded/default helper callers
+    omit the predicate and retain the established selection path.
     """
+    _check_final_asr_current(is_current)
     offline_raw: Optional[str] = None
     offline_outcome = "unavailable"
     offline_text: Optional[str] = None
@@ -816,7 +838,9 @@ def _resolve_final_transcript(
         punctuation,
         raw_final,
         log_exceptions=log_exceptions,
+        is_current=is_current,
     )
+    _check_final_asr_current(is_current)
     baseline_selected = streaming_final
     # Parakeet is an independent acoustic vote, not a new single-model
     # fallback. Keep the established streaming rendering until exact verifier
@@ -843,12 +867,16 @@ def _resolve_final_transcript(
         if observed_sec >= float(config.asr_final_min_sec):
             offline_outcome = "error"
             try:
+                _check_final_asr_current(is_current)
                 stream = final_recognizer.create_stream()
+                _check_final_asr_current(is_current)
                 stream.accept_waveform(
                     decode_sample_rate,
                     segment_samples,
                 )
+                _check_final_asr_current(is_current)
                 final_recognizer.decode_stream(stream)
+                _check_final_asr_current(is_current)
                 offline_raw = stream.result.text or ""
                 offline_text = offline_raw.strip()
                 offline_outcome = "decoded" if offline_text else "empty"
@@ -878,7 +906,10 @@ def _resolve_final_transcript(
                                 backend=config.asr_final_backend,
                                 speech_sec=speech_sec,
                             )
+            except _FinalAsrCancelled:
+                raise
             except Exception:  # noqa: BLE001 - use the streaming final
+                _check_final_asr_current(is_current)
                 if log_exceptions:
                     log.debug(
                         "second-pass recognizer failed; using streaming final",
@@ -895,10 +926,12 @@ def _resolve_final_transcript(
         if observed_sec >= float(config.asr_final_min_sec):
             verifier_outcome = "error"
             try:
+                _check_final_asr_current(is_current)
                 verifier_result = final_verifier.transcribe(
                     segment_samples,
                     decode_sample_rate,
                 )
+                _check_final_asr_current(is_current)
                 verifier_raw = verifier_result.text or ""
                 verifier_text = verifier_raw.strip()
                 if verifier_text:
@@ -953,13 +986,17 @@ def _resolve_final_transcript(
                             verifier_support = empty_consensus.support
                             selected = empty_consensus.chosen
                             verifier_changed = empty_consensus.changed
+            except _FinalAsrCancelled:
+                raise
             except Exception:  # noqa: BLE001 - preserve the established baseline
+                _check_final_asr_current(is_current)
                 if log_exceptions:
                     log.debug(
                         "final verifier failed; using established ASR final",
                         exc_info=True,
                     )
 
+    _check_final_asr_current(is_current)
     if not selected.strip():
         selected_source = FinalTranscriptSource.NONE
     elif verifier_changed:
@@ -6802,6 +6839,7 @@ class SherpaOnnxEngine(AudioEngine):
             allow_empty_streaming=allow_empty_streaming,
             attested_repair=_attested_interrupt_repair,
             log_exceptions=self._recognized_text_logging_enabled(),
+            is_current=self._capture_callback_is_current,
         )
 
     def _disable_final_verifier_after_error(
@@ -6904,12 +6942,25 @@ class SherpaOnnxEngine(AudioEngine):
                 kwargs["allow_empty_streaming"] = True
             return self._final_transcribe(decode_seg, raw_final, **kwargs)
 
-        if self._final_verifier is None:
-            default_seam = (
-                getattr(self._final_transcribe, "__func__", None)
-                is SherpaOnnxEngine._final_transcribe
-            )
-            if self._diagnostic_bundle is not None and default_seam:
+        try:
+            if self._final_verifier is None:
+                default_seam = (
+                    getattr(self._final_transcribe, "__func__", None)
+                    is SherpaOnnxEngine._final_transcribe
+                )
+                if self._diagnostic_bundle is not None and default_seam:
+                    final_decision = self._final_decision(
+                        decode_seg,
+                        raw_final,
+                        speech_sec=speech_sec,
+                        allow_empty_streaming=offline_recovery_authorized,
+                    )
+                    final_text = final_decision.selected
+                else:
+                    # Recording must remain observational for embedders/tests that
+                    # replace the established text-selection seam.
+                    final_text = established_transcribe()
+            else:
                 final_decision = self._final_decision(
                     decode_seg,
                     raw_final,
@@ -6917,23 +6968,16 @@ class SherpaOnnxEngine(AudioEngine):
                     allow_empty_streaming=offline_recovery_authorized,
                 )
                 final_text = final_decision.selected
-            else:
-                # Recording must remain observational for embedders/tests that
-                # replace the established text-selection seam.
-                final_text = established_transcribe()
-        else:
-            final_decision = self._final_decision(
-                decode_seg,
-                raw_final,
-                speech_sec=speech_sec,
-                allow_empty_streaming=offline_recovery_authorized,
-            )
-            final_text = final_decision.selected
-            if final_decision.verifier_outcome == "error":
-                self._disable_final_verifier_after_error(
-                    "asr_final_verifier_disabled_after_decode_error",
-                    capture_epoch=capture_epoch,
-                )
+                if not self._capture_callback_is_current(capture_epoch):
+                    raise _FinalAsrCancelled
+                if final_decision.verifier_outcome == "error":
+                    self._disable_final_verifier_after_error(
+                        "asr_final_verifier_disabled_after_decode_error",
+                        capture_epoch=capture_epoch,
+                    )
+        except _FinalAsrCancelled:
+            self._diagnostic_final_aborted(acoustic, revision, "stale_fenced")
+            return
         if final_decision is not None and self._diagnostic_bundle is not None:
             from ..diagnostic_bundle import DiagnosticStage
 

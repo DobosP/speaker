@@ -59,7 +59,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
   STOP need compatible speaker authority (ADR-0008/0072/0137/0152). `semantic-interruption-policy-v1` and the Anyreach contracts are inert
   (ADR-0168–0170); playback-time KWS effects need the pinned token binding (ADR-0171/0172/0182).
 - Sherpa native reads use a 300 ms/eight-frame capture-only MediaSession (ADR-0088), rebuilds re-derive the eight optional AEC/coherence/DTD
-  roles (ADR-0174), and async endpoint finalization crosses a bounded route-neutral media stage (ADR-0107). Echo-probe acceptance binds to
+  roles (ADR-0174), and async endpoint finalization crosses a bounded media stage (ADR-0107); exact revoked model boundaries unwind before later ASR work (ADR-0243). Echo-probe acceptance binds to
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
@@ -111,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Focused: warm 207, buffer 467/1 skip, ADR-0240 latency 392, producers 57, Unicode/markup 121; actual console Echo finalization passes without audio/models.
+- Focused: warm 207, buffer 467/1 skip, ADR-0240 latency 392, producers 57, Unicode/markup 121, final-ASR cancellation 914/1 skip; actual console Echo finalization passes without audio/models.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

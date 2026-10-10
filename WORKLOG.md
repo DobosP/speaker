@@ -1332,3 +1332,42 @@ Valid until: recorder/watchdog source or monitoring behavior changes — then tr
 Baseline 1bed9e2 rescans full metrics every tick. ADR-0241 uses per-observer monotonic cursors and exact unresolved/current snapshots, preserving full metric export, deadlines and maintenance callbacks. A measured initial-copy prototype regression was removed before acceptance; current source-pinned benchmark includes both initial and steady allocations. At 50,000 settled synthetic turns, repeated p50 20.37–22.06ms becomes 6.60–6.89us; traced steady400232→624B, initial400232→808B. Not agent latency/RSS. Existing+new gate113 passed in5.37s; no audio, native model or doctor. Independent review and combined qualification follow.
 
 Watchdog review correction: cursor now acknowledges completed records only, preserving current→banked phase changes between ticks. Both reproduced missed-warning regressions pass; independent re-review GO. Final focused115 passed3.29s. Final compact benchmark replaces the superseded transient report:50kturns baseline6.23–6.86ms/current2.57–2.71us p50;steady400232→592B;initial400232→776B. Prior numbers remain historical, with host-load-sensitive absolute times. Current source hashes bind the replacement receipt.
+
+Valid until: final-ASR model boundaries, work ownership or benchmark environment changes — then treat as history.
+
+## 2026-10-10 — Retire obsolete final-ASR model stages (ADR-0243)
+
+On pinned main 1bed9e2, actual `_finalize_and_dispatch` plus fakes reproduced:
+revocation during punctuation still admitted offline create/accept/decode and
+verifier calls; final callbacks were correctly suppressed only afterwards.
+The exact existing work-current predicate now fences model boundaries, unwinding
+without fail-open selection or verifier-health mutation after observed revocation.
+An entered native call remains owned until return; no preemption/thread/model,
+endpoint, threshold, raw/provenance or control-authority change is claimed.
+
+Focused ASR/provenance/capture/diagnostic gates: **914 passed, 1 optional-model
+skip in 22.76s**. Earlier narrow gate: 222 passed/1 skip in 5.51s; exact stream-release-count tightening then passed the 128-case new module in 1.45s. New deterministic
+cases cover every model boundary with success/error return, exact stage retirement,
+blocked-call ownership, stream release on the same worker, sole-worker successor
+progress, foreign scope isolation and healthy exact decisions. Two initial test
+fixtures were corrected to supply acoustic lineage for revisions and retain the
+established offline selector's lowercase text; no production policy was changed.
+
+The one reusable `tools.bench_asr_final_cancellation` setup and compact receipt
+bind baseline helper Git source plus current helper hashes. Healthy decisions
+match 48/48 baseline cases. Post-revocation calls at punctuation/create/accept/
+decode fall 4/3/2/1 to zero. A synthetic verifier allocating exactly 1MiB after
+offline-decode revocation falls from 1050248 to 2096 traced-peak bytes and from
+242.811 to 21.153us paired p50. This is deliberately a fake workload, not native
+latency/RSS or an agent speed claim. No-cost healthy fake p50 rises 67.376 to
+70.944us; that predicate is a lambda/Event check, not full-engine native timing.
+Four BLAS/OpenMP environment requests were one; CPU isolation was not established.
+Only one current compact scratch receipt is retained, with pinned baseline in Git.
+
+```sh
+SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_asr_final_cancellation.py tests/test_asr_final.py tests/test_asr_final_async.py tests/test_asr_segment.py tests/test_asr_verifier.py tests/test_asr_postprocess.py tests/test_asr_text_agreement.py tests/test_asr_text.py tests/test_final_trust_lineage.py tests/test_final_stt_profiles.py tests/test_final_preprocessing_cancel.py tests/test_sherpa_streaming_decode_owner.py tests/test_sherpa_streaming_decode_session.py tests/test_sherpa_media_session.py tests/test_sherpa_vad_final_gate.py tests/test_capture_replay_async_delivery.py tests/test_diagnostic_bundle.py tests/test_barge_confirm.py tests/test_barge_word_cut.py -q
+```
+
+No model, microphone, doctor, device, original recording, model transfer or live
+run occurred. Native/platform/physical acceptance and protected owner evidence
+remain open and untouched.

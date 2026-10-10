@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "baseline_source_commit": "1bed9e21df29c7885a88757b07e154e2ade972a3",
+  "baseline_helpers_sha256": "770b03aab79017842b9064ac84580327c31e9461c06baf36cd9a4c35dc757fdb",
+  "current_helpers_sha256": "1bee6ae28148060729c80608df01266f43a31787a01dcd3b0360b45e005d5a60",
+  "synthetic_only": true,
+  "native_model_or_device": false,
+  "thread_environment_requested_one": true,
+  "cpu_isolation": false,
+  "healthy_exact_decision_cases": 48,
+  "cancellation_boundaries": {
+    "punctuation": {
+      "baseline_calls_after_revocation": 4,
+      "current_calls_after_revocation": 0
+    },
+    "create": {
+      "baseline_calls_after_revocation": 3,
+      "current_calls_after_revocation": 0
+    },
+    "accept": {
+      "baseline_calls_after_revocation": 2,
+      "current_calls_after_revocation": 0
+    },
+    "decode": {
+      "baseline_calls_after_revocation": 1,
+      "current_calls_after_revocation": 0
+    },
+    "verifier": {
+      "baseline_calls_after_revocation": 0,
+      "current_calls_after_revocation": 0
+    }
+  },
+  "healthy_no_cost_fake_paired": {
+    "baseline": {
+      "p50_us": 67.376,
+      "p95_us": 81.514,
+      "scratch_bytes_per_call": 0
+    },
+    "current": {
+      "p50_us": 70.9435,
+      "p95_us": 81.269,
+      "scratch_bytes_per_call": 0
+    }
+  },
+  "revoked_after_offline_decode_fake_1mib_verifier_paired": {
+    "baseline": {
+      "p50_us": 242.8105,
+      "p95_us": 327.154,
+      "scratch_bytes_per_call": 1048576
+    },
+    "current": {
+      "p50_us": 21.153,
+      "p95_us": 32.864,
+      "scratch_bytes_per_call": 0
+    }
+  },
+  "revoked_after_offline_decode_fake_allocation": {
+    "baseline": {
+      "traced_current_bytes": 248,
+      "traced_peak_bytes": 1050248
+    },
+    "current": {
+      "traced_current_bytes": 296,
+      "traced_peak_bytes": 2096
+    }
+  },
+  "limits": {
+    "entered_native_call_preemption": false,
+    "native_latency_or_rss_evidence": false,
+    "whole_agent_or_physical_quality_evidence": false
+  }
+}

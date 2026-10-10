@@ -1199,3 +1199,40 @@ Durable ignored archives: `logs/runs/desktop-core-integration-20261010`,
 556b511e4b8762d35ae6ea2f6c9843ffbf1a84423dfaf3ed94fc655ccaa1dcbe.
 Only aggregate findings enter Git. The protected live candidate/backup/recordings
 and deferred mobile branch stay separate from desktop landing/cleanup.
+
+
+Valid until: startup warm ownership, provider cancellation or inference policy changes — then treat as history.
+
+## 2026-10-10 — Foreground input retires speculative warm ownership (ADR-0237)
+
+A public synthetic Event/lock reproducer on 70345ae observed no warm cancellation
+context, a foreground stream blocked by warm, unfinished warm after stop, and
+one helper call beginning after stop. No model/audio/route was used. The repair
+sets a runtime-owned retirement signal at accepted generation allocation and
+shutdown, uses the existing streaming cancellation seam, and checks every
+successor warm stage. Media-first order, selected residency and foreground
+models/capabilities/options/deadlines are retained. Legacy generate-only APIs
+are adapted before entry; an entered TypeError cannot replay warm inference.
+
+Built-in direct cloud clients and declared cloud helper owners are excluded,
+with zero-transport tests. Context snapshots are hook-free, LOCAL_ONLY and
+preserve inherited cancellation; foreign providers remain responsible for their
+locality/cancellation. Noncooperative generators/media warm may outlive retirement;
+readiness remains unfinished until true warm-worker return. No native-preemption,
+quiet-host CPU, Windows/macOS or physical-first-audio claim follows. Prior loaded
+host experiments remain unchanged. Handy primary code informs ownership/cleanup
+semantics, not imported implementation or performance evidence.
+
+Final scoped command: shared venv pytest with SPEAKER_TEST_LOG=0, local-config/
+live disabled, bytecode/cache disabled and fresh owned basetemp; files:
+startup_warm_priority, readiness, local_model_residency, ollama_async_cancel,
+llamacpp_cancel, final_preprocessing_cancel, pretoken_cancellation. Initial
+strict-context scope: 207 passed in 13.36 s; final nominal built-in warm
+selection gate is recorded below. Full new-test/readiness Ruff, scoped runtime
+lint, diff check and docs checker pass; STATUS remains at 120 lines.
+
+Final nominal-selection scope: 207 passed in 13.29 s. Source is frozen for
+review/landing; no native benchmark, model download, audio route, microphone,
+doctor or live run occurred. Only one compact result and the baseline
+synchronization reproducer are retained in owned scratch; superseded test
+transients may be pruned under the current human retention instruction.

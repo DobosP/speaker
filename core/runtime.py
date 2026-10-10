@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import string
 import threading
@@ -19,6 +20,8 @@ from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.models import (
+    CLOUD_EGRESS_SCOPE_CONTEXT_KEY,
+    CloudEgressScope,
     RETAINED_PROMPT_CONTEXT_METADATA_KEY,
     SYNTHETIC_RESUME_TAIL_METADATA_KEY,
 )
@@ -37,7 +40,7 @@ from always_on_agent.supervisor import AgentSupervisor, ArrivalContinuation
 from always_on_agent.text import normalize_text
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
-from .capabilities import RecallConfig, _answers_locally, attach_llm_capabilities
+from .capabilities import RecallConfig, attach_llm_capabilities
 from .capability_router import CapabilityRouter, CapabilityTierRouter, escalate_predicate
 from .conversation import RecentContextConfig
 from .cleanup import TranscriptCleaner, rewrite_is_overreach
@@ -57,7 +60,10 @@ from .engine import (
 )
 from .intents import LocalIntentHandler
 from .input_lineage import AcousticRevisionGate
-from .llm import EchoLLM, LLMCallCancelled, LLMClient
+from .llm import (
+    EchoLLM, HedgeLLM, LLMCallCancelled, LLMClient, OpenAICompatLLM, SensitivityRouterLLM,
+    _CombinedCancelEvent, capability_context, collect_llm_text, snapshot_capability_context,
+)
 from .metrics import (
     ASR_FINAL,
     BARGE_IN,
@@ -622,12 +628,14 @@ class VoiceRuntime:
         # (it answers the common case). Duplicates are collapsed by identity so
         # a collapsed fast/main pair is only warmed once.
         #
-        # §9.7 gate: warm ONLY purely-local tiers. ``_answers_locally`` is the
-        # canonical "this model cannot reach cloud" predicate (False for a
-        # cloud-backed HedgeLLM / SensitivityRouterLLM), so a throwaway warm-up
-        # "hi" can never fire a billed cloud completion before the user has
-        # invoked anything -- cloud egress still happens only on a real turn.
+        # Built-in cloud clients cannot warm. Known cloud-capable wrappers
+        # contribute only their explicit local leg; custom clients remain
+        # responsible for their declared locality/cancellation contract.
         self._warm_on_start = warm_on_start
+        # Speculation is retired monotonically on accepted foreground input or
+        # shutdown. Signal only from the capture/control path; provider cleanup
+        # remains on the warm worker and must never block an input callback.
+        self._warm_cancel = Event()
         # Readiness signals that the configured media/model warm plan finished
         # (or immediately when warm-up is off). Fast policy leaves main cold. A
         # programmatic handle a caller/test can block on until "ready to fire".
@@ -635,21 +643,14 @@ class VoiceRuntime:
         warm_models: list[LLMClient] = []
 
         def _add_warm(candidate: Optional[LLMClient]) -> None:
-            if candidate is None:
+            if isinstance(candidate, (HedgeLLM, SensitivityRouterLLM)):
+                candidate = getattr(candidate, "local", None)
+            if candidate is None or isinstance(
+                candidate, (OpenAICompatLLM, HedgeLLM, SensitivityRouterLLM)
+            ):
                 return
-            if _answers_locally(candidate):
-                if all(candidate is not m for m in warm_models):
-                    warm_models.append(candidate)
-            else:
-                # A cloud-backed model (HedgeLLM / SensitivityRouterLLM): warming
-                # the whole thing could fire a billed cloud completion before any
-                # real turn, so we don't. But its purely-LOCAL leg can be warmed
-                # safely (§9.7: no egress), so the local tier of a cloud-hybrid
-                # isn't left cold. Best-effort: only if it exposes a `.local`.
-                local = getattr(candidate, "local", None)
-                if local is not None and _answers_locally(local):
-                    if all(local is not m for m in warm_models):
-                        warm_models.append(local)
+            if all(candidate is not model for model in warm_models):
+                warm_models.append(candidate)
 
         # Fast-only startup changes residency, not routing or capability
         # availability. With no distinct fast tier the sole answering tier is
@@ -800,57 +801,91 @@ class VoiceRuntime:
         scripted helpers retain their warm behavior; only a declared LLM owner
         outside the selected local plan is skipped. On-demand calls stay intact.
         """
+        owner = getattr(helper, "_llm", None)
+        # A direct cloud client does not enforce capability_context locality.
+        # Unknown custom helpers retain their contract; declared cloud owners
+        # are never speculative startup work.
+        if isinstance(owner, (OpenAICompatLLM, HedgeLLM, SensitivityRouterLLM)):
+            return False
         if self._warm_start_policy == "all":
             return True
-        owner = getattr(helper, "_llm", None)
         return owner is None or any(owner is model for model in self._warm_models)
 
-    def _warm(self) -> None:
-        """Pre-load the engine, answering models, and gate/cleaner so
-        turn 1 isn't cold; then raise ``warm_ready``.
-
-        Best-effort: a warm-up failure (model not pulled yet, server down) must
-        never take down the live pipeline -- it just means turn 1 pays the cold
-        cost as before. The model warm uses the REAL system prompt so the
-        cacheable system prefix is prefilled (not a bare ``hi`` that leaves the
-        prefix cold), and the input gate / cleaner are exercised once so their
-        first live classify/clean isn't cold either."""
+    @staticmethod
+    def _warm_generate_once(model: LLMClient, system: str) -> None:
+        """Adapt a generate-only legacy provider before entry; never retry it."""
+        generate = model.generate
         try:
-            # Media warm must not queue behind a complete LLM response. Keep all
-            # startup warm calls on this one worker to avoid added native load.
+            parameters = inspect.signature(generate).parameters
+            accepts_system = "system" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            accepts_system = True  # unknown API gets one invocation, never replay
+        if accepts_system:
+            generate("hi", system=system)
+        else:
+            generate("hi")
+
+    def _warm(self) -> None:
+        """Warm media/local models while idle; accepted input retires the plan.
+
+        Readiness means the plan finished or was retired, not successful native
+        prefill. Cooperative providers cancel through their existing stream
+        path. A foreign blocking generator or engine.warm may still outlive
+        retirement; no subsequent model/helper is started once it returns.
+        """
+        token = None
+        try:
+            context = snapshot_capability_context()
+            cancel = _CombinedCancelEvent(context.get("cancel_event"), self._warm_cancel)
+            context["cancel_event"] = cancel
+            context[CLOUD_EGRESS_SCOPE_CONTEXT_KEY] = CloudEgressScope.LOCAL_ONLY
+            token = capability_context.set(context)
+            if cancel.is_set():
+                return
+            # Media remains first, with no new backend/pool/deadline settings.
             engine_warm = getattr(self.engine, "warm", None)
             if callable(engine_warm):
                 try:
                     engine_warm()
-                except Exception:  # noqa: BLE001 - engine warm is best-effort
+                except Exception:  # noqa: BLE001 - best effort
                     log.debug("engine warm-up failed", exc_info=True)
             for model in self._warm_models:
+                if cancel.is_set():
+                    return
                 try:
-                    model.generate("hi", system=self._system_prompt)
-                except TypeError:
-                    # A minimal LLM stub may not accept system=; fall back.
-                    try:
-                        model.generate("hi")
-                    except Exception:  # noqa: BLE001 - warm-up is best-effort
-                        log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
-                except Exception:  # noqa: BLE001 - warm-up is best-effort
+                    if callable(getattr(model, "stream", None)):
+                        collect_llm_text(model, "hi", system=self._system_prompt)
+                    else:
+                        self._warm_generate_once(model, self._system_prompt)
+                except LLMCallCancelled:
+                    return
+                except Exception:  # noqa: BLE001 - best effort, no replay
                     log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
-            # Warm the pre-brain gate + cleaner (they use the fast tier with a
-            # different system prefix, so they have their own cold cost).
+            if cancel.is_set():
+                return
             if self._addressing is not None and self._warm_helper_is_selected(self._addressing):
                 try:
                     self._addressing.classify("hi", recent=())
-                except Exception:  # noqa: BLE001 - best-effort
+                except LLMCallCancelled:
+                    return
+                except Exception:  # noqa: BLE001 - best effort
                     log.debug("addressing warm-up failed", exc_info=True)
+            if cancel.is_set():
+                return
             if self._cleaner is not None and self._warm_helper_is_selected(self._cleaner):
                 try:
                     self._cleaner.clean("hi", recent=())
-                except Exception:  # noqa: BLE001 - best-effort
+                except LLMCallCancelled:
+                    return
+                except Exception:  # noqa: BLE001 - best effort
                     log.debug("cleaner warm-up failed", exc_info=True)
-            log.info("startup pre-warm complete (%d model(s))", len(self._warm_models))
+            log.info("startup pre-warm finished (%d model(s))", len(self._warm_models))
         finally:
-            # Always signal readiness, even if a warm step failed -- "warm-up
-            # finished" is the signal, not "warm-up perfect".
+            if token is not None:
+                capability_context.reset(token)
             self.warm_ready.set()
 
     def stop(self) -> None:
@@ -880,6 +915,7 @@ class VoiceRuntime:
                 self._stop_lifecycle.notify_all()
 
     def _stop_once(self) -> None:
+        self._warm_cancel.set()
         # Shutdown gate FIRST: the threaded bus keeps dispatching until
         # bus.stop() below, so a queued TTS_REQUEST could otherwise start
         # speaking mid-teardown (codex-review 2026-07-06). _on_event drops
@@ -1329,6 +1365,7 @@ class VoiceRuntime:
     def _allocate_input_generation_locked(self) -> int:
         """Allocate while ``_input_generation_lock`` is already held."""
 
+        self._warm_cancel.set()
         self._next_input_generation += 1
         if self._conversation_admission is not None:
             self._conversation_admission.note_arrival(

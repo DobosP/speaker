@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (headless admission/resume/decision/reference/TTS/source/writer gates; owner live stopped; prior receipts retained).
+Last verified: 2026-10-10 (headless warm ownership and prior integration gates; no new live/model run).
 Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -28,7 +28,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
   Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
-- ADR-0213/0219 warm media first and optionally only the fast local tier; main/vision remain callable with per-role Ollama residency. ADR-0214
+- ADR-0213/0219 retain media-first fast/all residency; ADR-0237 retires warm on accepted input/shutdown with local-only cancellation; main/vision stay callable. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
 - ADR-0216/0217 bind English candidate evidence (37 scripted/6 pinned mic clips, separate) and explicit preflighted Kitten; native defaults
   stay unchanged. `docs/english_model_comparison.md` owns measurements/licenses; factory generation passed, with no live/phone promotion.

@@ -10,6 +10,7 @@ from core.metrics import (
     LLM_FIRST_TOKEN,
     TTS_FIRST_AUDIO,
     TTS_REQUESTED,
+    SPEECH_END,
     MetricsRecorder,
 )
 from core.watchdog import StuckWatchdog
@@ -179,7 +180,7 @@ def test_snapshot_is_detached_and_keeps_original_indices():
     empty = recorder.watchdog_snapshot(latest, {first_token})
     assert empty.records == ()
     assert empty.epoch == snapshot.epoch + 1
-    assert empty.through_token == latest
+    assert empty.through_token == 0
 
 
 def test_independent_watchdogs_do_not_consume_each_others_observations(caplog):
@@ -208,3 +209,33 @@ def test_closed_warning_deduplication_does_not_accumulate_over_session(caplog):
             assert not watcher._warned
             assert not watcher._pending_metric_tokens
     assert len(recorder.records()) == 1000
+
+
+def test_new_anchor_and_banking_between_ticks_cannot_skip_a_stall(caplog):
+    now, recorder, watcher = setup()
+    recorder.mark(SPEECH_END)
+    watcher.tick()  # observed current without any eligible stall anchor
+    recorder.mark(ASR_FINAL)
+    recorder.close_turn()  # both transitions precede the next observation
+    now[0] = 12
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        watcher.tick()
+        watcher.tick()
+    assert len(caplog.records) == 1
+    assert "llm stuck: turn 0" in caplog.text
+
+
+def test_late_model_token_and_banking_between_ticks_cannot_skip_tts_stall(caplog):
+    now, recorder, watcher = setup()
+    recorder.mark(ASR_FINAL)
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        now[0] = 11
+        watcher.tick()
+        recorder.mark(LLM_FIRST_TOKEN)
+        recorder.close_turn()
+        now[0] = 17
+        watcher.tick()
+        watcher.tick()
+    assert len(caplog.records) == 2
+    assert "llm stuck: turn 0" in caplog.records[0].message
+    assert "tts stuck: turn 0" in caplog.records[1].message

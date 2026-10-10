@@ -445,6 +445,8 @@ class MetricsRecorder:
     ) -> WatchdogSnapshot:
         """Inspect new, unresolved and current turns without copying all history.
 
+        The cursor acknowledges only the completed frontier: current may gain
+        new stages and be banked between ticks, so it must be reconsidered then.
         Turn tokens increase across reset; completed records stay ordered. Binary
         lookup avoids a second long-lived index. Each watchdog retains its own
         cursor/pending set, so observers cannot consume each other's evidence.
@@ -478,7 +480,8 @@ class MetricsRecorder:
                     dict(self._current.stamps), current_token,
                 )))
             return WatchdogSnapshot(
-                self._watchdog_epoch, self._next_turn_token - 1,
+                self._watchdog_epoch,
+                self._completed[-1].turn_token if self._completed else 0,
                 current_token, tuple(records),
             )
 

@@ -66,3 +66,22 @@ behavior, long history, late warnings on closed turns, independent phases, reset
 retrospective cancellation, separate observers, detached snapshots and exact
 history preservation. Combined integration and physical limits are in STATUS.
 No microphone, doctor, model download, native inference or live test ran.
+
+### Integration review and qualified receipt
+
+Independent review reproduced a cursor gap: a current record observed with only
+SPEECH_END could gain ASR_FINAL and be banked before the next tick. A cursor that
+already acknowledged the current token would miss its new stall obligation. The
+cursor now acknowledges **only the completed frontier**; current is always returned
+separately and must be reconsidered when banked. Regressions also cover an already
+warned LLM phase gaining a token and being banked before its new TTS deadline.
+Reset returns an empty completed frontier and a changed epoch. Review returned GO.
+
+The earlier measurements above describe the pre-review candidate. The final
+source-bound compact receipt replaces that transient report under ADR-0236. On
+this rerun, baseline/current p50 at 1,000 turns was 113.45–117.04 / 2.03–2.10 us;
+at 50,000 turns, 6.23–6.86 ms / 2.57–2.71 us. Steady traced peak is 8,232 or
+400,232 → 592 bytes, and 50,000-turn initial peak is 400,232 → 776 bytes.
+Absolute timings changed with host load; the deterministic history/work reduction,
+complete export preservation and source identity are the comparison's scope.
+Final focused source gate: **115 passed in 3.29 s**. No native/live claim follows.

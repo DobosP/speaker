@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "kind": "synthetic_settled_history_watchdog",
+  "baseline_commit": "1bed9e21df29c7885a88757b07e154e2ade972a3",
+  "physical_audio": false,
+  "native_models": false,
+  "source_sha256": {
+    "baseline": {
+      "core/metrics.py": "a6a5a0918cb9546e4b38f5f1fc1d22c86bb9b8c00b0899af10dd53ed5a7e3878",
+      "core/watchdog.py": "a1e9e288b3787d1f30b3948718bd08d784674341032a41b2fedb48f59f3e30e0"
+    },
+    "current": {
+      "core/metrics.py": "c8eb0886b06ccb8fa0b6712d9698e34fe78591b5b1b72a6b285c8af69eb07e9c",
+      "core/watchdog.py": "2af765a5ff514884d0b462c830012494aa70640e08ccf4b7da09fbd199c3fae2"
+    }
+  },
+  "limits": "Repeated synthetic monitor work, not voice latency or total session RSS; initial history discovery excluded.",
+  "cases": [
+    {
+      "turns": 1000,
+      "order": [
+        "baseline",
+        "current"
+      ],
+      "baseline": {
+        "turns": 1000,
+        "repeats": 30,
+        "tick_us_p50": 366.053,
+        "tick_us_max": 584.481,
+        "incremental_peak_bytes": 8232,
+        "initial_discovery_peak_bytes": 8232,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      },
+      "current": {
+        "turns": 1000,
+        "repeats": 30,
+        "tick_us_p50": 7.6265,
+        "tick_us_max": 108.117,
+        "incremental_peak_bytes": 624,
+        "initial_discovery_peak_bytes": 912,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      }
+    },
+    {
+      "turns": 1000,
+      "order": [
+        "current",
+        "baseline"
+      ],
+      "current": {
+        "turns": 1000,
+        "repeats": 30,
+        "tick_us_p50": 7.7735,
+        "tick_us_max": 56.943,
+        "incremental_peak_bytes": 624,
+        "initial_discovery_peak_bytes": 624,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      },
+      "baseline": {
+        "turns": 1000,
+        "repeats": 30,
+        "tick_us_p50": 349.297,
+        "tick_us_max": 392.977,
+        "incremental_peak_bytes": 8232,
+        "initial_discovery_peak_bytes": 8232,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      }
+    },
+    {
+      "turns": 50000,
+      "order": [
+        "baseline",
+        "current"
+      ],
+      "baseline": {
+        "turns": 50000,
+        "repeats": 30,
+        "tick_us_p50": 20365.3355,
+        "tick_us_max": 23307.392,
+        "incremental_peak_bytes": 400232,
+        "initial_discovery_peak_bytes": 400232,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      },
+      "current": {
+        "turns": 50000,
+        "repeats": 30,
+        "tick_us_p50": 6.603,
+        "tick_us_max": 82.483,
+        "incremental_peak_bytes": 624,
+        "initial_discovery_peak_bytes": 808,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      }
+    },
+    {
+      "turns": 50000,
+      "order": [
+        "current",
+        "baseline"
+      ],
+      "current": {
+        "turns": 50000,
+        "repeats": 30,
+        "tick_us_p50": 6.894,
+        "tick_us_max": 79.746,
+        "incremental_peak_bytes": 624,
+        "initial_discovery_peak_bytes": 808,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      },
+      "baseline": {
+        "turns": 50000,
+        "repeats": 30,
+        "tick_us_p50": 22061.779,
+        "tick_us_max": 23402.888,
+        "incremental_peak_bytes": 400232,
+        "initial_discovery_peak_bytes": 400232,
+        "history_preserved": true,
+        "maintenance_calls_preserved": true
+      }
+    }
+  ]
+}

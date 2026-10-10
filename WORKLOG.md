@@ -1324,3 +1324,9 @@ Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835.
 Valid until: source changes or new physical/platform evidence — then treat as history.
 
 Source ca2fe03375a1cf6b0b07cda9681387d22b81eda7: 12369 passed, 41 skipped, 9 dependency warnings, 225.76 s. CI LiveKit exclusions retained; no microphone/doctor/native platform run. New coverage includes actual console Echo finalization and unavailable-stage fallback. Changed 23 Python files pass scoped fatal-error Ruff; 38 docs checked with no findings; whitespace clean. Ignored current keeper logs/runs/desktop-pass-two-20261010 contains source-bound receipt, current runner, compact logs and public scheduling/baseline results; fresh hermetic pytest fixtures removed after result. Source-qualified worker branches merge into the integration ancestry; original live/mobile keepers remain excluded from cleanup.
+
+## Third-pass long-session watchdog (2026-10-10)
+
+Valid until: recorder/watchdog source or monitoring behavior changes — then treat as history.
+
+Baseline 1bed9e2 rescans full metrics every tick. ADR-0241 uses per-observer monotonic cursors and exact unresolved/current snapshots, preserving full metric export, deadlines and maintenance callbacks. A measured initial-copy prototype regression was removed before acceptance; current source-pinned benchmark includes both initial and steady allocations. At 50,000 settled synthetic turns, repeated p50 20.37–22.06ms becomes 6.60–6.89us; traced steady400232→624B, initial400232→808B. Not agent latency/RSS. Existing+new gate113 passed in5.37s; no audio, native model or doctor. Independent review and combined qualification follow.

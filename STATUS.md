@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-10 (combined desktop gate 12369 passed/41 skipped; owner live stopped; Windows/macOS physical gates open).
+Last verified: 2026-10-10 (prior combined gate 12369/41; third-pass watchdog scope 113 passes; full integration pending; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -96,7 +96,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Desktop-first plan: `docs/local_voice_performance.md`; second software pass verified; live tests paused and other-OS gates open; ADR-0236 retains rolling compact evidence.
+- Desktop-first plan: `docs/local_voice_performance.md`; third software pass in progress; ADR-0241 inspects watchdog history incrementally; live/other-OS gates open; ADR-0236 retains rolling compact evidence.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve

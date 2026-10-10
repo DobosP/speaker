@@ -33,17 +33,7 @@ from collections import deque
 from typing import Callable, Optional
 
 from .metrics import (
-    ASR_FINAL,
-    BARGE_IN,
-    BARGE_IN_STOP,
-    HANDLED_LOCAL,
-    HELD,
-    LLM_FIRST_TOKEN,
-    MERGED,
     MetricsRecorder,
-    SUPERSEDED,
-    TTS_FIRST_AUDIO,
-    TTS_REQUESTED,
 )
 
 log = logging.getLogger("speaker.watchdog")
@@ -114,6 +104,9 @@ class StuckWatchdog:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._warned: set[tuple[int, str]] = set()
+        self._metric_cursor = 0
+        self._metric_epoch = 0
+        self._pending_metric_tokens: set[int] = set()
         self._last_heartbeat: Optional[float] = None
         self._heartbeat_warned: bool = False
         self._barge_ins: deque = deque()
@@ -184,30 +177,21 @@ class StuckWatchdog:
                 log.exception("watchdog on_tick hook raised")
 
     def _check_turns(self, now: float) -> None:
-        for i, rec in enumerate(self._recorder.records()):
+        snapshot = self._recorder.watchdog_snapshot(
+            self._metric_cursor, self._pending_metric_tokens,
+        )
+        if snapshot.epoch != self._metric_epoch:
+            self._warned.clear()
+            self._pending_metric_tokens.clear()
+        self._metric_epoch = snapshot.epoch
+        self._metric_cursor = snapshot.through_token
+        for i, rec in snapshot.records:
+            token = rec.turn_token
+            self._pending_metric_tokens.discard(token)
             stamps = rec.stamps
-            # A turn the user barged into (or stopped via a "stop" command that
-            # aborted playback), or one PREEMPTED by a newer final
-            # (SUPERSEDED: newest-input-wins cancelled it pre-answer) may
-            # legitimately never reach llm_first_token or tts_first_audio -- that
-            # is an interrupt / cancelled turn, not a stall. Skip both
-            # stuck checks so it isn't mis-flagged as stuck (the live run surfaced
-            # this false positive on a cancelled turn; rc-5 covers the no-LLM +
-            # superseded cases).
-            if (
-                BARGE_IN in stamps or BARGE_IN_STOP in stamps
-                or SUPERSEDED in stamps
-                or MERGED in stamps
-                or (HELD in stamps and ASR_FINAL not in stamps)
-            ):
-                continue
-            handled_local = HANDLED_LOCAL in stamps
-            if (
-                not handled_local
-                and ASR_FINAL in stamps
-                and LLM_FIRST_TOKEN not in stamps
-            ):
-                elapsed = now - stamps[ASR_FINAL]
+            llm_anchor, tts_anchor = rec.watchdog_anchors()
+            if llm_anchor is not None:
+                elapsed = now - stamps[llm_anchor]
                 deadline = self._deadline(
                     self._recorder.recent_ttft_ms(),
                     self.LLM_FIRST_TOKEN_DEADLINE_SEC,
@@ -217,24 +201,13 @@ class StuckWatchdog:
                 )
                 if elapsed >= deadline:
                     self._warn_once(
-                        i, "llm_first_token",
+                        token, "llm_first_token",
                         "llm stuck: turn %d had asr_final but no llm_first_token after %.1fs (deadline %.1fs)"
                         % (i, elapsed, deadline),
                     )
-            # Controller-owned replies deliberately have no LLM token, but an
-            # admitted TTS request must still produce audio. Prefer that exact
-            # admission anchor; retain the first-token fallback for legacy
-            # emitters so existing LLM->TTS stalls remain visible.
-            tts_anchor = (
-                TTS_REQUESTED
-                if TTS_REQUESTED in stamps
-                else (
-                    LLM_FIRST_TOKEN
-                    if not handled_local and LLM_FIRST_TOKEN in stamps
-                    else None
-                )
-            )
-            if tts_anchor is not None and TTS_FIRST_AUDIO not in stamps:
+                if (token, "llm_first_token") not in self._warned:
+                    self._pending_metric_tokens.add(token)
+            if tts_anchor is not None:
                 elapsed = now - stamps[tts_anchor]
                 deadline = self._deadline(
                     self._recorder.recent_tts_ms(),
@@ -245,10 +218,19 @@ class StuckWatchdog:
                 )
                 if elapsed >= deadline:
                     self._warn_once(
-                        i, "tts_first_audio",
+                        token, "tts_first_audio",
                         "tts stuck: turn %d had %s but no tts_first_audio after %.1fs (deadline %.1fs)"
                         % (i, tts_anchor, elapsed, deadline),
                     )
+
+                if (token, "tts_first_audio") not in self._warned:
+                    self._pending_metric_tokens.add(token)
+        # A completed record can only gain retrospective cancellation/merge
+        # markers, not new model/audio stamps. Once checked or warned, it needs
+        # no further scan. The current record is always inspected for late phase
+        # transitions, so retain its warning deduplication until it is banked.
+        retained_tokens = self._pending_metric_tokens | {snapshot.current_token}
+        self._warned = {entry for entry in self._warned if entry[0] in retained_tokens}
 
     def _deadline(
         self, recent_ms: Optional[float], base_sec: float,

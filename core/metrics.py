@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 import threading
 import time
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 # Per-turn latency instrumentation shared by the real engine, the file-replay
 # engine, and the simulated sandbox engine, so measured and simulated numbers
@@ -126,6 +127,30 @@ class TurnRecord:
             "barge_in_latency": _round(self.barge_in_latency),
         }
 
+    def watchdog_anchors(self) -> tuple[str | None, str | None]:
+        """Existing LLM/TTS stall predicates, shared by snapshot and observer.
+
+        Closed records cannot acquire new forward stages through the recorder;
+        retrospective merge/cancellation only removes these diagnostic candidates.
+        Current records are always returned so later phase changes stay visible.
+        """
+        stamps = self.stamps
+        if (BARGE_IN in stamps or BARGE_IN_STOP in stamps
+                or SUPERSEDED in stamps or MERGED in stamps
+                or (HELD in stamps and ASR_FINAL not in stamps)):
+            return None, None
+        handled_local = HANDLED_LOCAL in stamps
+        llm = (ASR_FINAL if not handled_local and ASR_FINAL in stamps
+               and LLM_FIRST_TOKEN not in stamps else None)
+        # A controller-owned reply has no model token, but admitted output must
+        # still reach audio. Legacy emitters retain their first-token fallback.
+        tts = (TTS_REQUESTED if TTS_REQUESTED in stamps
+               else LLM_FIRST_TOKEN if not handled_local and LLM_FIRST_TOKEN in stamps
+               else None)
+        if TTS_FIRST_AUDIO in stamps:
+            tts = None
+        return llm, tts
+
     def stage_breakdown(self) -> dict[str, Optional[float]]:
         """Additive observed intervals; missing/invalid boundaries stay unknown.
 
@@ -144,6 +169,16 @@ class TurnRecord:
                 else None
             )
         return out
+
+
+@dataclass(frozen=True)
+class WatchdogSnapshot:
+    """Independent stamp copies for one observer's incremental inspection."""
+
+    epoch: int
+    through_token: int
+    current_token: int | None
+    records: tuple[tuple[int, TurnRecord], ...]
 
 
 def _round(value: Optional[float]) -> Optional[float]:
@@ -166,6 +201,7 @@ class MetricsRecorder:
         self._current: Optional[TurnRecord] = None
         self._completed: list[TurnRecord] = []
         self._next_turn_token = 1
+        self._watchdog_epoch = 0
         # Rolling local time-to-first-token estimate (milliseconds), updated as
         # ``llm_first_token`` is stamped against the open turn's ASR_FINAL
         # anchor. ``None`` until the first measurable turn -- the router treats
@@ -404,6 +440,48 @@ class MetricsRecorder:
                 out.append(self._current)
             return out
 
+    def watchdog_snapshot(
+        self, after_token: int, pending_tokens: Iterable[int] = (),
+    ) -> WatchdogSnapshot:
+        """Inspect new, unresolved and current turns without copying all history.
+
+        Turn tokens increase across reset; completed records stay ordered. Binary
+        lookup avoids a second long-lived index. Each watchdog retains its own
+        cursor/pending set, so observers cannot consume each other's evidence.
+        Historical records/summary export and metric mutation semantics remain
+        unchanged. Stamp copies are coherent under the recorder lock.
+        """
+        with self._lock:
+            start = bisect_right(
+                self._completed, after_token, key=lambda record: record.turn_token,
+            )
+            # Discard settled new history before allocating stamp copies. A
+            # watchdog attached late must not duplicate the entire session.
+            indices = {index for index in range(start, len(self._completed))
+                       if any(self._completed[index].watchdog_anchors())}
+            for token in pending_tokens:
+                index = bisect_left(
+                    self._completed, token, key=lambda record: record.turn_token,
+                )
+                if (index < start and index < len(self._completed)
+                        and self._completed[index].turn_token == token):
+                    indices.add(index)
+            records = [
+                (index, TurnRecord(dict(self._completed[index].stamps),
+                                   self._completed[index].turn_token))
+                for index in sorted(indices)
+            ]
+            current_token = None
+            if self._current is not None:
+                current_token = self._current.turn_token
+                records.append((len(self._completed), TurnRecord(
+                    dict(self._current.stamps), current_token,
+                )))
+            return WatchdogSnapshot(
+                self._watchdog_epoch, self._next_turn_token - 1,
+                current_token, tuple(records),
+            )
+
     def current_turn_token(self) -> int | None:
         """Return an opaque identity token for task-scoped future stamps."""
         with self._lock:
@@ -419,6 +497,7 @@ class MetricsRecorder:
 
     def reset(self) -> None:
         with self._lock:
+            self._watchdog_epoch += 1
             self._current = None
             self._completed = []
             self._ttft_ewma_ms = None

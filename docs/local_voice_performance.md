@@ -509,3 +509,26 @@ and small baseline receipts. The AEC setup/result are committed in `tools/` and
 No microphone, doctor, live trial, new model download or native platform validation
 ran. Recognition/echo/prosody quality and Windows/macOS device behavior remain
 independent acceptance gates, as requested.
+
+## Third desktop pass: remove obsolete work and recurring waits (2026-10-10)
+
+Valid until: changed source or a new measured device/platform result — then treat as history.
+
+The owner requested another substantive pass. This pass follows the same mature
+implementation principles reviewed above: exact cancellation ownership, prompt
+notification of completed work and bounded recurring monitoring cost. Existing
+model quality evidence is retained; this plan changes work scheduling around the
+models. Desktop English remains the target, with live testing paused.
+
+| Step | Reproduced baseline problem | Implementation / acceptance |
+|---|---|---|
+| Long-session monitoring | Every watchdog tick scans all historical metric records; warning deduplication grows after old stalls. | ADR-0241: incremental observer with full history retained. 113 focused tests; at 50,000 settled synthetic turns, 20–22 ms/tick becomes 6.6–6.9 us, with lower initial and steady traced allocation. Independent review and integration pending. |
+| Speech synthesis cancellation | A cancelled job waiting for the model lock can still enter native generation; cancelled callbacks/returns still perform conversion or DSP. | ADR-0242: exact-generation checkpoints at those boundaries; healthy samples/styles/receipts and entered-native cleanup ownership must remain equivalent. In progress. |
+| Final recognition cancellation | Revoked final work can still enter offline recognition and the independent verifier; stale errors can alter verifier health. | ADR-0243: exact-work checkpoints and a distinct cancellation unwind; no stale fallback/circuit-break effects. Healthy decision equivalence and worker progression tests required. In progress. |
+| Local model completion | A cleanly finished Ollama producer leaves its consumer waiting for a 50 ms queue poll. | ADR-0244: prompt terminal notification after actual cleanup, preserving every token/error and bounded buffering. Queue-full/cancellation races required. In progress. |
+| Combined qualification | Isolated fixes must preserve the full desktop contract together. | Full CI-style headless gate, source-bound compact receipts, current STATUS and verified origin/main landing; retain only the latest owned setup plus compact historical results. Pending. |
+
+Cancellation checkpoints cannot preempt an already-entered native call. They
+prevent obsolete successor work and preserve cleanup ownership until the entered
+call returns. Native acoustic quality, quiet-host CPU model qualification and
+Windows/macOS hardware validation remain separate from these deterministic gates.

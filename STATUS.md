@@ -1,7 +1,7 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
 Last verified: 2026-10-10 (headless warm/latency/first-fragment gates; combined integration pending; owner live stopped).
-Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen receipts are verbatim in `WORKLOG.md`.
+Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
   Python audio/inference/actions remain; Go-only image has no Python/models. Tokens default-deny; pre-body refusals close promptly and HTTP/IPC reject unpaired Unicode escapes (ADR-0224).
@@ -20,8 +20,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
-- ADR-0239 adds opt-in fast first-fragment scheduling with normal delivery unchanged; headless/CLI gates pass, physical quality remains unvalidated.
-- ADR-0225/0226 retain template/label boundaries; ADR-0227 retains canonical requests/vocatives and retires only matching rejected partials before successor work; ADR-0228 bounds local decisions.
+- ADR-0239 adds opt-in fast first-fragment scheduling, with normal unchanged and physical quality unvalidated. ADR-0225/0226 retain template/label boundaries; ADR-0227 retains canonical requests/vocatives and retires only matching rejected partials before successor work; ADR-0228 bounds local decisions.
   Explicit Qwen+spoken factory canaries pass (ADR-0232); GPU mixed turns pass; CPU startup/semantic failures and rejected compact prompt remain open (ADR-0235).
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
   and stop/start races cannot lend a timestamp to a successor. Pre-audio control and later talk-over remain available; live A/B is pending.
@@ -64,7 +63,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   `./live.sh` plus `python -m tools.live_audio_ab logs/runs/run-<id>.txt` (ADR-0175/0177–0181); the interrupt suite is a diagnostic with
   `live_validation_required` always true (ADR-0176).
 - The default Sherpa decode owner retains DSP/VAD/ASR/confirm/word-cut/endpoint; ADR-0222 uses native SOS lowpass with scalar fallback.
-  ADR-0230 bounds reference-ring copies; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
+  ADR-0230 bounds reference-ring copies; ADR-0238 bounds calibration history copies with exact estimator math; ADR-0233/0234 prevent TTS replay and isolate output failure; ADR-0231 adds offline LocalVQE comparison without AEC adoption.
   Replay source inventories bind output cleanup (7 checks); final-STT Git refusal uses a private HEAD fixture (70 passed/1 skip under umask 077); historical receipts unchanged (ADR-0234 addenda).
   Replay is headless evidence (ADR-0110/0111); acoustic identity stays immutable (ADR-0084/0086); VAD/recovery retain segment/rate evidence
   (ADR-0043/0046/0048). Only a finite enrolled final match mints owner trust (ADR-0027/0041/0051).
@@ -112,7 +111,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.
 - Prior Windows CPython 3.10.11: console echo exit 0 and `pip check` pass; doctor/mic deferred, no Windows READY or hardware claim.
   Sherpa 1.13.2 differs from the 1.13.3 pin; optimized assets are incomplete and enrollment persistence uses unavailable POSIX APIs.
-- Final turn-state scope: 342 passed; ADR-0240 observed latency/receipt scope: 392 passed. Prior Linux console echo exits 0 without audio/models; native/focused receipts: ADR-0227–0235.
+- Final turn-state scope: 342 passed; latency/receipt scope: 392 passed; AEC window scope: 467 passed/1 skip; prior Linux console echo exits 0 without audio/models.
   Earlier CUDA/route receipts remain historical; no microphone/doctor/live retry occurred during this integration.
 ## Doc map
 - Full index: `README.md` §Documentation. Contract `AGENTS.md`; routes `docs/agent-map.md`; gates `docs/agent-testing.md` and

@@ -1284,3 +1284,25 @@ command with fresh basetemp `pytest-qualified` passed **392 tests in 9.69 s**.
 Docs checker: 38 files, zero issues; STATUS remains 120 lines. Superseded owned
 synthetic fixture trees were pruned only after the successor qualified; one
 rolling qualified fixture and this compact reproducible result remain.
+
+Valid until: AEC delay history/estimator or its benchmark environment changes — then treat as history.
+
+## 2026-10-10 — Bound calibration history without changing delay math (ADR-0238)
+
+Pinned 70345ae baseline kept in Git. Paired fixed-ring storage retains byte-identical
+chronological windows and unchanged estimator/recalc/clamp AST. Original compact
+baseline/prototype result and one verified current result are retained; no model,
+private capture or snapshot tree was copied. Disk check reported 170 GiB available.
+Adjacent alternating unpaced synthetic observations measured baseline p50 21.965–
+27.806 us versus ring 15.022–19.273 us. Host-load variation limits absolute timing.
+Complete traced peaks: idle 309312→201056 bytes, energetic 496180→483156 bytes;
+post-warm incremental peak 308072→7704 bytes. Steady window storage 204800→192000 bytes;
+rolling copies 204800→12800 bytes/block. No process RSS or whole-agent claim.
+
+```sh
+SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_aec_delay_windows.py tests/test_aec_seam.py tests/test_input_calibration.py tests/test_denoise.py tests/test_sherpa_playback.py tests/test_sherpa_media_session.py tests/test_reference_recording.py tests/test_audio_frontend.py tests/test_apm_double_talk.py tests/test_barge_word_cut.py -q
+```
+
+Observed 467 passed/1 optional-model skip in 10.11s. Source pin/exact-window/default
+synthetic delay and reset comparisons pass. No native models, devices, microphone,
+private recordings, network model transfer, live probe or acoustic default change.

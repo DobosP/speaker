@@ -1324,3 +1324,43 @@ Merged startup96b5ab7, AEC1b7626f and latency8e9d39e with first-fragment7900835.
 Valid until: source changes or new physical/platform evidence — then treat as history.
 
 Source ca2fe03375a1cf6b0b07cda9681387d22b81eda7: 12369 passed, 41 skipped, 9 dependency warnings, 225.76 s. CI LiveKit exclusions retained; no microphone/doctor/native platform run. New coverage includes actual console Echo finalization and unavailable-stage fallback. Changed 23 Python files pass scoped fatal-error Ruff; 38 docs checked with no findings; whitespace clean. Ignored current keeper logs/runs/desktop-pass-two-20261010 contains source-bound receipt, current runner, compact logs and public scheduling/baseline results; fresh hermetic pytest fixtures removed after result. Source-qualified worker branches merge into the integration ancestry; original live/mobile keepers remain excluded from cleanup.
+
+
+Valid until: final-ASR model boundaries, work ownership or benchmark environment changes — then treat as history.
+
+## 2026-10-10 — Retire obsolete final-ASR model stages (ADR-0243)
+
+On pinned main 1bed9e2, actual `_finalize_and_dispatch` plus fakes reproduced:
+revocation during punctuation still admitted offline create/accept/decode and
+verifier calls; final callbacks were correctly suppressed only afterwards.
+The exact existing work-current predicate now fences model boundaries, unwinding
+without fail-open selection or verifier-health mutation after observed revocation.
+An entered native call remains owned until return; no preemption/thread/model,
+endpoint, threshold, raw/provenance or control-authority change is claimed.
+
+Focused ASR/provenance/capture/diagnostic gates: **914 passed, 1 optional-model
+skip in 22.76s**. Earlier narrow gate: 222 passed/1 skip in 5.51s; exact stream-release-count tightening then passed the 128-case new module in 1.45s. New deterministic
+cases cover every model boundary with success/error return, exact stage retirement,
+blocked-call ownership, stream release on the same worker, sole-worker successor
+progress, foreign scope isolation and healthy exact decisions. Two initial test
+fixtures were corrected to supply acoustic lineage for revisions and retain the
+established offline selector's lowercase text; no production policy was changed.
+
+The one reusable `tools.bench_asr_final_cancellation` setup and compact receipt
+bind baseline helper Git source plus current helper hashes. Healthy decisions
+match 48/48 baseline cases. Post-revocation calls at punctuation/create/accept/
+decode fall 4/3/2/1 to zero. A synthetic verifier allocating exactly 1MiB after
+offline-decode revocation falls from 1050248 to 2096 traced-peak bytes and from
+242.811 to 21.153us paired p50. This is deliberately a fake workload, not native
+latency/RSS or an agent speed claim. No-cost healthy fake p50 rises 67.376 to
+70.944us; that predicate is a lambda/Event check, not full-engine native timing.
+Four BLAS/OpenMP environment requests were one; CPU isolation was not established.
+Only one current compact scratch receipt is retained, with pinned baseline in Git.
+
+```sh
+SPEAKER_TEST_LOG=0 SPEAKER_NO_LOCAL_CONFIG=1 SPEAKER_LIVE=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_asr_final_cancellation.py tests/test_asr_final.py tests/test_asr_final_async.py tests/test_asr_segment.py tests/test_asr_verifier.py tests/test_asr_postprocess.py tests/test_asr_text_agreement.py tests/test_asr_text.py tests/test_final_trust_lineage.py tests/test_final_stt_profiles.py tests/test_final_preprocessing_cancel.py tests/test_sherpa_streaming_decode_owner.py tests/test_sherpa_streaming_decode_session.py tests/test_sherpa_media_session.py tests/test_sherpa_vad_final_gate.py tests/test_capture_replay_async_delivery.py tests/test_diagnostic_bundle.py tests/test_barge_confirm.py tests/test_barge_word_cut.py -q
+```
+
+No model, microphone, doctor, device, original recording, model transfer or live
+run occurred. Native/platform/physical acceptance and protected owner evidence
+remain open and untouched.

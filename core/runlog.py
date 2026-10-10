@@ -27,6 +27,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import math
 import queue
 import statistics
 import threading
@@ -50,6 +51,38 @@ _LATENCY_KEYS = (
     "barge_in_latency",
 )
 
+# Mirror core.metrics' additive observed intervals without importing the core.
+_STAGE_BREAKDOWN_KEYS = (
+    "preprocessing_to_model_request",
+    "model_request_to_first_token",
+    "first_token_to_speakable_text",
+    "speakable_text_to_tts_admission",
+    "tts_admission_to_render_observed",
+)
+
+
+def _stage_breakdown_rows(records: list) -> list[dict]:
+    """Retain only named finite non-negative scalar seconds; never source data."""
+    rows = []
+    for record in records:
+        if type(record) is not dict:
+            continue
+        row = {}
+        for key in _STAGE_BREAKDOWN_KEYS:
+            value = record.get(key)
+            if type(value) in (int, float):
+                try:
+                    value = float(value)
+                except OverflowError:
+                    value = None
+                if value is not None and (not math.isfinite(value) or value < 0):
+                    value = None
+            else:
+                value = None
+            row[key] = value
+        rows.append(row)
+    return rows
+
 
 def _hhmmss(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).strftime("%H:%M:%S")
@@ -70,6 +103,21 @@ def _percentile(sorted_values: list, pct: float) -> float:
     hi = min(lo + 1, n - 1)
     frac = idx - lo
     return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
+
+
+def _stage_breakdown_aggregates(rows: list[dict]) -> dict:
+    """Aggregate sanitized intervals without overflowing the median's sum."""
+    out = {}
+    for key in _STAGE_BREAKDOWN_KEYS:
+        values = sorted(row[key] for row in rows if row[key] is not None)
+        if values:
+            out[key] = {
+                "p50": round(_percentile(values, 0.5), 3),
+                "p95": round(_percentile(values, 0.95), 3),
+                "max": round(values[-1], 3),
+                "n": len(values),
+            }
+    return out
 
 
 def _latency_aggregates(turns: list) -> dict:
@@ -115,6 +163,7 @@ class RunSummary:
     errors: list = field(default_factory=list)
     transcript: list = field(default_factory=list)
     turns: list = field(default_factory=list)
+    stage_breakdowns: list = field(default_factory=list)
     system: dict = field(default_factory=dict)
 
     def note(self, **meta) -> None:
@@ -122,6 +171,9 @@ class RunSummary:
 
     def attach_metrics(self, records: list) -> None:
         self.turns = records
+
+    def attach_stage_breakdowns(self, records: list) -> None:
+        self.stage_breakdowns = _stage_breakdown_rows(records)
 
     def to_dict(self) -> dict:
         llm_times = [r.get("duration_sec", 0.0) for r in self.llm_requests]
@@ -177,6 +229,12 @@ class RunSummary:
                 "requests": self.llm_requests,
             },
             "latency": _latency_aggregates(self.turns),
+            "latency_stage_breakdown": {
+                "schema_version": 1,
+                "scope": "observed_turn_bound_pipeline_to_receipt_dispatch_seconds",
+                "turns": self.stage_breakdowns,
+                "aggregates": _stage_breakdown_aggregates(self.stage_breakdowns),
+            },
             "turns": self.turns,
             "stuck_hints": stuck,
             "errors": self.errors[-50:],
@@ -294,7 +352,10 @@ class RunLog:
     handlers: list
     _finalized: bool = False
 
-    def finalize(self, metrics_records: Optional[list] = None) -> None:
+    def finalize(
+        self, metrics_records: Optional[list] = None, *,
+        stage_breakdown_records: Optional[list] = None,
+    ) -> None:
         """Flush async logging, then write the summary. Idempotent and safe to
         call from a finally block, a signal path, or atexit."""
         if self._finalized:
@@ -302,6 +363,8 @@ class RunLog:
         self._finalized = True
         if metrics_records is not None:
             self.summary.attach_metrics(metrics_records)
+        if stage_breakdown_records is not None:
+            self.summary.attach_stage_breakdowns(stage_breakdown_records)
         # Drain the queue so every record reaches the summary handler first.
         try:
             self.listener.stop()

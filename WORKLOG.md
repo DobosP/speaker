@@ -1241,3 +1241,46 @@ review/landing; no native benchmark, model download, audio route, microphone,
 doctor or live run occurred. Only one compact result and the baseline
 synchronization reproducer are retained in owned scratch; superseded test
 transients may be pruned under the current human retention instruction.
+
+Valid until: stage-boundary semantics, metric token or playback receipt ownership changes — then treat as history.
+
+## 2026-10-10 — Add separate observed pipeline latency (ADR-0240)
+
+Based on clean 70345ae, this instrumentation lane adds request/text/admission/
+onset-observation boundaries and a separate scalar-only run-summary block. Existing
+five-key metrics, first-audio callbacks, EWMA, watchdog, routing and authority are
+unchanged. A locked snapshot requires captured current turn tokens; invalid
+timestamps and reversed known boundary order are refused. Exact tracked playback
+owns a maximum 64-entry fragment-to-metric map, installed before synchronous sink
+callbacks and retired through the existing receipt/cancellation lifecycle.
+
+The output endpoint is runtime **receipt-dispatch observation**, not DAC, first
+PCM, pure GPU, synthesis-only or queue-only time. Auxiliary/latency-ack, legacy,
+nonexact, missing-token and stale paths remain unknown. The new summary retains
+only five named intervals and aggregates, with no text/audio, identities or raw
+timestamps. Root integrates model-request/text producer and CLI finalize call
+sites separately; the isolated lane's producer boundaries are deterministic fakes.
+
+First focused run: 1 failed, 74 passed in 2.95 s. The new fixture replaced the
+recorder after engine.start had captured the old metric callback; moving fake
+recorder setup before start corrected the test, with no production workaround.
+Expanded focused gate: **79 passed in 2.43 s**. Adjacent command:
+
+```sh
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 19 /home/dobo/work/speaker/.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_metrics.py tests/test_runlog.py tests/test_latency_stage_runtime.py tests/test_playback_receipts.py tests/test_engine_playback_receipts.py tests/test_playback_history.py tests/test_core_runtime.py tests/test_watchdog.py tests/test_core_routing.py tests/test_streaming_tts.py tests/test_resume.py tests/test_continuation.py tests/test_tts_markup.py -q --basetemp=/home/dobo/work/_temp/codex__latency-contributions/pytest-adjacent
+```
+
+**391 passed in 8.79 s**. Formatting only the wholly new receipt module was
+followed by its standalone gate: **20 passed in 2.45 s**. Scoped fatal-error Ruff
+and whitespace pass. The host had 169 GiB available before the adjacent gate.
+No private recording, native model, microphone, doctor, network or device ran.
+Protected live/mobile worktrees and original baseline/source branches are intact.
+
+Self-review found that the new field's reused statistics.median could overflow
+when two individually finite intervals were 1e308. A separate interpolation-based
+stage aggregator now keeps its result finite, with a strict-JSON regression;
+the legacy aggregate implementation is restored exactly. The same adjacent
+command with fresh basetemp `pytest-qualified` passed **392 tests in 9.69 s**.
+Docs checker: 38 files, zero issues; STATUS remains 120 lines. Superseded owned
+synthetic fixture trees were pruned only after the successor qualified; one
+rolling qualified fixture and this compact reproducible result remain.

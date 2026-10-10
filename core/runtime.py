@@ -70,6 +70,8 @@ from .metrics import (
     HANDLED_LOCAL,
     HELD,
     LLM_FIRST_TOKEN,
+    TTS_ADMITTED,
+    TTS_RENDER_START_OBSERVED,
     TTS_REQUESTED,
     MetricsRecorder,
 )
@@ -112,6 +114,7 @@ _LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"}
 _LEGACY_TEXT_ORIGIN = "__legacy_text__"
 _CLEANER_RECENT_USER_LIMIT = 4
 _ASCII_CLEANER_POLICY_PUNCTUATION = frozenset(string.punctuation)
+_PLAYBACK_METRIC_BINDING_LIMIT = 64
 
 
 def _cleaner_recent_user_context(memory: Memory) -> list[str]:
@@ -260,6 +263,7 @@ class VoiceRuntime:
         # follow-up truth to its terminal sink attestations.
         playback_capabilities = self.engine.playback_capabilities
         self._tracked_playback = bool(playback_capabilities.tracked_terminal)
+        self._exact_playback_started = bool(playback_capabilities.exact_started)
         self._playback_history = PlaybackHistory() if self._tracked_playback else None
         _eng_cfg = getattr(self.engine, "config", None)
         self._tts_lock_speaker_id = bool(
@@ -290,6 +294,9 @@ class VoiceRuntime:
             self._playback_effect_lock
         )
         self._pending_playback_memory_commits = 0
+        # Measurement only: bounded alongside actor-owned playback receipts.
+        # Entries never contain text and grant no output/action authority.
+        self._playback_metric_turns: dict[str, tuple[int, str, int]] = {}
         # Optional deterministic speech-to-intent fast-path. When present it
         # answers frequent commands directly (no LLM); a miss falls through to
         # the brain. ``None`` -> disabled (the default, preserving the bare
@@ -1218,10 +1225,18 @@ class VoiceRuntime:
         if history is None:
             return
         with self._playback_effect_lock:
+            metric_binding = self._playback_metric_turns.pop(fragment_id, None)
             context = history.fragment_context(fragment_id)
             attempted = history.mark_started(fragment_id)
             if attempted is None or context is None:
                 return
+            if (metric_binding is not None and context.remember and not self._stopping
+                    and context.epoch == self.supervisor.speech_epoch
+                    and context.input_generation == self.supervisor.latest_arrival_generation
+                    and (context.task_id, context.binding_id) == metric_binding[1:]):
+                self.metrics.mark(
+                    TTS_RENDER_START_OBSERVED, turn_token=metric_binding[0],
+                )
             self._observe_playback_diagnostic(
                 stage="started",
                 fragment_id=fragment_id,
@@ -1247,6 +1262,7 @@ class VoiceRuntime:
         if history is None:
             return
         with self._playback_effect_lock:
+            self._playback_metric_turns.pop(receipt.fragment_id, None)
             playback_context = history.fragment_context(receipt.fragment_id)
             playback_admission_id = history.fragment_playback_admission(
                 receipt.fragment_id
@@ -1319,6 +1335,7 @@ class VoiceRuntime:
         history = self._playback_history
         if history is None:
             return
+        self._playback_metric_turns.pop(fragment_id, None)
         resolution = history.force_fail(fragment_id)
         if resolution is not None:
             self._resume.note_playback_receipt(
@@ -1354,9 +1371,18 @@ class VoiceRuntime:
         history = self._playback_history
         if history is not None:
             with self._playback_effect_lock:
+                self._playback_metric_turns.clear()
                 self._publish_playback_commits(history.interrupt_all())
                 self._playback_effect_changed.notify_all()
                 self._log_playback_finalizations(history.drain_finalizations())
+
+    def _retire_task_playback_metrics(
+        self, task_id: str, binding_id: int | None,
+    ) -> None:
+        """Forget exact cancelled/failed task observations under playback lock."""
+        for fragment_id, (_token, owner, binding) in tuple(self._playback_metric_turns.items()):
+            if owner == task_id and (binding_id is None or binding == binding_id):
+                self._playback_metric_turns.pop(fragment_id, None)
 
     def _new_input_generation(self) -> int:
         with self._input_generation_lock:
@@ -3029,6 +3055,7 @@ class VoiceRuntime:
         admitted_reminder_id = ""
         admitted_reminder_token = ""
         style = None
+        fragment_id: str | None = None
         try:
             if self._reply_voice_continuity is not None:
                 reply = None
@@ -3150,6 +3177,19 @@ class VoiceRuntime:
                         # Both ledgers must own the fragment before the engine
                         # can synchronously callback from speak_tracked().
                         self._resume.stage_playback(fragment_id, text)
+                        if (self._exact_playback_started and not auxiliary_tts
+                                and not event.payload.get("latency_ack", False)
+                                and task_id and type(metrics_turn_token) is int
+                                and metrics_turn_token > 0
+                                and metrics_turn_token == self.metrics.current_turn_token()
+                                and len(self._playback_metric_turns) < _PLAYBACK_METRIC_BINDING_LIMIT):
+                            self._playback_metric_turns[fragment_id] = (
+                                metrics_turn_token, task_id,
+                                playback_admission.identity.binding_id,
+                            )
+                            self.metrics.mark(
+                                TTS_ADMITTED, turn_token=metrics_turn_token,
+                            )
                         playback_context = self._playback_history.fragment_context(
                             fragment_id
                         )
@@ -3211,6 +3251,9 @@ class VoiceRuntime:
                 admitted_reminder_token,
             )
         finally:
+            if fragment_id is not None and not handoff_succeeded:
+                with self._playback_effect_lock:
+                    self._playback_metric_turns.pop(fragment_id, None)
             if admission_owned:
                 self.supervisor.finish_playback(
                     playback_admission.playback_admission_id
@@ -3349,6 +3392,7 @@ class VoiceRuntime:
                 self._reply_voice_continuity.close_task(task_id, binding_id)
             if self._playback_history is not None:
                 with self._playback_effect_lock:
+                    self._retire_task_playback_metrics(task_id, binding_id)
                     self._publish_playback_commits(
                         self._playback_history.close_task(
                             task_id,
@@ -3466,6 +3510,10 @@ class VoiceRuntime:
             elif event.kind in {EventKind.TASK_CANCELLED, EventKind.TASK_FAILED}:
                 task_id = str(event.payload.get("task_id", ""))
                 with self._playback_effect_lock:
+                    self._retire_task_playback_metrics(
+                        task_id,
+                        terminal_identity.binding_id if terminal_identity is not None else None,
+                    )
                     self._publish_playback_commits(
                         self._playback_history.close_task(
                             task_id,

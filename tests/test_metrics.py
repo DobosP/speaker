@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from pytest import approx
+import pytest
 
 from core.metrics import (
     ASR_FINAL,
     BARGE_IN,
     BARGE_IN_STOP,
     LLM_FIRST_TOKEN,
+    LLM_REQUESTED,
     MERGED,
     SPEECH_END,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
+    TTS_ADMITTED,
+    TTS_RENDER_START_OBSERVED,
+    TTS_REQUESTED,
+    TTS_TEXT_READY,
     MetricsRecorder,
     TurnRecord,
     mark_first_token,
@@ -247,3 +253,110 @@ def test_reset_clears_the_tts_ewma():
     assert rec.recent_tts_ms() is not None
     rec.reset()
     assert rec.recent_tts_ms() is None
+
+
+def test_additive_stage_intervals_leave_legacy_metrics_and_ewma_unchanged():
+    rec = MetricsRecorder(clock=lambda: 10.0)
+    legacy = MetricsRecorder(clock=lambda: 10.0)
+    for recorder in (rec, legacy):
+        recorder.mark(ASR_FINAL, at=1.0)
+        recorder.mark(LLM_FIRST_TOKEN, at=1.8)
+        recorder.mark(TTS_REQUESTED, at=2.0)
+        recorder.mark(TTS_FIRST_AUDIO, at=2.3)
+    token = rec.current_turn_token()
+    for stage, at in (
+        (LLM_REQUESTED, 1.3), (TTS_TEXT_READY, 1.9),
+        (TTS_ADMITTED, 2.05), (TTS_RENDER_START_OBSERVED, 2.4),
+    ):
+        rec.mark(stage, at=at, turn_token=token)
+    assert rec.records()[0].as_dict() == legacy.records()[0].as_dict()
+    assert rec.recent_ttft_ms() == legacy.recent_ttft_ms()
+    assert rec.recent_tts_ms() == legacy.recent_tts_ms()
+    assert rec.stage_breakdowns() == [{
+        "preprocessing_to_model_request": 0.3,
+        "model_request_to_first_token": 0.5,
+        "first_token_to_speakable_text": 0.1,
+        "speakable_text_to_tts_admission": 0.15,
+        "tts_admission_to_render_observed": 0.35,
+    }]
+
+
+@pytest.mark.parametrize("stage", [LLM_REQUESTED, TTS_TEXT_READY, TTS_ADMITTED, TTS_RENDER_START_OBSERVED])
+def test_additive_marks_require_explicit_current_integer_turn_token(stage):
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)
+    stale = rec.current_turn_token()
+    rec.mark(ASR_FINAL)
+    for token in (None, stale, True, 0, 1.0):
+        rec.mark(stage, turn_token=token)
+    rec.mark(stage)
+    assert stage not in rec.records()[-1].stamps
+    rec.mark(stage, turn_token=rec.current_turn_token())
+    assert stage in rec.records()[-1].stamps
+
+
+@pytest.mark.parametrize(
+    "at", [float("nan"), float("inf"), -float("inf"), -1, True, "2", object(), 10**400],
+    ids=["nan", "inf", "negative_inf", "negative", "bool", "string", "object", "overflow"],
+)
+def test_additive_marks_refuse_invalid_timestamp_without_poisoning_turn(at):
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)
+    rec.mark(LLM_REQUESTED, at=at, turn_token=rec.current_turn_token())
+    assert LLM_REQUESTED not in rec.records()[0].stamps
+    assert rec.recent_ttft_ms() is None
+
+
+def test_additive_marks_refuse_out_of_order_known_pipeline_boundaries():
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)
+    token = rec.current_turn_token()
+    rec.mark(LLM_REQUESTED, at=0.9, turn_token=token)
+    assert LLM_REQUESTED not in rec.records()[0].stamps
+    rec.mark(LLM_FIRST_TOKEN, at=2.0)
+    rec.mark(TTS_ADMITTED, at=3.0, turn_token=token)
+    rec.mark(TTS_TEXT_READY, at=1.9, turn_token=token)
+    rec.mark(TTS_TEXT_READY, at=3.1, turn_token=token)
+    assert TTS_TEXT_READY not in rec.records()[0].stamps
+    rec.mark(TTS_TEXT_READY, at=2.5, turn_token=token)
+    rec.mark(TTS_TEXT_READY, at=2.6, turn_token=token)
+    assert rec.records()[0].stamps[TTS_TEXT_READY] == 2.5
+
+
+def test_partial_breakdown_does_not_infer_output_from_legacy_global_stamps():
+    record = TurnRecord(stamps={
+        ASR_FINAL: 1.0, TTS_TEXT_READY: 2.0,
+        TTS_REQUESTED: 2.1, TTS_FIRST_AUDIO: 2.3,
+    })
+    assert set(record.stage_breakdown().values()) == {None}
+    record.stamps[TTS_ADMITTED] = 2.2
+    record.stamps[TTS_RENDER_START_OBSERVED] = 2.5
+    breakdown = record.stage_breakdown()
+    assert breakdown["speakable_text_to_tts_admission"] == 0.2
+    assert breakdown["tts_admission_to_render_observed"] == 0.3
+    assert breakdown["model_request_to_first_token"] is None
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, True, "1", 10**400])
+def test_breakdown_refuses_invalid_legacy_boundary_values(bad):
+    record = TurnRecord(stamps={ASR_FINAL: bad, LLM_REQUESTED: 2.0})
+    assert record.stage_breakdown()["preprocessing_to_model_request"] is None
+    record.stamps[ASR_FINAL] = 3.0
+    assert record.stage_breakdown()["preprocessing_to_model_request"] is None
+
+
+def test_breakdown_snapshot_is_detached_and_reset_cannot_reuse_stale_token():
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)
+    old = rec.current_turn_token()
+    rec.mark(LLM_REQUESTED, turn_token=old)
+    snapshot = rec.stage_breakdowns()
+    snapshot[0]["preprocessing_to_model_request"] = 100.0
+    assert rec.stage_breakdowns()[0]["preprocessing_to_model_request"] == 0.0
+    rec.reset()
+    rec.mark(ASR_FINAL)
+    rec.mark(TTS_ADMITTED, turn_token=old)
+    assert TTS_ADMITTED not in rec.records()[0].stamps
+    rec.close_turn()
+    rec.mark(TTS_ADMITTED, turn_token=rec.current_turn_token())
+    assert len(rec.stage_breakdowns()) == 1

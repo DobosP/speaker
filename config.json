@@ -358,7 +358,8 @@
   "mode": "assistant",
   "local_only": true,
   "tts": {
-    "streaming": true
+    "streaming": true,
+    "speech_latency": "normal"
   },
   "intents": {
     "enabled": true,

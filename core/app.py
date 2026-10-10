@@ -29,6 +29,7 @@ from .config import (
 )
 from .voice_model_profile import VOICE_MODEL_PROFILE_NAMES, apply_voice_model_profile
 from .voice_model_selection import select_voice_model
+from .speech_chunking import SPEECH_LATENCY_MODES, SpeechChunkingConfig, apply_speech_latency
 from .performance import PERFORMANCE_MODE_NAMES, PerformanceModeError, apply_performance_mode
 from .engine import AudioEngine
 from .llm import LLMClient, OllamaLLM
@@ -1112,6 +1113,7 @@ def build_runtime(
         capability_router=capability_router,
         planner_config=planner_config,
         stream_tts=stream_tts,
+        speech_chunking=SpeechChunkingConfig.from_tts(config.get("tts")),
         followup_config=followup_config,
         continuation_config=continuation_config,
         turn_merge_config=turn_merge_config,
@@ -1210,6 +1212,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="exact trusted-LAN audio publisher; never grants action authority",
     )
+    parser.add_argument("--speech-latency", choices=SPEECH_LATENCY_MODES, default=None,
+                        help="fast can start a neutral first fragment earlier; normal keeps full sentences (streaming TTS only)")
     parser.add_argument(
         "--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None,
         help="select the local voice model and matching spoken prompt; current restores the base selection",
@@ -1453,6 +1457,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--fast-model",
                 "--mode",
                 "--stream-tts",
+                "--speech-latency",
                 "--agent",
                 "--gui-actions",
                 "--planner",
@@ -1586,6 +1591,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"[performance] {performance_metadata.name}; models/resources changed; capability policy preserved", file=sys.stderr)
     try:
+        config, speech_chunking = apply_speech_latency(config, args.speech_latency)
         config, voice_metadata = select_voice_model(
             config, args.voice_model, model=args.model, fast_model=args.fast_model,
         )
@@ -1607,6 +1613,9 @@ def main(argv: list[str] | None = None) -> int:
             voice_model_profile_schema_version=voice_metadata.schema_version,
         )
         print(f"[voice-model] {voice_metadata.name}; local voice model and spoken prompt selected", file=sys.stderr)
+    runlog.summary.note(speech_latency=speech_chunking.mode,
+                        first_fragment_min_chars=speech_chunking.min_chars,
+                        first_fragment_max_words=speech_chunking.max_words)
     final_stt_metadata = None
     if args.final_stt_profile:
         try:

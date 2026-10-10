@@ -17,6 +17,7 @@ from typing import Callable, Iterable, Optional
 from core.performance import PERFORMANCE_MODE_NAMES, apply_performance_mode
 from core.voice_model_profile import VOICE_MODEL_PROFILE_NAMES
 from core.voice_model_selection import select_voice_model
+from core.speech_chunking import SPEECH_LATENCY_MODES, apply_speech_latency
 from core.config import (
     FINAL_STT_PROFILE_NAMES,
     SpeakerIdentityPolicyError,
@@ -89,6 +90,7 @@ def run_all(
     final_stt_profile: str | None = None,
     performance: str | None = None,
     voice_model: str | None = None,
+    speech_latency: str | None = None,
     model: str | None = None,
     fast_model: str | None = None,
     config_root: Path | None = None,
@@ -106,6 +108,9 @@ def run_all(
     if performance_metadata is not None:
         prefix.append(Check("performance mode", True,
                             f"{performance_metadata.name}; sha256={performance_metadata.sha256}"))
+    merged, speech_policy = apply_speech_latency(merged, speech_latency)
+    if speech_policy.mode == "fast":
+        prefix.append(Check("speech latency policy", True, "fast first fragment; streaming TTS only; physical quality unvalidated"))
     merged, voice_metadata = select_voice_model(
         merged, voice_model, model=model, fast_model=fast_model,
     )
@@ -181,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_abbrev=False,
     )
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--speech-latency", choices=SPEECH_LATENCY_MODES, default=None)
     parser.add_argument("--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--fast-model", default=None)
@@ -255,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
                 performance=args.performance,
-                voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
+                voice_model=args.voice_model, speech_latency=args.speech_latency, model=args.model, fast_model=args.fast_model,
                 config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
                 llm_mode="echo",
@@ -279,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
                     device=args.device,
                     final_stt_profile=args.final_stt_profile,
                     performance=args.performance,
-                    voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
+                    voice_model=args.voice_model, speech_latency=args.speech_latency, model=args.model, fast_model=args.fast_model,
                     config_root=Path(args.config).resolve().parent,
                     no_speaker_enrollment=args.no_speaker_enrollment,
                     llm_mode="echo",
@@ -290,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 final_stt_profile=args.final_stt_profile,
                 performance=args.performance,
-                voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
+                voice_model=args.voice_model, speech_latency=args.speech_latency, model=args.model, fast_model=args.fast_model,
                 config_root=Path(args.config).resolve().parent,
                 no_speaker_enrollment=args.no_speaker_enrollment,
             )

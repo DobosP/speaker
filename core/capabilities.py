@@ -34,7 +34,7 @@ from always_on_agent.models import (
     IntentKind,
 )
 
-from .contract import drain_complete_sentences
+from .speech_chunking import SpeechChunker, SpeechChunkingConfig
 from .conversation import (
     RecentContextConfig,
     collect_recent_turns,
@@ -444,27 +444,36 @@ def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]
 
 
 def _stream_and_speak(
-    tokens: Iterator[str], cancel: Optional[Event], emit: Callable[[str], None]
+    tokens: Iterator[str], cancel: Optional[Event], emit: Callable[[str], None],
+    *, chunking: SpeechChunkingConfig | None = None,
+    on_first_text: Callable[[], None] | None = None,
 ) -> tuple[str, bool]:
     """Drain a token stream, speaking each complete sentence as it lands.
 
     This is the latency win: playback of sentence one starts while the model is
-    still generating sentence two. Sentence boundaries follow the shared contract
-    (:mod:`core.contract`) so the desktop and mobile shells split identically.
+    still generating sentence two. Normal delivery keeps the shared sentence
+    contract; the explicit fast desktop policy may split one neutral first clause.
     Returns the full ``(text, cancelled)`` so the caller can still log/remember
     the whole answer."""
     parts: list[str] = []
-    buffer = ""
+    chunker = SpeechChunker(chunking)
     cancelled = False
+    first_text = True
+    completed = False
     try:
         for token in tokens:
             if cancel is not None and cancel.is_set():
                 cancelled = True
                 break
             parts.append(token)
-            buffer += token
-            sentences, buffer = drain_complete_sentences(buffer)
-            for sentence in sentences:
+            for sentence in chunker.feed(token):
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                    break
+                if first_text:
+                    first_text = False
+                    if on_first_text is not None:
+                        on_first_text()
                 if cancel is not None and cancel.is_set():
                     cancelled = True
                     break
@@ -472,19 +481,23 @@ def _stream_and_speak(
             if cancel is not None and cancel.is_set():
                 cancelled = True
                 break
-        # A final token can contain several sentences, and an emitter can revoke
-        # the turn without another provider token arriving to observe it.
         if cancel is not None and cancel.is_set():
             cancelled = True
-        tail = buffer.strip()
+        tail = chunker.finish()
         if tail and not cancelled:
-            emit(tail)
+            if first_text and on_first_text is not None:
+                on_first_text()
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+            else:
+                emit(tail)
         if cancel is not None and cancel.is_set():
             cancelled = True
+        completed = True
     finally:
-        # Barge-in cut: start provider cancellation/cleanup immediately rather
-        # than at GC time (see :func:`_close_token_stream`).
-        if cancelled:
+        # Also close on parsing/observer/emitter errors; an entered stream must
+        # not keep its provider alive after this consumer has left.
+        if cancelled or not completed:
             _close_token_stream(tokens)
     return "".join(parts).strip(), cancelled
 
@@ -507,6 +520,7 @@ def attach_llm_capabilities(
     image_provider: Optional[Callable[[], Optional[Sequence[object]]]] = None,
     before_conversation_read: Optional[Callable[[], bool]] = None,
     persona: Optional[PersonaConfig] = None,
+    speech_chunking: SpeechChunkingConfig | None = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -1230,7 +1244,7 @@ def attach_llm_capabilities(
                 turn_token=metric_turn,
             )
             if callable(emit):
-                text, cancelled = _stream_and_speak(tokens, cancel, _emit_tracked)  # type: ignore[arg-type]
+                text, cancelled = _stream_and_speak(tokens, cancel, _emit_tracked, chunking=speech_chunking)  # type: ignore[arg-type]
                 log.info(
                     "%s tier %s in %.2fs (%d chars, streamed)",
                     attempt_tier, "cancelled" if cancelled else "done",
@@ -1356,7 +1370,7 @@ def attach_llm_capabilities(
                 turn_token=metric_turn,
             )
             if callable(emit):
-                text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+                text, cancelled = _stream_and_speak(tokens, cancel, emit, chunking=speech_chunking)  # type: ignore[arg-type]
                 return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})
             text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
             return CapabilityResult(True, text, data={"cancelled": cancelled})

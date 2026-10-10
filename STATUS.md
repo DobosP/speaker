@@ -20,6 +20,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
   Python-plane convergence, native cleanup, a disjoint owner holdout and phone validation stay open; ADR-0200 is unlanded provenance.
 - ADR-0209 retains launcher-owned Go templating, streaming RMS and required enrolled word-cut authority on 4090. The original reference
   remains incompatible; the fresh isolated candidate passed live frontend compatibility on 2026-10-05, with acceptance/promotion pending.
+- ADR-0239 adds opt-in fast first-fragment scheduling with normal delivery unchanged; headless/CLI gates pass, physical quality remains unvalidated.
 - ADR-0225/0226 retain template/label boundaries; ADR-0227 retains canonical requests/vocatives and retires only matching rejected partials before successor work; ADR-0228 bounds local decisions.
   Explicit Qwen+spoken factory canaries pass (ADR-0232); GPU mixed turns pass; CPU startup/semantic failures and rejected compact prompt remain open (ADR-0235).
 - ADR-0210 binds desktop barge onset grace to the first rendered samples of the same playback generation; retained fades, slow synthesis
@@ -96,7 +97,7 @@ Runtime/evidence facts are as of 2026-08-21 (ADR-0209) unless dated; frozen rece
 - Owner bare-speaker / live A/B pending for barge-in, KWS, Smart Turn and the 4090 route (ADR-0185/0209).
 - Trusted-LAN and Microsoft AEC gates remain open (ADR-0163/0164); repeat 4090 route enrollment/A/B before use (ADR-0209); ADR ledger open.
 ## Next
-- Desktop-first plan: `docs/local_voice_performance.md`; software plan verified; next is owner-approved Linux A/B and quiet-host CPU qualification; live/other-OS gates remain open.
+- Desktop-first plan: `docs/local_voice_performance.md`; second improvement pass in progress at owner request; live tests remain paused and other-OS gates remain open.
   Guided close/far STT, disjoint commands/multi-voice, native-reader/gap, bare-speaker/live latency evidence stay open (ADR-0157/0158).
 - Paul stopped live testing on 2026-10-05; no microphone/doctor/live retry until owner resume. Preserve the candidate, backup and private evidence.
 - Accept the five Microsoft AEC terms, materialize the fixture, provision exact LiveKit 1.1.14 alone and run the bounded replay; preserve

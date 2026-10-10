@@ -85,6 +85,7 @@ from .tts_markup import (
     ReplyVoiceContinuity,
     build_markup_guidance,
 )
+from .speech_chunking import SpeechChunkingConfig
 from .resume import ResumeConfig, ResumeTracker
 from .routing import LatencyPolicy, Router, classify_latency_policy
 from .turn_merge import FinalDispatcher, FinalDispatchLease, TurnMergeConfig
@@ -212,6 +213,7 @@ class VoiceRuntime:
         capability_router: Optional[CapabilityRouter] = None,
         planner_config: Optional[PlannerConfig] = None,
         stream_tts: bool = False,
+        speech_chunking: SpeechChunkingConfig | None = None,
         followup_config: Optional[FollowupConfig] = None,
         continuation_config: Optional[ContinuationConfig] = None,
         turn_merge_config: Optional[TurnMergeConfig] = None,
@@ -459,7 +461,7 @@ class VoiceRuntime:
         self._current_frame: Optional[object] = None
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
-            persona=persona,
+            persona=persona, speech_chunking=speech_chunking,
             escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
             recent_context=recent_context_config,
             live_routing=live_routing, load_snapshot=load_snapshot,

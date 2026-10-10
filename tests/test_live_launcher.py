@@ -1998,3 +1998,17 @@ def test_conflicting_voice_profile_has_no_host_side_effects(tmp_path):
                         ops=ops, root=tmp_path) == 2
     assert not ops.popen_calls
     assert not _commands(ops)
+
+
+def test_speech_latency_forwarded_to_doctor_and_core(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({
+        "device": "safe", "device_profiles": {"safe": {"sherpa": {"aec_enabled": False}}},
+        "sherpa": {"aec_enabled": False}, "tts": {"streaming": True},
+    }))
+    ops = _FakeOps(nodes=True, ollama_healthy=True)
+    assert _run_session(["--llm", "echo", "--speech-latency", "fast"], ops=ops, root=tmp_path) == 0
+    doctor = next(command for command in _commands(ops) if command[1:3] == ("-m", "tools.doctor"))
+    for command in (doctor, _voice_command(ops)):
+        index = command.index("--speech-latency")
+        assert command[index:index + 2] == ("--speech-latency", "fast")
+        assert command.count("--speech-latency") == 1

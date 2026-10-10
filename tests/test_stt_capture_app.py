@@ -174,6 +174,7 @@ def _capture_cli(*extra: str) -> list[str]:
         ("--fast-model", "private-fast-model"),
         ("--mode", "assistant"),
         ("--stream-tts",),
+        ("--speech-latency", "fast"),
         ("--agent",),
         ("--gui-actions",),
         ("--planner",),

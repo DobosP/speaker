@@ -1064,6 +1064,7 @@ class _SelectedLiveConfig:
     performance_mode: str | None = None
     performance_mode_sha256: str | None = None
     voice_model_profile: str | None = None
+    speech_latency: str | None = None
     voice_model_profile_sha256: str | None = None
     effective_device: str | None = None
     effective_input_gain: float | None = None
@@ -1080,6 +1081,7 @@ def _selected_live_config(
     guided_capture: bool = False,
     performance: str | None = None,
     voice_model: str | None = None,
+    speech_latency: str | None = None,
     model: str | None = None,
     fast_model: str | None = None,
     input_gain: float | None = None,
@@ -1087,7 +1089,7 @@ def _selected_live_config(
     """Resolve and validate the profile core will use without constructing it."""
     config_path = root / "config.json"
     if not config_path.exists():
-        if final_stt_profile or performance not in (None, "current") or voice_model not in (None, "current"):
+        if final_stt_profile or performance not in (None, "current") or voice_model not in (None, "current") or speech_latency not in (None, "normal"):
             raise LauncherError(
                 "selected profiles need the repository config.json profile map"
             )
@@ -1109,6 +1111,8 @@ def _selected_live_config(
         config = apply_device_profile(config, device, strict=True)
         from core.performance import apply_performance_mode
         config, performance_metadata = apply_performance_mode(config, performance, root=root)
+        from core.speech_chunking import apply_speech_latency
+        config, speech_policy = apply_speech_latency(config, speech_latency)
         from core.voice_model_selection import select_voice_model
         config, voice_metadata = select_voice_model(
             config, voice_model, model=model, fast_model=fast_model,
@@ -1192,6 +1196,7 @@ def _selected_live_config(
         ),
         performance_mode=(performance_metadata.name if performance_metadata is not None else None),
         performance_mode_sha256=(performance_metadata.sha256 if performance_metadata is not None else None),
+        speech_latency=speech_policy.mode,
         voice_model_profile=(voice_metadata.name if voice_metadata is not None else None),
         voice_model_profile_sha256=(voice_metadata.sha256 if voice_metadata is not None else None),
         effective_device=str(device),
@@ -1403,6 +1408,7 @@ _VALUE_OPTIONS = (
     ("--device", "device"),
     ("--performance", "performance"),
     ("--voice-model", "voice_model"),
+    ("--speech-latency", "speech_latency"),
     ("--mode", "mode"),
     ("--input-gain", "input_gain"),
 )
@@ -1452,6 +1458,8 @@ def _live_parser() -> argparse.ArgumentParser:
         ),
     )
     from core.performance import PERFORMANCE_MODE_NAMES
+    from core.speech_chunking import SPEECH_LATENCY_MODES
+    parser.add_argument("--speech-latency", choices=SPEECH_LATENCY_MODES, default=None)
     from core.voice_model_profile import VOICE_MODEL_PROFILE_NAMES
     parser.add_argument("--voice-model", choices=VOICE_MODEL_PROFILE_NAMES, default=None)
     parser.add_argument("--performance", choices=PERFORMANCE_MODE_NAMES, default=None,
@@ -1520,6 +1528,7 @@ def _parse_live_arguments(
                 ("--fast-model", args.fast_model is not None),
                 ("--mode", args.mode is not None),
                 ("--stream-tts", bool(args.stream_tts)),
+                ("--speech-latency", args.speech_latency is not None),
             )
             if present
         )
@@ -1625,7 +1634,7 @@ def run_live_session(
             args.no_speaker_enrollment,
             guided_capture=bool(args.guided_stt_capture),
             performance=args.performance,
-            voice_model=args.voice_model, model=args.model, fast_model=args.fast_model,
+            voice_model=args.voice_model, speech_latency=args.speech_latency, model=args.model, fast_model=args.fast_model,
             input_gain=args.input_gain,
         )
         if args.guided_stt_capture:
@@ -1692,6 +1701,8 @@ def run_live_session(
             doctor.extend(["--device", args.device])
         if args.performance is not None:
             doctor.extend(["--performance", args.performance])
+        if args.speech_latency is not None:
+            doctor.extend(["--speech-latency", args.speech_latency])
         if args.voice_model is not None:
             doctor.extend(["--voice-model", args.voice_model])
         if args.model is not None:

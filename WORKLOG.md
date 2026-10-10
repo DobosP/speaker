@@ -1199,3 +1199,9 @@ Durable ignored archives: `logs/runs/desktop-core-integration-20261010`,
 556b511e4b8762d35ae6ea2f6c9843ffbf1a84423dfaf3ed94fc655ccaa1dcbe.
 Only aggregate findings enter Git. The protected live candidate/backup/recordings
 and deferred mobile branch stay separate from desktop landing/cleanup.
+
+## Desktop second pass: first-fragment scheduling (2026-10-10)
+
+Valid until: chunking/stream lifecycle changes or physical evidence — then treat as history.
+
+ADR-0239 adds explicit normal/fast delivery without changing defaults or shared sentence semantics. Public scheduling probe: long-clause first speakable step 25→10, unpunctuated 56→29, short/tagged/numeric unchanged; this is not audible latency. Initial adjacent gate 389 passed with one invalid empty-profile test fixture, corrected; final new module 34 passed. Full integration receipt follows after source freeze. No microphone, doctor, models or native audio were run.

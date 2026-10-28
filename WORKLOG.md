@@ -1600,3 +1600,47 @@ omitted pseudo/dev and pytest capture failed before collection; the corrected
 wrapper above passed. No model or private-data inference/audio/doctor/default
 change occurred. Independent review plus required Ruff/docs/diff precede commit;
 parent owns the final full rerun, which is still pending rather than assumed.
+
+## 2026-10-29 — ADR-0255 final CPU option evidence and full gate
+
+Valid until: executable/model/profile changes or new disjoint physical evidence — then treat as history.
+
+Parent fullCI gateon2512106241e8da496ddbc408afe070e0af08edff:12628passed,
+40skipped,9warnings,278.37s,exit0. Correct namespace uses private tmpfs/tmp,
+pseudo/dev and featurewritable so other-owner Git markers/ROlogs do not distort
+fixtures. No production guard was weakened. Earlier failed gates/unitfixes stay
+recorded; this final commit is docs/evidence only, no new tests/model reruns.
+
+Final Qwen/Parakeet composed pair completedMic6+Owner37n2 with postbindings,
+closednativeleases/rc0/reaped; exact nativewindow released. SelectedMic6raw3/25,
+norm4/25 sameascompact; Owner37raw25/212,norm22/213 worse thancompact22/212,
+21/213 (olderselected24/212,20/213historical). ComponentPara raw18/norm15 is
+better thanSense32/norm22 inproductionsegmentation, but quorumgeometryworsened
+selectedquality. BothofflineMic6zero doesnotbypassthe retainedSTOPcontrolguard.
+One controlguardmiss percohort/repeat, nofalsecontrols/emptyjoinedclip;
+Owner39decisions/37clips includes2selected-emptydecisions,1multifinalclip.
+No labels/authority/consensus tweaks or furthervotertrials.
+
+Ownercomplete-callp50/p95compact4.058/8.368s versusPara4.044/10.643; workerRSS
+1.849vs2.447decimalGB, sampledtreemax1.854vs2.452GB; CPU563.176vs626.609s.
+TheseafterPCMbatchASR timings exclude microphone/endpointwait/LLM/TTS/DAC,
+nonexclusivehost/sourcephases preclude causalmodelonlyspeedclaims. BothCPUpairs
+removeCUDAfromselectedASR tuple butno full-agent/device resourcemetric isclaimed.
+
+Compact9737B raw14cells+composed4cells aggregatepacket copiedbyte-exact to
+`docs/evidence/cpu-asr-comparison-2026-10-29.json`, SHA
+fe6598a29959e61e8685b9ca0c4b6f39d32ebe78428d16009ea98b9cdf2dd3d6.
+It preserves774calls/sourcephases/config/assets/corpus/scorer/reportSHAs and
+perrepeatcontrol/quality/resources, without rawaudio/ref/hyp/clipnames. Wider
+researchtools remain retained unmergedsourcebranches; no needlandallbenchhistory.
+Canonical runtimeguide updatednearTOP with Oct29tables plus install/select/
+rollback; datedOct4tables preservedashistory. ADR0255appendretainsnegativepair.
+
+FinalrecommendedNEWCPUoption:Qwen/Sensecompact, operationalexplicitADDonly,
+not selectedqualitypromotion/default. Parakeetvariant remainsadvancedexperimental,
+notrecommended/notpartofnormalcanonicalinstall. Rootwillinstallonlycompactentry
+into canonical localmap afterland; defaults/selection/enrollment/unrelatedvalues
+andlegacyprofiledigests unchanged, finalconfigbytesappropriatelydifferent.
+ReferencedQwen/SDKcachebytesareactivecanonicalkeepers, nevertransientprune.
+Originalrecordings/baselines remain. No live/doctor/playback/otherOSclaim, no
+new source/runtime edits or modeljob inthis docsstep. Rootownslanding/push/cleanup.

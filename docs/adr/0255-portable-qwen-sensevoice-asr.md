@@ -191,3 +191,71 @@ Independent source review is GO. Parent-owned full CI gate and then one clean
 source-bound Mic6/Owner37 composed pair are still required. No further voter
 or consensus experiment is authorized by this decision. Existing defaults,
 physical/live/other-OS gates and compact05 evidence remain unchanged.
+
+## Final operational verdict and qualification (2026-10-29)
+
+Accept the explicit compact `qwen-sensevoice-cpu` CPU option as operational
+software. It adds the best recorded raw-accuracy new CPU model from this screen
+and a distinct lightweight voter; it does **not** establish better production-
+selected accuracy, repaired STOP, a new default or physical/platform quality.
+Keep `qwen-parakeet-cpu` fully tested but advanced experimental and not
+recommended. Normal canonical setup installs only the compact profile entry,
+not the Parakeet alternative; setup never activates either profile. End these
+trials without label tuning, further voters or guard changes.
+
+The parent-owned CI-style full gate passed **12628 tests,40skipped,9warnings in
+278.37seconds**, exit0, on clean
+`2512106241e8da496ddbc408afe070e0af08edff`. CI's two LiveKit files were excluded.
+A fresh private tmpfs/tmp avoided unrelated host Git markers, pseudo/dev and a
+writable task-tree bind restored normal test permissions. Earlier failed gate
+attempts remain documented in WORKLOG; neither their environment nor the two
+unit-fixture fixes changed production/model/privacy caps. This final successor
+changes documentation/evidence only; runtime source stays equal to tested251210.
+
+All18 model/corpus cells completed and were post-verified:14raw cells602clip
+calls plus4composed cells172calls,774overall. This is a workload count, not a
+pooled score. The exact9737-byte PII-free packet
+[CPU ASR comparison](../evidence/cpu-asr-comparison-2026-10-29.json), SHA
+`fe6598a29959e61e8685b9ca0c4b6f39d32ebe78428d16009ea98b9cdf2dd3d6`,
+binds each report, corpus/model/config/scorer/source phase, resources and control
+counts. Wider raw-model research sources remain retained research branches;
+ADR-0254 is not required to exist on the landed runtime branch. The executable
+runtime/setup code and this aggregate packet are sufficient to identify the
+added operational tuple. Historical worktree paths identify execution origins,
+not permanent installed paths; the canonical runtime guide uses main paths.
+
+Per repeat, unchanged selected guards produced:
+
+| Pair | Mic6 legacy /25; normalized /25 | Owner37 legacy /212; normalized /213 | Owner p50 /p95 s | Owner worker RSS, decimal GB |
+|---|---:|---:|---:|---:|
+| Qwen/SenseVoice compact | 3;4 | 22;21 | 4.058 /8.368 | 1.849 |
+| Qwen/Parakeet experimental | 3;4 | 25;22 | 4.044 /10.643 | 2.447 |
+
+The historical older selected view was3/4 onMic6 and24/20 onOwner37. Neither
+new option improves normalized selected quality. Standalone raw Qwen had0/25
+Mic6 and9/213Owner37 normalized errors; under production segmentation it had
+0/25 and11/213. Replacing the voter improved its raw Owner37 normalized errors
+from22(SenseVoice) to15(Parakeet), yet worsened selection to22from21. A stronger
+component is not automatically a stronger exact-quorum selector. Do not report
+raw zero as a passing selected-control result.
+
+Both composed pairs retained one missed STOP behind the existing control guard
+per cohort/repeat, no false controls and no empty joined clip. Owner37 produced
+39decisions per37clips/repeat, including two selected-empty decisions and one
+clip with multiple final decisions; denominator/selection accounting stays
+explicit. Exact endpoint leases closed and every process was reaped, with no
+remaining owned worker. CPU2/noGPU/noaudio namespace/memory bounds remained;
+no microphone, actual endpoint wait, agent/LLM/TTS or DAC latency was measured.
+Timings span nonexclusive host/source phases and are not causal model-only or
+cross-date speedups. No disjoint owner holdout, acoustic barge or other-OS proof
+follows. Original recordings and baseline weights remain untouched.
+
+The normal installer is authorized to add one compact optional entry to
+canonical `config.local.json` after landing. That targeted local-map change is
+expected; selected/default/enrollment/unrelated values and legacy profile
+digests stay unchanged. The earlier private qualification's unchanged-canonical-
+config statements are dated history, not a claim of final config byte equality.
+Manifest-referenced active Qwen/SDK files remain canonical keepers, not disposable
+scratch. No experimental Parakeet entry is installed by that normal setup.
+See the updated [runtime/research guide](../english_model_comparison.md) for
+verified cache reuse, explicit selection/rollback, fixed pins and limits.

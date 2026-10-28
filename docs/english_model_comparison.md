@@ -2,8 +2,160 @@
 
 Valid until: a model/runtime/profile changes or fresh disjoint device evidence supersedes this comparison — then treat as history.
 
-Verified: 2026-10-04. Decision and authority scope: [ADR-0216](adr/0216-english-model-candidates-and-recording-benchmarks.md).
+Latest software/replay verification:2026-10-29, [ADR-0255](adr/0255-portable-qwen-sensevoice-asr.md).
+Historical October4 experiment scope: [ADR-0216](adr/0216-english-model-candidates-and-recording-benchmarks.md).
 Current runtime selection: [STATUS](../STATUS.md).
+
+## CPU final-ASR options — verified 2026-10-29
+
+[ADR-0255](adr/0255-portable-qwen-sensevoice-asr.md) governs the explicit
+`qwen-sensevoice-cpu` option. Qwen3-ASR0.6B Q8 had the lowest recorded raw
+English errors in this new CPU screen; SenseVoice is its much faster independent
+voter. The complete production selector retains exact quorum and control guards.
+This is a usable non-CUDA final-ASR option, **not a selected-accuracy promotion**
+or a default change. Existing SenseVoice remains the fastest/smallest screened
+component. Linuxx86_64 is the only pinned Qwen native tuple; Windows/macOS and
+physical microphone/speaker behavior remain unqualified.
+
+Fourteen raw CPU cells and four actual production FileReplay cells completed
+(two repeats each,774 total clip calls). Mic6 and Owner37 are separate existing
+development corpora; Owner37 human/TTS provenance remains unattested. References
+enter scoring after inference, never as prompts. All cells use CPU mask `[0,2]`
+and two requested native threads, private network/PID namespaces and no audio
+devices. Measurements are unpaced after-PCM work, excluding capture, endpoint
+waiting, LLM, TTS and DAC. Host/source phases are recorded and not assumed to be
+identical machine-load conditions. RTF uses original audio duration; scores below
+are per repeat and never pooled across the two corpora.
+
+| Raw CPU recognizer | Mic6 normalized errors /25 | Owner37 legacy /212; normalized /213 | Owner p50 /p95 s | Worker peak RSS, decimal GB |
+|---|---:|---:|---:|---:|
+| Qwen3-ASR0.6B Q8 | 0 | 12;9 | 1.695 /3.787 | 1.154 |
+| Granite470M English Q8 | 1 | 35;15 | 0.406 /0.667 | 0.615 |
+| Distil-Whisper Small.en INT8 | 1 | 25;15 | 2.046 /2.513 | 0.584 |
+| Faster-Whisper Small.en INT8 | 0 | 22;13 | 2.218 /2.623 | 0.790 |
+| Parakeet TDT v3 INT8 | 0 | 16;13 | 0.432 /0.566 | 1.194 |
+| SenseVoice INT8 | 0 | 30;19 | 0.079 /0.107 | 0.451 |
+| Granite470M multilingual Q8, Oct21 weights | 0 | 19;12 | 0.455 /1.248 | 0.615 |
+
+Both repeats had the displayed counts. All components had zero empty clips and
+no false controls in the benign subset. English Granite and Distil missed the
+single Mic6 STOP; Qwen, Small.en, Parakeet, SenseVoice and multilingual Granite
+recognized it. These small positive-control counts cannot qualify noise,
+bystander or live STOP reliability. Qwen's original training weights are
+January2026; speech.cpp0.9.0 is the October runtime, not new October Qwen training.
+The faster latest Granite export remains a research alternative; one SDK enters
+the operational option.
+
+Actual production selection, including original segmentation, streaming ASR
+and independent voting, differs from standalone decoding:
+
+| Optional pair | Mic6 selected legacy /25; normalized /25 | Owner37 selected legacy /212; normalized /213 | Owner p50 /p95 s | Owner worker peak RSS, decimal GB |
+|---|---:|---:|---:|---:|
+| Qwen + SenseVoice CPU | 3;4 | 22;21 | 4.058 /8.368 | 1.849 |
+| Qwen + Parakeet CPU, experimental | 3;4 | 25;22 | 4.044 /10.643 | 2.447 |
+
+These are complete FileReplay call timings, not real-time speech-end or agent
+response latency. Both pairs retain one missed STOP behind `control_guard` in
+each cohort/repeat, even when both offline models recognized it. Owner37 has
+39 selection decisions over37 clips per repeat, including two selected-empty
+decisions; joined clip outputs are nonempty. No false controls or missing clip
+results occurred. Exact endpoint leases closed and all processes were reaped.
+The historical prior selected control was3/4 Mic6 and24/20 Owner37 errors
+(legacy/normalized). Neither new pair establishes a selected normalized-quality
+win. The larger Parakeet voter improved its own transcript but worsened the
+composed selected score, tail latency and memory. It is retained only as an
+advanced experimental explicit variant; it is not recommended or part of normal
+compact installation. The guards were not tuned to labels or weakened to admit
+a favourable result.
+
+The [9,737-byte aggregate packet](evidence/cpu-asr-comparison-2026-10-29.json),
+SHA `fe6598a29959e61e8685b9ca0c4b6f39d32ebe78428d16009ea98b9cdf2dd3d6`,
+retains every cell report hash, source phase, corpus/model/config/scorer identity,
+per-repeat raw/selected/control counts and resource scope. It contains no raw
+recordings, references, hypotheses or private clip names. Historical source
+worktrees in underlying receipts describe executed origins, not a promise those
+paths survive cleanup. The executable integration and setup live in this repo;
+the wider model-screening sources remain retained research branches.
+
+### Install, select and roll back the explicit CPU option
+
+From the canonical repository, reuse the already verified local cache:
+
+```bash
+cd /home/dobo/work/speaker
+.venv/bin/python -m tools.setup_portable_asr \
+  --config-root /home/dobo/work/speaker \
+  --cache-root /home/dobo/work/speaker/pretrained_models/sherpa/benchmarks/english-2026-10-28/noncuda \
+  --bundle-dir /home/dobo/work/speaker/pretrained_models/sherpa/qwen_cpu \
+  --sense-voice-dir /home/dobo/work/speaker/pretrained_models/sherpa/sense_voice \
+  --install-profile
+```
+
+This verifies pinned bytes and adds `qwen-sensevoice-cpu` to `config.local.json`;
+it neither copies weights nor activates a profile. It preserves legacy/default,
+enrollment and unrelated settings, including an existing opaque two-profile map.
+The bundle references regular local Qwen/library files in the canonical model
+keeper; that active backing cache must remain available and must not be pruned
+as transient scratch. The authorized normal installation adds only the compact
+entry to the canonical local profile map. Qualification used private config
+copies; those unchanged-canonical-config observations are historical, not a
+claim that installing the optional entry preserves final config bytes. On a fresh install, `--download` replaces `--cache-root`
+for explicit pinned public Qwen downloads; the existing pinned SenseVoice model
+must also be provisioned. Constructors never fetch models or contact a service.
+
+For a session that is separately authorized, pass
+`--final-stt-profile qwen-sensevoice-cpu` through the existing core/launcher
+interface. Selection alone does not authorize starting a microphone or speaker.
+A configuration-only check constructs no model and opens no device:
+
+```python
+from core.config import load_config, apply_device_profile, apply_final_stt_profile
+
+config = apply_device_profile(load_config(), "cpu_laptop", strict=True)
+config, identity = apply_final_stt_profile(config, "qwen-sensevoice-cpu")
+assert config["sherpa"]["asr_num_threads"] == 2
+assert config["sherpa"]["asr_final_verifier_backend"] == "sense_voice"
+```
+
+Omit that session flag to retain the pre-existing configured selection, or select
+an already provisioned legacy profile explicitly (`sense-voice` or
+`parakeet-faster-whisper`) to roll back. Setup does not change the stored default.
+`--verifier parakeet --parakeet-dir <verified-existing-TDTv3-directory>` adds the
+separate experimental profile for advanced reproduction only; it is unnecessary
+for normal compact installation and requires more memory. No new default,
+Windows/macOS support, acoustic authority or live quality is implied.
+
+### Exact integrated assets and public sources
+
+- [Qwen official model/card](https://huggingface.co/Qwen/Qwen3-ASR-0.6B/tree/5eb144179a02acc5e5ba31e748d22b0cf3e303b0), Apache2.0;
+  [measured Q8 conversion](https://huggingface.co/sakasegawa/Qwen3-ASR-0.6B-GGUF/tree/ee78f8709547f39bea3b924a16c72403826cac92),841,502,336bytes,
+  SHA `416e10c15b4a3d9002bd337d18fc450233fdf68502b6e10d1379d2789838afd0`.
+- [speech.cpp0.9.0](https://github.com/nyosegawa/speech.cpp/releases/tag/v0.9.0), MIT;
+  pinned LinuxCPU ZIP SHA `e2e9a260fde6242e43f7fa57c658321c798d4f1f855b1adf973dd50361b5805b`,
+  executed library SHA `935cf967511af4d4baf8e80a865edbcfa70ec4b305aa00695ea9cc191aa03b93`.
+- [SenseVoice export](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html)
+  and [upstream](https://huggingface.co/FunAudioLLM/SenseVoiceSmall), Apache2.0;
+  installed INT8 model SHA `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51`,
+  token SHA `f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc`.
+  The advanced [TDTv3 export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tree/2bda32ec70b097a55adaa07d9a7173915b43cc78)
+  is670,478,772bytes/4files, CC-BY-4.0; every exact pin is in `_qwen_assets.py`.
+
+- The research-only [latest Granite multilingual conversion](https://huggingface.co/17slever17/granite-speech-5.0-470m-turboctc-multilingual-GGUF/tree/62f64d9d5ad35989b06caf199cafe7155944a22b)
+  uses publisher weights dated2026-10-21, upstream revision
+  `1dd23f46f6d4e6eae2531982ba2e33220086dd97`; model SHA
+  `f3efdc05b85b3a764bb5bb7022e69f61cafcecc11605c881c6396a6ed07ec91b`.
+  The [older English conversion](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/tree/0cf5be9f4bcd479989e6a24d142094d34d552daa)
+  is a separate measured model, not the latest multilingual weights.
+
+Full CI-style headless gate on `2512106241e8da496ddbc408afe070e0af08edff`:
+12,628passed,40skipped,9warnings in278.37seconds. No physical test ran; no raw
+model score is a live, held-out or selected-accuracy promotion.
+
+## Historical October4 comparisons
+
+The remaining tables are the unchanged October4 experiment, with its own source,
+thread/scoring/transport conditions. New October29 rows above do not retroactively
+change those receipts or turn cross-date timings into a causal comparison.
 
 The practical result is a targeted resource trial, not a wholesale latest-model upgrade.
 The INT8 version of the current Zipformer cuts process memory and CPU cost substantially.

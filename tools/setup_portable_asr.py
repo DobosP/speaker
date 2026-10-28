@@ -153,28 +153,38 @@ def prepare_bundle(bundle_dir, *, cache_root=None, download=False):
     return assets.validate_qwen_bundle(bundle_dir)
 
 
-def install_profile(config_root, bundle_dir, sense_voice_dir, *, add_profile=None):
+def install_profile(config_root, bundle_dir, sense_voice_dir=None, *, verifier="sensevoice", parakeet_dir=None, add_profile=None):
     """Add one optional profile to the local overlay; keep every other key."""
     from core.config import deep_merge
+    if verifier not in {"sensevoice", "parakeet"}:
+        raise ValueError("portable_asr_verifier_invalid")
     if add_profile is None:
-        from core.config import add_qwen_sensevoice_profile
-        add_profile = add_qwen_sensevoice_profile
+        from core import config as profile_config
+        add_profile = profile_config.add_qwen_sensevoice_profile if verifier == "sensevoice" else profile_config.add_qwen_parakeet_profile
     config_root = Path(config_root).absolute()
     assets.validate_qwen_bundle(bundle_dir)
-    assets.validate_sense_voice(sense_voice_dir)
+    voter_dir = sense_voice_dir if verifier == "sensevoice" else parakeet_dir
+    if voter_dir is None:
+        raise ValueError("portable_asr_voter_missing")
+    if verifier == "sensevoice":
+        assets.validate_sense_voice(voter_dir)
+    else:
+        assets.validate_parakeet_tdt(voter_dir)
     base = _json(_read(config_root / "config.json"))
     local_path = config_root / "config.local.json"
     previous = _read(local_path) if local_path.exists() else None
     local = _json(previous) if previous is not None else {}
     effective = deep_merge(base, local)
-    updated = add_profile(effective, qwen_model_dir=str(Path(bundle_dir).absolute()), sense_voice_dir=str(Path(sense_voice_dir).absolute()))
+    voter_key = "sense_voice_dir" if verifier == "sensevoice" else "parakeet_model_dir"
+    updated = add_profile(effective, qwen_model_dir=str(Path(bundle_dir).absolute()), **{voter_key: str(Path(voter_dir).absolute())})
     if {k: v for k, v in updated.items() if k != "final_stt_profiles"} != {k: v for k, v in effective.items() if k != "final_stt_profiles"}:
         raise ValueError("portable_asr_profile_changed_other_settings")
     local["final_stt_profiles"] = updated["final_stt_profiles"]
     raw = (json.dumps(local, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
     if raw != previous:
         _write_atomic(local_path, raw, previous=previous)
-    return {"profile": "qwen-sensevoice-cpu", "profile_installed": True, "selection_changed": False}
+    name = "qwen-sensevoice-cpu" if verifier == "sensevoice" else "qwen-parakeet-cpu"
+    return {"profile": name, "profile_installed": True, "selection_changed": False}
 
 
 def main(argv=None):
@@ -183,6 +193,8 @@ def main(argv=None):
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--cache-root", type=Path)
     parser.add_argument("--sense-voice-dir", type=Path)
+    parser.add_argument("--verifier", choices=("sensevoice", "parakeet"), default="sensevoice")
+    parser.add_argument("--parakeet-dir", type=Path)
     parser.add_argument("--download", action="store_true", help="Download missing pinned Qwen assets, rather than reuse --cache-root")
     parser.add_argument("--install-profile", action="store_true", help="Add the optional CPU profile to config.local.json; never selects it")
     args = parser.parse_args(argv)
@@ -192,7 +204,8 @@ def main(argv=None):
         prepare_bundle(bundle, cache_root=args.cache_root, download=args.download)
         result = {"bundle_verified": True, "profile_installed": False, "selection_changed": False}
         if args.install_profile:
-            result.update(install_profile(args.config_root, bundle, sense))
+            parakeet = args.parakeet_dir or args.config_root / "pretrained_models/sherpa/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+            result.update(install_profile(args.config_root, bundle, sense, verifier=args.verifier, parakeet_dir=parakeet))
         print(json.dumps(result))
         return 0
     except (OSError, ValueError, KeyError, zipfile.BadZipFile):

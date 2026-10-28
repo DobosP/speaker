@@ -1517,3 +1517,17 @@ its fake localfile. Test now explicitly enables ONLYthatfixture localconfig;
 assets/setup-only rerun20passed0.18s. All three inventory failures are green
 in the affected rerun. These are combined targeted checks, not a claim that the
 original17-file run passed as one green invocation.
+
+
+## 2026-10-29 — one explicit CPU verifier alternative
+
+Valid until: model/runtime/source/config policy changes — then treat as history.
+
+The helper adds exact four-file cached ParakeetTDTv3 INT8 validation and explicit
+`--verifier parakeet --parakeet-dir` setup selection for the one prospective
+Qwen-primary alternative. The existing SenseVoice setup default is unchanged,
+no default profile is activated, and unrelated/previous optional profile entries
+are preserved. This prepares the declared quality comparison; it does not claim
+a selected-quality win. No inference, runtime upgrade or download occurred.
+Synthetic helper gate:21passed in0.23s, required scoped Ruff and diff clean;
+independent delta review GO. Companion core config supplies the profile helper.

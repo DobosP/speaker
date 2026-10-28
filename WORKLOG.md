@@ -1558,3 +1558,25 @@ Source freezes for the parent's one fullCIgate then one actual composed pair;
 no selected-quality/adoption claim precedes that evidence. Root owns native
 window/fullgate/landing; worker never pushes. Checks below are docs/lint/diff
 only, with no extra broad test or model run in this lane.
+
+## 2026-10-29 — deterministic VAD fake-worker RSS after integration gate
+
+Valid until: VAD benchmark/test protocol changes — then treat as history.
+
+Parent's full gate on67f2 completed12522passed/40skipped/104failed in335.63s.
+Parent established103 preparation refusals came from its chosen pytest basetemp
+having an external Git ancestor; that other owner's Git tree was not changed.
+One unit fixture used the accumulated full-suite interpreter RSS as a synthetic
+VAD worker resource receipt, exceeding the unchanged2^31 validator ceiling.
+This is not a model or production CPU option failure. The full gate is not green
+and will be rerun once by the parent with a fresh private tmpfs `/tmp` in
+bubblewrap. Both host `/tmp/.git` and `/home/dobo/work/.git` exist; no other
+owner marker is deleted and no production artifact guard is weakened.
+
+Only `tests/test_english_vad_benchmark.py` changes: complete() supplies a fixed
+synthetic getrusage high-water value, a fake3GiB-process regression confirms the
+fixture does not inherit suite history, and a forged2^31+1receipt still refuses.
+Production VAD/tool/core/model/profile/authority bytes and caps are unchanged.
+Narrow public/fake file gate47passed0.62s, root-approved basetemp
+`/tmp/speaker-vad-fixture-portable-asr`; required Ruff/diff/docs checked.
+No new model/native/audio/doctor/route jobs or policy/default changes occurred.

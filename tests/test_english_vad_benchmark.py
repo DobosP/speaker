@@ -88,6 +88,9 @@ def inputs(tmp_path, frames=600):
 def complete(tmp_path, monkeypatch):
     corpus, model = inputs(tmp_path)
     monkeypatch.setattr(subject.metadata, "version", lambda _name: "1.13.3")
+    # This is a synthetic worker receipt. The shared full-suite interpreter's
+    # lifetime high-water RSS is unrelated to this fake model's resource use.
+    monkeypatch.setattr(subject.resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=1024))
     instance = FakeVad()
     result = subject.benchmark_cell(
         model, corpus, 3, 2, factory=lambda _model, _threads: instance
@@ -197,6 +200,7 @@ def test_full_cell_metrics_state_and_private_text_never_render(tmp_path, monkeyp
         (("repeats",), 99),
         (("active_frame_fraction",), 2),
         (("segments",), "private filename"),
+        (("peak_rss_bytes",), 2**31 + 1),
         (("config", "window_size"), 1024),
         (("config", "threshold"), False),
         (("cpu_affinity", "applied"), 1),
@@ -363,3 +367,11 @@ def test_unsettable_binding_and_unattested_exit_threshold_are_strict(
         forged[field] = value
         with pytest.raises(subject.VadBenchmarkError):
             subject._validate_result(forged, model.id, corpus, 3, 2)
+
+
+
+def test_synthetic_receipt_does_not_inherit_full_suite_process_rss(tmp_path, monkeypatch):
+    monkeypatch.setattr(subject.resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=3 * 1024**3))
+    corpus, model, _vad, result = complete(tmp_path, monkeypatch)
+    assert result["peak_rss_bytes"] == 1024 * (1 if sys.platform == "darwin" else 1024)
+    subject._validate_result(result, model.id, corpus, 3, 2)

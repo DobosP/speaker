@@ -220,6 +220,7 @@ def test_unknown_or_unsafe_profile_name_is_rejected():
         "sense-voice",
         "parakeet-faster-whisper",
         "qwen-sensevoice-cpu",
+        "qwen-parakeet-cpu",
     )
 
 
@@ -706,3 +707,41 @@ def test_cpu_profile_contract_cannot_widen_or_silently_retune(key, value):
     config["final_stt_profiles"]["qwen-sensevoice-cpu"]["sherpa"][key] = value
     with pytest.raises(ValueError):
         apply_final_stt_profile(config, "qwen-sensevoice-cpu")
+
+
+
+def test_qwen_parakeet_optional_profile_preserves_compact_legacy_and_active_policy():
+    from core.config import add_qwen_sensevoice_profile, add_qwen_parakeet_profile
+    config = add_qwen_sensevoice_profile(_config(), qwen_model_dir="/models/qwen", sense_voice_dir="/models/sense")
+    config["final_stt_profile"] = "sense-voice"
+    config["sherpa"].update(speaker_enroll_embedding="retained", asr_num_threads=4)
+    before = copy.deepcopy(config)
+    old_compact, compact_metadata = apply_final_stt_profile(config, "qwen-sensevoice-cpu")
+    added = add_qwen_parakeet_profile(config, qwen_model_dir="/models/qwen", parakeet_model_dir="/models/parakeet")
+    assert config == before
+    assert added["sherpa"] == config["sherpa"] and added["final_stt_profile"] == "sense-voice"
+    for name, value in config["final_stt_profiles"].items():
+        assert added["final_stt_profiles"][name] == value
+    compact, metadata = apply_final_stt_profile(added, "qwen-sensevoice-cpu")
+    assert compact == old_compact | {"final_stt_profiles": added["final_stt_profiles"]}
+    assert metadata == compact_metadata
+    chosen, meta = apply_final_stt_profile(added, "qwen-parakeet-cpu")
+    assert chosen["sherpa"]["asr_final_backend"] == "qwen_cpu"
+    assert chosen["sherpa"]["asr_final_verifier_backend"] == "parakeet_tdt_cpu"
+    assert chosen["sherpa"]["asr_final_verifier_model"] == "/models/parakeet"
+    assert chosen["sherpa"]["asr_num_threads"] == chosen["sherpa"]["asr_final_verifier_cpu_threads"] == 2
+    assert meta.sha256 == _canonical_sha256(added["final_stt_profiles"]["qwen-parakeet-cpu"])
+    assert add_qwen_parakeet_profile(added, qwen_model_dir="/models/qwen", parakeet_model_dir="/models/parakeet") == added
+    with pytest.raises(ValueError, match="not provisioned"):
+        apply_final_stt_profile(_config(), "qwen-parakeet-cpu")
+
+
+@pytest.mark.parametrize("key,value", [("asr_num_threads", True), ("asr_num_threads", 4),
+                                       ("asr_final_verifier_backend", "faster_whisper"),
+                                       ("asr_final_verifier_cpu_threads", 1)])
+def test_qwen_parakeet_profile_cannot_retune_fixed_resource_or_model_family(key, value):
+    from core.config import add_qwen_parakeet_profile
+    config = add_qwen_parakeet_profile(_config(), qwen_model_dir="/models/qwen", parakeet_model_dir="/models/parakeet")
+    config["final_stt_profiles"]["qwen-parakeet-cpu"]["sherpa"][key] = value
+    with pytest.raises(ValueError):
+        apply_final_stt_profile(config, "qwen-parakeet-cpu")

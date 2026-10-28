@@ -1822,6 +1822,17 @@ def _existing_sherpa_family_is_valid(
             str(sherpa.get("asr_final_verifier_backend", "") or "").strip().lower()
         )
         root = str(sherpa.get("asr_final_verifier_model", "") or "")
+        if backend == "parakeet_tdt_cpu":
+            try:
+                from core.engines._qwen_assets import validate_parakeet_tdt
+                validate_parakeet_tdt(root)
+            except (ImportError, OSError, RuntimeError, ValueError):
+                return False
+            return (
+                str(sherpa.get("asr_final_backend", "") or "").strip().lower() != "nemo_transducer"
+                and type(sherpa.get("asr_final_verifier_cpu_threads")) is int
+                and 1 <= sherpa["asr_final_verifier_cpu_threads"] <= 8
+            )
         if backend == "sense_voice":
             return (
                 str(sherpa.get("asr_final_backend", "") or "").strip().lower() != "sense_voice"
@@ -1890,7 +1901,7 @@ def _incoming_family_required_keys(
             "nemo_transducer": SHERPA_PATH_FAMILIES[family],
         }.get(target_mode, ())
     if family == "final_verifier":
-        return SHERPA_PATH_FAMILIES[family] if target_mode in {"faster_whisper", "sense_voice"} else ()
+        return SHERPA_PATH_FAMILIES[family] if target_mode in {"faster_whisper", "sense_voice", "parakeet_tdt_cpu"} else ()
     if family == "kws":
         return SHERPA_PATH_FAMILIES[family]
     return tuple(key for key in SHERPA_PATH_FAMILIES[family] if key in incoming)
@@ -1944,6 +1955,10 @@ def _validate_incoming_sherpa_family(
                 )
     if family == "final_verifier":
         root = incoming["asr_final_verifier_model"]
+        if target_mode == "parakeet_tdt_cpu":
+            from core.engines._qwen_assets import validate_parakeet_tdt
+            validate_parakeet_tdt(root)
+            return
         missing_files = [
             name
             for name in (("model.int8.onnx", "tokens.txt") if target_mode == "sense_voice" else FASTER_WHISPER_REQUIRED_FILES)

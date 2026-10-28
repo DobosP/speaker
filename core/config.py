@@ -59,8 +59,12 @@ _FINAL_STT_PROFILE_SPECS = {
     "sense-voice": ("sense_voice", "", 0),
     "parakeet-faster-whisper": ("nemo_transducer", "faster_whisper", 1),
     "qwen-sensevoice-cpu": ("qwen_cpu", "sense_voice", 2),
+    "qwen-parakeet-cpu": ("qwen_cpu", "parakeet_tdt_cpu", 2),
 }
-_FINAL_STT_PROFILE_EXTRA_FIELDS = {"qwen-sensevoice-cpu": {"asr_num_threads": 2}}
+_FINAL_STT_PROFILE_EXTRA_FIELDS = {
+    "qwen-sensevoice-cpu": {"asr_num_threads": 2},
+    "qwen-parakeet-cpu": {"asr_num_threads": 2},
+}
 FINAL_STT_PROFILE_NAMES = tuple(_FINAL_STT_PROFILE_SPECS)
 _FINAL_STT_PROFILE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _FINAL_STT_STRING_FIELDS = frozenset(
@@ -285,36 +289,45 @@ def apply_final_stt_profile(
     return effective, metadata
 
 
-def add_qwen_sensevoice_profile(
-    config: dict, *, qwen_model_dir: str, sense_voice_dir: str,
-) -> dict:
-    """Add the optional CPU profile without selecting it or changing other policy.
-
-    Provisioning validates the referenced assets separately. This pure helper
-    only publishes one complete fixed profile and preserves the legacy map.
-    """
+def _add_qwen_cpu_profile(config, *, name, verifier, qwen_model_dir, verifier_model_dir):
     import copy
 
-    for path in (qwen_model_dir, sense_voice_dir):
+    for path in (qwen_model_dir, verifier_model_dir):
         if type(path) is not str or not path or "\x00" in path:
             raise ValueError("CPU ASR profile requires two local model directories")
     effective = copy.deepcopy(config)
     profiles = effective.get("final_stt_profiles")
     if not isinstance(profiles, dict):
         raise ValueError("CPU ASR setup requires the complete legacy profile map")
-    # Replace only this optional entry, including a partial previous attempt.
-    profiles.pop("qwen-sensevoice-cpu", None)
+    # Replace only this optional entry; every other profile/default is retained.
+    profiles.pop(name, None)
     apply_final_stt_profile(effective, "sense-voice")
     profile = copy.deepcopy(profiles["parakeet-faster-whisper"])
     profile["sherpa"].update(
         asr_final_backend="qwen_cpu", asr_final_model=qwen_model_dir,
         asr_final_tokens="", asr_final_decoder="", asr_final_joiner="",
-        asr_final_verifier_backend="sense_voice", asr_final_verifier_model=sense_voice_dir,
+        asr_final_verifier_backend=verifier, asr_final_verifier_model=verifier_model_dir,
         asr_final_verifier_cpu_threads=2, asr_num_threads=2,
     )
-    _validate_final_stt_profile("qwen-sensevoice-cpu", profile)
-    profiles["qwen-sensevoice-cpu"] = profile
+    _validate_final_stt_profile(name, profile)
+    profiles[name] = profile
     return effective
+
+
+def add_qwen_sensevoice_profile(
+    config: dict, *, qwen_model_dir: str, sense_voice_dir: str,
+) -> dict:
+    """Add the optional compact CPU profile without selecting/changing policy."""
+    return _add_qwen_cpu_profile(config, name="qwen-sensevoice-cpu", verifier="sense_voice",
+                                 qwen_model_dir=qwen_model_dir, verifier_model_dir=sense_voice_dir)
+
+
+def add_qwen_parakeet_profile(
+    config: dict, *, qwen_model_dir: str, parakeet_model_dir: str,
+) -> dict:
+    """Add the optional stronger-voter CPU profile, preserving all other entries."""
+    return _add_qwen_cpu_profile(config, name="qwen-parakeet-cpu", verifier="parakeet_tdt_cpu",
+                                 qwen_model_dir=qwen_model_dir, verifier_model_dir=parakeet_model_dir)
 
 
 def apply_no_speaker_enrollment(config: dict) -> dict:

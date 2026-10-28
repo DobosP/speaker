@@ -426,7 +426,7 @@ def build_final_verifier(c: "SherpaConfig"):
     required = bool(getattr(c, "asr_final_required", False))
     if not backend:
         return None
-    if backend not in {"faster_whisper", "sense_voice"}:
+    if backend not in {"faster_whisper", "sense_voice", "parakeet_tdt_cpu"}:
         if required:
             raise RuntimeError(
                 f"required final verifier backend {backend!r} is unsupported"
@@ -450,7 +450,13 @@ def build_final_verifier(c: "SherpaConfig"):
     verifier = None
     try:
         cpu_threads = getattr(c, "asr_final_verifier_cpu_threads", 0)
-        if backend == "sense_voice":
+        if backend == "parakeet_tdt_cpu":
+            if str(getattr(c, "asr_final_backend", "") or "").strip().lower() == "nemo_transducer":
+                raise ValueError("Parakeet cannot independently verify the same primary family")
+            from ._parakeet_verifier import ParakeetEndpointRecognizer
+
+            verifier = ParakeetEndpointRecognizer(model, cpu_threads=cpu_threads)
+        elif backend == "sense_voice":
             if str(getattr(c, "asr_final_backend", "") or "").strip().lower() == "sense_voice":
                 raise ValueError("SenseVoice cannot independently verify the same primary family")
             from ._sense_voice import SenseVoiceEndpointRecognizer

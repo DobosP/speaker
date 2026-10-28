@@ -885,7 +885,7 @@ def test_build_final_recognizer_omits_hr_when_unset(monkeypatch):
         assert k not in captured
 
 
-@pytest.mark.parametrize("verifier_backend", ["", "sense_voice", "other_cpu", "faster_whisper_cpu"])
+@pytest.mark.parametrize("verifier_backend", ["", "sense_voice", "other_cpu", "faster_whisper_cpu", "parakeet_tdt_cpu"])
 def test_new_verifier_family_cannot_inherit_retained_control_repair(verifier_backend):
     decision = _resolve_final_transcript(
         SherpaConfig(asr_final_backend="nemo_transducer", asr_final_verifier_backend=verifier_backend),
@@ -910,3 +910,19 @@ def test_qwen_primary_requires_independent_exact_quorum_without_changing_control
                                        "DON'T PLAY SPEAK", final_verifier=_FakeVerifier("stop speaking"), speech_sec=1.5)
     assert control.selected == "Don't play speak" and control.verifier_outcome == "control_guard"
     assert control.verifier_changed is False
+
+
+
+def test_qwen_parakeet_pair_retains_quorum_empty_streaming_and_control_fences():
+    cfg = SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="parakeet_tdt_cpu")
+    segment = np.ones(2 * 16000, dtype="float32")
+    for raw, offline, verifier, expected in (
+        ("different words", "The lamp is blue.", "the lamp is blue", "The lamp is blue."),
+        ("different words", "The lamp is blue.", "another rendering", "Different words"),
+        ("", "Hello there.", "hello there", ""),
+        ("DON'T PLAY SPEAK", "Stop speaking.", "stop speaking", "Don't play speak"),
+    ):
+        decision = _resolve_final_transcript(cfg, _FakeOffline(offline), None, segment, raw,
+                                             final_verifier=_FakeVerifier(verifier), speech_sec=1.5)
+        assert decision.selected == expected
+        assert decision.verifier_outcome != "attested_control"

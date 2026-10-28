@@ -134,3 +134,60 @@ to enable only its owned fake local file. The assets/setup file then passed20
 in0.18seconds. Thus the three inventory failures and real opaque-map installer
 path are covered by successful focused reruns; the earlier17-file invocation
 remains recorded as1058passed/4skipped/3failed, not retrospectively all green.
+
+## 2026-10-29: composed compact result and one stronger CPU voter option
+
+Actual production FileReplay on clean feature05e536c4 completed both original
+corpora, each two repeats, with source/config/asset/original-PCM checks and exact
+lease cleanup. Compact Qwen/SenseVoice selected errors were Mic6 3/25 legacy,
+4/25 normalized, and Owner37 22/212 legacy,21/213 normalized in each repeat.
+Raw offline models were better than the selected rendering, but exact quorum
+and control guards retained disagreements and one STOP control guard per
+cohort. This is not a selected-quality win over the older selected development
+control (Mic6 3/25,4/25; Owner37 24/212,20/213). No repair list, thresholds,
+authority rule or labels were changed to improve these numbers.
+
+Frozen canonical compact reports are
+`logs/runs/local-model-comparison-20261028/noncuda-asr/production-selected/mic6.json`
+SHA `375d5ddedb60560708db2301371b68c7c8327e4c5e819e4e4b2ad349b3c8911e`
+and `owner37.json` SHA
+`f00e28dca5f29816a741e6a07523341d09b14ad6fecb8d343eb6199bdd09b864`.
+Their combined source identity is
+`6c9ad8792c6108805e15f5beb397966569885797fc999b55d633162c84897d21`;
+original receipts and raw-versus-selected cohorts remain unchanged history.
+Component-only and historical cross-load timings are not causal response
+comparisons or physical/live qualification.
+
+Add one explicit alternative, `qwen-parakeet-cpu`: the same Qwen CPU primary,
+streaming-ASRthreads2 and independent CPU2 Parakeet TDT v3 INT8 voter instead
+of SenseVoice. Keep the compact profile and all legacy/default selections.
+Parakeet's existing four verified assets total670,478,772bytes; the companion
+asset helper pins every file before construction. No new model download,
+SDK/runtime, CUDA path, authority rule or extra concurrent acoustic model is
+introduced. This trades a larger voter for a prospective exact-quorum quality
+improvement; no selected win is claimed before its own composed replay.
+
+The32-line voter subclass reuses the existing fresh-stream/full-PCM/resampler/
+lease/cleanup implementation and changes only its fixed verified constructor:
+`OfflineRecognizer.from_transducer`, CPU,2threads,16kHz,feature80,greedy,
+maxpaths4,model_type `nemo_transducer`. It is not an invented
+`from_nemo_transducer` Python API. A NeMo-family primary plus this voter is
+refused to prevent double-counting the same model family. New Qwen/Parakeet
+still receives no legacy NeMo/Faster-Whisper attested control exception.
+
+`add_qwen_parakeet_profile` adds only its complete optional entry. Setup's
+`--verifier parakeet --parakeet-dir <verified-dir>` validates and installs it
+without selecting it, preserving any existing compact entry, enrollment and
+legacy configuration. Legacy two-profile and compact three-profile maps remain
+accepted. No unselected model must be downloaded. The lazy voter source is
+added only to the prospective production-factory inventory, not eager-import
+inventories or historical locks.
+
+Companion helper74dea8c was integrated as4785c03, preserving both conflict-side
+tests/evidence. New-pair focused/public-fake gate:237passed,1skipped in2.71s;
+this covers new CPU constructor/fullPCM/retirement, fixed profile compatibility,
+control fences, actual installer choices and affected factory-source inventory.
+Independent source review is GO. Parent-owned full CI gate and then one clean
+source-bound Mic6/Owner37 composed pair are still required. No further voter
+or consensus experiment is authorized by this decision. Existing defaults,
+physical/live/other-OS gates and compact05 evidence remain unchanged.

@@ -173,6 +173,7 @@ _EVALUATOR_SOURCE_FILES = (
     "core/engines/_qwen_asr.py",
     "core/engines/_qwen_assets.py",
     "core/engines/_sense_voice.py",
+    "core/engines/_parakeet_verifier.py",
     "core/engines/_endpoint_lease.py",
     "core/engines/_output_cleanup.py",
     "core/engines/_sherpa_models.py",

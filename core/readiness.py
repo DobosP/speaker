@@ -284,11 +284,24 @@ def check_sherpa_models(
             problems.append("SenseVoice cannot independently verify the same primary family")
         threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
         if type(threads) is not int or not 1 <= threads <= 8:
-            problems.append("SenseVoice verifier CPU threads must be between 1 and 8")
+            problems.append("CPU verifier threads must be between 1 and 8")
+    elif verifier_backend == "parakeet_tdt_cpu":
+        require("asr_final_verifier_model", label="Parakeet CPU verifier directory")
+        try:
+            from .engines._qwen_assets import validate_parakeet_tdt
+
+            validate_parakeet_tdt(str(sherpa.get("asr_final_verifier_model", "") or ""))
+        except (ImportError, OSError, RuntimeError, ValueError):
+            problems.append("Parakeet TDT verifier is unavailable or incompatible")
+        if final_backend == "nemo_transducer":
+            problems.append("Parakeet cannot independently verify the same primary family")
+        threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
+        if type(threads) is not int or not 1 <= threads <= 8:
+            problems.append("Parakeet verifier CPU threads must be between 1 and 8")
     elif verifier_backend:
         problems.append(
             f"asr_final_verifier_backend={verifier_backend!r} unsupported "
-            "(expected faster_whisper or sense_voice)"
+            "(expected faster_whisper, sense_voice, or parakeet_tdt_cpu)"
         )
 
     # A configured VAD is eagerly built during engine start.  It remains optional
@@ -339,32 +352,37 @@ def check_asr_final_verifier_runtime(
     ).strip().lower()
     if not backend:
         return Check("ASR final verifier runtime", True, "disabled")
-    if backend == "sense_voice":
+    if backend in {"sense_voice", "parakeet_tdt_cpu"}:
         try:
-            if str(sherpa.get("asr_final_backend", "") or "").strip().lower() == "sense_voice":
-                raise RuntimeError("SenseVoice cannot independently verify the same primary family")
+            duplicate = "sense_voice" if backend == "sense_voice" else "nemo_transducer"
+            if str(sherpa.get("asr_final_backend", "") or "").strip().lower() == duplicate:
+                raise RuntimeError("CPU voter cannot independently verify the same primary family")
             import_fn("sherpa_onnx")
             path = str(sherpa.get("asr_final_verifier_model", "") or "")
             threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
             if type(threads) is not int or not 1 <= threads <= 8:
-                raise RuntimeError("SenseVoice verifier CPU threads must be between 1 and 8")
+                raise RuntimeError("CPU verifier threads must be between 1 and 8")
             if model_probe_fn is not None:
                 model_probe_fn(path)
             else:
-                from .engines._sense_voice import SenseVoiceEndpointRecognizer
-
-                voter = SenseVoiceEndpointRecognizer(path, cpu_threads=threads)
+                if backend == "sense_voice":
+                    from .engines._sense_voice import SenseVoiceEndpointRecognizer
+                    factory = SenseVoiceEndpointRecognizer
+                else:
+                    from .engines._parakeet_verifier import ParakeetEndpointRecognizer
+                    factory = ParakeetEndpointRecognizer
+                voter = factory(path, cpu_threads=threads)
                 try:
                     voter.warm()
                 finally:
                     voter.close()
                     if not voter._endpoint_lease.wait_closed(1.0):
-                        raise RuntimeError("SenseVoice verifier cleanup is pending or uncertain")
+                        raise RuntimeError("CPU verifier cleanup is pending or uncertain")
         except Exception as exc:
             return Check("ASR final verifier runtime", False,
                          f"{type(exc).__name__}: {exc}",
-                         "provision the complete local SenseVoice CPU model and thread budget")
-        return Check("ASR final verifier runtime", True, "local SenseVoice CPU available")
+                         "provision the complete selected local CPU voter and thread budget")
+        return Check("ASR final verifier runtime", True, f"local {backend} CPU available")
     if backend != "faster_whisper":
         return Check(
             "ASR final verifier runtime",

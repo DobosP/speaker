@@ -220,7 +220,8 @@ def test_download_deadline_removes_unverified_file(tmp_path, monkeypatch):
     assert not path.exists() and not list(tmp_path.glob(".download-*"))
 
 
-def test_real_profile_helper_adds_optional_entry_to_legacy_opaque_local_map(tmp_path, monkeypatch):
+@pytest.mark.parametrize("verifier", ["sensevoice", "parakeet"])
+def test_real_profile_helper_adds_optional_entry_to_legacy_opaque_local_map(tmp_path, monkeypatch, verifier):
     import copy
     from core.config import load_config, apply_final_stt_profile
 
@@ -233,7 +234,9 @@ def test_real_profile_helper_adds_optional_entry_to_legacy_opaque_local_map(tmp_
     (tmp_path / "config.local.json").write_text(json.dumps(local))
     monkeypatch.setattr(assets, "validate_qwen_bundle", lambda path: (tmp_path / "model.gguf", tmp_path / "libspeech.so"))
     monkeypatch.setattr(assets, "validate_sense_voice", lambda path: path)
-    setup.install_profile(tmp_path, tmp_path / "bundle", tmp_path / "sense")
+    monkeypatch.setattr(assets, "validate_parakeet_tdt", lambda path: path)
+    setup.install_profile(tmp_path, tmp_path / "bundle", tmp_path / "sense", verifier=verifier,
+                          parakeet_dir=tmp_path / "parakeet")
     saved = json.loads((tmp_path / "config.local.json").read_bytes())
     assert saved["private_fixture"] == local["private_fixture"]
     assert saved["sherpa"] == local["sherpa"]
@@ -243,10 +246,11 @@ def test_real_profile_helper_adds_optional_entry_to_legacy_opaque_local_map(tmp_
     # The headless global test prefix normally disables every local file.
     monkeypatch.delenv("SPEAKER_NO_LOCAL_CONFIG", raising=False)
     merged = load_config(str(tmp_path / "config.json"), local=str(tmp_path / "config.local.json"))
-    chosen, metadata = apply_final_stt_profile(merged, "qwen-sensevoice-cpu")
-    assert metadata.name == "qwen-sensevoice-cpu"
+    name = "qwen-sensevoice-cpu" if verifier == "sensevoice" else "qwen-parakeet-cpu"
+    chosen, metadata = apply_final_stt_profile(merged, name)
+    assert metadata.name == name
     assert chosen["sherpa"]["asr_final_model"] == str(tmp_path / "bundle")
-    assert chosen["sherpa"]["asr_final_verifier_model"] == str(tmp_path / "sense")
+    assert chosen["sherpa"]["asr_final_verifier_model"] == str(tmp_path / ("sense" if verifier == "sensevoice" else "parakeet"))
     assert chosen["sherpa"]["asr_num_threads"] == 2
     assert chosen["sherpa"]["speaker_enroll_embedding"] == local["sherpa"]["speaker_enroll_embedding"]
 

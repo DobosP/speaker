@@ -1531,3 +1531,30 @@ are preserved. This prepares the declared quality comparison; it does not claim
 a selected-quality win. No inference, runtime upgrade or download occurred.
 Synthetic helper gate:21passed in0.23s, required scoped Ruff and diff clean;
 independent delta review GO. Companion core config supplies the profile helper.
+
+## 2026-10-29 — ADR-0255 one independent stronger CPU voter option
+
+Valid until: source/profile/model/SDK/selection policy changes or composed alternative qualification — then treat as history.
+
+Compact05 production FileReplay completed both cohorts twice with exact source/
+config/model/PCM/cleanup receipts. Selected Mic6raw3/norm4 of25 andOwner37raw22
+of212/norm21of213 retain one control_guard STOP each; they do not establish a
+selected-quality win despite better raw offline hypotheses. Frozen reports
+375d5dde…/f00e28dc… and source6c9ad879… remain unchanged; ADR-0255 binds paths.
+No labels, control guard, quorum or authority conditions were relaxed.
+
+Added exactly one optional qwen-parakeet-cpu profile with the existing cached
+four-file INT8 TDTv3 CPU voter, replacing Sense as the independent vote for this
+choice, not adding a fourth model. Compact/legacy/default selections remain.
+Small fixed constructor subclass reuses fullPCM/resampling/lease semantics,
+forcesCPU2/greedy/80/nemo_transducer and rejects NeMo-family duplicate voting.
+Companion helper74dea8c integrated as4785c03: exact4pins plus explicit setup
+--verifierparakeet/--parakeet-dir preserves existing optional/local-map entries.
+New lazy source enters only prospective factory inventory; no eager/old receipts
+are rewritten. No model download/newruntime/CUDA/microphone/doctor/playback.
+
+Focused new+adjacent gate237passed1skipped2.71s; independent delta reviewGO.
+Source freezes for the parent's one fullCIgate then one actual composed pair;
+no selected-quality/adoption claim precedes that evidence. Root owns native
+window/fullgate/landing; worker never pushes. Checks below are docs/lint/diff
+only, with no extra broad test or model run in this lane.

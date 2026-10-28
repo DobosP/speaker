@@ -1172,7 +1172,7 @@ class SherpaConfig:
     # the established streaming + SenseVoice final byte-for-byte. The model must
     # be an existing local Faster-Whisper directory; remote model IDs and
     # downloads are rejected by the adapter.
-    asr_final_verifier_backend: str = ""  # "" | "faster_whisper" | "sense_voice" (CPU)
+    asr_final_verifier_backend: str = ""  # "" | "faster_whisper" | "sense_voice" | "parakeet_tdt_cpu"
     asr_final_verifier_model: str = ""
     # Optional explicit bound for Faster-Whisper's CPU-side CTranslate2 work.
     # Zero preserves the adapter's legacy/default constructor byte-for-byte.

@@ -1946,7 +1946,8 @@ def test_rejects_private_input_content_drift_after_publication(
         if target == "metadata":
             selected = root / "test" / "text"
         elif target == "audio":
-            selected = next((root / "data").glob("*.wav"))
+            # Mutate a retained test input, not an unordered/unselected dev WAV.
+            selected = root / "data" / f"{_test_recording(0)}.wav"
         else:
             selected = archive
         _mutate_first_byte(selected)

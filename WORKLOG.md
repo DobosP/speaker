@@ -1580,3 +1580,23 @@ Production VAD/tool/core/model/profile/authority bytes and caps are unchanged.
 Narrow public/fake file gate47passed0.62s, root-approved basetemp
 `/tmp/speaker-vad-fixture-portable-asr`; required Ruff/diff/docs checked.
 No new model/native/audio/doctor/route jobs or policy/default changes occurred.
+
+## 2026-10-29 — selected EDAcc input mutation fixture after namespace gate
+
+Valid until: fixture selection/test harness changes — then treat as history.
+
+Parent's fresh-/tmp namespace full gate on aab575f completed12626passed,
+40skipped,2failed in281.74s. Prior Git-ancestor and fake-VAD-RSS failures were
+gone. One console case was blocked by the parent's read-only task-tree log
+mount; the corrected wrapper makes only the feature worktree writable. The
+other fixture chose an arbitrary `.wav` glob result, which can be an unselected
+dev recording on tmpfs; production correctly refuses only retained-input drift.
+
+Changed only that test's audio mutation to the fixture-selected
+`_test_recording(0)` WAV. Production content hashes/guards/core/models remain
+unchanged. All3metadata/audio/archive mutation cases pass in1.01s with private
+tmpfs/tmp, pseudo/dev and writable feature task tree. The first narrow wrapper
+omitted pseudo/dev and pytest capture failed before collection; the corrected
+wrapper above passed. No model or private-data inference/audio/doctor/default
+change occurred. Independent review plus required Ruff/docs/diff precede commit;
+parent owns the final full rerun, which is still pending rather than assumed.

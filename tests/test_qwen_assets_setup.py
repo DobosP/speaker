@@ -218,3 +218,34 @@ def test_download_deadline_removes_unverified_file(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="portable_asr_download_deadline"):
         setup._download(path, 6, hashlib.sha256(b"public").hexdigest(), "https://example.invalid/model")
     assert not path.exists() and not list(tmp_path.glob(".download-*"))
+
+
+def test_real_profile_helper_adds_optional_entry_to_legacy_opaque_local_map(tmp_path, monkeypatch):
+    import copy
+    from core.config import load_config, apply_final_stt_profile
+
+    repo = Path(__file__).resolve().parents[1]
+    base = json.loads((repo / "config.json").read_bytes())
+    (tmp_path / "config.json").write_text(json.dumps(base))
+    legacy = copy.deepcopy(base["final_stt_profiles"])
+    local = {"final_stt_profiles": legacy, "private_fixture": {"preserved": "public test"},
+             "sherpa": {"speaker_enroll_embedding": "existing enrollment reference"}}
+    (tmp_path / "config.local.json").write_text(json.dumps(local))
+    monkeypatch.setattr(assets, "validate_qwen_bundle", lambda path: (tmp_path / "model.gguf", tmp_path / "libspeech.so"))
+    monkeypatch.setattr(assets, "validate_sense_voice", lambda path: path)
+    setup.install_profile(tmp_path, tmp_path / "bundle", tmp_path / "sense")
+    saved = json.loads((tmp_path / "config.local.json").read_bytes())
+    assert saved["private_fixture"] == local["private_fixture"]
+    assert saved["sherpa"] == local["sherpa"]
+    assert "final_stt_profile" not in saved
+    assert all(saved["final_stt_profiles"][name] == value for name, value in legacy.items())
+    # Use the real config merger: its opaque map must retain the new entry.
+    # The headless global test prefix normally disables every local file.
+    monkeypatch.delenv("SPEAKER_NO_LOCAL_CONFIG", raising=False)
+    merged = load_config(str(tmp_path / "config.json"), local=str(tmp_path / "config.local.json"))
+    chosen, metadata = apply_final_stt_profile(merged, "qwen-sensevoice-cpu")
+    assert metadata.name == "qwen-sensevoice-cpu"
+    assert chosen["sherpa"]["asr_final_model"] == str(tmp_path / "bundle")
+    assert chosen["sherpa"]["asr_final_verifier_model"] == str(tmp_path / "sense")
+    assert chosen["sherpa"]["asr_num_threads"] == 2
+    assert chosen["sherpa"]["speaker_enroll_embedding"] == local["sherpa"]["speaker_enroll_embedding"]

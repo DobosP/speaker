@@ -84,6 +84,7 @@ _EXECUTION_CLOSURE_RELATIVE_PATHS = (
     "core/endpointing.py",
     "core/engines/_output_cleanup.py",
     "core/engines/sherpa.py",
+    "core/engines/_endpoint_lease.py",
     "always_on_agent/acoustic.py",
     "always_on_agent/text.py",
 )

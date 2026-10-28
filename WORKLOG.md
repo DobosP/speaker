@@ -1477,3 +1477,43 @@ FDs, verifies retained rights on existing-bundle reuse, and adds a cooperative
 900-second download deadline checked between read1 calls (60-second socket
 timeout; not a hard-preemptive wall deadline). Added FIFO/symlink, rights-tamper
 and deadline regression checks. No model/network call occurred.
+
+## 2026-10-28 — ADR-0255 portable CPU final-ASR software integration
+
+Valid until: source/profile/model/SDK/selection policy changes or composed qualification — then treat as history.
+
+Created `codex/portable-asr-model` from main57672 with the required task helper.
+Integrated reviewed pinned asset/setup helper27dbc5e as1ec813f; Qwen direct CAPI
+facade forces CPU2/English/nohints and retains full owned PCM without the
+research30s cap. New optional profile qwen-sensevoice-cpu adds Qwen primary plus
+distinct pinned SenseVoiceCPU2 voter and explicit streaming-ASRthreads2. No
+existing profile/default/performance/enrollment/tool/egress policy changes.
+Installer extends the opaque legacy2 local profile map without activating it;
+actual helper/merger regression covers that trap. Linuxx86_64 native tuple is
+explicit; no untested Windows/macOS binary or CUDA dependency implied.
+
+New leased endpoint ownership fences warm/decode/retire, keeps entered handles
+until native return and confirmed exact free, quarantines ambiguous launch/free,
+and prevents new contexts while cleanup is pending. Tests cover blocked warm,
+inline decode, queued native entry, destructor order, partial load/start/warm
+failure, duplicate-start preservation and exact replacement identity. Existing
+legacy close behavior is inert. Qwen is quorum-required; new voter families
+cannot inherit the retained NeMo/FW attested control repair, and changing final
+text still loses direct-live/owner action authority. No control/voting relaxation.
+
+Focused model-free gate153passed4.66s; independent reviewer153passed3.87s.
+Integrated17-file gate1058passed/4skipped with3mechanical source-count/order
+failures isolated and corrected. Only prospective bound inventories change;
+no frozen receipt/lock rewriting. Source-inventory closure and actual installer
+compatibility rerun receipt follows. Required scoped Ruff/diff pass before docs.
+No new model or audio-device run, doctor, default activation, merge or push.
+Actual composed FileReplayMic6/Owner37 quality/latency remains the next gate;
+raw-model best scores do not qualify selected policy behavior. Full decision,
+operational setup and lifecycle limits are ADR-0255.
+
+Corrected-inventory/installer affected rerun:172passed; its new installer test
+initially inherited SPEAKER_NO_LOCAL_CONFIG=1 and therefore deliberately ignored
+its fake localfile. Test now explicitly enables ONLYthatfixture localconfig;
+assets/setup-only rerun20passed0.18s. All three inventory failures are green
+in the affected rerun. These are combined targeted checks, not a claim that the
+original17-file run passed as one green invocation.

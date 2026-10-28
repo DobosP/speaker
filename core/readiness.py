@@ -238,6 +238,14 @@ def check_sherpa_models(
                 "asr_final_hr_rule_fsts", comma_separated=True
             )
             require_if_configured("asr_final_rule_fsts", comma_separated=True)
+    elif final_backend == "qwen_cpu":
+        require("asr_final_model", label="Qwen CPU verified bundle directory")
+        try:
+            from .engines._qwen_assets import validate_qwen_bundle
+
+            validate_qwen_bundle(str(sherpa.get("asr_final_model", "") or ""))
+        except (ImportError, OSError, RuntimeError, ValueError):
+            problems.append("Qwen CPU bundle is unavailable or incompatible; run tools.setup_portable_asr")
     elif final_backend:
         problems.append(
             f"asr_final_backend={final_backend!r} unsupported "
@@ -265,10 +273,22 @@ def check_sherpa_models(
                     problems.append(
                         f"Faster-Whisper verifier {filename} missing on disk"
                     )
+    elif verifier_backend == "sense_voice":
+        verifier_model = str(sherpa.get("asr_final_verifier_model", "") or "")
+        require("asr_final_verifier_model", label="SenseVoice CPU verifier directory")
+        if verifier_model:
+            for filename in ("model.int8.onnx", "tokens.txt"):
+                if not exists(os.path.join(verifier_model, filename)):
+                    problems.append(f"SenseVoice verifier {filename} missing on disk")
+        if final_backend == "sense_voice":
+            problems.append("SenseVoice cannot independently verify the same primary family")
+        threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
+        if type(threads) is not int or not 1 <= threads <= 8:
+            problems.append("SenseVoice verifier CPU threads must be between 1 and 8")
     elif verifier_backend:
         problems.append(
             f"asr_final_verifier_backend={verifier_backend!r} unsupported "
-            "(expected faster_whisper)"
+            "(expected faster_whisper or sense_voice)"
         )
 
     # A configured VAD is eagerly built during engine start.  It remains optional
@@ -312,13 +332,39 @@ def check_asr_final_verifier_runtime(
     preload_fn: Callable[[], None] | None = None,
     model_probe_fn: Callable[[str], None] | None = None,
 ) -> Check:
-    """Prove the selected verifier has a CUDA FP16 CTranslate2 runtime."""
+    """Prove the selected legacy CUDA or explicitly local CPU verifier runtime."""
     sherpa = (config or {}).get("sherpa", {}) or {}
     backend = str(
         sherpa.get("asr_final_verifier_backend", "") or ""
     ).strip().lower()
     if not backend:
         return Check("ASR final verifier runtime", True, "disabled")
+    if backend == "sense_voice":
+        try:
+            if str(sherpa.get("asr_final_backend", "") or "").strip().lower() == "sense_voice":
+                raise RuntimeError("SenseVoice cannot independently verify the same primary family")
+            import_fn("sherpa_onnx")
+            path = str(sherpa.get("asr_final_verifier_model", "") or "")
+            threads = sherpa.get("asr_final_verifier_cpu_threads", 0)
+            if type(threads) is not int or not 1 <= threads <= 8:
+                raise RuntimeError("SenseVoice verifier CPU threads must be between 1 and 8")
+            if model_probe_fn is not None:
+                model_probe_fn(path)
+            else:
+                from .engines._sense_voice import SenseVoiceEndpointRecognizer
+
+                voter = SenseVoiceEndpointRecognizer(path, cpu_threads=threads)
+                try:
+                    voter.warm()
+                finally:
+                    voter.close()
+                    if not voter._endpoint_lease.wait_closed(1.0):
+                        raise RuntimeError("SenseVoice verifier cleanup is pending or uncertain")
+        except Exception as exc:
+            return Check("ASR final verifier runtime", False,
+                         f"{type(exc).__name__}: {exc}",
+                         "provision the complete local SenseVoice CPU model and thread budget")
+        return Check("ASR final verifier runtime", True, "local SenseVoice CPU available")
     if backend != "faster_whisper":
         return Check(
             "ASR final verifier runtime",
@@ -391,9 +437,9 @@ def check_asr_final_runtime(
     if backend != "nemo_transducer" and not required:
         return Check("ASR final runtime", True, "NeMo transducer disabled")
     try:
-        if backend not in {"sense_voice", "whisper", "nemo_transducer"}:
+        if backend not in {"sense_voice", "whisper", "nemo_transducer", "qwen_cpu"}:
             raise RuntimeError(f"required final backend {backend!r} is unsupported")
-        module = import_fn("sherpa_onnx")
+        module = import_fn("sherpa_onnx") if backend != "qwen_cpu" else None
         version = str(getattr(module, "__version__", "") or "")
         if (
             backend == "nemo_transducer"
@@ -414,13 +460,22 @@ def check_asr_final_runtime(
             )
             if recognizer is None:
                 raise RuntimeError(f"selected {backend} final recognizer did not load")
-            stream = recognizer.create_stream()
-            stream.accept_waveform(16_000, np.zeros(1600, dtype=np.float32))
-            recognizer.decode_stream(stream)
-            if not isinstance(getattr(stream.result, "text", None), str):
-                raise RuntimeError(
-                    f"selected {backend} final decode returned no result"
-                )
+            try:
+                stream = recognizer.create_stream()
+                stream.accept_waveform(16_000, np.zeros(1600, dtype=np.float32))
+                recognizer.decode_stream(stream)
+                if not isinstance(getattr(stream.result, "text", None), str):
+                    raise RuntimeError(
+                        f"selected {backend} final decode returned no result"
+                    )
+            finally:
+                from .engines._endpoint_lease import EndpointModelLease
+
+                lease = getattr(recognizer, "_endpoint_lease", None)
+                if isinstance(lease, EndpointModelLease):
+                    lease.retire()
+                    if not lease.wait_closed(1.0):
+                        raise RuntimeError("final model cleanup is pending or uncertain")
         else:
             model_probe_fn(sherpa)
     except Exception as exc:  # noqa: BLE001 - selected runtime fails closed

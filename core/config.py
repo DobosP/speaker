@@ -53,7 +53,15 @@ __all__ = [
 _OPAQUE_KEYS = frozenset({"options", "final_stt_profiles", "performance_profiles"})
 
 
-FINAL_STT_PROFILE_NAMES = ("sense-voice", "parakeet-faster-whisper")
+# New optional profiles must not make existing complete legacy maps invalid.
+_REQUIRED_FINAL_STT_PROFILE_NAMES = frozenset({"sense-voice", "parakeet-faster-whisper"})
+_FINAL_STT_PROFILE_SPECS = {
+    "sense-voice": ("sense_voice", "", 0),
+    "parakeet-faster-whisper": ("nemo_transducer", "faster_whisper", 1),
+    "qwen-sensevoice-cpu": ("qwen_cpu", "sense_voice", 2),
+}
+_FINAL_STT_PROFILE_EXTRA_FIELDS = {"qwen-sensevoice-cpu": {"asr_num_threads": 2}}
+FINAL_STT_PROFILE_NAMES = tuple(_FINAL_STT_PROFILE_SPECS)
 _FINAL_STT_PROFILE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _FINAL_STT_STRING_FIELDS = frozenset(
     {
@@ -131,8 +139,10 @@ def _validate_final_stt_profile(name: str, profile: object) -> dict:
     sherpa = profile.get("sherpa")
     if not isinstance(sherpa, dict):
         raise ValueError(f"final STT profile {name!r} sherpa must be an object")
-    missing = sorted(_FINAL_STT_SHERPA_FIELDS - set(sherpa))
-    extra = sorted(set(sherpa) - _FINAL_STT_SHERPA_FIELDS)
+    extra_policy = _FINAL_STT_PROFILE_EXTRA_FIELDS.get(name, {})
+    expected_fields = _FINAL_STT_SHERPA_FIELDS | set(extra_policy)
+    missing = sorted(expected_fields - set(sherpa))
+    extra = sorted(set(sherpa) - expected_fields)
     if missing or extra:
         details = []
         if missing:
@@ -174,19 +184,17 @@ def _validate_final_stt_profile(name: str, profile: object) -> dict:
 
     backend = sherpa["asr_final_backend"]
     verifier = sherpa["asr_final_verifier_backend"]
-    expected_pair = {
-        "sense-voice": ("sense_voice", ""),
-        "parakeet-faster-whisper": ("nemo_transducer", "faster_whisper"),
-    }[name]
+    expected_backend, expected_verifier, expected_threads = _FINAL_STT_PROFILE_SPECS[name]
+    expected_pair = (expected_backend, expected_verifier)
     if (backend, verifier) != expected_pair:
         raise ValueError(
             f"final STT profile {name!r} must select "
             f"backend={expected_pair[0]!r}, verifier={expected_pair[1]!r}"
         )
-    if not sherpa["asr_final_model"] or not sherpa["asr_final_tokens"]:
+    if not sherpa["asr_final_model"] or (backend != "qwen_cpu" and not sherpa["asr_final_tokens"]):
         raise ValueError(f"final STT profile {name!r} needs final model and tokens")
-    if backend == "sense_voice":
-        if sherpa["asr_final_decoder"] or sherpa["asr_final_joiner"]:
+    if backend in {"sense_voice", "qwen_cpu"}:
+        if (backend == "qwen_cpu" and sherpa["asr_final_tokens"]) or sherpa["asr_final_decoder"] or sherpa["asr_final_joiner"]:
             raise ValueError(
                 f"final STT profile {name!r} cannot set decoder or joiner"
             )
@@ -216,10 +224,12 @@ def _validate_final_stt_profile(name: str, profile: object) -> dict:
         "asr_final_async": True,
         "asr_final_required": True,
         "asr_final_preroll_sec": 0.8,
-        "asr_final_verifier_cpu_threads": (
-            0 if name == "sense-voice" else 1
-        ),
+        "asr_final_verifier_cpu_threads": expected_threads,
     }
+    for key in extra_policy:
+        if type(sherpa[key]) is not int:
+            raise ValueError(f"final STT profile {name!r} {key} must be an integer")
+    fixed_policy.update(extra_policy)
     for key, expected in fixed_policy.items():
         if sherpa[key] != expected:
             raise ValueError(
@@ -250,13 +260,17 @@ def apply_final_stt_profile(
         valid = ", ".join(FINAL_STT_PROFILE_NAMES)
         raise ValueError(f"unknown final STT profile {name!r}; valid profiles: {valid}")
     profiles = config.get("final_stt_profiles")
-    if not isinstance(profiles, dict) or set(profiles) != set(
-        FINAL_STT_PROFILE_NAMES
+    if (
+        not isinstance(profiles, dict)
+        or not _REQUIRED_FINAL_STT_PROFILE_NAMES.issubset(profiles)
+        or set(profiles).difference(FINAL_STT_PROFILE_NAMES)
     ):
         raise ValueError(
-            "final_stt_profiles must be one complete opaque map containing "
-            + ", ".join(FINAL_STT_PROFILE_NAMES)
+            "final_stt_profiles must contain the complete legacy profiles "
+            "and only supported optional profiles"
         )
+    if name not in profiles:
+        raise ValueError(f"selected final STT profile {name!r} is not provisioned")
     validated = {
         profile_name: _validate_final_stt_profile(profile_name, value)
         for profile_name, value in profiles.items()
@@ -269,6 +283,38 @@ def apply_final_stt_profile(
         schema_version=1,
     )
     return effective, metadata
+
+
+def add_qwen_sensevoice_profile(
+    config: dict, *, qwen_model_dir: str, sense_voice_dir: str,
+) -> dict:
+    """Add the optional CPU profile without selecting it or changing other policy.
+
+    Provisioning validates the referenced assets separately. This pure helper
+    only publishes one complete fixed profile and preserves the legacy map.
+    """
+    import copy
+
+    for path in (qwen_model_dir, sense_voice_dir):
+        if type(path) is not str or not path or "\x00" in path:
+            raise ValueError("CPU ASR profile requires two local model directories")
+    effective = copy.deepcopy(config)
+    profiles = effective.get("final_stt_profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("CPU ASR setup requires the complete legacy profile map")
+    # Replace only this optional entry, including a partial previous attempt.
+    profiles.pop("qwen-sensevoice-cpu", None)
+    apply_final_stt_profile(effective, "sense-voice")
+    profile = copy.deepcopy(profiles["parakeet-faster-whisper"])
+    profile["sherpa"].update(
+        asr_final_backend="qwen_cpu", asr_final_model=qwen_model_dir,
+        asr_final_tokens="", asr_final_decoder="", asr_final_joiner="",
+        asr_final_verifier_backend="sense_voice", asr_final_verifier_model=sense_voice_dir,
+        asr_final_verifier_cpu_threads=2, asr_num_threads=2,
+    )
+    _validate_final_stt_profile("qwen-sensevoice-cpu", profile)
+    profiles["qwen-sensevoice-cpu"] = profile
+    return effective
 
 
 def apply_no_speaker_enrollment(config: dict) -> dict:

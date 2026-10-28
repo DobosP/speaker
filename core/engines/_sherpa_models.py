@@ -289,6 +289,23 @@ def build_final_recognizer(c: "SherpaConfig"):
             backend, model or "(unset)",
         )
         return None
+    if backend == "qwen_cpu":
+        recognizer = None
+        try:
+            from ._qwen_asr import QwenOfflineRecognizer
+
+            recognizer = QwenOfflineRecognizer(model, cpu_threads=c.resolved_asr_threads)
+            recognizer.warm()
+            return recognizer
+        except BaseException as error:
+            if recognizer is not None:
+                recognizer.close()
+            if not isinstance(error, Exception):
+                raise
+            if required:
+                raise RuntimeError("required qwen_cpu final recognizer failed to build") from error
+            log.warning("Qwen CPU final recognizer unavailable; retaining streaming final")
+            return None
     if required:
         required_paths = {"tokens": tokens}
         if backend in {"whisper", "nemo_transducer"}:
@@ -394,7 +411,7 @@ def build_final_recognizer(c: "SherpaConfig"):
 
 
 def build_final_verifier(c: "SherpaConfig"):
-    """Optional local-only Faster-Whisper verifier for endpointed finals.
+    """Optional local endpoint verifier (legacy CUDA or explicit SenseVoice CPU).
 
     The verifier is independent of the existing streaming and offline
     recognizers.  It is disabled unless an explicit backend and existing local
@@ -409,7 +426,7 @@ def build_final_verifier(c: "SherpaConfig"):
     required = bool(getattr(c, "asr_final_required", False))
     if not backend:
         return None
-    if backend != "faster_whisper":
+    if backend not in {"faster_whisper", "sense_voice"}:
         if required:
             raise RuntimeError(
                 f"required final verifier backend {backend!r} is unsupported"
@@ -424,29 +441,43 @@ def build_final_verifier(c: "SherpaConfig"):
     if not model:
         if required:
             raise RuntimeError(
-                "required faster_whisper verifier model is unavailable"
+                f"required {backend} verifier model is unavailable"
             )
         log.warning(
-            "faster_whisper final verifier has no local model path; "
-            "verifier disabled"
+            "%s final verifier has no local model path; verifier disabled", backend
         )
         return None
+    verifier = None
     try:
-        from ._faster_whisper import FasterWhisperEndpointRecognizer
-
         cpu_threads = getattr(c, "asr_final_verifier_cpu_threads", 0)
-        options = {"cpu_threads": cpu_threads} if cpu_threads else {}
-        verifier = FasterWhisperEndpointRecognizer(model, **options)
+        if backend == "sense_voice":
+            if str(getattr(c, "asr_final_backend", "") or "").strip().lower() == "sense_voice":
+                raise ValueError("SenseVoice cannot independently verify the same primary family")
+            from ._sense_voice import SenseVoiceEndpointRecognizer
+
+            verifier = SenseVoiceEndpointRecognizer(model, cpu_threads=cpu_threads)
+        else:
+            from ._faster_whisper import FasterWhisperEndpointRecognizer
+
+            options = {"cpu_threads": cpu_threads} if cpu_threads else {}
+            verifier = FasterWhisperEndpointRecognizer(model, **options)
         if required:
             verifier.warm()
         return verifier
-    except Exception as exc:  # noqa: BLE001 - optional path preserves baseline
+    except BaseException as exc:
+        from ._endpoint_lease import EndpointModelLease
+
+        lease = getattr(verifier, "_endpoint_lease", None)
+        if isinstance(lease, EndpointModelLease):
+            lease.retire()
+        if not isinstance(exc, Exception):
+            raise
         if required:
             raise RuntimeError(
-                "required faster_whisper final verifier failed to build"
+                f"required {backend} final verifier failed to build"
             ) from exc
         log.warning(
-            "faster_whisper final verifier failed to build; verifier disabled",
+            "local final verifier failed to build; verifier disabled",
             exc_info=True,
         )
         return None

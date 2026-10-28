@@ -430,7 +430,7 @@ def test_fake_run_preserves_generic_report_and_scores_overlap_min_order(
     )
     assert report["execution"] == {
         "closure_sha256": subject._closure_sha256(),
-        "source_files": 59,
+        "source_files": 60,
     }
     assert "brief answer host phrase" not in json.dumps(report, sort_keys=True)
 
@@ -1042,7 +1042,7 @@ print(json.dumps(files))
     )
     assert completed.returncode == 0, completed.stderr.decode("utf-8")
     assert json.loads(completed.stdout) == list(subject._SOURCE_FILES)
-    assert len(subject._SOURCE_FILES) == 59
+    assert len(subject._SOURCE_FILES) == 60
 
 
 class _SpawnGapProcess:

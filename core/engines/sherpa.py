@@ -485,6 +485,10 @@ from ._sherpa_streaming_decode_owner import (
     DecodeStreamRole,
     SherpaStreamingDecodeOwner,
 )
+from ._endpoint_lease import (  # noqa: E402
+    require_endpoint_models_retired,
+    retire_endpoint_models,
+)
 from ._kws_speaker_inference_owner import (  # noqa: E402
     KwsSpeakerInferenceOutcome,
     KwsSpeakerInferenceOwner,
@@ -728,6 +732,7 @@ def _attested_interrupt_pair_allowed(
 def _independent_attested_control_repair(
     *,
     backend: str,
+    verifier_backend: str,
     streaming_final: str,
     offline_text: str,
     verifier_text: str,
@@ -739,9 +744,10 @@ def _independent_attested_control_repair(
     NeMo path is newer and therefore stricter: its offline rendering and the
     independent Faster-Whisper verifier must have identical complete words and
     the same controller-owned meaning before the retained transcript/duration
-    pair may cross the ordinary control-change fence.
+    pair may cross the ordinary control-change fence. Other verifier families
+    do not inherit that retained exception merely by returning the same text.
     """
-    if backend != "nemo_transducer":
+    if (backend, verifier_backend) != ("nemo_transducer", "faster_whisper"):
         return None
     if _attested_repair_words(offline_text) != _attested_repair_words(verifier_text):
         return None
@@ -848,7 +854,7 @@ def _resolve_final_transcript(
     # Legacy SenseVoice/Whisper second-pass behavior remains unchanged.
     offline_requires_quorum = (
         str(getattr(config, "asr_final_backend", "") or "").strip().lower()
-        == "nemo_transducer"
+        in {"nemo_transducer", "qwen_cpu"}
     )
 
     segment_samples = None
@@ -947,6 +953,9 @@ def _resolve_final_transcript(
                     if consensus.outcome is AsrConsensusOutcome.CONTROL_GUARD:
                         attested_control = _independent_attested_control_repair(
                             backend=config.asr_final_backend,
+                            verifier_backend=str(
+                                getattr(config, "asr_final_verifier_backend", "") or ""
+                            ).strip().lower(),
                             streaming_final=streaming_final,
                             offline_text=offline_text or "",
                             verifier_text=verifier_text,
@@ -1152,7 +1161,7 @@ class SherpaConfig:
     # is RE-transcribed by a stronger offline model (sees the whole utterance ->
     # robust on run-on/casual speech; punctuation+casing+ITN built in). Empty
     # backend (default) = streaming final only (byte-identical). ~150ms/utterance.
-    asr_final_backend: str = ""  # "" | "sense_voice" | "whisper" | "nemo_transducer"
+    asr_final_backend: str = ""  # "" | "sense_voice" | "whisper" | "nemo_transducer" | "qwen_cpu"
     asr_final_model: str = ""  # SenseVoice model, or Whisper/NeMo encoder
     asr_final_tokens: str = ""
     asr_final_decoder: str = ""  # Whisper/NeMo decoder
@@ -1163,7 +1172,7 @@ class SherpaConfig:
     # the established streaming + SenseVoice final byte-for-byte. The model must
     # be an existing local Faster-Whisper directory; remote model IDs and
     # downloads are rejected by the adapter.
-    asr_final_verifier_backend: str = ""  # "" | "faster_whisper"
+    asr_final_verifier_backend: str = ""  # "" | "faster_whisper" | "sense_voice" (CPU)
     asr_final_verifier_model: str = ""
     # Optional explicit bound for Faster-Whisper's CPU-side CTranslate2 work.
     # Zero preserves the adapter's legacy/default constructor byte-for-byte.
@@ -3300,6 +3309,8 @@ class SherpaOnnxEngine(AudioEngine):
                     "cannot rebuild while the streaming decode owner is live"
                 )
             self._streaming_decode_session = None
+        retire_endpoint_models(self, getattr(self, "_final_recognizer", None), getattr(self, "_final_verifier", None))
+        require_endpoint_models_retired(self)
         # Every admitted build derives optional audio roles from the builders
         # that succeed for THIS run.  A current AEC/detector fail-open (or a
         # disabled option) must not inherit ownership, masking, calibration, or
@@ -5263,6 +5274,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._capture_stopping.set()
             self._capture_effect_condition.notify_all()
 
+        retire_endpoint_models(self, getattr(self, "_final_recognizer", None), getattr(self, "_final_verifier", None))
         grace = max(0.01, float(self.config.block_sec) + 0.05)
         capture_thread = self._capture_thread
         if (
@@ -5472,6 +5484,20 @@ class SherpaOnnxEngine(AudioEngine):
     # --- AudioEngine ---
     @guard_kws_speaker_inference_mutation
     def start(self, callbacks: EngineCallbacks) -> None:
+        prior_models = (getattr(self, "_final_recognizer", None),
+                        getattr(self, "_final_verifier", None))
+        try:
+            self._start_impl(callbacks)
+        except BaseException:
+            # An early duplicate-start guard owns no new models. Only this
+            # failed attempt's newly published incarnations may be retired.
+            models = (getattr(self, "_final_recognizer", None),
+                      getattr(self, "_final_verifier", None))
+            retire_endpoint_models(self, *(model for model in models
+                                          if not any(model is prior for prior in prior_models)))
+            raise
+
+    def _start_impl(self, callbacks: EngineCallbacks) -> None:
         self._require_kws_speaker_inference_idle_before_mutation()
         output_owner = self._output_cleanup
         if self._output_open_uncertain or (
@@ -5986,6 +6012,7 @@ class SherpaOnnxEngine(AudioEngine):
         if self._capture_control_lane is not None:
             self._capture_control_lane.close()
         self._running.clear()
+        retire_endpoint_models(self, getattr(self, "_final_recognizer", None), getattr(self, "_final_verifier", None))
         final_stage = self._final_stage
         if final_stage is not None:
             # Close is the final-stage linearization point. It fences the active
@@ -6605,7 +6632,8 @@ class SherpaOnnxEngine(AudioEngine):
         # The opt-in endpoint verifier is lazy so default startup remains
         # byte-identical. When selected, pay its model-load cost on the shared
         # background warm path instead of the first user's final.
-        verifier_warm = getattr(self._final_verifier, "warm", None)
+        warming_verifier = self._final_verifier
+        verifier_warm = getattr(warming_verifier, "warm", None)
         if callable(verifier_warm):
             try:
                 verifier_warm()
@@ -6613,7 +6641,8 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - first decode still fails open
                 log.debug("final ASR verifier warm-up failed", exc_info=True)
                 self._disable_final_verifier_after_error(
-                    "asr_final_verifier_disabled_after_warm_error"
+                    "asr_final_verifier_disabled_after_warm_error",
+                    expected_verifier=warming_verifier,
                 )
         # Word-cut startup already warms required speaker authority synchronously
         # before capture. Keep this idempotent retry for optional input gating.
@@ -6847,12 +6876,17 @@ class SherpaOnnxEngine(AudioEngine):
         metric: str,
         *,
         capture_epoch: Optional[int] = None,
+        expected_verifier=None,
     ) -> None:
-        """Circuit-break one failed opt-in verifier for the current session."""
+        """Circuit-break only the exact failed opt-in model incarnation."""
         with self._final_verifier_lock:
-            if self._final_verifier is None:
+            if self._final_verifier is None or (
+                expected_verifier is not None and self._final_verifier is not expected_verifier
+            ):
                 return
+            retired_verifier = self._final_verifier
             self._final_verifier = None
+        retire_endpoint_models(self, retired_verifier)
         log.warning(
             "final ASR verifier disabled after a local error; retaining the "
             "established ASR final"

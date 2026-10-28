@@ -134,6 +134,7 @@ _SOURCE_FILES = (
     "core/engines/_output_cleanup.py",
     "core/engines/_semantic_hold.py",
     "core/engines/sherpa.py",
+    "core/engines/_endpoint_lease.py",
     "tools/bench/production.py",
     "tools/capture_replay/corpus.py",
     "tools/capture_replay/metrics.py",

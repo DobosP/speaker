@@ -369,7 +369,7 @@ def test_two_decoded_empty_models_cannot_veto_stop():
 
 def test_nemo_two_model_consensus_recovers_attested_long_stop():
     decision = _resolve_final_transcript(
-        SherpaConfig(asr_final_backend="nemo_transducer"),
+        SherpaConfig(asr_final_backend="nemo_transducer", asr_final_verifier_backend="faster_whisper"),
         _FakeOffline("Stop speaking."),
         None,
         np.ones(2 * 16000, dtype="float32"),
@@ -400,7 +400,7 @@ def test_attested_nemo_control_requires_two_exact_votes_and_owned_timing(
     speech_sec,
 ):
     decision = _resolve_final_transcript(
-        SherpaConfig(asr_final_backend=backend),
+        SherpaConfig(asr_final_backend=backend, asr_final_verifier_backend="faster_whisper"),
         _FakeOffline("Stop speaking."),
         None,
         np.ones(2 * 16000, dtype="float32"),
@@ -883,3 +883,30 @@ def test_build_final_recognizer_omits_hr_when_unset(monkeypatch):
     assert build_final_recognizer(cfg) is not None
     for k in ("hr_dict_dir", "hr_lexicon", "hr_rule_fsts", "rule_fsts"):
         assert k not in captured
+
+
+@pytest.mark.parametrize("verifier_backend", ["", "sense_voice", "other_cpu", "faster_whisper_cpu"])
+def test_new_verifier_family_cannot_inherit_retained_control_repair(verifier_backend):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="nemo_transducer", asr_final_verifier_backend=verifier_backend),
+        _FakeOffline("Stop speaking."), None, np.ones(2 * 16000, dtype="float32"),
+        "DON'T PLAY SPEAK", final_verifier=_FakeVerifier("stop speaking"), speech_sec=1.5,
+    )
+    assert decision.selected == "Don't play speak"
+    assert decision.verifier_outcome == "control_guard"
+    assert decision.verifier_changed is False
+
+
+
+def test_qwen_primary_requires_independent_exact_quorum_without_changing_controls():
+    cfg = SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="sense_voice")
+    segment = np.ones(2 * 16000, dtype="float32")
+    unavailable = _resolve_final_transcript(cfg, _FakeOffline("Turn on the desk lamp."), None, segment, "different streaming words")
+    assert unavailable.selected == "Different streaming words"
+    agreed = _resolve_final_transcript(cfg, _FakeOffline("Turn on the desk lamp."), None, segment,
+                                      "different streaming words", final_verifier=_FakeVerifier("turn on the desk lamp"))
+    assert agreed.selected == "Turn on the desk lamp." and agreed.verifier_support == 2
+    control = _resolve_final_transcript(cfg, _FakeOffline("Stop speaking."), None, segment,
+                                       "DON'T PLAY SPEAK", final_verifier=_FakeVerifier("stop speaking"), speech_sec=1.5)
+    assert control.selected == "Don't play speak" and control.verifier_outcome == "control_guard"
+    assert control.verifier_changed is False

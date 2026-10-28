@@ -219,6 +219,7 @@ def test_unknown_or_unsafe_profile_name_is_rejected():
     assert FINAL_STT_PROFILE_NAMES == (
         "sense-voice",
         "parakeet-faster-whisper",
+        "qwen-sensevoice-cpu",
     )
 
 
@@ -341,7 +342,7 @@ def test_doctor_applies_profile_before_readiness_and_reports_safe_digest(monkeyp
     assert "pretrained_models" not in identity.detail
 
 
-@pytest.mark.parametrize("profile", FINAL_STT_PROFILE_NAMES)
+@pytest.mark.parametrize("profile", ("sense-voice", "parakeet-faster-whisper"))
 def test_doctor_applies_identity_off_after_each_final_profile(
     monkeypatch, profile
 ):
@@ -633,3 +634,75 @@ def test_required_sense_voice_replay_fails_in_central_builder(
         engine.start(EngineCallbacks())
 
     assert not engine._started
+
+
+
+def test_future_optional_profile_does_not_require_unselected_assets_or_break_legacy_map(monkeypatch):
+    from core import config as module
+
+    extra = "extra-sense-voice"
+    monkeypatch.setattr(module, "_FINAL_STT_PROFILE_SPECS", {
+        **module._FINAL_STT_PROFILE_SPECS, extra: ("sense_voice", "", 0),
+    })
+    monkeypatch.setattr(module, "FINAL_STT_PROFILE_NAMES", (*module.FINAL_STT_PROFILE_NAMES, extra))
+    config = _config()
+    old, old_metadata = apply_final_stt_profile(config, "sense-voice")
+    assert old_metadata.sha256 == _canonical_sha256(config["final_stt_profiles"]["sense-voice"])
+    with pytest.raises(ValueError, match="not provisioned"):
+        apply_final_stt_profile(config, extra)
+
+    optional = copy.deepcopy(config["final_stt_profiles"]["sense-voice"])
+    optional["sherpa"]["asr_final_model"] = "/not-installed/optional/model.int8.onnx"
+    optional["sherpa"]["asr_final_tokens"] = "/not-installed/optional/tokens.txt"
+    config["final_stt_profiles"][extra] = optional
+    before = copy.deepcopy(config)
+    unchanged, metadata = apply_final_stt_profile(config, "sense-voice")
+    assert unchanged["sherpa"] == old["sherpa"]
+    assert metadata == old_metadata
+    selected, selected_metadata = apply_final_stt_profile(config, extra)
+    assert selected["sherpa"]["asr_final_model"] == optional["sherpa"]["asr_final_model"]
+    assert selected_metadata.sha256 == _canonical_sha256(optional)
+    assert config == before
+
+
+def test_unknown_optional_profile_map_entry_is_rejected_even_if_unselected():
+    config = _config()
+    config["final_stt_profiles"]["unknown-profile"] = copy.deepcopy(config["final_stt_profiles"]["sense-voice"])
+    with pytest.raises(ValueError, match="supported optional"):
+        apply_final_stt_profile(config, "sense-voice")
+
+
+
+def test_cpu_profile_add_is_pure_targeted_and_preserves_legacy_digest_and_active_defaults():
+    from core.config import add_qwen_sensevoice_profile
+    config = _config()
+    config.update(final_stt_profile="sense-voice", private_fixture={"retained": "value"})
+    config["sherpa"].update(speaker_enroll_embedding="unchanged", asr_num_threads=4)
+    before = copy.deepcopy(config)
+    old, old_metadata = apply_final_stt_profile(config, "sense-voice")
+    result = add_qwen_sensevoice_profile(config, qwen_model_dir="/models/qwen-bundle", sense_voice_dir="/models/sense")
+    assert config == before and result["sherpa"] == config["sherpa"]
+    assert result["final_stt_profile"] == "sense-voice" and result["private_fixture"] == config["private_fixture"]
+    for name in ("sense-voice", "parakeet-faster-whisper"):
+        assert result["final_stt_profiles"][name] == config["final_stt_profiles"][name]
+    legacy, metadata = apply_final_stt_profile(result, "sense-voice")
+    assert legacy["sherpa"] == old["sherpa"] and metadata == old_metadata
+    selected, selected_metadata = apply_final_stt_profile(result, "qwen-sensevoice-cpu")
+    assert selected["sherpa"]["asr_num_threads"] == selected["sherpa"]["asr_final_verifier_cpu_threads"] == 2
+    assert selected["sherpa"]["asr_final_backend"] == "qwen_cpu"
+    assert selected["sherpa"]["asr_final_verifier_backend"] == "sense_voice"
+    assert selected["sherpa"]["speaker_enroll_embedding"] == "unchanged"
+    assert selected_metadata.sha256 == _canonical_sha256(result["final_stt_profiles"]["qwen-sensevoice-cpu"])
+    assert add_qwen_sensevoice_profile(result, qwen_model_dir="/models/qwen-bundle", sense_voice_dir="/models/sense") == result
+
+
+@pytest.mark.parametrize("key,value", [("asr_num_threads", True), ("asr_num_threads", 4),
+                                       ("asr_final_verifier_backend", "faster_whisper"),
+                                       ("asr_final_verifier_cpu_threads", 1),
+                                       ("asr_final_tokens", "foreign.tokens")])
+def test_cpu_profile_contract_cannot_widen_or_silently_retune(key, value):
+    from core.config import add_qwen_sensevoice_profile
+    config = add_qwen_sensevoice_profile(_config(), qwen_model_dir="/models/qwen", sense_voice_dir="/models/sense")
+    config["final_stt_profiles"]["qwen-sensevoice-cpu"]["sherpa"][key] = value
+    with pytest.raises(ValueError):
+        apply_final_stt_profile(config, "qwen-sensevoice-cpu")

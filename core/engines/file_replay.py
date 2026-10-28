@@ -31,6 +31,7 @@ from ..tts_markup import (
     resolve_tts_params,
     style_to_directives,
 )
+from ._endpoint_lease import require_endpoint_models_retired, retire_endpoint_models
 from ._sherpa_models import (
     build_final_recognizer,
     build_final_verifier,
@@ -156,17 +157,24 @@ class FileReplayEngine(AudioEngine):
         )
 
     def start(self, callbacks: EngineCallbacks) -> None:
+        retire_endpoint_models(self, getattr(self, "_final_recognizer", None), getattr(self, "_final_verifier", None))
+        require_endpoint_models_retired(self)
         recognizer = build_recognizer(self.config)
         if recognizer is None:
             raise SystemExit(
                 "FileReplayEngine needs an ASR model: set sherpa.asr_encoder/"
                 "decoder/joiner/tokens (see tools/bench, which fetches them)."
             )
-        tts = None if self._asr_only else build_tts(self.config)
-        final_recognizer = build_final_recognizer(self.config)
-        final_verifier = build_final_verifier(self.config)
-        punctuation = build_punctuation(self.config)
-        stream = create_recognizer_stream(recognizer, self.config)
+        final_recognizer = final_verifier = None
+        try:
+            tts = None if self._asr_only else build_tts(self.config)
+            final_recognizer = build_final_recognizer(self.config)
+            final_verifier = build_final_verifier(self.config)
+            punctuation = build_punctuation(self.config)
+            stream = create_recognizer_stream(recognizer, self.config)
+        except BaseException:
+            retire_endpoint_models(self, final_recognizer, final_verifier)
+            raise
         with self._receipt_lock:
             self._stop_speaking.set()
             delivery = self._claim_active_tracked_locked(
@@ -196,6 +204,7 @@ class FileReplayEngine(AudioEngine):
             delivery = self._claim_active_tracked_locked(
                 PlaybackOutcome.INTERRUPTED
             )
+        retire_endpoint_models(self, getattr(self, "_final_recognizer", None), getattr(self, "_final_verifier", None))
         if delivery is not None:
             fatal_error = self._deliver_tracked(delivery)
             if fatal_error is not None:

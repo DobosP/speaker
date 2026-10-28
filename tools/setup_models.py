@@ -1779,6 +1779,14 @@ def _existing_sherpa_family_is_valid(
         return kokoro == model_is_kokoro
     if family == "final_asr":
         backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
+        if backend == "qwen_cpu":
+            try:
+                from core.engines._qwen_assets import validate_qwen_bundle
+
+                validate_qwen_bundle(str(sherpa.get("asr_final_model", "") or ""))
+                return True
+            except (ImportError, OSError, RuntimeError, ValueError):
+                return False
         required = {
             "sense_voice": ("asr_final_model", "asr_final_tokens"),
             "whisper": (
@@ -1814,6 +1822,14 @@ def _existing_sherpa_family_is_valid(
             str(sherpa.get("asr_final_verifier_backend", "") or "").strip().lower()
         )
         root = str(sherpa.get("asr_final_verifier_model", "") or "")
+        if backend == "sense_voice":
+            return (
+                str(sherpa.get("asr_final_backend", "") or "").strip().lower() != "sense_voice"
+                and bool(root) and exists(root)
+                and all(exists(os.path.join(root, name)) for name in ("model.int8.onnx", "tokens.txt"))
+                and type(sherpa.get("asr_final_verifier_cpu_threads")) is int
+                and 1 <= sherpa["asr_final_verifier_cpu_threads"] <= 8
+            )
         return (
             backend == "faster_whisper"
             and bool(root)
@@ -1874,7 +1890,7 @@ def _incoming_family_required_keys(
             "nemo_transducer": SHERPA_PATH_FAMILIES[family],
         }.get(target_mode, ())
     if family == "final_verifier":
-        return SHERPA_PATH_FAMILIES[family] if target_mode == "faster_whisper" else ()
+        return SHERPA_PATH_FAMILIES[family] if target_mode in {"faster_whisper", "sense_voice"} else ()
     if family == "kws":
         return SHERPA_PATH_FAMILIES[family]
     return tuple(key for key in SHERPA_PATH_FAMILIES[family] if key in incoming)
@@ -1930,7 +1946,7 @@ def _validate_incoming_sherpa_family(
         root = incoming["asr_final_verifier_model"]
         missing_files = [
             name
-            for name in FASTER_WHISPER_REQUIRED_FILES
+            for name in (("model.int8.onnx", "tokens.txt") if target_mode == "sense_voice" else FASTER_WHISPER_REQUIRED_FILES)
             if not exists(os.path.join(root, name))
         ]
         if missing_files:

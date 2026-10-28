@@ -1381,7 +1381,7 @@ def test_evaluator_async_mode_uses_schema_four_and_real_worker_harness(
     assert report["engine"]["final_execution"] == (
         "post-capture-dedicated-worker-drain"
     )
-    assert report["engine"]["evaluator_source_files"] == 33
+    assert report["engine"]["evaluator_source_files"] == 34
     assert "PRIVATE" not in json.dumps(evidence, sort_keys=True)
     payload = (
         json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")

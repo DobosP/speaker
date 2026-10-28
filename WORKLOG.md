@@ -1477,3 +1477,16 @@ FDs, verifies retained rights on existing-bundle reuse, and adds a cooperative
 900-second download deadline checked between read1 calls (60-second socket
 timeout; not a hard-preemptive wall deadline). Added FIFO/symlink, rights-tamper
 and deadline regression checks. No model/network call occurred.
+
+## 2026-10-29 — one explicit CPU verifier alternative
+
+Valid until: model/runtime/source/config policy changes — then treat as history.
+
+The helper adds exact four-file cached ParakeetTDTv3 INT8 validation and explicit
+`--verifier parakeet --parakeet-dir` setup selection for the one prospective
+Qwen-primary alternative. The existing SenseVoice setup default is unchanged,
+no default profile is activated, and unrelated/previous optional profile entries
+are preserved. This prepares the declared quality comparison; it does not claim
+a selected-quality win. No inference, runtime upgrade or download occurred.
+Synthetic helper gate:21passed in0.23s, required scoped Ruff and diff clean;
+independent delta review GO. Companion core config supplies the profile helper.

@@ -218,3 +218,34 @@ def test_download_deadline_removes_unverified_file(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="portable_asr_download_deadline"):
         setup._download(path, 6, hashlib.sha256(b"public").hexdigest(), "https://example.invalid/model")
     assert not path.exists() and not list(tmp_path.glob(".download-*"))
+
+
+def test_parakeet_option_preserves_existing_optional_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(assets, "validate_qwen_bundle", lambda path: None)
+    checked = []
+    monkeypatch.setattr(assets, "validate_parakeet_tdt", lambda path: checked.append(path))
+    monkeypatch.setattr(assets, "validate_sense_voice", lambda path: pytest.fail("wrong voter"))
+    base = {"final_stt_profiles": {"qwen-sensevoice-cpu": {"existing": True}}, "selection": "legacy"}
+    (tmp_path / "config.json").write_text(json.dumps(base))
+    def add(config, **paths):
+        assert paths == {"qwen_model_dir": str(tmp_path / "bundle"), "parakeet_model_dir": str(tmp_path / "tdt")}
+        out = deepcopy(config)
+        out["final_stt_profiles"]["qwen-parakeet-cpu"] = {"new": True}
+        return out
+    result = setup.install_profile(tmp_path, tmp_path / "bundle", verifier="parakeet", parakeet_dir=tmp_path / "tdt", add_profile=add)
+    saved = json.loads((tmp_path / "config.local.json").read_text())
+    assert saved["final_stt_profiles"]["qwen-sensevoice-cpu"] == {"existing": True}
+    assert result["profile"] == "qwen-parakeet-cpu" and result["selection_changed"] is False
+    assert checked == [tmp_path / "tdt"]
+
+
+def test_parakeet_validator_binds_all_four_files(tmp_path, monkeypatch):
+    pins = {}
+    for name in assets.PARAKEET_TDT_FILES:
+        raw = ("public " + name).encode()
+        (tmp_path / name).write_bytes(raw)
+        pins[name] = (len(raw), hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(assets, "PARAKEET_TDT_FILES", pins)
+    assert assets.validate_parakeet_tdt(tmp_path) == tmp_path
+    (tmp_path / "joiner.int8.onnx").write_bytes(b"changed")
+    with pytest.raises(assets.QwenAssetError): assets.validate_parakeet_tdt(tmp_path)

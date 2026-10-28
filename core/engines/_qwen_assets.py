@@ -112,3 +112,19 @@ def validate_sense_voice(directory: Path) -> Path:
     for name, (size, sha256) in SENSE_FILES.items():
         verified_file(root / name, size, sha256)
     return root
+
+
+PARAKEET_TDT_FILES = {
+    "decoder.int8.onnx": (11845275, "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e"),
+    "encoder.int8.onnx": (652184281, "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247"),
+    "joiner.int8.onnx": (6355277, "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3"),
+    "tokens.txt": (93939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+}
+
+
+def validate_parakeet_tdt(directory: Path) -> Path:
+    """The measured INT8 TDT v3 voter, not a lookalike NeMo checkpoint."""
+    root = Path(directory).absolute()
+    for name, (size, sha256) in PARAKEET_TDT_FILES.items():
+        verified_file(root / name, size, sha256)
+    return root

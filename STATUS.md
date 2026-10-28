@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-28 (19 CPU asset/setup public tests; prior full gate 2026-10-10; no new live validation).
+Last verified: 2026-10-29 (21 CPU asset/setup public tests; explicit voter choice; prior full gate historical; no new live validation).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;

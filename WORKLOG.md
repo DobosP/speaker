@@ -1448,3 +1448,32 @@ Scoped fatal-error Ruff, new-file formatting and whitespace pass; docs report
 Valid until: source changes or new physical/platform evidence — then treat as history.
 
 Source a75fda8ef7c4f9074d62ea643d60d6926b2f6fa3 passed 12537 tests, 41 skips and 9 dependency warnings in 232.76 s, with CI LiveKit exclusions and fresh private hermetic fixtures. Twelve changed Python files pass scoped fatal-error Ruff; 38 docs checked with no findings. Independent reviews passed all four lanes. Integrated ASR/TTS function bytes, Ollama source and watchdog hashes match qualified component evidence. No physical/model quality claim follows. Current compact keeper: logs/runs/desktop-pass-three-20261010; exact 3861-byte TTS probe hash verified before retaining it, other probes/results in Git. Synthetic full-suite fixtures removed after result; merged source cleanup follows verified publication. Protected original baselines, live/enrollment evidence and unmerged mobile work remain intact.
+
+## 2026-10-28 — explicit pinned Qwen CPU asset setup
+
+Valid until: model/runtime/source/config policy changes — then treat as history.
+
+The isolated asset helper pins the recorded Qwen0.6B Q8 GGUF and speech.cpp0.9.0
+Linux x86-64 CPU library. Construction validates fixed source-owned byte hashes
+and never downloads or loads a model. A bounded manifest references existing
+verified local cache paths so installation does not duplicate weights. The setup
+command optionally downloads pinned files, reads only the named library member,
+retains model/code license evidence, and adds an optional profile through the
+production config helper without changing selection or other local settings.
+SenseVoice model/token bytes are checked before profile installation. Other
+platforms fail explicitly; no physical, other-OS or default qualification follows.
+The profile helper and native adapter are supplied by the companion ADR-0255
+integration lane; this helper commit alone does not provide a runnable profile.
+
+Executed synthetic checks: 19 passed in0.28s; required scoped Ruff and diff check
+pass. Tests cover exact pins, malformed/bool/relative/symlink paths, changed bytes,
+platform refusal, atomic configuration conflict, unchanged unrelated settings,
+idempotent local cache reuse, bounded downloads and named-member archive reads.
+No private recordings, native model inference, network download or microphone
+was used by these checks.
+
+Independent review tightened manifest/config reads to stable no-follow bounded
+FDs, verifies retained rights on existing-bundle reuse, and adds a cooperative
+900-second download deadline checked between read1 calls (60-second socket
+timeout; not a hard-preemptive wall deadline). Added FIFO/symlink, rights-tamper
+and deadline regression checks. No model/network call occurred.

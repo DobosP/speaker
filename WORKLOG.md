@@ -1644,3 +1644,53 @@ andlegacyprofiledigests unchanged, finalconfigbytesappropriatelydifferent.
 ReferencedQwen/SDKcachebytesareactivecanonicalkeepers, nevertransientprune.
 Originalrecordings/baselines remain. No live/doctor/playback/otherOSclaim, no
 new source/runtime edits or modeljob inthis docsstep. Rootownslanding/push/cleanup.
+
+
+## 2026-10-29 — Close out historical development voice evaluation tools
+
+Integrated the useful missing source packet from `codex/recording-response-latency`
+`befa8eaacec823a2fd6c92bf6d6c482607a7b8bb` onto main base `fa59d9d0`:
+English scoring with pinned MIT normalization/provenance, recorded-response
+first-post-DSP-PCM evaluator, their public/fake tests and dated ADR records.
+Historical STATUS/WORKLOG authority was not copied. Current Qwen runtime,
+profiles, assets, dependencies, default selection and live-stop instruction are
+unchanged. This is development-tool integration, not new acoustic/model evidence.
+
+ADR-0257 adds a bounded evaluator-only compatibility guard: selected newly leased
+or unknown endpoint backends refuse before assets/inference, including direct
+pipeline/engine entry. The explicit source binding covers endpoint retirement.
+Ten new cases failed against the old tool (`10 failed, 72 deselected`), with only
+public fakes and startup traps; the adapted three-module gate passed `199 passed`
+in 2.09 seconds. The old tool was restored to the adapted bytes after the
+fail-before check. An initial sandbox run had 195 passes and one loopback-socket
+permission refusal; the host gate passed with no real provider connection.
+
+Command environment: `SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1`, task-owned TMPDIR,
+`ionice -c 3 nice -n 19 ~/work/speaker/.venv/bin/python -B -m pytest
+-p no:cacheprovider tests/test_english_asr_scoring.py
+tests/test_recording_response_benchmark.py tests/test_english_asr_benchmark.py -q`.
+No microphone, speaker, doctor, model run/download, Ollama request or private
+recording read was performed. Original research branches and baselines remain.
+Integration review and exact-head qualification are recorded by the owning
+closeout audit before landing; this entry does not claim a hosted run or native
+profile qualification.
+
+
+Final wider CI-style gate on the same product/tool/test bytes: `12787 passed,
+40 skipped, 9 warnings` in 245.87 seconds, with the standard two LiveKit test
+files excluded. The first full attempt used workspace scratch and hit 103
+private-fixture placement refusals (`12684 passed, 40 skipped`); the workspace
+has a Git sentinel, so ADR-0215 correctly refused those generated outputs.
+The corrected full command kept every test selected, unchanged guards and the
+same environment, using the documented private fixture root
+`--basetemp=/var/tmp/speaker-veval-20261029-070100` with `TMPDIR=/var/tmp`.
+No product fix or exclusion was used to obtain green. Fatal scoped Ruff,
+38-file fleet docs gate (all four diagnostics zero) and whitespace pass.
+Independent implementation review approved the exact tool/test bytes. Current
+tracked runtime/config inputs (199 files) match base main byte-for-byte.
+
+The active voice owner is separately working on Qwen selection/benchmarks.
+This packet uses ADR-0257 to avoid its ADR-0256 number and never edits that
+worker's source, recordings, private configuration, models or jobs. Landing
+uses fresh clean/expected-main checks and refuses actual drift.

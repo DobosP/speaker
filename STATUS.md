@@ -27,7 +27,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
   Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
   Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
-- ADR-0255 adds explicit Qwen/Sense CPU compact option; Parakeet voter is experimental/unrecommended. Both preserve guards and lack selected-quality gain; Linuxx86_64 only, defaults unchanged.
+- ADR-0255 adds explicit Qwen/Sense CPU compact option; Parakeet voter is experimental/unrecommended. Both preserve guards and lack selected-quality gain; Linuxx86_64 only, defaults unchanged. Development scorers/recorded-response tools are headless-qualified (199 tests, ADR-0257); leased CPU endpoint profiles refuse in this legacy evaluator.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 retain media-first fast/all residency; ADR-0237 retires warm on accepted input/shutdown with local-only cancellation; main/vision stay callable. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.

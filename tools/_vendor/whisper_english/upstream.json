@@ -1,0 +1,24 @@
+{
+  "files": {
+    "LICENSE": {
+      "upstream_bytes": 1063,
+      "upstream_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+    },
+    "basic.py": {
+      "upstream_bytes": 2064,
+      "upstream_sha256": "4742eaa040e0657fa1247a1361e0d856c62317a43326ea59a40c2e9edd8d2c38"
+    },
+    "english.json": {
+      "upstream_bytes": 56128,
+      "upstream_sha256": "6607f948be9824d2e1b2fa2223cd94c06c45afa4e05ea0e3d5e1f2bdffde2465"
+    },
+    "english.py": {
+      "upstream_bytes": 20868,
+      "upstream_sha256": "2898e4672aeefc9f44cb4de38c115cdf286f5b35ae321433467a7674ce8841d0"
+    }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/openai/whisper",
+  "revision": "31243bad24cc746f07d4c8bfdd2d974872cb1803",
+  "version": "v20250625"
+}

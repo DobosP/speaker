@@ -59,7 +59,7 @@ _FINAL_INPUT_ROLE_TAGS = frozenset(
     {"model_gate_segment", "selected_asr_segment"}
 )
 _SELECTED_SOURCES = frozenset(
-    {"none", "streaming", "offline", "verifier_consensus", "established_override"}
+    {"none", "streaming", "offline", "verifier_consensus", "corroborated_primary", "established_override"}
 )
 _OFFLINE_OUTCOMES = frozenset({"unavailable", "skipped", "error", "decoded", "empty"})
 _VERIFIER_OUTCOMES = frozenset(
@@ -75,6 +75,7 @@ _VERIFIER_OUTCOMES = frozenset(
         "attested_control",
         "empty_veto",
         "empty_streaming_guard",
+        "corroborated_primary",
     }
 )
 _VERIFIER_COMPLETED_OUTCOMES = _VERIFIER_OUTCOMES - {

@@ -76,6 +76,7 @@ _VERIFIER_OUTCOMES = frozenset(
         "attested_control",
         "empty_veto",
         "empty_streaming_guard",
+        "corroborated_primary",
     }
 )
 _COMPLETED_VERIFIER_OUTCOMES = _VERIFIER_OUTCOMES - {
@@ -84,7 +85,7 @@ _COMPLETED_VERIFIER_OUTCOMES = _VERIFIER_OUTCOMES - {
     "error",
 }
 _SELECTED_SOURCES = frozenset(
-    {"none", "streaming", "offline", "verifier_consensus", "established_override"}
+    {"none", "streaming", "offline", "verifier_consensus", "corroborated_primary", "established_override"}
 )
 _ROUTE_ATTEMPTS = {
     "none": 5,

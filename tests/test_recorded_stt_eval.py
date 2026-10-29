@@ -363,6 +363,7 @@ def test_artifact_digest_ignores_stale_disabled_verifier_path(tmp_path):
         "attested_control",
         "empty_veto",
         "empty_streaming_guard",
+        "corroborated_primary",
     ],
 )
 def test_enabled_verifier_accepts_completed_safe_fallback_outcomes(outcome):
@@ -923,7 +924,7 @@ def test_terminal_text_helper_preserves_empty_decision_boundaries():
     assert private not in repr(texts)
 
 
-def test_evaluate_attests_all_five_selected_sources(monkeypatch):
+def test_evaluate_attests_all_six_selected_sources(monkeypatch):
     from core.engines import file_replay
     from core.engines.sherpa import FinalTranscriptSource
 
@@ -938,7 +939,7 @@ def test_evaluate_attests_all_five_selected_sources(monkeypatch):
         )
         for source, text in zip(
             FinalTranscriptSource,
-            ("", "one", "two", "three", "four"),
+            ("", "one", "two", "three", "four", "five"),
         )
     )
 
@@ -961,7 +962,7 @@ def test_evaluate_attests_all_five_selected_sources(monkeypatch):
 
     monkeypatch.setattr(file_replay, "FileReplayEngine", Engine)
     item = stt_eval._CorpusItem(
-        "one two three four",
+        "one two three four five",
         np.zeros(16, dtype=np.float32),
         16_000,
         None,
@@ -970,12 +971,13 @@ def test_evaluate_attests_all_five_selected_sources(monkeypatch):
     totals, errors = stt_eval._evaluate(object(), (item,), ())
 
     assert errors == ((0, 0),)
-    assert totals.decisions == 5
+    assert totals.decisions == 6
     assert totals.selected_sources == {
         "none": 1,
         "streaming": 1,
         "offline": 1,
         "verifier_consensus": 1,
+        "corroborated_primary": 1,
         "established_override": 1,
     }
     assert totals.selected_sources_attested is True
@@ -1192,6 +1194,7 @@ def test_selected_source_attestation_signal_requires_exact_bool():
                 "attested_control",
                 "empty_veto",
                 "empty_streaming_guard",
+                "corroborated_primary",
             ),
         ),
     ],
@@ -1241,6 +1244,7 @@ def test_outcome_maps_accept_only_the_complete_production_vocabularies(
             "empty",
             "attested_control",
             "empty_streaming_guard",
+            "corroborated_primary",
         }
     assert dict(getattr(totals, field)) == {outcome: 1 for outcome in vocabulary}
     assert getattr(totals, accounting_property) is True

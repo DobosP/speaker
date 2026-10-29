@@ -411,7 +411,9 @@ def _validate_semantic_hold_reset_config(config: "SherpaConfig") -> None:
 
 
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
-from ..asr_verifier import AsrConsensusOutcome, verify_asr_consensus
+from ..asr_verifier import (
+    AsrConsensusOutcome, corroborated_primary, verify_asr_consensus,
+)
 from ..contract import is_stop_command, normalize_command
 from ..kws_contract import (
     KwsPhraseBinding,
@@ -601,6 +603,7 @@ class FinalTranscriptSource(str, Enum):
     STREAMING = "streaming"
     OFFLINE = "offline"
     VERIFIER_CONSENSUS = "verifier_consensus"
+    CORROBORATED_PRIMARY = "corroborated_primary"
     ESTABLISHED_OVERRIDE = "established_override"
 
 
@@ -825,7 +828,10 @@ def _resolve_final_transcript(
 
     The current streaming/offline selection is computed first and remains the
     baseline on verifier unavailability, error, or lack of an independent
-    quorum. A decoded-empty pair may veto only a one-word, non-control
+    quorum. The explicit CPU Qwen path additionally admits its whole original
+    rendering when every changed span has an exact independent verifier vote;
+    controls, deletions, ambiguity and empty sources cannot use that fallback.
+    A decoded-empty pair may veto only a one-word, non-control
     streaming-only hypothesis. The verifier sees the exact same endpoint-owned
     PCM as the offline recognizer. An empty streaming hypothesis remains
     fail-closed unless its caller separately authorized offline recovery.
@@ -978,6 +984,27 @@ def _resolve_final_transcript(
                     else:
                         selected = consensus.chosen
                         verifier_changed = consensus.changed
+                        if (
+                            consensus.outcome in {
+                                AsrConsensusOutcome.TIE,
+                                AsrConsensusOutcome.NO_QUORUM,
+                            }
+                            and config.asr_final_backend == "qwen_cpu"
+                            and getattr(config, "asr_final_verifier_backend", "")
+                            in {"sense_voice", "parakeet_tdt_cpu"}
+                            and offline_text
+                        ):
+                            primary = corroborated_primary(
+                                streaming=streaming_final,
+                                primary=offline_text,
+                                verifier=verifier_text,
+                            )
+                            _check_final_asr_current(is_current)
+                            if primary is not None:
+                                selected = primary
+                                verifier_outcome = "corroborated_primary"
+                                verifier_support = 2
+                                verifier_changed = primary != baseline_selected
                 else:
                     verifier_outcome = "empty"
                     if offline_raw is not None and not offline_text:
@@ -1008,6 +1035,8 @@ def _resolve_final_transcript(
     _check_final_asr_current(is_current)
     if not selected.strip():
         selected_source = FinalTranscriptSource.NONE
+    elif verifier_outcome == "corroborated_primary":
+        selected_source = FinalTranscriptSource.CORROBORATED_PRIMARY
     elif verifier_changed:
         selected_source = FinalTranscriptSource.VERIFIER_CONSENSUS
     elif (

@@ -145,7 +145,7 @@ _SAFE_VERIFIER_OUTCOMES = frozenset(
     }
 )
 _SAFE_SELECTED_SOURCES = frozenset(
-    {"none", "streaming", "offline", "verifier_consensus", "established_override"}
+    {"none", "streaming", "offline", "verifier_consensus", "corroborated_primary", "established_override"}
 )
 _SAFE_RUNTIME_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}\Z")
 _RUNTIME_DISTRIBUTIONS = (

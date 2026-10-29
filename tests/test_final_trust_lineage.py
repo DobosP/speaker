@@ -707,3 +707,48 @@ def test_asr_segment_demotes_word_cut_lineage_on_fresh_voiced_continuation():
     assert segment.owner_lineage_intact is True
     segment.observe_vad(True, 1.2)  # fresh voiced PCM was not cut-time attested
     assert segment.owner_lineage_intact is False
+
+
+@pytest.mark.parametrize(("raw", "selected", "witness"), [
+    ("Tell me the whether in London today", "Tell me the weather in London today",
+     "Tell me the weather in London tomorrow"),
+    ("Remind me in tin minutes to call mom", "Remind me in ten minutes to call mom",
+     "Remind me in ten minutes to call dad"),
+])
+def test_qwen_corroborated_final_reaches_dialogue_without_owner_or_action_authority(raw, selected, witness):
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class Offline:
+        def create_stream(self):
+            return SimpleNamespace(
+                result=SimpleNamespace(text=selected),
+                accept_waveform=lambda _rate, _samples: None,
+            )
+
+        def decode_stream(self, _stream):
+            pass
+
+    class Verifier:
+        def transcribe(self, _samples, _rate):
+            return SimpleNamespace(text=witness)
+
+    engine = SherpaOnnxEngine(SherpaConfig(
+        speaker_gate_input=True, asr_final_backend="qwen_cpu",
+        asr_final_verifier_backend="sense_voice",
+    ))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = Offline()
+    engine._final_verifier = Verifier()
+    _dispatch(engine, np.full(32000, 0.2, dtype="float32"),
+              text=raw)
+    assert legacy == []
+    assert len(typed) == 1
+    assert typed[0].text == selected
+    assert typed[0].origin == "unknown"
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    [event] = _final_events(published)
+    assert event.payload["text"] == typed[0].text
+    assert event.payload["owner_verified"] is False
+    assert event.payload["metadata"]["direct_user_instruction"] is False
+    assert not is_action_allowed(typed[0].origin, owner_verified=typed[0].owner_verified)

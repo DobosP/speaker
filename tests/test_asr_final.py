@@ -926,3 +926,75 @@ def test_qwen_parakeet_pair_retains_quorum_empty_streaming_and_control_fences():
                                              final_verifier=_FakeVerifier(verifier), speech_sec=1.5)
         assert decision.selected == expected
         assert decision.verifier_outcome != "attested_control"
+
+
+@pytest.mark.parametrize("verifier_backend", ["sense_voice", "parakeet_tdt_cpu"])
+def test_qwen_primary_exact_edits_can_be_corroborated_without_whole_phrase_quorum(verifier_backend):
+    raw = "Tell me the whether in London today"
+    primary = "Tell me the weather in London today"
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend=verifier_backend),
+        _FakeOffline(primary), None, np.ones(32000, dtype="float32"), raw,
+        final_verifier=_FakeVerifier("Tell me the weather in London tomorrow"),
+    )
+    assert decision.selected == primary
+    assert decision.selected_source is FinalTranscriptSource.CORROBORATED_PRIMARY
+    assert decision.verifier_outcome == "corroborated_primary"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed
+    assert primary not in repr(decision)
+
+
+@pytest.mark.parametrize(("backend", "verifier_backend"), [
+    ("nemo_transducer", "faster_whisper"), ("nemo_transducer", "parakeet_tdt_cpu"),
+    ("qwen_cpu", "qwen_cpu"), ("qwen_cpu", ""), ("qwen_cpu", "remote_api"),
+])
+def test_corroborated_primary_cannot_apply_to_legacy_or_same_family_verifiers(backend, verifier_backend):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend=backend, asr_final_verifier_backend=verifier_backend),
+        _FakeOffline("Tell me the weather in London today"), None,
+        np.ones(32000, dtype="float32"), "Tell me the whether in London today",
+        final_verifier=_FakeVerifier("Tell me the weather in London tomorrow"),
+    )
+    assert decision.selected == "Tell me the whether in London today"
+    assert decision.verifier_outcome == "tie"
+    assert decision.selected_source is FinalTranscriptSource.STREAMING
+
+
+@pytest.mark.parametrize("verifier", [None, _FakeVerifier(""), _FakeVerifier(error=RuntimeError("private"))])
+def test_qwen_primary_never_replaces_streaming_when_verifier_unavailable(verifier):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="sense_voice"),
+        _FakeOffline("Tell me the weather in London today"), None,
+        np.ones(32000, dtype="float32"), "Tell me the whether in London today",
+        final_verifier=verifier, log_exceptions=False,
+    )
+    assert decision.selected == "Tell me the whether in London today"
+    assert decision.selected_source is FinalTranscriptSource.STREAMING
+
+
+def test_qwen_corroboration_does_not_override_existing_exact_quorum():
+    raw = "Tell me the whether in London today"
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="sense_voice"),
+        _FakeOffline("Tell me the weather in London today"), None,
+        np.ones(32000, dtype="float32"), raw, final_verifier=_FakeVerifier(raw),
+    )
+    assert decision.selected == raw
+    assert decision.verifier_outcome == "consensus"
+    assert not decision.verifier_changed
+
+
+@pytest.mark.parametrize(("raw", "primary", "verifier"), [
+    ("Don't play speak", "Stop", "Stop"),
+    ("Stop", "Tell me the weather", "Tell me the weather tomorrow"),
+    ("", "Tell me the weather", "Tell me the weather tomorrow"),
+])
+def test_qwen_corroboration_keeps_control_and_empty_streaming_guards(raw, primary, verifier):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="sense_voice"),
+        _FakeOffline(primary), None, np.ones(32000, dtype="float32"), raw,
+        final_verifier=_FakeVerifier(verifier),
+    )
+    assert decision.selected == raw
+    assert decision.verifier_outcome != "corroborated_primary"

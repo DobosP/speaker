@@ -582,3 +582,74 @@ def test_quoted_heard_answer_ticket_keeps_original_identity_and_expiry(changed):
     if changed == "expiry":
         clock[0] += 30
     assert not gate.observe('"Paris"', input_epoch=epoch, acoustic=acoustic).candidate
+
+
+def test_unknown_origin_typed_audio_still_cannot_interrupt_with_room_words():
+    rt, engine, classifier = runtime(hold=True)
+    try:
+        live(engine, "Tell me a story")
+        deadline = time.monotonic() + 2
+        while not engine.is_speaking and time.monotonic() < deadline:
+            rt.bus.drain()
+            time.sleep(0.001)
+        assert engine.is_speaking
+        generation = rt.supervisor.latest_arrival_generation
+        engine.final_result(FinalTranscript("random room words", origin="unknown"))
+        rt.bus.drain()
+        assert rt.supervisor.latest_arrival_generation == generation
+        assert engine.is_speaking
+        assert len(classifier.calls) == 1
+        assert any(x.text == "random room words" and "ingested" in x.tags for x in rt.memory.all())
+    finally:
+        rt.stop()
+
+
+def test_unknown_origin_typed_corrected_request_is_ordinary_dialogue_only():
+    rt, engine, classifier = runtime()
+    seen = []
+    rt.bus.subscribe(seen.append)
+    try:
+        engine.final_result(FinalTranscript("Tell me the weather in London today", origin="unknown"))
+        assert rt.wait_idle()
+        assert len(classifier.calls) == 1
+        assert engine.spoken == ["Four."]
+        [event] = [x for x in seen if x.kind is EventKind.STT_FINAL]
+        assert event.payload["origin"] == "unknown"
+        assert event.payload["owner_verified"] is False
+        assert event.payload["metadata"]["direct_user_instruction"] is False
+    finally:
+        rt.stop()
+
+
+def test_unknown_origin_typed_audio_needs_heard_followup_question_window():
+    rt, engine, classifier = runtime(reply="Which city?")
+    try:
+        engine.final_result(FinalTranscript("Paris", origin="unknown"))
+        assert rt.wait_idle()
+        assert classifier.calls == []
+        live(engine, "Can you help me plan a trip?")
+        assert rt.wait_idle()
+        engine.final_result(FinalTranscript("Paris", origin="unknown"))
+        assert rt.wait_idle()
+        assert len(classifier.calls) == 2
+        engine.command("stop")
+        rt.bus.drain()
+        engine.final_result(FinalTranscript("Rome", origin="unknown"))
+        assert rt.wait_idle()
+        assert len(classifier.calls) == 2
+    finally:
+        rt.stop()
+
+
+@pytest.mark.parametrize("mode", [Mode.DICTATION, Mode.MEETING])
+def test_unknown_origin_typed_audio_keeps_recording_mode_admission(mode):
+    rt, engine, classifier = runtime()
+    try:
+        rt.bus.publish(AgentEvent.mode(mode))
+        rt.bus.drain()
+        engine.final_result(FinalTranscript("ordinary recording statement", origin="unknown"))
+        assert rt.wait_idle()
+        assert any(x.text == "ordinary recording statement" and "ingested" not in x.tags for x in rt.memory.all())
+        assert len(classifier.calls) == 1
+    finally:
+        rt.stop()

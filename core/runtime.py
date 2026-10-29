@@ -1901,6 +1901,7 @@ class VoiceRuntime:
             origin=result.origin,
             acoustic=result.acoustic,
             revision=result.revision,
+            _audio_admission=True,
         )
 
     def _on_final(
@@ -1912,6 +1913,7 @@ class VoiceRuntime:
         origin: str = _LEGACY_TEXT_ORIGIN,
         acoustic: AcousticLineage | None = None,
         revision: int = 0,
+        _audio_admission: bool = False,
     ) -> None:
         final_at = time.perf_counter()
         with self._terminal_effect_lock:
@@ -1968,8 +1970,12 @@ class VoiceRuntime:
                         self.supervisor.commit_input_generation(partial_generation)
                         self._clear_arrival_continuation(partial_generation)
                     return
-            if (origin == "live_audio"
+            if ((_audio_admission or origin == "live_audio")
                     and not self._has_conversation_cue(text, acoustic=acoustic)):
+                # Audio admission and direct-instruction trust are different
+                # facts. A corrected ASR final loses live action authority, but
+                # must still pass the room-speech/conversation gate before it
+                # can cancel a reply or claim a new input generation.
                 # This terminal may reject a previously plausible partial. Retire
                 # only its exact fence/reservation; do not reissue the old input
                 # or let an unrelated/unkeyed final clear another utterance.

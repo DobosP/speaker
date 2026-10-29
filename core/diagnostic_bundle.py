@@ -105,7 +105,7 @@ _FIELD_SYMBOLS = {
         }
     ),
     "selected_source": frozenset(
-        {"none", "streaming", "offline", "verifier_consensus", "established_override"}
+        {"none", "streaming", "offline", "verifier_consensus", "corroborated_primary", "established_override"}
     ),
     "outcome": frozenset(
         {
@@ -121,6 +121,7 @@ _FIELD_SYMBOLS = {
             "empty_veto",
             "attested_control",
             "empty_streaming_guard",
+            "corroborated_primary",
             "nonempty",
             "callback_returned",
             "completed",

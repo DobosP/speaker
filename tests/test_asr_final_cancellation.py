@@ -319,3 +319,36 @@ def test_foreign_scope_retirement_does_not_cancel_current_final():
     assert finals == ["public synthetic phrase"]
     assert stage.finish(current)
     assert stage.wait_idle(0.0)
+
+
+def test_revocation_after_corroborated_primary_aborts_without_verifier_health_change(monkeypatch):
+    from core.engines import sherpa
+
+    cancel = threading.Event()
+
+    class Offline:
+        def create_stream(self):
+            return SimpleNamespace(
+                result=SimpleNamespace(text="Tell me the weather in London today"),
+                accept_waveform=lambda _rate, _samples: None,
+            )
+
+        def decode_stream(self, _stream):
+            pass
+
+    class Verifier:
+        def transcribe(self, _samples, _rate):
+            return SimpleNamespace(text="Tell me the weather in London tomorrow")
+
+    def revoke(**_kwargs):
+        cancel.set()
+        return "Tell me the weather in London today"
+
+    monkeypatch.setattr(sherpa, "corroborated_primary", revoke)
+    with pytest.raises(_FinalAsrCancelled):
+        _resolve_final_transcript(
+            SherpaConfig(asr_final_backend="qwen_cpu", asr_final_verifier_backend="sense_voice"),
+            Offline(), None, np.ones(32000, np.float32),
+            "Tell me the whether in London today", final_verifier=Verifier(),
+            is_current=lambda: not cancel.is_set(),
+        )

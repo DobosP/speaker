@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-29 (12628 passed/40 skipped full gate; two CPU ASR pairs replayed; defaults unchanged; live stopped).
+Last verified: 2026-10-29 (prior full gate12628/40 skipped; Qwen selection focused tests856/1 skipped, paired replay pending; defaults unchanged; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -27,7 +27,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
   Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
   Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
-- ADR-0255 adds explicit Qwen/Sense CPU compact option; Parakeet voter is experimental/unrecommended. Both preserve guards and lack selected-quality gain; Linuxx86_64 only, defaults unchanged.
+- ADR-0255 adds explicit Qwen/Sense CPU compact option; Parakeet voter is experimental/unrecommended. ADR-0256 adds exact corroborated Qwen dialogue edits and retains audio admission after trust downgrade; paired CPU recording qualification pending, controls/defaults unchanged.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 retain media-first fast/all residency; ADR-0237 retires warm on accepted input/shutdown with local-only cancellation; main/vision stay callable. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.

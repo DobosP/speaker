@@ -73,10 +73,14 @@ local research branch `codex/qwen-selection-benchmarks` (final docs-only
 `tools/english_feature_asr_benchmark.py` accepts fresh output/scratch paths for
 reproduction; existing immutable results must not be overwritten.
 
-The full headless CI-style gate passed12,738 tests,40 skipped,9 warnings in
-218.52s on `54104f6`, excluding the two documented LiveKit files. Its only
-successor to measured `7a9c58d` is a deterministic test-fixture repair plus
-documentation; runtime bytes are identical. Independent source/result review
+The combined full headless CI-style gate passed12,897 tests,40 skipped,
+9 warnings in279.71s on `4c90042`, excluding the two documented LiveKit files.
+This includes concurrent `1d3e8bd` evaluation tools/tests. The earlier `54104f6`
+gate passed12,738/40; its changes from measured `7a9c58d` were a deterministic
+test-fixture repair and documentation. Production `core/`, `always_on_agent/`,
+configuration and model-setup code still match the measured version; added
+benchmark/scorer files are outside that runtime scope. The new scorer bytes
+match those used in the recorded comparison. Independent source/result review
 passed. Original recordings, baseline assets and stored configuration remain.
 Mic6 is old human-verified development audio; Owner37 provenance remains
 unverified. Neither is a disjoint holdout. No microphone, speaker, doctor,

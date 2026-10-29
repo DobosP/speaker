@@ -1742,3 +1742,28 @@ Final docs/evidence keep that tested runtime unchanged. Full test fake trees
 were ephemeral namespace fixtures; no original audio/logs/models/unmerged source
 was deleted. Root owns final reviewed landing/push and verified-merged feature
 worktree cleanup. No live/doctor/default activation or other-OS/device run.
+
+## 2026-10-29 — Combined Qwen selection and concurrent evaluator landing gate
+
+Valid until: tested runtime/tools/configuration or qualified input bindings change — then treat as history.
+
+Preserved concurrently landed main1d3e8bd (ADR0257) by merging into feature as
+4c9004296d2cd1c0518fdb9a6ab4ea4aac3dfb4e. Only STATUS/WORKLOG conflicted;
+both histories and current qualifier facts remain. Existing production core,
+always_on_agent, config and model-setup code are byte-identical to benchmark7a9;
+new scorer/vendor/response benchmark/tests/docs are additions, not runtime
+changes. Scorer/normalizer/spelling bytes match measured899 researchsource;
+independent static integration review GO. Earlier alltools/testseq claims apply
+to preintegration54104 only, not the added tooling. Native results stay valid.
+
+Combined fullgate **12897passed40skipped9warnings279.71s**, rc0,postclean4c90042.
+Initial integrationlaunch collected0 because recursive root remount failed on
+unrelated broken /mnt/seed; receipt retained full-logic-gate-integrated.json.
+Verified successor builds read-only top-level mounts omitting/mnt, same taskRW,
+private/tmp/pseudodev/proc, same lowprioritythread1env and exact pytestargs,
+documented two LiveKit ignores, no additional exclusions. Successful command
+and receipt full-logic-gate-integrated-safe.json retain exact mount/env/source
+scope; no host mount or product guard was changed. No tests/source changed to
+resolve that environment issue. Final docs-only successor retains all12897
+verified runtime/test bytes. Packet14,043B/a82ed967 and bothrepeatOwner21→17/Mic4
+and STOP0/1+1/2 remain; no physical/live/default activation.

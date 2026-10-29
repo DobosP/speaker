@@ -169,3 +169,30 @@ Private synthetic full-suite fixture trees vanished with their namespaces;
 original logs/audio/model keepers and unmerged research work were not pruned.
 No microphone, doctor, live speaker, phone or other operating-system validation
 ran. Linuxx86_64 remains the qualified Qwen binary tuple.
+
+## Concurrent evaluator integration and combined final gate
+
+After the prior green54104 checkpoint and reviewed docs0d94cda, shared main
+advanced to `1d3e8bd0f137aa852252107743cba443b7b4e8fc` (ADR-0257). Merge
+`4c9004296d2cd1c0518fdb9a6ab4ea4aac3dfb4e` preserves those independent
+benchmark/scorer/vendor/test/history additions and both STATUS/WORKLOG records.
+The earlier final-successor wording describes the pre-integration checkpoint;
+the combined tree also adds these evaluator tools/tests/docs. It is not a claim
+that all tools/tests equal measured7a9. Actual production core/always_on_agent,
+configuration and original model-setup source remain byte-identical to7a9;
+new evaluator/scorer files are unselected and not imported by the runtime. The
+new scorer/normalizer/spelling files equal the frozen measured benchmark bytes.
+Independent integration/source review passed, so no native corpus rerun follows.
+
+The parent-owned combined full CI-style gate on4c90042 passed **12897 tests,
+40skipped,9warnings in279.71s**, exit0/postclean. Same pytest/environment and
+documented two LiveKit exclusions as above. The first integration launch
+collected zero tests because recursive root remount hit an unrelated broken
+`/mnt/seed` mount. The verified successor binds top-level filesystem entries
+read-only while omitting `/mnt`, retains the writable task tree, private
+/tmp+pseudo/dev+/proc and no audio devices. It changes no source or tests and
+never mutates the host mount. Both the zero-collection failure and successful
+command/receipt remain at `full-logic-gate-integrated.json` and
+`full-logic-gate-integrated-safe.json` in the same private run directory.
+Final successor updates documentation only. Recording packet/results, existing
+configuration/defaults and STOP-red/live limits remain unchanged.

@@ -1,7 +1,7 @@
 # ADR-0255: Add an explicit Qwen/SenseVoice CPU final-ASR option
 
 Date: 2026-10-28
-Status: accepted for explicit software integration; composed recording qualification pending
+Status: accepted for CPU integration; dialogue selection partially superseded by ADR-0256; original qualification retained as history
 
 ## Decision
 
@@ -259,3 +259,15 @@ Manifest-referenced active Qwen/SDK files remain canonical keepers, not disposab
 scratch. No experimental Parakeet entry is installed by that normal setup.
 See the updated [runtime/research guide](../english_model_comparison.md) for
 verified cache reuse, explicit selection/rollback, fixed pins and limits.
+
+## Later 2026-10-29: independently qualified dialogue selector successor
+
+[ADR-0256](0256-corroborated-qwen-dialogue-selection.md) supersedes only the
+whole-phrase-only dialogue fallback for explicit CPU Qwen profiles. The exact
+consensus/control path and this decision's models, CPU resources, configuration,
+privacy, native lifetime and default choices remain. Fresh Qwen/SenseVoice
+paired replay improves selected Owner37 normalized errors21/213→17/213 while
+Mic6 stays4/25 and all STOP/control/empty counts remain unchanged. The earlier
+negative selected-quality verdict above remains accurate for its measured
+source. The later comparison is software/development evidence, not live STOP
+or default promotion. Its immutable packet, full gate and limits are in ADR-0256.

@@ -1,7 +1,7 @@
 # ADR-0256: Corroborate Qwen dialogue edits without changing control authority
 
 Date: 2026-10-29
-Status: accepted for software implementation; paired recorded qualification pending
+Status: accepted for software and development recording qualification; STOP/live qualification remains open
 
 ## Context
 
@@ -122,3 +122,50 @@ Final fixture verification: the exact isolated case passed1 in0.15s; complete
 streaming and extra-Kyutai manifest files passed114 in1.42s. Scoped Ruff,
 whitespace and the38-file documentation check pass. Independent static review
 accepted both target-descriptor scoping and the explicit owned mtime change.
+
+## Final paired qualification and landing evidence
+
+The declared four-cell selector comparison passed: actual FileReplay on BEFORE
+`fa59d9d03c9e6ef9be9a29ef9b1fff605403d876` and AFTER
+`7a9c58d10585ec438c9b78c0345bdbec0c793e0f`, benchmark
+`899201c3b01020808c86dd7239fedfdecfffa938`, two separate repeats per corpus.
+Same profile/config/assets/scorer/original PCM and CPU mask[0,2]/thread2 bind
+both phases. All raw score fields/control counts and endpoint/empty accounting
+match; three corroborated primary decisions replace three ties per repeat.
+Owner37 selected legacy22/212→18/212, normalized21/213→17/213 and exact26/37→29/37;
+Mic6 remains legacy3/25,normalized4/25. No label tuning or further voter trial
+followed. Retain the optional CPU profile and unchanged defaults.
+
+STOP is not fixed: Mic6 selected0/1 and Owner37 1/2 per repeat, one guarded miss
+per corpus. Benign false controls remain0; no confirm/deny/mode positive coverage
+or noise-negative acoustic proof follows. The selector gain cannot authorize
+live/default/control promotion. Typed runtime/engine tests independently prove
+admission and action-authority fences; FileReplay scores alone do not.
+
+Owner complete-call p50/p95 compute2.607/4.280→2.473/3.213s, peakworkerRSS
+1.850→1.850decimalGB, RTF1.008→0.946. Timings are nonexclusive-host after-PCM
+compute, not causal acceleration, real speech-end response or STOP delivery.
+Both original endpoint leases closed in every cell, children exited0/reaped,
+network isolation/no GPU/audio-device exposure/resource bounds passed. The
+[compact packet](../evidence/qwen-selection-comparison-2026-10-29.json) is exactly
+14,043bytes, SHA `a82ed9672d855337da90d74b0b3cad4e10628fbb1c07185c0185feb5135e9c76`.
+It preserves172clip calls across four cells without raw voice/reference/hypothesis
+text. Full raw score equality is aggregate parity, not transcript byte identity.
+The research branch retains measured899201c and docs-onlyb92f496 reproducibility
+sources; original recordings and baseline model assets remain unchanged.
+
+After the test-only fixture repair, the parent-owned full CI-style gate on
+`54104f68014feb1619466bbd7cbe9f18582d465c` passed **12738 tests,40skipped,
+9warnings in218.52s**, exit0. Command: low-priority single-thread environment,
+private tmpfs/tmp+pseudo/dev+writable task-tree `bwrap`, canonical `.venv`
+`python -B -m pytest tests -q --tb=short -p no:cacheprovider
+--ignore=tests/test_livekit_audio.py --ignore=tests/test_livekit_engine.py
+--basetemp=/tmp/speaker-qwen-selection-fullgate`.
+Two LiveKit ignores are the documented CI exclusions; no failing case was
+excluded. Measured7a9 runtime/core/tools/config bytes equal tested54104; final
+successor documentation/evidence changes no runtime or tests. Earlier failed
+full gate and exact successful receipts remain in private `logs/runs/qwen-selection-20261029/`.
+Private synthetic full-suite fixture trees vanished with their namespaces;
+original logs/audio/model keepers and unmerged research work were not pruned.
+No microphone, doctor, live speaker, phone or other operating-system validation
+ran. Linuxx86_64 remains the qualified Qwen binary tuple.

@@ -1644,3 +1644,51 @@ andlegacyprofiledigests unchanged, finalconfigbytesappropriatelydifferent.
 ReferencedQwen/SDKcachebytesareactivecanonicalkeepers, nevertransientprune.
 Originalrecordings/baselines remain. No live/doctor/playback/otherOSclaim, no
 new source/runtime edits or modeljob inthis docsstep. Rootownslanding/push/cleanup.
+
+## 2026-10-29 — ADR-0256 CPU Qwen selection and guarded recording qualification
+
+Valid until: bound runtime/profile/assets/config/scorer/corpora change or fresh disjoint evidence supersedes it — then treat as history.
+
+Clean measured7a9c58d adds exact changed-span corroboration for explicit Qwen
+CPU dialogue only, preserving whole-phrase consensus precedence and all control,
+empty-recovery, speaker/echo, cancellation and direct-action fences. Typed audio
+also keeps conversation admission after trust becomes unknown, closing the
+room-fragment reply-cancellation bypass. New labels remain distinct from exact
+consensus. Focused856passed1skip5.42s, independent351passed2.26s and final static
+review GO. Component models, installed profile and canonical configuration were
+not changed or activated by this pass; no new model/threads/inference/framework.
+
+Fresh benchmark899201c, BEFOREfa59d9d→AFTER7a9c58d, four cells172clip calls,
+CPU[0,2]/2native threads, same profile/config/assets/scorer/PCM, network/PID
+isolation and no GPU/audio devices. Both ordered repeats: Mic6selectedlegacy3/25,
+normalized4/25 unchanged; Owner37legacy22/212→18/212,normalized21/213→17/213,
+exact26/37→29/37. All raw score fields/control counts and endpoint/decision/
+missing/multiple/allfour-empty accounting match. Three new corroborated decisions
+replace three ties; eight Owner ties remain. Selected STOP remains redMic0/1,
+Owner1/2, no false controls or empty joined clips, Owner2emptydecisions/39total.
+No confirm/deny/mode positives, noise-negative or heldout quality claim follows.
+
+Ownercallp50/p95s2.607/4.280→2.473/3.213, peakRSS1.850GBsame, CPU407.001→387.690s,
+RTF1.008→0.946. Micp50/p95s2.287/2.914→2.149/2.378. These sequential nonexclusive
+host afterPCM clocks do not prove causal speedup, speech-end/agent/DAC latency
+or delivered STOP. All eight endpoint model leases closed, children exited0/reaped and
+original corpus/config/model/scorer hashes verified. Independent complete
+report/packet audit GO. Exact14,043B packet a82ed9672d855337da90d74b0b3cad4e10628fbb1c07185c0185feb5135e9c76
+is committed at docs/evidence/qwen-selection-comparison-2026-10-29.json.
+Original4reports/plans remain private under logs/runs/qwen-selection-20261029;
+measured899201c and docs-onlyb92f496 survive on unmerged researchbranch
+codex/qwen-selection-benchmarks, whose source worktree remains for continuation.
+
+First full7a9 gate12737passed40skip1failed9warn207.60s: known mutation-race
+fixture failed, initial cause unproven. TESTONLY54104f6 binds mutation to target
+FD and explicit changed mtime; real byte rewrite and production error unchanged.
+Isolated1/0.15s, manifest114/1.42s, independent review GO. Final parent full54104f6
+**12738passed40skipped9warnings218.52s**, exit0, postclean, canonicalPython,
+singlethreadlowpriority, private tmpfs/tmp+pseudo/dev+taskRW namespace. Exact
+pytest tests -q --tb=short -p no:cacheprovider, documented two LiveKit ignores;
+no flaky case excluded. Receipts full-logic-gate.json and full-logic-gate-final.json
+retain both attempts; runtime diff7a9..54104 empty(core/always_on_agent/tools/config).
+Final docs/evidence keep that tested runtime unchanged. Full test fake trees
+were ephemeral namespace fixtures; no original audio/logs/models/unmerged source
+was deleted. Root owns final reviewed landing/push and verified-merged feature
+worktree cleanup. No live/doctor/default activation or other-OS/device run.

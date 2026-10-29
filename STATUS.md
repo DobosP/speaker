@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-29 (Qwen full gate12737 passed/40 skipped/1 timestamp-fixture failure; test-only repair isolated1/manifest114 pass; final full gate pending; live stopped).
+Last verified: 2026-10-29 (12738 passed/40 skipped full gate; paired CPU Qwen selection improves Owner37; STOP remains red; defaults unchanged; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;
@@ -27,7 +27,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
   Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
   Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
-- ADR-0255 adds explicit Qwen/Sense CPU compact option; Parakeet voter is experimental/unrecommended. ADR-0256 adds exact corroborated Qwen dialogue edits and retains audio admission after trust downgrade; paired CPU recording qualification pending, controls/defaults unchanged.
+- ADR-0255 retains explicit CPU profiles; Parakeet voter stays experimental. ADR-0256 exact corroborated Qwen edits improve Owner37 selected normalized errors21/213→17/213 in both repeats; Mic6 stays4/25, STOP misses persist, controls/defaults unchanged; typed audio retains admission after trust downgrade.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 retain media-first fast/all residency; ADR-0237 retires warm on accepted input/shutdown with local-only cancellation; main/vision stay callable. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
@@ -106,7 +106,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - Mobile ASR: preserve every ADR-0207/0208 artifact; next evidence is a private owner-recorded holdout disjoint between tuning and verdict,
   then phone CPU/RSS/thermal/mic validation. Zipformer stays the English owner and Romanian is deferred (ADR-0203/0205–0208).
 ## Verification record (2026-10-29; older platform receipts labelled; commands/history in WORKLOG.md)
-- Python CI-style full gate on251210: `12628 passed, 40 skipped, 9 warnings` in278.37s; two LiveKit files excluded. CPU raw14/composed4cells774calls verified; ADR-0255/evidence/WORKLOG.
+- Python CI-style full gate on54104f6: `12738 passed, 40 skipped, 9 warnings` in218.52s; two LiveKit files excluded. Four paired CPU cells/172calls pass selector verdict; STOP red; ADR-0256/evidence/WORKLOG.
 - Prior mobile (2026-10-05): `275 passed`, compiled Compact/asset gate `23 passed`, full analysis clean; current cached Sherpa 1.13.3/Gemma 0.16.5.
 - Prior Go HTTP/race/vet/native HTTP/image and fake pipe pass; Python scope `166 passed, 1 skipped`, adapter `73 passed`; installed SDK opt-in refused (missing closure).
 - Prior owner live (2026-10-05): fresh candidate passes 4090 Responsive compatibility; room noise still triggers instruction-copying. Stopped; route/server restored.

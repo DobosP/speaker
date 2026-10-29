@@ -2,11 +2,88 @@
 
 Valid until: a model/runtime/profile changes or fresh disjoint device evidence supersedes this comparison — then treat as history.
 
-Latest software/replay verification:2026-10-29, [ADR-0255](adr/0255-portable-qwen-sensevoice-asr.md).
+Latest software/replay verification:2026-10-29, [ADR-0256](adr/0256-corroborated-qwen-dialogue-selection.md).
 Historical October4 experiment scope: [ADR-0216](adr/0216-english-model-candidates-and-recording-benchmarks.md).
 Current runtime selection: [STATUS](../STATUS.md).
 
-## CPU final-ASR options — verified 2026-10-29
+## CPU Qwen selector improvement — verified 2026-10-29
+
+[ADR-0256](adr/0256-corroborated-qwen-dialogue-selection.md) records a selected
+transcript improvement with the existing `qwen-sensevoice-cpu` option. The
+previous selector required two complete transcripts to match. The revised
+fallback can retain a Qwen correction when the independent verifier supports
+that exact change but makes a separate error elsewhere. It returns Qwen's
+original complete rendering; every changed span must have exact support at the
+same streaming positions. Ambiguous alignment, deletion, token migration,
+one/two-token streaming fragments, empty sources and controls abstain. Exact
+whole-transcript consensus remains the first choice. There is no new model,
+extra inference pass, CPU-thread increase or default/profile activation.
+
+Changed final text still loses owner/direct-instruction action authority.
+Typed audio now retains the conversation-cue filter after its origin becomes
+unknown, closing an admission bypass that could let corrected room fragments
+cancel a reply. Echo, speaker, capture/cancellation, empty-recovery and
+STOP/confirm/deny/mode fences remain. These are deterministic software checks;
+they do not prove acoustic room-noise or open-speaker behavior.
+
+Fresh actual production FileReplay compared clean BEFORE `fa59d9d` and AFTER
+`7a9c58d`, with the same frozen benchmark `899201c`, installed profile, config,
+model/library/scorer bytes, CPU affinity `[0,2]` and two native threads. All four
+cells ran twice on original unchanged PCM in network/PID namespaces without
+GPU or audio devices. References entered scoring only after decoding.
+
+| Selected result per repeat | Before | After |
+|---|---:|---:|
+| Mic6 legacy errors /25; normalized /25 | 3;4 | 3;4 |
+| Owner37 legacy errors /212; normalized /213 | 22;21 | 18;17 |
+| Owner37 normalized WER | 9.86% | 7.98% |
+| Owner37 exact normalized clips /37 | 26 | 29 |
+| Mic6 STOP hits /1; Owner37 STOP hits /2 | 0;1 | 0;1 |
+| Benign false controls in either corpus | 0 | 0 |
+| Owner37 complete-call compute p50 /p95 s | 2.607 /4.280 | 2.473 /3.213 |
+| Owner37 worker peak RSS, decimal GB | 1.850 | 1.850 |
+
+Both repeats produced these scores: four fewer Owner37 normalized errors, a
+19% relative error reduction. Three corroborated Qwen decisions replace three
+previous ties per repeat; eight ties remain. Complete raw recognizer score
+fields and controls, selected controls, endpoint/decision/missing/multiple and
+all four empty-decision counts match BEFORE/AFTER. There are zero empty joined
+clips; Owner37 still has39 decisions/37 clips, two selected-empty decisions and
+one multiple-final clip per repeat. Mic6 has six decisions and no native
+endpoint. The declared selector comparison passes; **STOP remains red**, with
+one guarded miss per corpus/repeat. No new control exception admits either miss.
+
+Clocks measure unpaced complete `evaluate_samples` work after PCM, excluding
+stream creation, capture, endpoint waiting, LLM, TTS and DAC. The sequential
+nonexclusive host run does not prove a causal speedup or live response latency.
+Owner37 RTF was1.008→0.946; CPU407.001→387.690s across both repeats. Mic6 call
+p50/p95 was2.287/2.914→2.149/2.378s. STOP-clip complete-call p50/p95 statistics span roughly
+1.7–2.2s; they do not measure a delivered STOP callback, including for misses.
+Constructor checks prewarm disk cache; no physically cold-start claim follows.
+
+The [14,043-byte comparison packet](evidence/qwen-selection-comparison-2026-10-29.json),
+SHA `a82ed9672d855337da90d74b0b3cad4e10628fbb1c07185c0185feb5135e9c76`,
+binds all four reports, prospective plans, both source phases, configuration,
+assets, corpora, scoring, separate repeats and resource/cleanup receipts without
+raw recordings, references, hypotheses or clip names. Every model lease closed
+and each worker exited/reaped. The measured harness is retained at `899201c` on
+local research branch `codex/qwen-selection-benchmarks` (final docs-only
+`b92f496`); `docs/qwen_selection_benchmark_plan.md` and
+`tools/run_qwen_selection_comparison.py` there preserve the protocol. Direct
+`tools/english_feature_asr_benchmark.py` accepts fresh output/scratch paths for
+reproduction; existing immutable results must not be overwritten.
+
+The full headless CI-style gate passed12,738 tests,40 skipped,9 warnings in
+218.52s on `54104f6`, excluding the two documented LiveKit files. Its only
+successor to measured `7a9c58d` is a deterministic test-fixture repair plus
+documentation; runtime bytes are identical. Independent source/result review
+passed. Original recordings, baseline assets and stored configuration remain.
+Mic6 is old human-verified development audio; Owner37 provenance remains
+unverified. Neither is a disjoint holdout. No microphone, speaker, doctor,
+physical STOP, phone or other-OS test ran, and live readiness is not established.
+Selection/rollback instructions below remain applicable to the existing option.
+
+## Historical CPU model screen and pre-ADR-0256 selector — 2026-10-29
 
 [ADR-0255](adr/0255-portable-qwen-sensevoice-asr.md) governs the explicit
 `qwen-sensevoice-cpu` option. Qwen3-ASR0.6B Q8 had the lowest recorded raw

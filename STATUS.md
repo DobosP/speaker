@@ -1,6 +1,6 @@
 # Status — speaker
 Single source of current truth: this file > newest accepted ADR in docs/adr/ > everything else (AGENTS.md, Docs discipline).
-Last verified: 2026-10-29 (prior full gate12628/40 skipped; Qwen selection focused tests856/1 skipped, paired replay pending; defaults unchanged; live stopped).
+Last verified: 2026-10-29 (Qwen full gate12737 passed/40 skipped/1 timestamp-fixture failure; test-only repair isolated1/manifest114 pass; final full gate pending; live stopped).
 Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `WORKLOG.md`.
 ## Current state — runtime
 - GitHub Actions are manual-only (ADR-0223). Dormant web HTTP/auth/JWT/static/limits/probes are Go, with explicit bounded Python text IPC;

@@ -655,18 +655,41 @@ def test_bound_file_hash_rejects_in_place_mutation_during_streaming_read(
     target = tmp_path / "large-bound-file"
     payload = b"a" * (2 * 1024 * 1024)
     target.write_bytes(payload)
+    before = target.stat()
     real_read = bounded_io.os.read
     calls = 0
 
     def racing_read(descriptor, size):
         nonlocal calls
+        # os.read is shared process-wide; unrelated background reads must not
+        # trigger this mutation before the target's own snapshot starts. Keep
+        # real_read authoritative for invalid-descriptor errors as well.
+        try:
+            opened = os.fstat(descriptor)
+            is_target = (opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino)
+        except OSError:
+            is_target = False
         chunk = real_read(descriptor, size)
+        if not is_target:
+            return chunk
         calls += 1
         if calls == 1:
             target.write_bytes(b"b" * len(payload))
+            # The same-size rewrite can share the initial filesystem timestamp
+            # tick. Explicitly make this owned mutation observable; no sleeps or
+            # production clock/identity changes are needed for a deterministic
+            # before/after snapshot check.
+            os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+            assert target.stat().st_mtime_ns != before.st_mtime_ns
         return chunk
 
     monkeypatch.setattr(bounded_io.os, "read", racing_read)
+    unrelated = tmp_path / "unrelated-read"
+    unrelated.write_bytes(b"unrelated")
+    with unrelated.open("rb") as handle:
+        assert os.read(handle.fileno(), 16) == b"unrelated"
+    assert calls == 0
+    assert target.read_bytes() == payload
 
     with pytest.raises(BoundedReadError):
         hash_regular_bounded(
@@ -674,6 +697,9 @@ def test_bound_file_hash_rejects_in_place_mutation_during_streaming_read(
             maximum_bytes=len(payload),
             expected_bytes=len(payload),
         )
+
+    assert calls >= 1
+    assert target.read_bytes() == b"b" * len(payload)
 
 
 def test_corpus_loads_finite_exact_f32_and_hides_text_from_repr(tmp_path):

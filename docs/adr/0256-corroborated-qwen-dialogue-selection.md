@@ -91,3 +91,34 @@ complete focused invocation then passed. Scoped Ruff E9/F63/F7/F82, AST parsing
 and whitespace checks pass. The native benchmark owner serialized these checks
 after its before-run workers were reaped. Parent owns independent final review,
 the full logic suite, paired recorded verdict and any eventual landing.
+
+## Full-gate race-fixture repair
+
+The parent-owned first full CI-style run on7a9c58d completed **12737 passed,
+40 skipped,9 warnings and1 failure in207.60s**. The only failure was the known
+`test_bound_file_hash_rejects_in_place_mutation_during_streaming_read` race:
+it did not raise the expected production error. Its precise cause was not
+captured. Source review found two fixture hazards: its real same-size2MiB
+rewrite could share the initial filesystem timestamp tick, and its process-wide
+`os.read` hook could fire on an unrelated background read before the target's
+own snapshot began. All selection cases in that run passed; the full run
+remains failed history.
+
+Repair that test only by scoping the hook to the captured target device/inode
+before the actual read. Unrelated reads retain their original results/errors
+and cannot increment the target counter or cause its mutation; an explicit
+unrelated-FD probe verifies the target remains unchanged. Retain the real byte
+rewrite after the first target streaming read, preserve its recorded atime and
+explicitly set mtime one second beyond its own initial mtime. Assert the
+timestamp actually differs and the rewritten bytes are present. The production
+bounded reader, metadata identity checks, expected `BoundedReadError`, deadlines
+and resource/safety policy are unchanged. This removes two scheduling/clock
+assumptions without sleeping, excluding the case or retrying unchanged code
+until success. The final exact isolated and related manifest receipts follow.
+Parent will run the full gate on the clean successor; benchmarked7a9c58d runtime
+bytes remain unchanged by this fixture repair.
+
+Final fixture verification: the exact isolated case passed1 in0.15s; complete
+streaming and extra-Kyutai manifest files passed114 in1.42s. Scoped Ruff,
+whitespace and the38-file documentation check pass. Independent static review
+accepted both target-descriptor scoping and the explicit owned mtime change.

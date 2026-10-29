@@ -27,7 +27,7 @@ Runtime/evidence facts are as of 2026-08-21 unless dated; historical receipts: `
 - ADR-0211/0212 retain one mobile TTS lookahead and four ASR credits plus bounded pending PCM, original capture boundaries and session-end revocation.
   Exact playback cleanup releases WAVs; uncertain cleanup retains them. ADR-0220 scopes active assets and ADR-0221 freezes startup thread requests.
   Phone first-audio, sustained RTF/WER, thermal and acoustic behavior remain unvalidated.
-- ADR-0255 retains explicit CPU profiles; Parakeet voter stays experimental. ADR-0256 exact corroborated Qwen edits improve Owner37 selected normalized errors21/213→17/213 in both repeats; Mic6 stays4/25, STOP misses persist, controls/defaults unchanged; typed audio retains admission after trust downgrade.
+- ADR-0255/0256: CPU Qwen corroborated edits cut Owner37 normalized21→17/213, Mic6 stays4/25; STOP red/defaults unchanged; typed audio keeps admission. Parakeet voter experimental. ADR-0257 adds199-test development evaluators; the legacy response tool rejects leased CPU endpoints.
 - ADR-0215 repairs prospective AMI/Microsoft import closures and private repository-lock test staging; original receipts stay historical.
 - ADR-0213/0219 retain media-first fast/all residency; ADR-0237 retires warm on accepted input/shutdown with local-only cancellation; main/vision stay callable. ADR-0214
   offline acceptance plan in `docs/local_voice_performance.md`. Phone English-only selection and physical quality/thermal gates stay open.
